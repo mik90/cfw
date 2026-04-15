@@ -12,6 +12,10 @@ In order of priority
   - [x] quick test for determinism
   - [x] honor thread pool constraints when it comes to whether a task is able to be executed in a group
   - [x] multi-thread execution, flush loans at end of step
+  - [ ] more stressful tests for determinism
+- [ ] forwarded messages, publish a message alongside a handle to a message it was produced with
+    - so, given a message B that was produced using contents of A, allow for message B to link to message A
+    - this should allow us to defer logging of messages to a normal callback, we'd publish a message that has some handles and the timestamp in which they were seen
 - [ ] bitwise replay executor
   - Threading is kind of irrelevant here
   - I'll need to consider logging executions and message queues for this
@@ -28,8 +32,6 @@ In order of priority
   - arena configuration may be different
 - [ ] maybe a manual input pull and fallable publish? allows for global defaults and configurable 
   - storing the typed publisher or subscriber might work here
-- [ ] forwarded messages, publish a message alongside a handle to a message it was produced with
-      - so, given a message B that was produced using contents of A, allow for message B to link to message A
 - [ ] allow for run_generic on Fn and FnMut
 - [ ] provide task storage abstraction
   - cleanup subscriber buffers before publishers
