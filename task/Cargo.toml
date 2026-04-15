@@ -1,0 +1,12 @@
+[package]
+name = "task"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+
+[features]
+test-utils = []
+
+[dependencies]
+crossbeam-queue = "0.3"

@@ -1,0 +1,34 @@
+use crate::message_header::MessageHeader;
+use crate::{generic_subscriber::GenericSubscriber, publisher::PublisherConfig};
+use std::time::Instant;
+
+pub struct ConnectionTypeMismatch {}
+
+pub trait GenericPublisher {
+    fn as_any(&mut self) -> &mut dyn std::any::Any;
+
+    fn get_config(&self) -> &PublisherConfig;
+
+    fn get_config_mut(&mut self) -> &mut PublisherConfig;
+
+    fn flush_loaned_values(&mut self, timestamp: Instant);
+
+    fn allocate_arena(&mut self);
+
+    fn increase_arena_size(&mut self, additional_capacity: usize);
+
+    fn connect_to_subscriber(
+        &mut self,
+        subscriber: &mut dyn GenericSubscriber,
+    ) -> Result<(), ConnectionTypeMismatch>;
+
+    /// Iterate over sent-but-not-yet-flushed outputs.
+    /// `execution_time` is the current `ctx.now` — all pending outputs share this timestamp.
+    /// The default no-op impl is used by publishers that don't participate in logging.
+    fn for_each_pending_output(
+        &self,
+        _execution_time: Instant,
+        _f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any),
+    ) {
+    }
+}

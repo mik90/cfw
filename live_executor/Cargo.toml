@@ -1,0 +1,13 @@
+[package]
+name = "live_executor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+
+[dependencies]
+task = { path = "../task" }
+crossbeam = "0.8"
+
+[dev-dependencies]
+task = { path = "../task", features = ["test-utils"] }
