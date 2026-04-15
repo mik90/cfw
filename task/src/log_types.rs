@@ -35,6 +35,7 @@ pub trait LogDeserialize: Sized {
 // ── Log entry types ──────────────────────────────────────────────────────────
 
 /// One entry per message in the subscriber's read buffer at execution time.
+#[derive(Clone)]
 pub struct InputLogEntry {
     pub header: MessageHeader,
     /// `None` unless `ChannelLogMode::CountAndValues` is configured for this channel.
@@ -42,6 +43,7 @@ pub struct InputLogEntry {
 }
 
 /// One entry per output sent by the publisher during this execution.
+#[derive(Clone)]
 pub struct OutputLogEntry {
     pub header: MessageHeader,
     /// `None` unless `ChannelLogMode::CountAndValues` is configured for this channel.
@@ -49,17 +51,20 @@ pub struct OutputLogEntry {
 }
 
 /// All inputs logged for one subscriber slot.
+#[derive(Clone)]
 pub struct SubscriberLog {
     pub entries: Vec<InputLogEntry>,
 }
 
 /// All outputs logged for one publisher slot.
+#[derive(Clone)]
 pub struct PublisherLog {
     pub entries: Vec<OutputLogEntry>,
 }
 
 /// One record per callback execution. `subscribers` and `publishers` are indexed
 /// to match the order in `ConnectedCallback`.
+#[derive(Clone)]
 pub struct CallbackExecutionLog {
     pub execution_time: Instant,
     pub subscribers: Vec<SubscriberLog>,
@@ -292,42 +297,7 @@ impl Default for InMemoryLogWriter {
 
 impl LogWriter for InMemoryLogWriter {
     fn log_execution(&mut self, entry: &CallbackExecutionLog) {
-        // Clone the entry so we own it.
-        self.entries.push_back(CallbackExecutionLog {
-            execution_time: entry.execution_time,
-            subscribers: entry
-                .subscribers
-                .iter()
-                .map(|s| SubscriberLog {
-                    entries: s
-                        .entries
-                        .iter()
-                        .map(|e| InputLogEntry {
-                            header: MessageHeader {
-                                published_at: e.header.published_at,
-                            },
-                            serialized: e.serialized.clone(),
-                        })
-                        .collect(),
-                })
-                .collect(),
-            publishers: entry
-                .publishers
-                .iter()
-                .map(|p| PublisherLog {
-                    entries: p
-                        .entries
-                        .iter()
-                        .map(|e| OutputLogEntry {
-                            header: MessageHeader {
-                                published_at: e.header.published_at,
-                            },
-                            serialized: e.serialized.clone(),
-                        })
-                        .collect(),
-                })
-                .collect(),
-        });
+        self.entries.push_back(entry.clone());
     }
 }
 
