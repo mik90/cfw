@@ -18,7 +18,7 @@ In order of priority
   - Should allow for reproduction of a given message
   - populate all intermediate non-logged messages
   - [x] optionally log executions via publisher in other (threadpool / sim executor)
-  - [ ] see if we can avoid more allocations wiht Vecs in logging
+  - [ ] see if we can avoid more allocations with Vecs in logging
   - [ ] create workflow to log data
   - [ ] add code to parse logged data and replay specific executions
 - [ ] normalize stop signal type between executors

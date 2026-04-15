@@ -303,7 +303,8 @@ impl ConnectedCallback {
     }
 
     pub fn get_execution_duration(&self) -> Duration {
-        (self.execution_duration_callback
+        (self
+            .execution_duration_callback
             .as_ref()
             .expect("execution_duration_callback not set on this ConnectedCallback"))()
     }
@@ -335,10 +336,11 @@ impl ConnectedCallback {
 
     pub fn run(&mut self, ctx: &crate::context::Context) -> Run {
         if let Some(mut logger) = self.logger.take() {
-            logger.before_run(ctx, &self.subscribers);
-            let result = self.callback
-                .run_generic(&mut self.subscribers, &mut self.publishers, ctx);
-            logger.after_run(ctx, &self.publishers);
+            logger.log_before_run(ctx, &self.subscribers);
+            let result =
+                self.callback
+                    .run_generic(&mut self.subscribers, &mut self.publishers, ctx);
+            logger.log_after_run(ctx, &self.publishers);
             self.logger = Some(logger);
             result
         } else {
@@ -420,12 +422,18 @@ mod test {
 
         let initial = starting_subscriber_bitmask(&[
             Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: false, capacity: 1, is_trigger: true,
-                keep_across_runs: true, channel_name: "a".into(),
+                is_optional: false,
+                capacity: 1,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: "a".into(),
             })),
             Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: false, capacity: 1, is_trigger: true,
-                keep_across_runs: true, channel_name: "b".into(),
+                is_optional: false,
+                capacity: 1,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: "b".into(),
             })),
         ]);
         let readiness = CallbackReadiness::new(initial);
@@ -433,18 +441,27 @@ mod test {
 
         // Only subscriber 0 is ready — should NOT enqueue yet
         readiness.set_bit(0);
-        assert_eq!(enqueue_count.load(Ordering::Relaxed), 0,
-            "should not enqueue after only one subscriber is ready");
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            0,
+            "should not enqueue after only one subscriber is ready"
+        );
 
         // Now subscriber 1 is also ready — bitmask becomes MAX, should enqueue
         readiness.set_bit(1);
-        assert_eq!(enqueue_count.load(Ordering::Relaxed), 1,
-            "should enqueue once both subscribers are ready");
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            1,
+            "should enqueue once both subscribers are ready"
+        );
 
         // Setting an already-set bit again should not double-enqueue
         readiness.set_bit(0);
-        assert_eq!(enqueue_count.load(Ordering::Relaxed), 1,
-            "should not enqueue again when bit is already set");
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            1,
+            "should not enqueue again when bit is already set"
+        );
     }
 
     #[test]

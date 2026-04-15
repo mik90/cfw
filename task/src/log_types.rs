@@ -82,10 +82,10 @@ pub trait LogReader: Send {
 
 pub trait ExecutionLogger: Send {
     /// Called after `drain_subscribers()`, before `run_generic()`.
-    fn before_run(&mut self, ctx: &Context, subscribers: &[Box<dyn GenericSubscriber>]);
+    fn log_before_run(&mut self, ctx: &Context, subscribers: &[Box<dyn GenericSubscriber>]);
 
     /// Called after `run_generic()`, before `flush_publishers()`.
-    fn after_run(&mut self, ctx: &Context, publishers: &[Box<dyn GenericPublisher>]);
+    fn log_after_run(&mut self, ctx: &Context, publishers: &[Box<dyn GenericPublisher>]);
 }
 
 // ── StandardExecutionLogger ──────────────────────────────────────────────────
@@ -120,7 +120,7 @@ impl StandardExecutionLogger {
 }
 
 impl ExecutionLogger for StandardExecutionLogger {
-    fn before_run(&mut self, ctx: &Context, subscribers: &[Box<dyn GenericSubscriber>]) {
+    fn log_before_run(&mut self, ctx: &Context, subscribers: &[Box<dyn GenericSubscriber>]) {
         self.buffer.execution_time = ctx.now;
 
         // Ensure the subscriber log vec has the right number of slots, reusing existing ones.
@@ -167,7 +167,7 @@ impl ExecutionLogger for StandardExecutionLogger {
         }
     }
 
-    fn after_run(&mut self, ctx: &Context, publishers: &[Box<dyn GenericPublisher>]) {
+    fn log_after_run(&mut self, ctx: &Context, publishers: &[Box<dyn GenericPublisher>]) {
         while self.buffer.publishers.len() < publishers.len() {
             self.buffer.publishers.push(PublisherLog {
                 entries: Vec::new(),
