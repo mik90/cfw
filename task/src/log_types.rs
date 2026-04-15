@@ -10,16 +10,19 @@ use crate::message_header::MessageHeader;
 
 /// Pluggable serialization — no external dependencies required by this trait.
 /// Users implement it for their message types with whatever backend they prefer.
-/// The caller provides the destination writer, so no `Vec<u8>` is allocated per call.
+/// The caller provides the destination buffer, so no `Vec<u8>` is allocated per call.
 ///
 /// Example (serde_json):
 /// ```ignore
-/// fn serialize_to_log(&self, w: &mut dyn std::io::Write) -> std::io::Result<()> {
-///     serde_json::to_writer(w, self).map_err(std::io::Error::other)
+/// const TYPE_NAME: &'static str = "MyMsg";
+/// fn serialize_to_log(&self, out: &mut Vec<u8>) {
+///     serde_json::to_writer(out, self).unwrap();
 /// }
 /// ```
 pub trait LogSerialize {
-    fn serialize_to_log(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()>;
+    /// The Rust type name used to tag serialized bytes in the log.
+    const TYPE_NAME: &'static str;
+    fn serialize_to_log(&self, out: &mut Vec<u8>);
 }
 
 /// Deserializes from an already-materialized byte slice.
@@ -95,7 +98,7 @@ pub enum ChannelLogMode {
     HeaderOnly,
     /// Record each message's header plus serialized value.
     /// The closure receives `&dyn std::any::Any` and a `&mut dyn Write` to write into.
-    HeaderAndValues(Box<dyn Fn(&dyn std::any::Any, &mut dyn std::io::Write) -> std::io::Result<()> + Send>),
+    HeaderAndValues(Box<dyn Fn(&dyn std::any::Any, &mut Vec<u8>) + Send>),
 }
 
 /// A ready-to-use `ExecutionLogger` that covers the most common logging needs.
@@ -144,7 +147,7 @@ impl ExecutionLogger for StandardExecutionLogger {
                 ChannelLogMode::HeaderAndValues(serialize_fn) => {
                     sub.for_each_queued_input(&mut |header, value| {
                         self.serialize_scratch.clear();
-                        let _ = serialize_fn(value, &mut self.serialize_scratch);
+                        serialize_fn(value, &mut self.serialize_scratch);
                         sub_log.entries.push(InputLogEntry {
                             header: MessageHeader { published_at: header.published_at },
                             serialized: Some(self.serialize_scratch.clone()),
@@ -179,7 +182,7 @@ impl ExecutionLogger for StandardExecutionLogger {
                 ChannelLogMode::HeaderAndValues(serialize_fn) => {
                     pub_.for_each_pending_output(ctx.now, &mut |header, value| {
                         self.serialize_scratch.clear();
-                        let _ = serialize_fn(value, &mut self.serialize_scratch);
+                        serialize_fn(value, &mut self.serialize_scratch);
                         pub_log.entries.push(OutputLogEntry {
                             header: MessageHeader { published_at: header.published_at },
                             serialized: Some(self.serialize_scratch.clone()),
