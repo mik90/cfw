@@ -125,7 +125,9 @@ impl ExecutionLogger for StandardExecutionLogger {
 
         // Ensure the subscriber log vec has the right number of slots, reusing existing ones.
         while self.buffer.subscribers.len() < subscribers.len() {
-            self.buffer.subscribers.push(SubscriberLog { entries: Vec::new() });
+            self.buffer.subscribers.push(SubscriberLog {
+                entries: Vec::new(),
+            });
         }
         self.buffer.subscribers.truncate(subscribers.len());
 
@@ -133,13 +135,18 @@ impl ExecutionLogger for StandardExecutionLogger {
             let sub_log = &mut self.buffer.subscribers[i];
             sub_log.entries.clear();
 
-            let mode = self.subscriber_modes.get(i).unwrap_or(&ChannelLogMode::Skip);
+            let mode = self
+                .subscriber_modes
+                .get(i)
+                .unwrap_or(&ChannelLogMode::Skip);
             match mode {
                 ChannelLogMode::Skip => {}
                 ChannelLogMode::HeaderOnly => {
                     sub.for_each_queued_input(&mut |header, _value| {
                         sub_log.entries.push(InputLogEntry {
-                            header: MessageHeader { published_at: header.published_at },
+                            header: MessageHeader {
+                                published_at: header.published_at,
+                            },
                             serialized: None,
                         });
                     });
@@ -149,7 +156,9 @@ impl ExecutionLogger for StandardExecutionLogger {
                         self.serialize_scratch.clear();
                         serialize_fn(value, &mut self.serialize_scratch);
                         sub_log.entries.push(InputLogEntry {
-                            header: MessageHeader { published_at: header.published_at },
+                            header: MessageHeader {
+                                published_at: header.published_at,
+                            },
                             serialized: Some(self.serialize_scratch.clone()),
                         });
                     });
@@ -160,7 +169,9 @@ impl ExecutionLogger for StandardExecutionLogger {
 
     fn after_run(&mut self, ctx: &Context, publishers: &[Box<dyn GenericPublisher>]) {
         while self.buffer.publishers.len() < publishers.len() {
-            self.buffer.publishers.push(PublisherLog { entries: Vec::new() });
+            self.buffer.publishers.push(PublisherLog {
+                entries: Vec::new(),
+            });
         }
         self.buffer.publishers.truncate(publishers.len());
 
@@ -174,7 +185,9 @@ impl ExecutionLogger for StandardExecutionLogger {
                 ChannelLogMode::HeaderOnly => {
                     pub_.for_each_pending_output(ctx.now, &mut |header, _value| {
                         pub_log.entries.push(OutputLogEntry {
-                            header: MessageHeader { published_at: header.published_at },
+                            header: MessageHeader {
+                                published_at: header.published_at,
+                            },
                             serialized: None,
                         });
                     });
@@ -184,7 +197,9 @@ impl ExecutionLogger for StandardExecutionLogger {
                         self.serialize_scratch.clear();
                         serialize_fn(value, &mut self.serialize_scratch);
                         pub_log.entries.push(OutputLogEntry {
-                            header: MessageHeader { published_at: header.published_at },
+                            header: MessageHeader {
+                                published_at: header.published_at,
+                            },
                             serialized: Some(self.serialize_scratch.clone()),
                         });
                     });
@@ -216,7 +231,8 @@ impl StandardExecutionLoggerBuilder {
     /// Set the logging mode for subscriber at `index`.
     pub fn subscriber(mut self, index: usize, mode: ChannelLogMode) -> Self {
         if self.subscriber_modes.len() <= index {
-            self.subscriber_modes.resize_with(index + 1, || ChannelLogMode::Skip);
+            self.subscriber_modes
+                .resize_with(index + 1, || ChannelLogMode::Skip);
         }
         self.subscriber_modes[index] = mode;
         self
@@ -225,7 +241,8 @@ impl StandardExecutionLoggerBuilder {
     /// Set the logging mode for publisher at `index`.
     pub fn publisher(mut self, index: usize, mode: ChannelLogMode) -> Self {
         if self.publisher_modes.len() <= index {
-            self.publisher_modes.resize_with(index + 1, || ChannelLogMode::Skip);
+            self.publisher_modes
+                .resize_with(index + 1, || ChannelLogMode::Skip);
         }
         self.publisher_modes[index] = mode;
         self
@@ -255,11 +272,15 @@ pub struct InMemoryLogWriter {
 
 impl InMemoryLogWriter {
     pub fn new() -> Self {
-        InMemoryLogWriter { entries: VecDeque::new() }
+        InMemoryLogWriter {
+            entries: VecDeque::new(),
+        }
     }
 
     pub fn into_reader(self) -> InMemoryLogReader {
-        InMemoryLogReader { entries: self.entries }
+        InMemoryLogReader {
+            entries: self.entries,
+        }
     }
 }
 
@@ -274,18 +295,38 @@ impl LogWriter for InMemoryLogWriter {
         // Clone the entry so we own it.
         self.entries.push_back(CallbackExecutionLog {
             execution_time: entry.execution_time,
-            subscribers: entry.subscribers.iter().map(|s| SubscriberLog {
-                entries: s.entries.iter().map(|e| InputLogEntry {
-                    header: MessageHeader { published_at: e.header.published_at },
-                    serialized: e.serialized.clone(),
-                }).collect(),
-            }).collect(),
-            publishers: entry.publishers.iter().map(|p| PublisherLog {
-                entries: p.entries.iter().map(|e| OutputLogEntry {
-                    header: MessageHeader { published_at: e.header.published_at },
-                    serialized: e.serialized.clone(),
-                }).collect(),
-            }).collect(),
+            subscribers: entry
+                .subscribers
+                .iter()
+                .map(|s| SubscriberLog {
+                    entries: s
+                        .entries
+                        .iter()
+                        .map(|e| InputLogEntry {
+                            header: MessageHeader {
+                                published_at: e.header.published_at,
+                            },
+                            serialized: e.serialized.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            publishers: entry
+                .publishers
+                .iter()
+                .map(|p| PublisherLog {
+                    entries: p
+                        .entries
+                        .iter()
+                        .map(|e| OutputLogEntry {
+                            header: MessageHeader {
+                                published_at: e.header.published_at,
+                            },
+                            serialized: e.serialized.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
         });
     }
 }
