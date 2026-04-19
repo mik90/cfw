@@ -1,6 +1,7 @@
 use crate::arena::{Arena, ArenaPtr};
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::WriteBufferHandle;
+use crate::forwarded_message::MessageWithForwards;
 use crate::generic_publisher::ConnectionTypeMismatch;
 pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
@@ -49,6 +50,9 @@ pub struct Publisher<T> {
     loaned_values: Vec<LoanedValue<T>>,
     subscriber_write_buffers: Vec<SubscriberBuffer<T>>,
     arena: Arena<T>,
+    /// This _could_ be part of the publisher config but it's something tied to `T` so it's better to keep it outside of a
+    /// user-configurable thing like publisher config (probably).
+    forwarded_channels: Vec<ChannelName>,
 }
 
 impl<T: 'static> GenericPublisher for Publisher<T> {
@@ -64,13 +68,21 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         &mut self.config
     }
 
+    fn get_forwarded_channels(&self) -> &[ChannelName] {
+        self.forwarded_channels.as_slice()
+    }
+
     fn flush_loaned_values(&mut self, timestamp: Instant) {
         for loaned_value in &mut self.loaned_values.drain(..) {
             if loaned_value.sent {
-                let header = MessageHeader { published_at: timestamp };
+                let header = MessageHeader {
+                    published_at: timestamp,
+                };
                 for subscriber_buffer in &mut self.subscriber_write_buffers {
                     subscriber_buffer.buffer.write((
-                        MessageHeader { published_at: header.published_at },
+                        MessageHeader {
+                            published_at: header.published_at,
+                        },
                         loaned_value.ptr.clone(),
                     ));
                     // Notify the target ConnectedCallback's readiness bitmask
@@ -87,7 +99,9 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         execution_time: Instant,
         f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any),
     ) {
-        let header = MessageHeader { published_at: execution_time };
+        let header = MessageHeader {
+            published_at: execution_time,
+        };
         for loaned in self.loaned_values.iter().filter(|lv| lv.sent) {
             // SAFETY: Publisher guarantees the value has been initialized on loan.
             let value: &T = unsafe { (*loaned.ptr.payload.get()).assume_init_ref() };
@@ -131,6 +145,22 @@ impl<T> Publisher<T> {
             arena: Arena::<T>::new(capacity),
             subscriber_write_buffers: vec![],
             loaned_values: Vec::with_capacity(capacity),
+            forwarded_channels: vec![],
+        }
+    }
+
+    pub fn new_with_forwards(
+        config: PublisherConfig,
+        forwarded_channels: Vec<ChannelName>,
+    ) -> Self {
+        let capacity = config.capacity;
+        Publisher {
+            config,
+            // Arena will be resized to allow for enough data for subscribers
+            arena: Arena::<T>::new(capacity),
+            subscriber_write_buffers: vec![],
+            loaned_values: Vec::with_capacity(capacity),
+            forwarded_channels,
         }
     }
 

@@ -1,4 +1,5 @@
 use crate::message_header::MessageHeader;
+use crate::pub_sub::ChannelName;
 use crate::{generic_subscriber::GenericSubscriber, publisher::PublisherConfig};
 use std::time::Instant;
 
@@ -10,6 +11,8 @@ pub trait GenericPublisher {
     fn get_config(&self) -> &PublisherConfig;
 
     fn get_config_mut(&mut self) -> &mut PublisherConfig;
+
+    fn get_forwarded_channels(&self) -> &[ChannelName];
 
     fn flush_loaned_values(&mut self, timestamp: Instant);
 

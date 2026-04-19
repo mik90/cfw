@@ -151,6 +151,8 @@ pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), Mism
         }
     }
 
+    // TODO check for forwarded channels
+
     // Allocate all arenas for all publishers
     for callback in callbacks.iter_mut() {
         for publisher in callback.publishers.iter_mut() {
