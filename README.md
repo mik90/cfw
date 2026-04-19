@@ -1,3 +1,17 @@
+# cfw 
+
+**C**allback **f**rame**w**ork
+
+A testbed for how _I_ would like a robotics task framework to work.
+
+This is very much a work in progress, it'll be barely tested, undocumented, and, sloppy for a while (forever?).
+
+The goal is to make an integration-agnostic framework that can plug into a bunch of different ecosystems while providing
+- a featureful user-facing API for pub/sub that allows the framework to manage when a callback should run
+- deterministic multi-threaded simulation (same inputs == same outputs)
+- exact replay: given a commit that produced a log, you can reproduce the exact messages that were seen in the log (but with more debugging info)
+- convenient unit-testing API for tasks
+
 ## TODO 
 
 In order of priority
@@ -15,13 +29,14 @@ In order of priority
   - [ ] more stressful tests for determinism
 - [ ] forwarded messages, publish a message alongside a handle to a message it was produced with
     - so, given a message B that was produced using contents of A, allow for message B to link to message A
-    - this should allow us to defer logging of messages to a normal callback, we'd publish a message that has some handles and the timestamp in which they were seen
-- [ ] bitwise replay executor
-  - Threading is kind of irrelevant here
+    - this should allow us to defer logging of messages to a normal callback, we'd publish a message that has some handles and the timestamp in which they were seenA
+    - [ ] handle message headers, dont need to embed this in ArenaPtr, we can just have ArenaPtr take in a message + header
+- [ ] exact replay executor
+  - prob should mimic thread pool constraints but we should be able to execute stuff in any order as long as callbacks aren't stateful
   - I'll need to consider logging executions and message queues for this
   - Should allow for reproduction of a given message
   - populate all intermediate non-logged messages
-  - [x] optionally log executions via publisher in other (threadpool / sim executor)
+  - [ ] optionally log executions via publisher in other (threadpool / sim executor)
   - [ ] see if we can avoid more allocations with Vecs in logging
   - [ ] create workflow to log data
   - [ ] add code to parse logged data and replay specific executions
@@ -29,9 +44,12 @@ In order of priority
 - [ ] provide a stop message that the executor can subscribe to
 - [ ] allow for foreign subscribers/publishers such as iceoryx2
   - we should be able to swap out foreign/native impls per task at build/configuration time
-  - arena configuration may be different
+  - arena configuration may be different per backing pub/sub system
+  - the reason we'd do this instead of introducing another callback that publishes on a given channel is that another callback means we have another queue whose capacity we have to manage
+  - blocking pub/sub is fine here since people can opt into it, if they want async pub/sub they can have a separate callback to do the work
 - [ ] maybe a manual input pull and fallable publish? allows for global defaults and configurable 
   - storing the typed publisher or subscriber might work here
+  - the proc macro setup isn't required, so this may be a non-proc macro way to implement things
 - [ ] allow for run_generic on Fn and FnMut
 - [ ] provide task storage abstraction
   - cleanup subscriber buffers before publishers
@@ -43,7 +61,9 @@ In order of priority
 - [ ] dump connections in graphviz or some other diagram tool
 - [ ] better stress testing for multi-threaded sim
 - [ ] live replay executor
-  - similar to live executor, except it works by slowing down replay speed
+  - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
+  - useful for development of viz tools
+- [ ] flesh out callback construction and how we want to handle configuration
 
 ## Debugging tips
 
