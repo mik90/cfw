@@ -12,6 +12,8 @@ The goal is to make an integration-agnostic framework that can plug into a bunch
 - exact replay: given a commit that produced a log, you can reproduce the exact messages that were seen in the log (but with more debugging info)
 - convenient unit-testing API for tasks
 
+If you want a Rust task framework with actual integrations and meaningful support, you should use https://github.com/copper-project/copper-rs.
+
 ## TODO 
 
 In order of priority
