@@ -66,6 +66,8 @@ In order of priority
   - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
   - useful for development of viz tools
 - [ ] flesh out callback construction and how we want to handle configuration
+- [ ] do some better testing to ensure that users can't hold onto reference of messages in the pub/sub system
+- [ ] see if I should use pins in the arenas to avoid moving MaybeUninit, the current setup may suffice
 
 ## Debugging tips
 
