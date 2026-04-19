@@ -29,6 +29,7 @@ In order of priority
   - [x] honor thread pool constraints when it comes to whether a task is able to be executed in a group
   - [x] multi-thread execution, flush loans at end of step
   - [ ] more stressful tests for determinism
+  - [ ] better stress testing for multi-threaded sim
 - [ ] forwarded messages, publish a message alongside a handle to a message it was produced with
     - so, given a message B that was produced using contents of A, allow for message B to link to message A
     - this should allow us to defer logging of messages to a normal callback, we'd publish a message that has some handles and the timestamp in which they were seenA
@@ -61,13 +62,13 @@ In order of priority
   - allows for testing whole tasks in unit test, based on sim executor
 - [ ] create custom time type, SystemTime doesn't make sense (we'd want monotonic), Instant doesn't have enough flexibility (no default init, no max value), third party crates are probably not worth it
 - [ ] dump connections in graphviz or some other diagram tool
-- [ ] better stress testing for multi-threaded sim
 - [ ] live replay executor
   - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
   - useful for development of viz tools
 - [ ] flesh out callback construction and how we want to handle configuration
 - [ ] do some better testing to ensure that users can't hold onto reference of messages in the pub/sub system
 - [ ] see if I should use pins in the arenas to avoid moving MaybeUninit, the current setup may suffice
+- [ ] add tests to make sure we aren't dynamically allocating after everything is connected
 
 ## Debugging tips
 

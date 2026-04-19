@@ -5,6 +5,9 @@ use crate::log_types::ExecutionLogger;
 use crate::pub_sub::{CallbackName, ChannelName};
 use crate::publisher::PublisherConfig;
 use crate::subscriber::SubscriberConfig;
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::ops::Add;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -120,23 +123,62 @@ impl std::fmt::Display for MismatchTypeError {
     }
 }
 
-pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), MismatchTypeError> {
-    // for each callback's publisher, connect it to all subscribers (including itself)
+/// Returns a mapping of the forwarded channel to the depth of subscriber queues listening to it
+fn find_forwarded_channel_usage(callbacks: &[ConnectedCallback]) -> HashMap<ChannelName, usize> {
+    let mut channel_to_usage = HashMap::<ChannelName, usize>::new();
 
+    // Find all channels that are forwarded
+    for callback in callbacks.iter() {
+        for publisher in callback.publishers.iter() {
+            for forwarded_channel in publisher.get_forwarded_channels() {
+                channel_to_usage.insert(forwarded_channel.clone(), 0);
+            }
+        }
+    }
+
+    // Find all subscribers of the forwarded channel set and bump the usage accordingly
+    for callback in callbacks.iter() {
+        for subscriber in callback.subscribers.iter() {
+            let subscriber_channel_name = &subscriber.get_config().channel_name;
+            match channel_to_usage.get_mut(subscriber_channel_name) {
+                Some(usage) => *usage = *usage + subscriber.get_config().capacity,
+                None => {
+                    // Subscriber doesn't use this channel
+                }
+            };
+        }
+    }
+
+    channel_to_usage
+}
+
+/// Connects publishers to subscribers and sizes arenas accordingly
+pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), MismatchTypeError> {
+    let forwarded_channel_to_usage = find_forwarded_channel_usage(callbacks);
+
+    // Connect publishers to everyone who is subscribing to their output
     for callback_idx in 0..callbacks.len() {
         for other_callback_idx in 0..callbacks.len() {
-            let publisher_task_name = callbacks[callback_idx].get_name().to_string();
-            let subscriber_task_name = callbacks[other_callback_idx].get_name().to_string();
+            let callback_name = callbacks[callback_idx].get_name().to_string();
+            let other_callback_name = callbacks[other_callback_idx].get_name().to_string();
+
             for publisher in callbacks[callback_idx].publishers.iter_mut() {
-                for subscriber in callbacks[other_callback_idx].subscribers.iter_mut() {
-                    if publisher.get_config().channel_name == subscriber.get_config().channel_name {
+                // Find subscribers to this publisher
+                for other_callback_subscriber in
+                    callbacks[other_callback_idx].subscribers.iter_mut()
+                {
+                    if publisher.get_config().channel_name
+                        == other_callback_subscriber.get_config().channel_name
+                    {
                         println!(
                             "Connecting task '{}' to task '{}' on channel '{}'",
-                            publisher_task_name,
-                            subscriber_task_name,
+                            callback_name,
+                            other_callback_name,
                             publisher.get_config().channel_name
                         );
-                        if let Err(_e) = publisher.connect_to_subscriber(subscriber.as_mut()) {
+                        if let Err(_e) =
+                            publisher.connect_to_subscriber(other_callback_subscriber.as_mut())
+                        {
                             return Err(MismatchTypeError {
                                 channel_name: publisher.get_config().channel_name.clone(),
                                 publisher_callback: callbacks[callback_idx].get_name().into(),
@@ -147,11 +189,19 @@ pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), Mism
                         }
                     }
                 }
+
+                // This task has its channel forwarded to a bunch of subscriber slots, so we must bump its size accordingly
+                match forwarded_channel_to_usage.get(&publisher.get_config().channel_name) {
+                    Some(usage) => {
+                        publisher.increase_arena_size(*usage);
+                    }
+                    None => {
+                        // Channel not forwaded anywhere
+                    }
+                }
             }
         }
     }
-
-    // TODO check for forwarded channels
 
     // Allocate all arenas for all publishers
     for callback in callbacks.iter_mut() {
@@ -223,8 +273,11 @@ impl CallbackReadiness {
 fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> usize {
     const MAX_SUBSCRIBER_COUNT: usize = std::mem::size_of::<usize>() * 8;
     if subscribers.len() > MAX_SUBSCRIBER_COUNT {
+        // 64 isn't much for most use-cases, but we may have some diagnostic or logging callbacks that want more.
+        // We could either have some non-triggering subscribers (so, poll only) or have those callbacks decompose themselves into smaller
+        // callbacks that publish intermediate results.
         panic!(
-            "We cannot support callbacks with more than {} subscribers",
+            "We cannot support callbacks with more than {} subscribers, try splitting out your callback into multiple callbacks.",
             MAX_SUBSCRIBER_COUNT
         )
     }
