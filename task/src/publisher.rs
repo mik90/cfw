@@ -4,12 +4,12 @@ use crate::double_buffer::WriteBufferHandle;
 use crate::generic_publisher::ConnectionTypeMismatch;
 pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
-use crate::message_header::MessageHeader;
+use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
 use crate::subscriber::{Subscriber, SubscriberConfig};
+use crate::time::Instant;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 #[derive(Debug)]
 pub enum LoanError {
@@ -25,18 +25,18 @@ pub struct PublisherConfig {
 }
 
 struct LoanedValue<T> {
-    pub ptr: ArenaPtr<T>,
+    pub ptr: ArenaPtr<Message<T>>,
     pub sent: bool,
 }
 
 impl<T> LoanedValue<T> {
-    fn new(ptr: ArenaPtr<T>) -> Self {
+    fn new(ptr: ArenaPtr<Message<T>>) -> Self {
         LoanedValue { ptr, sent: false }
     }
 }
 
 struct SubscriberBuffer<T> {
-    buffer: WriteBufferHandle<(MessageHeader, ArenaPtr<T>)>,
+    buffer: WriteBufferHandle<ArenaPtr<Message<T>>>,
     subscriber_config: SubscriberConfig,
     /// Readiness bitmask and bit index for the target ConnectedCallback, if the
     /// subscriber is a trigger+non-optional input (set during connection).
@@ -48,7 +48,7 @@ pub struct Publisher<T> {
     /// Drop ordering is relevant here, arena must be dropped last since loaned values are pointers into the arena
     loaned_values: Vec<LoanedValue<T>>,
     subscriber_write_buffers: Vec<SubscriberBuffer<T>>,
-    arena: Arena<T>,
+    arena: Arena<Message<T>>,
     /// This _could_ be part of the publisher config but it's something tied to `T` so it's better to keep it outside of a
     /// user-configurable thing like publisher config (probably).
     forwarded_channels: Vec<ChannelName>,
@@ -72,18 +72,21 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
     }
 
     fn flush_loaned_values(&mut self, timestamp: Instant) {
-        for loaned_value in &mut self.loaned_values.drain(..) {
+        for mut loaned_value in &mut self.loaned_values.drain(..) {
             if loaned_value.sent {
                 let header = MessageHeader {
                     published_at: timestamp,
                 };
+                // SAFETY: For a loaned value to have been sent, it must have been initialized
+                unsafe {
+                    let maybe_uninit_payload = loaned_value.ptr.payload.get_mut();
+                    maybe_uninit_payload.assume_init_mut().header = header;
+                }
+
                 for subscriber_buffer in &mut self.subscriber_write_buffers {
-                    subscriber_buffer.buffer.write((
-                        MessageHeader {
-                            published_at: header.published_at,
-                        },
-                        loaned_value.ptr.clone(),
-                    ));
+                    // Copy the arena pointer to each subscriber buffer
+                    subscriber_buffer.buffer.write(loaned_value.ptr.clone());
+
                     // Notify the target ConnectedCallback's readiness bitmask
                     if let Some((readiness, bit_index)) = &subscriber_buffer.readiness {
                         readiness.set_bit(*bit_index);
@@ -93,18 +96,11 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         }
     }
 
-    fn for_each_pending_output(
-        &self,
-        execution_time: Instant,
-        f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any),
-    ) {
-        let header = MessageHeader {
-            published_at: execution_time,
-        };
+    fn for_each_pending_output(&self, f: &mut dyn FnMut(&dyn std::any::Any)) {
         for loaned in self.loaned_values.iter().filter(|lv| lv.sent) {
             // SAFETY: Publisher guarantees the value has been initialized on loan.
-            let value: &T = unsafe { (*loaned.ptr.payload.get()).assume_init_ref() };
-            f(&header, value as &dyn std::any::Any);
+            let value: &Message<T> = unsafe { &(*loaned.ptr.payload.get()).assume_init_ref() };
+            f(value as &dyn std::any::Any);
         }
     }
 
@@ -141,7 +137,7 @@ impl<T> Publisher<T> {
         Publisher {
             config,
             // Arena will be resized to allow for enough data for subscribers
-            arena: Arena::<T>::new(capacity),
+            arena: Arena::new(capacity),
             subscriber_write_buffers: vec![],
             loaned_values: Vec::with_capacity(capacity),
             forwarded_channels: vec![],
@@ -156,7 +152,7 @@ impl<T> Publisher<T> {
         Publisher {
             config,
             // Arena will be resized to allow for enough data for subscribers
-            arena: Arena::<T>::new(capacity),
+            arena: Arena::new(capacity),
             subscriber_write_buffers: vec![],
             loaned_values: Vec::with_capacity(capacity),
             forwarded_channels,
@@ -255,13 +251,14 @@ impl<'a, T> Deref for Output<'a, T> {
         unsafe {
             // SAFETY: Publisher guarantees that the value has been initialized on loan
             // and a loaned value is exclusive acifcess.
-            (*self
+            &(*self
                 .publisher
                 .loaned_value_at(self.loaned_value_idx)
                 .ptr
                 .payload
                 .get())
             .assume_init_ref()
+            .message
         }
     }
 }
@@ -271,13 +268,14 @@ impl<'a, T> DerefMut for Output<'a, T> {
         unsafe {
             // SAFETY: Publisher guarantees that the value has been initialized on loan
             // and a loaned value is exclusive access.
-            (*self
+            &mut (*self
                 .publisher
                 .loaned_value_at_mut(self.loaned_value_idx)
                 .ptr
                 .payload
                 .get())
             .assume_init_mut()
+            .message
         }
     }
 }
@@ -341,7 +339,7 @@ impl<'a, T: Default + 'static> OutputSpan<'a, T> {
             .map(|loaned_value|
                 // SAFETY: Publisher guarantees that the value has been initialized on loan
                 // and a loaned value is exclusive access.
-                unsafe { (*loaned_value.ptr.payload.get()).assume_init_ref() })
+                unsafe { &(*loaned_value.ptr.payload.get()).assume_init_ref().message })
     }
 
     pub fn outputs_mut(&mut self) -> impl Iterator<Item = &mut T> {
@@ -351,7 +349,7 @@ impl<'a, T: Default + 'static> OutputSpan<'a, T> {
             .map(|loaned_value|
                 // SAFETY: Publisher guarantees that the value has been initialized on loan
                 // and a loaned value is exclusive access.
-                unsafe { (*loaned_value.ptr.payload.get()).assume_init_mut() })
+                unsafe { &mut (*loaned_value.ptr.payload.get()).assume_init_mut().message })
     }
 }
 
@@ -419,7 +417,7 @@ mod tests {
         *output = 42;
         output.send();
 
-        publisher.flush_loaned_values(std::time::Instant::now());
+        publisher.flush_loaned_values(crate::time::Instant::now());
 
         assert!(subscriber.get_queue_info().writer_size == 1);
         assert!(subscriber.get_queue_info().reader_size == 0);

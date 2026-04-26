@@ -1,10 +1,10 @@
+use crate::time::Instant;
 use std::collections::VecDeque;
-use std::time::Instant;
 
 use crate::context::Context;
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
-use crate::message_header::MessageHeader;
+use crate::message::MessageHeader;
 
 // ── Serialization traits ─────────────────────────────────────────────────────
 
@@ -147,7 +147,7 @@ impl ExecutionLogger for StandardExecutionLogger {
             match mode {
                 ChannelLogMode::Skip => {}
                 ChannelLogMode::HeaderOnly => {
-                    sub.for_each_queued_input(&mut |header, _value| {
+                    sub.for_each_queued_input(&mut |_value| {
                         sub_log.entries.push(InputLogEntry {
                             header: MessageHeader {
                                 published_at: header.published_at,
@@ -198,13 +198,10 @@ impl ExecutionLogger for StandardExecutionLogger {
                     });
                 }
                 ChannelLogMode::HeaderAndValues(serialize_fn) => {
-                    pub_.for_each_pending_output(ctx.now, &mut |header, value| {
+                    pub_.for_each_pending_output(ctx.now, &mut |value| {
                         self.serialize_scratch.clear();
                         serialize_fn(value, &mut self.serialize_scratch);
                         pub_log.entries.push(OutputLogEntry {
-                            header: MessageHeader {
-                                published_at: header.published_at,
-                            },
                             serialized: Some(self.serialize_scratch.clone()),
                         });
                     });
@@ -255,7 +252,7 @@ impl StandardExecutionLoggerBuilder {
 
     pub fn build(self) -> StandardExecutionLogger {
         let buffer = CallbackExecutionLog {
-            execution_time: std::time::Instant::now(),
+            execution_time: crate::time::Instant::now(),
             subscribers: Vec::new(),
             publishers: Vec::new(),
         };

@@ -2,9 +2,9 @@ use crate::arena::ArenaPtr;
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
-use crate::message_header::MessageHeader;
-use crate::pub_sub::ChannelName;
 pub use crate::generic_subscriber::GenericSubscriber;
+use crate::message::{Message, MessageHeader};
+use crate::pub_sub::ChannelName;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -21,9 +21,8 @@ pub struct SubscriberConfig {
     pub channel_name: ChannelName,
 }
 
-
 pub struct Subscriber<T> {
-    buffers: DoubleBuffer<(MessageHeader, ArenaPtr<T>)>,
+    buffers: DoubleBuffer<ArenaPtr<Message<T>>>,
     writer_queue_drops: usize,
     reader_queue_drops: usize,
     queue_has_new_data: bool,
@@ -55,7 +54,7 @@ impl<T> Subscriber<T> {
         self.reader_queue_drops
     }
 
-    pub fn get_write_guard(&mut self) -> WriteBufferHandle<(MessageHeader, ArenaPtr<T>)> {
+    pub fn get_write_guard(&mut self) -> WriteBufferHandle<ArenaPtr<Message<T>>> {
         self.buffers.get_write_buffer()
     }
 
@@ -72,7 +71,6 @@ impl<T> Subscriber<T> {
     pub fn cleanup_buffers(&self) {
         self.buffers.clear();
     }
-
 }
 
 impl<T: 'static> GenericSubscriber for Subscriber<T> {
@@ -88,7 +86,7 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         }
     }
 
-    fn get_config(& self) -> &SubscriberConfig {
+    fn get_config(&self) -> &SubscriberConfig {
         &self.config
     }
 
@@ -111,7 +109,7 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
     fn get_queue_info(&self) -> generic_subscriber::QueueInfo {
         generic_subscriber::QueueInfo {
             reader_size: self.buffers.get_read_buffer().len(),
-            writer_size: self.buffers.get_write_buffer().len()
+            writer_size: self.buffers.get_write_buffer().len(),
         }
     }
 
@@ -127,19 +125,19 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         self.readiness_state.clone()
     }
 
-    fn for_each_queued_input(&self, f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any)) {
+    fn for_each_queued_input(&self, f: &mut dyn FnMut(&dyn std::any::Any)) {
         let mut guard = self.buffers.get_read_buffer();
-        for (header, ptr) in guard.as_slice() {
+        for message_ptr in guard.as_slice() {
             // SAFETY: Publisher guarantees that the value has been initialized and
             // any value in a subscriber queue cannot be modified by a publisher.
-            let value: &T = unsafe { (*ptr.payload.get()).assume_init_ref() };
-            f(header, value as &dyn std::any::Any);
+            let value: &Message<T> = unsafe { &(*message_ptr.payload.get()).assume_init_ref() };
+            f(value as &dyn std::any::Any);
         }
     }
 }
 
 pub struct RequiredInput<'a, T> {
-    storage: ReadBufferGuard<'a, (MessageHeader, ArenaPtr<T>)>,
+    storage: ReadBufferGuard<'a, ArenaPtr<Message<T>>>,
 }
 
 impl<'a, T: 'static> RequiredInput<'a, T> {
@@ -165,19 +163,20 @@ impl<T> Deref for RequiredInput<'_, T> {
         // SAFETY: Publisher guarantees that the value has been initialized and
         // any value in a subscriber queue cannot be modified by a publisher.
         unsafe {
-            (*self.storage
+            &(*self
+                .storage
                 .front()
                 .expect("Required input storage should have been validated before construction")
-                .1
                 .payload
                 .get())
-                .assume_init_ref()
+            .assume_init_ref()
+            .message
         }
     }
 }
 
 pub struct OptionalInput<'a, T> {
-    storage: ReadBufferGuard<'a, (MessageHeader, ArenaPtr<T>)>,
+    storage: ReadBufferGuard<'a, ArenaPtr<Message<T>>>,
     is_cleared: bool,
 }
 
@@ -198,12 +197,10 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
             // If the user has already cleared the input, then we can't let them clear the next one
             None
         } else {
-            self.storage
-                .front()
-                .map(|(_header, ptr)|
+            self.storage.front().map(| ptr|
                     // SAFETY: Publisher guarantees that the value has been initialized and
                     // any value in a subscriber queue cannot be modified by a publisher.
-                    unsafe { (*ptr.payload.get()).assume_init_ref() })
+                    unsafe { &(*ptr.payload.get()).assume_init_ref().message })
         }
     }
 
@@ -214,7 +211,7 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
 }
 
 pub struct InputSpan<'a, T> {
-    storage: ReadBufferGuard<'a, (MessageHeader, ArenaPtr<T>)>,
+    storage: ReadBufferGuard<'a, ArenaPtr<Message<T>>>,
 }
 
 impl<'a, T: 'static> InputSpan<'_, T> {
@@ -229,13 +226,9 @@ impl<'a, T: 'static> InputSpan<'_, T> {
     }
 
     pub fn inputs(&mut self) -> impl Iterator<Item = &T> {
-        self.storage
-            .as_slice()
-            .iter()
-            .map(|(_header, ptr)|
+        self.storage.as_slice().iter().map(|ptr|
                 // SAFETY: Publisher guarantees that the value has been initialized and
                 // any value in a subscriber queue cannot be modified by a publisher.
-                unsafe { (*ptr.payload.get()).assume_init_ref() }
-            )
+                unsafe { &(*ptr.payload.get()).assume_init_ref().message })
     }
 }

@@ -68,7 +68,7 @@ mod tests {
             output.send();
         }
 
-        test_publisher.flush_loaned_values(std::time::Instant::now());
+        test_publisher.flush_loaned_values(crate::time::Instant::now());
 
         for subscriber in task_subscribers.iter_mut() {
             subscriber.drain_writer_to_reader();
@@ -76,7 +76,7 @@ mod tests {
 
         let mut task = MyTask {};
 
-        let ctx = task::context::Context::new(std::time::Instant::now());
+        let ctx = task::context::Context::new(crate::time::Instant::now());
         let result = task.run_generic(
             task_subscribers.as_mut_slice(),
             task_publishers.as_mut_slice(),
@@ -84,7 +84,7 @@ mod tests {
         );
 
         for publisher in task_publishers.iter_mut() {
-            publisher.flush_loaned_values(std::time::Instant::now());
+            publisher.flush_loaned_values(crate::time::Instant::now());
         }
 
         assert_eq!(result.num_iterations, 1);

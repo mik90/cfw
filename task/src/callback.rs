@@ -57,7 +57,7 @@ pub enum OutputKind {
     Span,
 }
 impl From<OutputKind> for PublisherConfig {
-    fn from(val: OutputKind) -> Self {
+    fn from(_val: OutputKind) -> Self {
         PublisherConfig {
             capacity: 1,
             // TODO, dont default this

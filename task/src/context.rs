@@ -1,4 +1,4 @@
-use std::time::Instant;
+use crate::time::Instant;
 
 #[derive(Clone)]
 pub struct Context {

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Instant;
+use crate::time::Instant;
 use task::callback::ConnectedCallback;
 use task::context::Context;
 use task::executor::{Executor, ExecutorError, ExecutorStopSignal};

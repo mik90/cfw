@@ -1,5 +1,4 @@
 use crate::callback::CallbackReadiness;
-use crate::message_header::MessageHeader;
 use crate::subscriber::SubscriberConfig;
 use std::sync::Arc;
 
@@ -30,7 +29,7 @@ pub trait GenericSubscriber {
     /// Iterate the read buffer (after `drain_writer_to_reader`) yielding each message's
     /// header and value. The default no-op impl is used by subscribers that don't
     /// participate in logging.
-    fn for_each_queued_input(&self, _f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any)) {}
+    fn for_each_queued_input(&self, _f: &mut dyn FnMut(&dyn std::any::Any)) {}
 
     /// Inject the shared readiness bitmask and this subscriber's bit index.
     /// Called by ConnectedCallback::new_with after creating the bitmask Arc.

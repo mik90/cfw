@@ -1,7 +1,6 @@
-use crate::message_header::MessageHeader;
 use crate::pub_sub::ChannelName;
+use crate::time::Instant;
 use crate::{generic_subscriber::GenericSubscriber, publisher::PublisherConfig};
-use std::time::Instant;
 
 pub struct ConnectionTypeMismatch {}
 
@@ -26,12 +25,6 @@ pub trait GenericPublisher {
     ) -> Result<(), ConnectionTypeMismatch>;
 
     /// Iterate over sent-but-not-yet-flushed outputs.
-    /// `execution_time` is the current `ctx.now` — all pending outputs share this timestamp.
     /// The default no-op impl is used by publishers that don't participate in logging.
-    fn for_each_pending_output(
-        &self,
-        _execution_time: Instant,
-        _f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any),
-    ) {
-    }
+    fn for_each_pending_output(&self, _f: &mut dyn FnMut(&dyn std::any::Any)) {}
 }
