@@ -69,6 +69,7 @@ In order of priority
 - [ ] do some better testing to ensure that users can't hold onto reference of messages in the pub/sub system
 - [ ] see if I should use pins in the arenas to avoid moving MaybeUninit, the current setup may suffice
 - [ ] add tests to make sure we aren't dynamically allocating after everything is connected
+- [ ] more consistent handling of MaybeUninit in subscriber, maybe specialize on it in read buffer?
 
 ## Debugging tips
 

@@ -66,6 +66,10 @@ impl<T> Subscriber<T> {
         }
     }
 
+    pub fn get_read_buffer<'a>(&'a self) -> ReadBufferGuard<'a, ArenaPtr<Message<T>>> {
+        self.buffers.get_read_buffer()
+    }
+
     /// Clear all buffered values. Should be called before the Arena is dropped
     /// to prevent ArenaPtrs from outliving their Arena.
     pub fn cleanup_buffers(&self) {

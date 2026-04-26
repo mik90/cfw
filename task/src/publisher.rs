@@ -356,7 +356,7 @@ impl<'a, T: Default + 'static> OutputSpan<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subscriber::Subscriber;
+    use crate::{subscriber::Subscriber, time};
 
     #[test]
     fn one_allocation() {
@@ -417,7 +417,7 @@ mod tests {
         *output = 42;
         output.send();
 
-        publisher.flush_loaned_values(crate::time::FrameworkTime::from_wall_clock());
+        publisher.flush_loaned_values(time::FrameworkTime::from_nanoseconds(99));
 
         assert!(subscriber.get_queue_info().writer_size == 1);
         assert!(subscriber.get_queue_info().reader_size == 0);
@@ -430,5 +430,17 @@ mod tests {
 
         assert!(subscriber.get_queue_info().writer_size == 0);
         assert!(subscriber.get_queue_info().reader_size == 1);
+
+        let read_buffer = subscriber.get_read_buffer();
+        assert_eq!(read_buffer.len(), 1);
+        let front = read_buffer.front();
+        assert!(front.is_some());
+        // SAFETY: Subscribers should always see initialized values
+        let front_message = unsafe { (*front.unwrap().payload.get()).assume_init_ref() };
+        assert_eq!(
+            (*front_message).header.published_at,
+            time::FrameworkTime::from_nanoseconds(99)
+        );
+        assert_eq!((*front_message).message, 42);
     }
 }
