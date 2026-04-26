@@ -99,7 +99,7 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
     fn for_each_pending_output(&self, f: &mut dyn FnMut(&dyn std::any::Any)) {
         for loaned in self.loaned_values.iter().filter(|lv| lv.sent) {
             // SAFETY: Publisher guarantees the value has been initialized on loan.
-            let value: &Message<T> = unsafe { &(*loaned.ptr.payload.get()).assume_init_ref() };
+            let value: &Message<T> = unsafe { (*loaned.ptr.payload.get()).assume_init_ref() };
             f(value as &dyn std::any::Any);
         }
     }

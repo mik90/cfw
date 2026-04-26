@@ -140,7 +140,7 @@ fn find_forwarded_channel_usage(callbacks: &[ConnectedCallback]) -> HashMap<Chan
         for subscriber in callback.subscribers.iter() {
             let subscriber_channel_name = &subscriber.get_config().channel_name;
             match channel_to_usage.get_mut(subscriber_channel_name) {
-                Some(usage) => *usage = *usage + subscriber.get_config().capacity,
+                Some(usage) => *usage += subscriber.get_config().capacity,
                 None => {
                     // Subscriber doesn't use this channel
                 }
@@ -237,13 +237,12 @@ impl CallbackReadiness {
         let bit = 1usize << index;
         let prev = self.bitmask.fetch_or(bit, Ordering::AcqRel);
         // Only enqueue on the transition: previous was not MAX but now is
-        if prev != usize::MAX && prev | bit == usize::MAX {
-            if let (Some(enqueuer), Some(&task_index)) =
+        if prev != usize::MAX && prev | bit == usize::MAX
+            && let (Some(enqueuer), Some(&task_index)) =
                 (self.enqueuer.get(), self.task_index.get())
             {
                 enqueuer.enqueue_task(task_index);
             }
-        }
     }
 
     /// Clear bit `index` (called when the task drains write→read for this subscriber).
@@ -258,11 +257,10 @@ impl CallbackReadiness {
         let _ = self.task_index.set(task_index);
         let _ = self.enqueuer.set(enqueuer);
         // Startup case: if already ready, enqueue now
-        if self.bitmask.load(Ordering::Acquire) == usize::MAX {
-            if let (Some(enqueuer), Some(&idx)) = (self.enqueuer.get(), self.task_index.get()) {
+        if self.bitmask.load(Ordering::Acquire) == usize::MAX
+            && let (Some(enqueuer), Some(&idx)) = (self.enqueuer.get(), self.task_index.get()) {
                 enqueuer.enqueue_task(idx);
             }
-        }
     }
 }
 

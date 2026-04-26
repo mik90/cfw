@@ -2,9 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use task::callback::ConnectedCallback;
-use task::context::Context;
 use task::executor::{Executor, ExecutorError, ExecutorStopSignal};
-use task::time::FrameworkTime;
 
 pub struct StopSignal(Arc<AtomicBool>);
 

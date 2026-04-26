@@ -1,4 +1,4 @@
-use std::{ops::Add, ops::Sub, time::Duration};
+use std::{ops::Add, time::Duration};
 
 use libc::{self, CLOCK_MONOTONIC};
 /// Monotonic clock with fixed size

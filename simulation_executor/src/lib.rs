@@ -320,11 +320,10 @@ impl SimulationState {
             .map(|p| p.requested_exec_time)
             .filter(|&t| t > self.time)
             .min();
-        if let Some(t) = [next_busy, next_periodic].into_iter().flatten().min() {
-            if t > self.time {
+        if let Some(t) = [next_busy, next_periodic].into_iter().flatten().min()
+            && t > self.time {
                 self.time = t;
             }
-        }
 
         // See if any tasks are no longer busy, and if they aren't, free up a thread from their pool
         for (index, t) in self.task_busy_until.iter().enumerate() {

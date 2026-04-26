@@ -1,4 +1,3 @@
-use crate::message::Message;
 use crate::pub_sub::ChannelName;
 use crate::time::FrameworkTime;
 use crate::{generic_subscriber::GenericSubscriber, publisher::PublisherConfig};

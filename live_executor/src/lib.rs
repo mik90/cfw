@@ -4,7 +4,6 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{self, Duration};
 use task::time::FrameworkTime;
 
 use task::callback::ConnectedCallback;

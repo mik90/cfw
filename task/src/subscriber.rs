@@ -3,7 +3,7 @@ use crate::callback::CallbackReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
-use crate::message::{Message, MessageHeader};
+use crate::message::Message;
 use crate::pub_sub::ChannelName;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -130,7 +130,7 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         for message_ptr in guard.as_slice() {
             // SAFETY: Publisher guarantees that the value has been initialized and
             // any value in a subscriber queue cannot be modified by a publisher.
-            let value: &Message<T> = unsafe { &(*message_ptr.payload.get()).assume_init_ref() };
+            let value: &Message<T> = unsafe { (*message_ptr.payload.get()).assume_init_ref() };
             f(value as &dyn std::any::Any);
         }
     }
