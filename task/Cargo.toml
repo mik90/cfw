@@ -10,3 +10,4 @@ test-utils = []
 
 [dependencies]
 crossbeam-queue = "0.3"
+libc = "0.2.186"
