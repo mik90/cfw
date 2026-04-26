@@ -30,6 +30,7 @@ pub struct ReadBufferGuard<'a, T> {
     buffer: RefMut<'a, Buffer<T>>,
 }
 
+// TODO should this be partially specialized on MaybeUninit and auto-handle safety?
 impl<'a, T> ReadBufferGuard<'a, T> {
     pub fn pop_front(&mut self) {
         self.buffer.storage.pop_front();

@@ -35,6 +35,22 @@ impl<T> LoanedValue<T> {
     }
 }
 
+impl<T> Deref for LoanedValue<T> {
+    type Target = Message<T>;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: For a loaned value to have been created, the MessageHeader should have been initialized
+        unsafe { (*self.ptr.payload.get()).assume_init_ref() }
+    }
+}
+
+impl<T> DerefMut for LoanedValue<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: For a loaned value to have been created, the MessageHeader should have been initialized
+        unsafe { (*self.ptr.payload.get()).assume_init_mut() }
+    }
+}
+
 struct SubscriberBuffer<T> {
     buffer: WriteBufferHandle<ArenaPtr<Message<T>>>,
     subscriber_config: SubscriberConfig,
@@ -248,35 +264,19 @@ pub struct Output<'a, T> {
 impl<'a, T> Deref for Output<'a, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
-        unsafe {
-            // SAFETY: Publisher guarantees that the value has been initialized on loan
-            // and a loaned value is exclusive acifcess.
-            &(*self
-                .publisher
-                .loaned_value_at(self.loaned_value_idx)
-                .ptr
-                .payload
-                .get())
-            .assume_init_ref()
+        &self
+            .publisher
+            .loaned_value_at(self.loaned_value_idx)
             .message
-        }
     }
 }
 
 impl<'a, T> DerefMut for Output<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe {
-            // SAFETY: Publisher guarantees that the value has been initialized on loan
-            // and a loaned value is exclusive access.
-            &mut (*self
-                .publisher
-                .loaned_value_at_mut(self.loaned_value_idx)
-                .ptr
-                .payload
-                .get())
-            .assume_init_mut()
+        &mut self
+            .publisher
+            .loaned_value_at_mut(self.loaned_value_idx)
             .message
-        }
     }
 }
 
@@ -442,5 +442,18 @@ mod tests {
             time::FrameworkTime::from_nanoseconds(99)
         );
         assert_eq!((*front_message).message, 42);
+    }
+
+    #[test]
+    fn default_allocation_of_header() {
+        let mut publisher = Publisher::<i32>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "channel".into(),
+        });
+        publisher.allocate_arena();
+        assert!(publisher.loan().is_ok());
+        let value = publisher.loaned_value_at(0);
+        let header = value.get_header();
+        assert_eq!(header.published_at, FrameworkTime::INVALID);
     }
 }
