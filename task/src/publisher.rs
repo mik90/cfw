@@ -417,7 +417,7 @@ mod tests {
         *output = 42;
         output.send();
 
-        publisher.flush_loaned_values(crate::time::FrameworkTime::now());
+        publisher.flush_loaned_values(crate::time::FrameworkTime::from_wall_clock());
 
         assert!(subscriber.get_queue_info().writer_size == 1);
         assert!(subscriber.get_queue_info().reader_size == 0);

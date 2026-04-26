@@ -137,7 +137,7 @@ impl SimulationExecutor {
     pub fn new(num_virtual_threads: usize, tasks: Vec<ConnectedCallback>) -> Self {
         Self::new_with(SimulationConfig {
             // We can't create an instant from a fixed value, so any 'now' will be arbitrary
-            start_time: FrameworkTime::now(),
+            start_time: FrameworkTime::from_wall_clock(),
             pools: vec![ThreadPoolConfig::new(num_virtual_threads, tasks)],
             execution_thread_count: 1,
         })

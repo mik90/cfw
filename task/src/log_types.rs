@@ -264,7 +264,7 @@ impl StandardExecutionLoggerBuilder {
 
     pub fn build(self) -> StandardExecutionLogger {
         let buffer = CallbackExecutionLog {
-            execution_time: crate::time::FrameworkTime::now(),
+            execution_time: crate::time::FrameworkTime::from_wall_clock(),
             subscribers: Vec::new(),
             publishers: Vec::new(),
         };

@@ -68,7 +68,7 @@ mod tests {
             output.send();
         }
 
-        test_publisher.flush_loaned_values(task::time::FrameworkTime::now());
+        test_publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
 
         for subscriber in task_subscribers.iter_mut() {
             subscriber.drain_writer_to_reader();
@@ -76,7 +76,7 @@ mod tests {
 
         let mut task = MyTask {};
 
-        let ctx = task::context::Context::new(task::time::FrameworkTime::now());
+        let ctx = task::context::Context::new(task::time::FrameworkTime::from_wall_clock());
         let result = task.run_generic(
             task_subscribers.as_mut_slice(),
             task_publishers.as_mut_slice(),
@@ -84,7 +84,7 @@ mod tests {
         );
 
         for publisher in task_publishers.iter_mut() {
-            publisher.flush_loaned_values(task::time::FrameworkTime::now());
+            publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
         }
 
         assert_eq!(result.num_iterations, 1);

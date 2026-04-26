@@ -109,7 +109,7 @@ fn periodic_trigger_thread(
     shared_state: &SharedThreadPoolState,
     exec_times: &mut VecDeque<TimeTriggeredTask>,
 ) {
-    let now = task::time::FrameworkTime::now();
+    let now = task::time::FrameworkTime::from_wall_clock();
 
     let maybe_earliest = exec_times
         .iter()
@@ -175,7 +175,7 @@ fn executor_cycle(pool_state: &PoolState, shared_state: &SharedThreadPoolState) 
 
     let mut task_guard = shared_state.tasks[index].lock().unwrap();
     println!("Found runnable task {}", task_guard.get_name());
-    let ctx = Context::new(task::time::FrameworkTime::now());
+    let ctx = Context::new(task::time::FrameworkTime::from_wall_clock());
     task_guard.drain_subscribers();
     let _ = task_guard.run(&ctx);
     task_guard.flush_publishers(ctx.now);
@@ -271,7 +271,7 @@ impl LiveExecutor {
         // Spawn the periodic trigger thread; it owns exec_times entirely so no mutex is needed
         let shared_state = self.shared_state.clone();
         let thread = thread::spawn(move || {
-            let now = task::time::FrameworkTime::now();
+            let now = task::time::FrameworkTime::from_wall_clock();
             let mut exec_times: VecDeque<TimeTriggeredTask> = VecDeque::new();
             for (index, task) in shared_state.tasks.iter().enumerate() {
                 if let Some(t) = task.lock().unwrap().get_next_requested_execution_time(now) {

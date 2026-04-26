@@ -17,7 +17,7 @@ impl FrameworkTime {
     }
 
     // Get current time via monotonic libc clock
-    pub fn now() -> FrameworkTime {
+    pub fn from_wall_clock() -> FrameworkTime {
         let mut timespec = libc::timespec {
             tv_sec: 0,
             tv_nsec: 0,
