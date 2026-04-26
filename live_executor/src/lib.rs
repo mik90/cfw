@@ -4,7 +4,8 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{self, Duration, Instant};
+use std::time::{self, Duration};
+use task::time::FrameworkTime;
 
 use task::callback::ConnectedCallback;
 use task::context::Context;
@@ -16,7 +17,7 @@ const SHUTDOWN_SENTINEL: usize = usize::MAX;
 #[derive(Clone, Copy)]
 struct TimeTriggeredTask {
     index: usize,
-    requested_exec_time: Instant,
+    requested_exec_time: FrameworkTime,
 }
 
 struct PoolState {
@@ -108,7 +109,7 @@ fn periodic_trigger_thread(
     shared_state: &SharedThreadPoolState,
     exec_times: &mut VecDeque<TimeTriggeredTask>,
 ) {
-    let now = time::Instant::now();
+    let now = task::time::FrameworkTime::now();
 
     let maybe_earliest = exec_times
         .iter()
@@ -145,13 +146,9 @@ fn periodic_trigger_thread(
             .lock()
             .unwrap();
 
-        // Rust has no max instant time, so just do something 1000 years from now
-        // TODO find some better fixed constant that we can use or handle optionality in the next exec time for everyone
-        let max_time = now + Duration::from_hours(8_766_000);
-
         let next_exec_time = task_guard
             .get_next_requested_execution_time(now)
-            .unwrap_or(max_time);
+            .unwrap_or(task::time::FrameworkTime::MAX);
 
         for t in exec_times.iter_mut() {
             if t.index == time_triggered_task.index {
@@ -178,7 +175,7 @@ fn executor_cycle(pool_state: &PoolState, shared_state: &SharedThreadPoolState) 
 
     let mut task_guard = shared_state.tasks[index].lock().unwrap();
     println!("Found runnable task {}", task_guard.get_name());
-    let ctx = Context::new(time::Instant::now());
+    let ctx = Context::new(task::time::FrameworkTime::now());
     task_guard.drain_subscribers();
     let _ = task_guard.run(&ctx);
     task_guard.flush_publishers(ctx.now);
@@ -274,7 +271,7 @@ impl LiveExecutor {
         // Spawn the periodic trigger thread; it owns exec_times entirely so no mutex is needed
         let shared_state = self.shared_state.clone();
         let thread = thread::spawn(move || {
-            let now = time::Instant::now();
+            let now = task::time::FrameworkTime::now();
             let mut exec_times: VecDeque<TimeTriggeredTask> = VecDeque::new();
             for (index, task) in shared_state.tasks.iter().enumerate() {
                 if let Some(t) = task.lock().unwrap().get_next_requested_execution_time(now) {

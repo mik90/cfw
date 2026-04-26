@@ -1,5 +1,6 @@
+use crate::message::Message;
 use crate::pub_sub::ChannelName;
-use crate::time::Instant;
+use crate::time::FrameworkTime;
 use crate::{generic_subscriber::GenericSubscriber, publisher::PublisherConfig};
 
 pub struct ConnectionTypeMismatch {}
@@ -13,7 +14,7 @@ pub trait GenericPublisher {
 
     fn get_forwarded_channels(&self) -> &[ChannelName];
 
-    fn flush_loaned_values(&mut self, timestamp: Instant);
+    fn flush_loaned_values(&mut self, timestamp: FrameworkTime);
 
     fn allocate_arena(&mut self);
 

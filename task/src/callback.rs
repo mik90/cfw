@@ -5,12 +5,11 @@ use crate::log_types::ExecutionLogger;
 use crate::pub_sub::{CallbackName, ChannelName};
 use crate::publisher::PublisherConfig;
 use crate::subscriber::SubscriberConfig;
+use crate::time::FrameworkTime;
 use std::collections::HashMap;
-use std::hash::Hash;
-use std::ops::Add;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::usize;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -299,7 +298,7 @@ pub struct ConnectedCallback {
     callback: Box<dyn GenericCallback>,
 
     // Ideally this would be apart of GenericCallback, but I dont have a good way to store it
-    next_execution_time_callback: Box<dyn Fn(Instant) -> Option<Instant>>,
+    next_execution_time_callback: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>,
     execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
 
     name: CallbackName,
@@ -366,14 +365,14 @@ impl ConnectedCallback {
 
     pub fn set_execution_time_callback(
         &mut self,
-        callback: Box<dyn Fn(Instant) -> Option<Instant>>,
+        callback: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>,
     ) {
         self.next_execution_time_callback = callback;
     }
 
     /// The next requested execution time relevant to a current execution time.
     /// 'Instant' is assumed to be provided via a monotonic clock as per rust docs.
-    pub fn get_next_requested_execution_time(&self, now: Instant) -> Option<Instant> {
+    pub fn get_next_requested_execution_time(&self, now: FrameworkTime) -> Option<FrameworkTime> {
         (self.next_execution_time_callback)(now)
     }
 
@@ -383,7 +382,7 @@ impl ConnectedCallback {
         }
     }
 
-    pub fn flush_publishers(&mut self, timestamp: Instant) {
+    pub fn flush_publishers(&mut self, timestamp: FrameworkTime) {
         for publisher in self.publishers.iter_mut() {
             publisher.flush_loaned_values(timestamp);
         }

@@ -7,7 +7,7 @@ use crate::generic_subscriber::GenericSubscriber;
 use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
 use crate::subscriber::{Subscriber, SubscriberConfig};
-use crate::time::Instant;
+use crate::time::FrameworkTime;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
@@ -71,7 +71,7 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         self.forwarded_channels.as_slice()
     }
 
-    fn flush_loaned_values(&mut self, timestamp: Instant) {
+    fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
         for mut loaned_value in &mut self.loaned_values.drain(..) {
             if loaned_value.sent {
                 let header = MessageHeader {
@@ -417,7 +417,7 @@ mod tests {
         *output = 42;
         output.send();
 
-        publisher.flush_loaned_values(crate::time::Instant::now());
+        publisher.flush_loaned_values(crate::time::FrameworkTime::now());
 
         assert!(subscriber.get_queue_info().writer_size == 1);
         assert!(subscriber.get_queue_info().reader_size == 0);

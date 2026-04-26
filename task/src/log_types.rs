@@ -1,4 +1,4 @@
-use crate::time::Instant;
+use crate::time::FrameworkTime;
 use std::collections::VecDeque;
 
 use crate::context::Context;
@@ -66,7 +66,7 @@ pub struct PublisherLog {
 /// to match the order in `ConnectedCallback`.
 #[derive(Clone)]
 pub struct CallbackExecutionLog {
-    pub execution_time: Instant,
+    pub execution_time: FrameworkTime,
     pub subscribers: Vec<SubscriberLog>,
     pub publishers: Vec<PublisherLog>,
 }
@@ -80,7 +80,7 @@ pub trait LogWriter: Send {
 
 pub trait LogReader: Send {
     fn next_execution(&mut self) -> Option<CallbackExecutionLog>;
-    fn peek_next_time(&self) -> Option<Instant>;
+    fn peek_next_time(&self) -> Option<FrameworkTime>;
 }
 
 // ── ExecutionLogger trait ────────────────────────────────────────────────────
@@ -125,6 +125,7 @@ impl StandardExecutionLogger {
 }
 
 impl ExecutionLogger for StandardExecutionLogger {
+    #[allow(unused_variables)] // just while these TODOs are here
     fn log_before_run(&mut self, ctx: &Context, subscribers: &[Box<dyn GenericSubscriber>]) {
         self.buffer.execution_time = ctx.now;
 
@@ -147,6 +148,8 @@ impl ExecutionLogger for StandardExecutionLogger {
             match mode {
                 ChannelLogMode::Skip => {}
                 ChannelLogMode::HeaderOnly => {
+                    todo!("Figure out how to just get the header from std::any::Any")
+                    /*
                     sub.for_each_queued_input(&mut |_value| {
                         sub_log.entries.push(InputLogEntry {
                             header: MessageHeader {
@@ -155,9 +158,12 @@ impl ExecutionLogger for StandardExecutionLogger {
                             serialized: None,
                         });
                     });
+                    */
                 }
                 ChannelLogMode::HeaderAndValues(serialize_fn) => {
-                    sub.for_each_queued_input(&mut |header, value| {
+                    todo!("Figure out how to just get the header from std::any::Any")
+                    /*
+                    sub.for_each_queued_input(&mut |value| {
                         self.serialize_scratch.clear();
                         serialize_fn(value, &mut self.serialize_scratch);
                         sub_log.entries.push(InputLogEntry {
@@ -167,11 +173,13 @@ impl ExecutionLogger for StandardExecutionLogger {
                             serialized: Some(self.serialize_scratch.clone()),
                         });
                     });
+                    */
                 }
             }
         }
     }
 
+    #[allow(unused_variables)] // just while these TODOs are here
     fn log_after_run(&mut self, ctx: &Context, publishers: &[Box<dyn GenericPublisher>]) {
         while self.buffer.publishers.len() < publishers.len() {
             self.buffer.publishers.push(PublisherLog {
@@ -188,23 +196,27 @@ impl ExecutionLogger for StandardExecutionLogger {
             match mode {
                 ChannelLogMode::Skip => {}
                 ChannelLogMode::HeaderOnly => {
-                    pub_.for_each_pending_output(ctx.now, &mut |header, _value| {
+                    todo!("Figure out how to just get the header from std::any::Any")
+                    /*
+                    pub_.for_each_pending_output(ctx.now, &mut |value| {
                         pub_log.entries.push(OutputLogEntry {
                             header: MessageHeader {
                                 published_at: header.published_at,
                             },
                             serialized: None,
                         });
-                    });
+                    }); */
                 }
                 ChannelLogMode::HeaderAndValues(serialize_fn) => {
+                    todo!("Figure out how to just get the header from std::any::Any")
+                    /*
                     pub_.for_each_pending_output(ctx.now, &mut |value| {
                         self.serialize_scratch.clear();
                         serialize_fn(value, &mut self.serialize_scratch);
                         pub_log.entries.push(OutputLogEntry {
                             serialized: Some(self.serialize_scratch.clone()),
                         });
-                    });
+                    }); */
                 }
             }
         }
@@ -252,7 +264,7 @@ impl StandardExecutionLoggerBuilder {
 
     pub fn build(self) -> StandardExecutionLogger {
         let buffer = CallbackExecutionLog {
-            execution_time: crate::time::Instant::now(),
+            execution_time: crate::time::FrameworkTime::now(),
             subscribers: Vec::new(),
             publishers: Vec::new(),
         };
@@ -307,7 +319,7 @@ impl LogReader for InMemoryLogReader {
         self.entries.pop_front()
     }
 
-    fn peek_next_time(&self) -> Option<Instant> {
+    fn peek_next_time(&self) -> Option<FrameworkTime> {
         self.entries.front().map(|e| e.execution_time)
     }
 }

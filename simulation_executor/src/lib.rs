@@ -4,15 +4,15 @@ use std::num::Saturating;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use crate::time::Instant;
 use task::callback::ConnectedCallback;
 use task::context::Context;
 use task::executor::{Executor, ExecutorError, ExecutorStopSignal, ThreadPoolConfig};
+use task::time::FrameworkTime;
 
 #[derive(Clone, Copy)]
 struct TimeTriggeredTask {
     index: usize,
-    requested_exec_time: Instant,
+    requested_exec_time: FrameworkTime,
 }
 
 pub struct StopSignal(Arc<AtomicBool>);
@@ -60,14 +60,14 @@ struct SimulationState {
     periodic_tasks: VecDeque<TimeTriggeredTask>,
 
     /// Per-task sim-time when each task's last execution finishes. Initialized to start_time.
-    task_busy_until: Vec<Instant>,
+    task_busy_until: Vec<FrameworkTime>,
 
     /// Sim-time when each task first became ready but hadn't yet been allocated a thread.
     /// None if the task is not currently waiting. Used to prioritize longest-waiting tasks.
-    task_ready_since: Vec<Option<Instant>>,
+    task_ready_since: Vec<Option<FrameworkTime>>,
 
     /// Current simulation time
-    time: Instant,
+    time: FrameworkTime,
 
     /// Number of times the state has been stepped
     step_count: Saturating<usize>,
@@ -124,7 +124,7 @@ impl Executor for SimulationExecutor {
 }
 
 pub struct SimulationConfig {
-    pub start_time: Instant,
+    pub start_time: FrameworkTime,
     pub pools: Vec<ThreadPoolConfig>,
     /// Number of real OS threads used to execute tasks in parallel within a step.
     /// Independent of any virtual thread pool sizes.
@@ -137,7 +137,7 @@ impl SimulationExecutor {
     pub fn new(num_virtual_threads: usize, tasks: Vec<ConnectedCallback>) -> Self {
         Self::new_with(SimulationConfig {
             // We can't create an instant from a fixed value, so any 'now' will be arbitrary
-            start_time: Instant::now(),
+            start_time: FrameworkTime::now(),
             pools: vec![ThreadPoolConfig::new(num_virtual_threads, tasks)],
             execution_thread_count: 1,
         })
@@ -190,7 +190,7 @@ impl SimulationExecutor {
         self.state.lock().unwrap().get_step_count()
     }
 
-    pub fn get_simulation_time(&self) -> Instant {
+    pub fn get_simulation_time(&self) -> FrameworkTime {
         self.state.lock().unwrap().get_simulation_time()
     }
 }
@@ -344,7 +344,7 @@ impl SimulationState {
         self.step_count
     }
 
-    pub fn get_simulation_time(&self) -> Instant {
+    pub fn get_simulation_time(&self) -> FrameworkTime {
         self.time
     }
 
@@ -464,11 +464,14 @@ mod tests {
 
         let mut step_history = vec![];
         for _ in 0..step_count {
-            let offset = state.get_simulation_time() - start_time;
+            let maybe_offset = state
+                .get_simulation_time()
+                .checked_duration_since(start_time);
+            assert!(maybe_offset.is_some());
             let tasks_executed = state.step();
             step_history.push(StepState {
                 tasks_executed,
-                offset_from_start: offset,
+                offset_from_start: maybe_offset.unwrap(),
                 string_store: task_info.get_stored_strings(),
             });
         }

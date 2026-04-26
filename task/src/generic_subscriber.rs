@@ -1,4 +1,5 @@
 use crate::callback::CallbackReadiness;
+use crate::message::Message;
 use crate::subscriber::SubscriberConfig;
 use std::sync::Arc;
 

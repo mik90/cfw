@@ -1,12 +1,12 @@
-use crate::time::Instant;
+use crate::time::FrameworkTime;
 
 #[derive(Clone)]
 pub struct Context {
-    pub now: Instant,
+    pub now: FrameworkTime,
 }
 
 impl Context {
-    pub fn new(now: Instant) -> Self {
+    pub fn new(now: FrameworkTime) -> Self {
         Context { now }
     }
 }
