@@ -156,20 +156,21 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
 
 pub struct RequiredInput<'a, T> {
     _subscriber: &'a Subscriber<T>,
-    ptr: ArenaPtr<Message<T>>,
+    ptr: &'a ArenaPtr<Message<T>>,
 }
 
 impl<'a, T: 'static> RequiredInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> RequiredInput<'a, T> {
         let guard = subscriber.get_read_buffer();
-        let ptr = guard
-            .front()
-            .expect("Required input storage should have been validated before construction")
-            .clone();
-        RequiredInput {
-            _subscriber: subscriber,
-            ptr,
-        }
+        // SAFETY: The read buffer VecDeque is not modified during task execution.
+        // &'a Subscriber<T> ensures the subscriber (and its VecDeque allocation) lives for 'a.
+        let ptr = unsafe {
+            &*(guard
+                .front()
+                .expect("Required input storage should have been validated before construction")
+                as *const ArenaPtr<Message<T>>)
+        };
+        RequiredInput { _subscriber: subscriber, ptr }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> RequiredInput<'a, T> {
         let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
@@ -187,20 +188,25 @@ impl<T> Deref for RequiredInput<'_, T> {
     fn deref(&self) -> &Self::Target {
         // SAFETY: Publisher guarantees that the value has been initialized and
         // any value in a subscriber queue cannot be modified by a publisher.
-        // ptr holds a reference-counted handle keeping the arena slot alive.
         unsafe { &(*self.ptr.payload.get()).assume_init_ref().message }
     }
 }
 
 pub struct OptionalInput<'a, T> {
     subscriber: &'a Subscriber<T>,
-    ptr: Option<ArenaPtr<Message<T>>>,
+    ptr: Option<&'a ArenaPtr<Message<T>>>,
 }
 
 impl<'a, T: 'static> OptionalInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> OptionalInput<'a, T> {
         let guard = subscriber.get_read_buffer();
-        let ptr = guard.front().cloned();
+        // SAFETY: The read buffer VecDeque is not modified during task execution.
+        // &'a Subscriber<T> ensures the subscriber (and its VecDeque allocation) lives for 'a.
+        let ptr = unsafe {
+            guard
+                .front()
+                .map(|p| &*(p as *const ArenaPtr<Message<T>>))
+        };
         OptionalInput { subscriber, ptr }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> OptionalInput<'a, T> {
@@ -209,10 +215,9 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
     }
 
     pub fn value(&'a self) -> Option<&'a T> {
-        self.ptr.as_ref().map(|ptr|
+        self.ptr.map(|ptr|
             // SAFETY: Publisher guarantees that the value has been initialized and
             // any value in a subscriber queue cannot be modified by a publisher.
-            // ptr holds a reference-counted handle keeping the arena slot alive.
             unsafe { &(*ptr.payload.get()).assume_init_ref().message })
     }
 
@@ -225,17 +230,16 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
 
 pub struct InputSpan<'a, T> {
     _subscriber: &'a Subscriber<T>,
-    ptrs: Vec<ArenaPtr<Message<T>>>,
+    ptrs: &'a [ArenaPtr<Message<T>>],
 }
 
 impl<'a, T: 'static> InputSpan<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> InputSpan<'a, T> {
         let mut guard = subscriber.get_read_buffer();
-        let ptrs = guard.as_slice().iter().cloned().collect();
-        InputSpan {
-            _subscriber: subscriber,
-            ptrs,
-        }
+        // SAFETY: The read buffer VecDeque is not modified during task execution.
+        // &'a Subscriber<T> ensures the subscriber (and its VecDeque allocation) lives for 'a.
+        let ptrs = unsafe { &*(guard.as_slice() as *const [ArenaPtr<Message<T>>]) };
+        InputSpan { _subscriber: subscriber, ptrs }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> InputSpan<'a, T> {
         let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
@@ -246,7 +250,6 @@ impl<'a, T: 'static> InputSpan<'a, T> {
         self.ptrs.iter().map(|ptr|
             // SAFETY: Publisher guarantees that the value has been initialized and
             // any value in a subscriber queue cannot be modified by a publisher.
-            // ptrs hold reference-counted handles keeping the arena slots alive.
             unsafe { &(*ptr.payload.get()).assume_init_ref().message })
     }
 }
