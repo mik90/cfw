@@ -2,7 +2,7 @@ use crossbeam::channel::{self, Receiver, Sender};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
 use task::time::FrameworkTime;
 
@@ -25,17 +25,38 @@ struct PoolState {
     work_rx: Receiver<usize>,
 }
 
-struct SharedThreadPoolState {
-    /// One entry per logical thread pool
+/// Everything tasks need to enqueue work. Owns no tasks, so tasks can hold
+/// a strong Arc<EnqueueState> without creating a reference cycle.
+struct EnqueueState {
     pools: Vec<Arc<PoolState>>,
-
-    /// Maps each global task index to its pool index
     task_to_pool: Vec<usize>,
-
     /// One flag per task: true while the task index is sitting in the work channel.
     /// CAS'd to true on enqueue, cleared to false before execution begins, preventing
     /// duplicate entries in the channel.
     task_enqueued: Vec<AtomicBool>,
+}
+
+impl EnqueueState {
+    fn trigger_task(&self, index: usize) {
+        if self.task_enqueued[index]
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            let pool = &self.pools[self.task_to_pool[index]];
+            let _ = pool.work_tx.send(index);
+            println!("Triggering task index {}", index);
+        }
+    }
+}
+
+impl TaskEnqueuer for EnqueueState {
+    fn enqueue_task(&self, task_index: usize) {
+        self.trigger_task(task_index);
+    }
+}
+
+struct SharedThreadPoolState {
+    enqueue_state: Arc<EnqueueState>,
 
     /// Mutex and condvar used only to sleep/wake the periodic trigger thread
     periodic_mutex: Mutex<()>,
@@ -47,20 +68,6 @@ struct SharedThreadPoolState {
 
     /// Whether the thread pool should continue running
     should_run: AtomicBool,
-}
-
-impl SharedThreadPoolState {
-    fn trigger_task(&self, index: usize) {
-        // Only enqueue if the task isn't already queued
-        if self.task_enqueued[index]
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            let pool = &self.pools[self.task_to_pool[index]];
-            let _ = pool.work_tx.send(index);
-            println!("Triggering task index {}", index);
-        }
-    }
 }
 
 impl fmt::Display for SharedThreadPoolState {
@@ -75,7 +82,7 @@ impl fmt::Display for SharedThreadPoolState {
                 "\t Index:{}, Name: {}, Pool: {}",
                 index,
                 task.get_name(),
-                self.task_to_pool[index]
+                self.enqueue_state.task_to_pool[index]
             )?;
             writeln!(f, "\t Able to run: {}", task.able_to_run())?;
             writeln!(
@@ -139,7 +146,9 @@ fn periodic_trigger_thread(
     }
 
     if now <= time_triggered_task.requested_exec_time {
-        shared_state.trigger_task(time_triggered_task.index);
+        shared_state
+            .enqueue_state
+            .trigger_task(time_triggered_task.index);
 
         let task_guard = shared_state.tasks[time_triggered_task.index]
             .lock()
@@ -170,7 +179,7 @@ fn executor_cycle(pool_state: &PoolState, shared_state: &SharedThreadPoolState) 
 
     // Clear the enqueued flag before running so any triggers that arrive during
     // execution are captured, not dropped
-    shared_state.task_enqueued[index].store(false, Ordering::Release);
+    shared_state.enqueue_state.task_enqueued[index].store(false, Ordering::Release);
 
     let mut task_guard = shared_state.tasks[index].lock().unwrap();
     println!("Found runnable task {}", task_guard.get_name());
@@ -217,17 +226,20 @@ impl LiveExecutor {
         }
 
         let num_tasks = all_arc_tasks.len();
-        let shared_state = Arc::new(SharedThreadPoolState {
+        let enqueue_state = Arc::new(EnqueueState {
             pools: pool_states,
             task_to_pool,
             task_enqueued: (0..num_tasks).map(|_| AtomicBool::new(false)).collect(),
+        });
+        let shared_state = Arc::new(SharedThreadPoolState {
+            enqueue_state: enqueue_state.clone(),
             periodic_mutex: Mutex::new(()),
             periodic_cond_var: Condvar::new(),
             tasks: all_arc_tasks,
             should_run: true.into(),
         });
 
-        let enqueuer = shared_state.clone() as Arc<dyn TaskEnqueuer>;
+        let enqueuer = enqueue_state as Arc<dyn TaskEnqueuer>;
         for (index, arc_task) in shared_state.tasks.iter().enumerate() {
             arc_task
                 .lock()
@@ -247,12 +259,12 @@ impl LiveExecutor {
             let task = self.shared_state.tasks[index].lock().unwrap();
             if task.subscribers_request_execution() && task.able_to_run() {
                 drop(task);
-                self.shared_state.trigger_task(index);
+                self.shared_state.enqueue_state.trigger_task(index);
             }
         }
 
         // Spawn worker threads for each pool
-        for pool_arc in self.shared_state.pools.iter() {
+        for pool_arc in self.shared_state.enqueue_state.pools.iter() {
             for _ in 0..pool_arc.thread_count {
                 let pool = pool_arc.clone();
                 let shared = self.shared_state.clone();
@@ -291,7 +303,7 @@ impl LiveExecutor {
         self.shared_state.should_run.store(false, Ordering::Relaxed);
 
         // Send one shutdown sentinel per worker so every blocked recv() unblocks
-        for pool in self.shared_state.pools.iter() {
+        for pool in self.shared_state.enqueue_state.pools.iter() {
             for _ in 0..pool.thread_count {
                 let _ = pool.work_tx.send(SHUTDOWN_SENTINEL);
             }
@@ -331,26 +343,23 @@ impl LiveExecutor {
     }
 }
 
-impl TaskEnqueuer for SharedThreadPoolState {
-    fn enqueue_task(&self, task_index: usize) {
-        self.trigger_task(task_index);
-    }
-}
-
 /// A lightweight, cloneable handle that can signal the executor to stop.
-/// Holds only the shared state Arc so it is safe to call from worker threads
-/// without acquiring any lock on the LiveExecutor itself.
-pub struct StopSignal(Arc<SharedThreadPoolState>);
+/// Holds a Weak<SharedThreadPoolState> so tasks can own a StopSignal without
+/// creating a reference cycle back through the executor's task list.
+pub struct StopSignal(Weak<SharedThreadPoolState>);
 
 impl ExecutorStopSignal for StopSignal {
     fn request_stop(&self) {
-        self.0.should_run.store(false, Ordering::Relaxed);
-        for pool in self.0.pools.iter() {
+        let Some(state) = self.0.upgrade() else {
+            return;
+        };
+        state.should_run.store(false, Ordering::Relaxed);
+        for pool in state.enqueue_state.pools.iter() {
             for _ in 0..pool.thread_count {
                 let _ = pool.work_tx.send(SHUTDOWN_SENTINEL);
             }
         }
-        self.0.periodic_cond_var.notify_all();
+        state.periodic_cond_var.notify_all();
     }
 }
 
@@ -364,7 +373,7 @@ impl Executor for LiveExecutor {
     }
 
     fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
-        Arc::new(StopSignal(self.shared_state.clone()))
+        Arc::new(StopSignal(Arc::downgrade(&self.shared_state)))
     }
 
     fn is_running(&self) -> bool {
