@@ -77,6 +77,20 @@ impl<T> Subscriber<T> {
     }
 }
 
+impl<T: 'static> Subscriber<T> {
+    pub fn required_input(&self) -> RequiredInput<'_, T> {
+        RequiredInput::new(self)
+    }
+
+    pub fn optional_input(&self) -> OptionalInput<'_, T> {
+        OptionalInput::new(self)
+    }
+
+    pub fn input_span(&self) -> InputSpan<'_, T> {
+        InputSpan::new(self)
+    }
+}
+
 impl<T: 'static> GenericSubscriber for Subscriber<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
@@ -141,13 +155,20 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
 }
 
 pub struct RequiredInput<'a, T> {
-    storage: ReadBufferGuard<'a, ArenaPtr<Message<T>>>,
+    _subscriber: &'a Subscriber<T>,
+    ptr: ArenaPtr<Message<T>>,
 }
 
 impl<'a, T: 'static> RequiredInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> RequiredInput<'a, T> {
+        let guard = subscriber.get_read_buffer();
+        let ptr = guard
+            .front()
+            .expect("Required input storage should have been validated before construction")
+            .clone();
         RequiredInput {
-            storage: subscriber.buffers.get_read_buffer(),
+            _subscriber: subscriber,
+            ptr,
         }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> RequiredInput<'a, T> {
@@ -166,30 +187,21 @@ impl<T> Deref for RequiredInput<'_, T> {
     fn deref(&self) -> &Self::Target {
         // SAFETY: Publisher guarantees that the value has been initialized and
         // any value in a subscriber queue cannot be modified by a publisher.
-        unsafe {
-            &(*self
-                .storage
-                .front()
-                .expect("Required input storage should have been validated before construction")
-                .payload
-                .get())
-            .assume_init_ref()
-            .message
-        }
+        // ptr holds a reference-counted handle keeping the arena slot alive.
+        unsafe { &(*self.ptr.payload.get()).assume_init_ref().message }
     }
 }
 
 pub struct OptionalInput<'a, T> {
-    storage: ReadBufferGuard<'a, ArenaPtr<Message<T>>>,
-    is_cleared: bool,
+    subscriber: &'a Subscriber<T>,
+    ptr: Option<ArenaPtr<Message<T>>>,
 }
 
 impl<'a, T: 'static> OptionalInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> OptionalInput<'a, T> {
-        OptionalInput {
-            storage: subscriber.buffers.get_read_buffer(),
-            is_cleared: false,
-        }
+        let guard = subscriber.get_read_buffer();
+        let ptr = guard.front().cloned();
+        OptionalInput { subscriber, ptr }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> OptionalInput<'a, T> {
         let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
@@ -197,31 +209,32 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
     }
 
     pub fn value(&'a self) -> Option<&'a T> {
-        if self.is_cleared {
-            // If the user has already cleared the input, then we can't let them clear the next one
-            None
-        } else {
-            self.storage.front().map(| ptr|
-                    // SAFETY: Publisher guarantees that the value has been initialized and
-                    // any value in a subscriber queue cannot be modified by a publisher.
-                    unsafe { &(*ptr.payload.get()).assume_init_ref().message })
-        }
+        self.ptr.as_ref().map(|ptr|
+            // SAFETY: Publisher guarantees that the value has been initialized and
+            // any value in a subscriber queue cannot be modified by a publisher.
+            // ptr holds a reference-counted handle keeping the arena slot alive.
+            unsafe { &(*ptr.payload.get()).assume_init_ref().message })
     }
 
     pub fn clear(&'a mut self) {
-        self.storage.pop_front();
-        self.is_cleared = true;
+        if self.ptr.take().is_some() {
+            self.subscriber.get_read_buffer().pop_front();
+        }
     }
 }
 
 pub struct InputSpan<'a, T> {
-    storage: ReadBufferGuard<'a, ArenaPtr<Message<T>>>,
+    _subscriber: &'a Subscriber<T>,
+    ptrs: Vec<ArenaPtr<Message<T>>>,
 }
 
-impl<'a, T: 'static> InputSpan<'_, T> {
+impl<'a, T: 'static> InputSpan<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> InputSpan<'a, T> {
+        let mut guard = subscriber.get_read_buffer();
+        let ptrs = guard.as_slice().iter().cloned().collect();
         InputSpan {
-            storage: subscriber.buffers.get_read_buffer(),
+            _subscriber: subscriber,
+            ptrs,
         }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> InputSpan<'a, T> {
@@ -229,10 +242,11 @@ impl<'a, T: 'static> InputSpan<'_, T> {
         InputSpan::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
     }
 
-    pub fn inputs(&mut self) -> impl Iterator<Item = &T> {
-        self.storage.as_slice().iter().map(|ptr|
-                // SAFETY: Publisher guarantees that the value has been initialized and
-                // any value in a subscriber queue cannot be modified by a publisher.
-                unsafe { &(*ptr.payload.get()).assume_init_ref().message })
+    pub fn inputs(&self) -> impl Iterator<Item = &T> {
+        self.ptrs.iter().map(|ptr|
+            // SAFETY: Publisher guarantees that the value has been initialized and
+            // any value in a subscriber queue cannot be modified by a publisher.
+            // ptrs hold reference-counted handles keeping the arena slots alive.
+            unsafe { &(*ptr.payload.get()).assume_init_ref().message })
     }
 }
