@@ -453,7 +453,7 @@ mod tests {
         publisher.allocate_arena();
         assert!(publisher.loan().is_ok());
         let value = publisher.loaned_value_at(0);
-        let header = value.get_header();
+        let header = &value.header;
         assert_eq!(header.published_at, FrameworkTime::INVALID);
     }
 }
