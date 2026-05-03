@@ -205,10 +205,11 @@ impl SimulationState {
     pub fn start(&mut self) {
         // Set up periodic execution
         for (index, callback) in self.tasks.iter().enumerate() {
-            if let Some(_) = callback
+            if callback
                 .lock()
                 .unwrap()
                 .get_next_requested_execution_time(self.time)
+                .is_some()
             {
                 self.periodic_tasks.push_back(TimeTriggeredTask {
                     index,

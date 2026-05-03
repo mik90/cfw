@@ -113,7 +113,7 @@ pub struct Arena<T> {
     storage: Vec<ArenaSlot<T>>,
 }
 
-impl<'a, T> Arena<T> {
+impl<T> Arena<T> {
     pub fn new(capacity: usize) -> Self {
         Arena {
             storage: Vec::with_capacity(capacity),
@@ -141,7 +141,7 @@ impl<'a, T> Arena<T> {
     }
 }
 
-impl<'a, T: Default> Arena<T> {
+impl<T: Default> Arena<T> {
     pub fn try_allocate_default(&mut self) -> Option<ArenaPtr<T>> {
         for slot in self.storage.iter() {
             match ArenaPtr::try_new(slot) {

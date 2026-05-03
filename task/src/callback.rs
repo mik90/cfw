@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use std::usize;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputKind {
@@ -237,12 +236,13 @@ impl CallbackReadiness {
         let bit = 1usize << index;
         let prev = self.bitmask.fetch_or(bit, Ordering::AcqRel);
         // Only enqueue on the transition: previous was not MAX but now is
-        if prev != usize::MAX && prev | bit == usize::MAX
+        if prev != usize::MAX
+            && prev | bit == usize::MAX
             && let (Some(enqueuer), Some(&task_index)) =
                 (self.enqueuer.get(), self.task_index.get())
-            {
-                enqueuer.enqueue_task(task_index);
-            }
+        {
+            enqueuer.enqueue_task(task_index);
+        }
     }
 
     /// Clear bit `index` (called when the task drains write→read for this subscriber).
@@ -258,9 +258,10 @@ impl CallbackReadiness {
         let _ = self.enqueuer.set(enqueuer);
         // Startup case: if already ready, enqueue now
         if self.bitmask.load(Ordering::Acquire) == usize::MAX
-            && let (Some(enqueuer), Some(&idx)) = (self.enqueuer.get(), self.task_index.get()) {
-                enqueuer.enqueue_task(idx);
-            }
+            && let (Some(enqueuer), Some(&idx)) = (self.enqueuer.get(), self.task_index.get())
+        {
+            enqueuer.enqueue_task(idx);
+        }
     }
 }
 
