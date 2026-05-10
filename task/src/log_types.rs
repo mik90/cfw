@@ -95,6 +95,9 @@ pub trait ExecutionLogger: Send {
 
 // ── StandardExecutionLogger ──────────────────────────────────────────────────
 
+/// The closure receives `&dyn std::any::Any` and a `&mut dyn Write` to write into.
+type HeaderAndValueSerializerCallback = dyn Fn(&dyn std::any::Any, &mut Vec<u8>) + Send;
+
 /// Per-channel logging mode. Configure independently for each subscriber/publisher slot.
 pub enum ChannelLogMode {
     /// Don't record this channel.
@@ -102,8 +105,7 @@ pub enum ChannelLogMode {
     /// Record each message's header (timestamp) only.
     HeaderOnly,
     /// Record each message's header plus serialized value.
-    /// The closure receives `&dyn std::any::Any` and a `&mut dyn Write` to write into.
-    HeaderAndValues(Box<dyn Fn(&dyn std::any::Any, &mut Vec<u8>) + Send>),
+    HeaderAndValues(Box<HeaderAndValueSerializerCallback>),
 }
 
 /// A ready-to-use `ExecutionLogger` that covers the most common logging needs.

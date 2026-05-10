@@ -19,11 +19,7 @@ impl<T> MpscQueue<T> {
     /// Push a value, displacing the oldest element if the queue is at capacity.
     /// Returns `true` if a drop occurred.
     pub fn push(&self, value: T) -> bool {
-        if self.inner.force_push(value).is_some() {
-            true
-        } else {
-            false
-        }
+        self.inner.force_push(value).is_some()
     }
 
     pub fn pop(&self) -> Option<T> {

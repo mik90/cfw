@@ -54,11 +54,10 @@ impl SimulationExecutor {
     /// Use this when you want to wait for natural completion without forcing a stop.
     /// Call [`stop`] afterwards to join the callback executor threads.
     pub fn join(&mut self) -> Result<(), ExecutorError> {
-        if let Some(t) = self.step_thread.take() {
-            if t.join().is_err() {
+        if let Some(t) = self.step_thread.take()
+            && t.join().is_err() {
                 return Err(ExecutorError::PanickedThreads(vec![0]));
             }
-        }
         Ok(())
     }
 
@@ -204,11 +203,10 @@ impl Executor for SimulationExecutor {
         self.should_run.store(false, Ordering::Release);
         // Join the step thread before shutting down callback threads, so we don't
         // pull the rug out from under an in-progress step.
-        if let Some(t) = self.step_thread.take() {
-            if t.join().is_err() {
+        if let Some(t) = self.step_thread.take()
+            && t.join().is_err() {
                 return Err(ExecutorError::PanickedThreads(vec![0]));
             }
-        }
         match self.state.lock().unwrap().shutdown_callback_threads() {
             Ok(()) => Ok(()),
             Err(idxs) => Err(ExecutorError::PanickedThreads(idxs)),
