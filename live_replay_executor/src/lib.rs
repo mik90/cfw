@@ -1,11 +1,12 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use task::callback::ConnectedCallback;
 use task::executor::{Executor, ExecutorError, ExecutorStopSignal};
 
 pub struct StopSignal(Arc<AtomicBool>);
 
+#[allow(dead_code)]
 pub struct LiveReplayExecutor {
     // All tasks, regardless of if they're run or not
     tasks: Vec<ConnectedCallback>,
@@ -19,11 +20,9 @@ pub struct LiveReplayExecutor {
 
 pub struct LiveReplayConfig {
     /// Speed at which logged messages should be replayed
-    replay_speed: f32,
-
-    /// TODO: some way to load log files
-    
-    /// TODO: some thread pool configuration
+    pub replay_speed: f32,
+    // TODO: some way to load log files
+    // TODO: some thread pool configuration
 }
 
 impl ExecutorStopSignal for StopSignal {

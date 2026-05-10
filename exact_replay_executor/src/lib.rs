@@ -6,6 +6,7 @@ use task::executor::{Executor, ExecutorError, ExecutorStopSignal};
 
 pub struct StopSignal(Arc<AtomicBool>);
 
+#[allow(dead_code)]
 pub struct ExactReplayExecutor {
     // All tasks, regardless of if they're run or not
     tasks: Vec<ConnectedCallback>,
