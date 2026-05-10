@@ -33,6 +33,9 @@ pub struct SimulationExecutor {
     should_run: Arc<AtomicBool>,
 
     state: Arc<Mutex<SimulationState>>,
+
+    /// Background thread running the step loop. Present after start(), absent before.
+    step_thread: Option<JoinHandle<()>>,
 }
 
 type PoolIndex = usize;
@@ -183,14 +186,33 @@ fn callback_executor_thread(
 }
 
 impl Executor for SimulationExecutor {
-    /// Blocks the caller's thread, stepping the simulation until something flips
+    /// Spawns a background thread that steps the simulation until something flips
     /// the stop signal (e.g. a callback calling [`ExecutorStopSignal::request_stop`]).
+    /// Returns immediately; call [`stop`] to join the thread.
     fn start(&mut self) {
-        self.step_loop();
+        let should_run = self.should_run.clone();
+        let state = self.state.clone();
+
+        should_run.store(true, Ordering::Release);
+        state.lock().unwrap().start();
+
+        self.step_thread = Some(thread::spawn(move || {
+            while should_run.load(Ordering::Acquire) {
+                state.lock().unwrap().step();
+            }
+            state.lock().unwrap().cleanup();
+        }));
     }
 
     fn stop(&mut self) -> Result<(), ExecutorError> {
         self.should_run.store(false, Ordering::Release);
+        // Join the step thread before shutting down callback threads, so we don't
+        // pull the rug out from under an in-progress step.
+        if let Some(t) = self.step_thread.take() {
+            if t.join().is_err() {
+                return Err(ExecutorError::PanickedThreads(vec![0]));
+            }
+        }
         match self.state.lock().unwrap().shutdown_callback_threads() {
             Ok(()) => Ok(()),
             Err(idxs) => Err(ExecutorError::PanickedThreads(idxs)),
@@ -254,22 +276,23 @@ impl SimulationExecutor {
             config.start_time,
         )));
 
-        SimulationExecutor { should_run, state }
+        SimulationExecutor {
+            should_run,
+            state,
+            step_thread: None,
+        }
     }
 
-    /// Run the simulation on the caller's thread, blocking until something clears
-    /// the stop signal. Performs one-time periodic-task setup before the loop and
-    /// subscriber-buffer cleanup after.
-    pub fn step_loop(&mut self) {
-        self.should_run.store(true, Ordering::Release);
-        {
-            let mut state = self.state.lock().unwrap();
-            state.start();
+    /// Block until the step thread exits on its own (e.g. a callback fired the stop signal).
+    /// Use this when you want to wait for natural completion without forcing a stop.
+    /// Call [`stop`] afterwards to join the callback executor threads.
+    pub fn join(&mut self) -> Result<(), ExecutorError> {
+        if let Some(t) = self.step_thread.take() {
+            if t.join().is_err() {
+                return Err(ExecutorError::PanickedThreads(vec![0]));
+            }
         }
-        while self.should_run.load(Ordering::Acquire) {
-            self.state.lock().unwrap().step();
-        }
-        self.state.lock().unwrap().cleanup();
+        Ok(())
     }
 
     /// Run a single simulation step on the caller's thread. The caller is responsible
@@ -514,14 +537,15 @@ mod tests {
         let mut exec = SimulationExecutor::new(1, callbacks);
 
         task_info.stop_signal.set(exec.stop_signal()).ok();
-        // start() now blocks on the caller's thread until a callback signals stop.
+        // start() spawns the step loop thread and returns immediately.
         exec.start();
-
-        assert!(!exec.is_running());
-
+        // join() blocks until a callback fires the stop signal and the thread exits.
+        assert!(exec.join().is_ok());
+        // stop() shuts down the callback executor threads.
         let stop_result = exec.stop();
         assert!(stop_result.is_ok());
 
+        assert!(!exec.is_running());
         assert!(!task_info.get_stored_strings().is_empty());
     }
 
