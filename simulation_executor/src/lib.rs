@@ -1,10 +1,11 @@
-use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::num::Saturating;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use task::callback::ConnectedCallback;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+use task::callback::{ConnectedCallback, Run};
 use task::context::Context;
 use task::executor::{Executor, ExecutorError, ExecutorStopSignal, ThreadPoolConfig};
 use task::time::FrameworkTime;
@@ -28,7 +29,7 @@ struct VirtualPool {
 }
 
 pub struct SimulationExecutor {
-    // Threads that run tasks, not the same as the virtual threads that model live threading behavior
+    /// Thread(s) that step simulation state. Currently just one thread.
     execution_threads: Vec<thread::JoinHandle<()>>,
 
     // Other threads may swap this on/off to stop
@@ -44,17 +45,22 @@ struct SimulationState {
     /// Storage of all tasks. A task's index into this vec is used to index into other Vecs.
     /// Each task is wrapped in a Mutex so the parallel execution block can lock individual
     /// tasks without unsafe disjoint-index tricks.
-    tasks: Vec<Mutex<ConnectedCallback>>,
+    tasks: Vec<Arc<Mutex<ConnectedCallback>>>,
 
-    /// Thread pool used to run tasks in parallel within a single simulation step.
-    /// None when execution_thread_count == 1; tasks run sequentially in that case.
-    thread_pool: Option<rayon::ThreadPool>,
+    /// Threads that execute callbacks in parallel.
+    callback_executor_threads: Vec<JoinHandle<()>>,
+
+    /// Tells callback executors to do work
+    callback_exec_request_senders: Vec<Sender<CallbackExecutionRequest>>,
+
+    /// Mono channel with all results of execution
+    callback_exec_response_receiver: Receiver<CallbackExecutionResponse>,
 
     /// Maps each global task index to its pool index
     task_to_pool: Vec<PoolIndex>,
 
     /// Virtual pools — no real threads, but models concurrency boundaries
-    pools: Vec<VirtualPool>,
+    virtual_pools: Vec<VirtualPool>,
 
     /// TODO should this be a sorted queue?
     periodic_tasks: VecDeque<TimeTriggeredTask>,
@@ -73,9 +79,113 @@ struct SimulationState {
     step_count: Saturating<usize>,
 }
 
+impl SimulationState {
+    fn new(
+        tasks: Vec<Arc<Mutex<ConnectedCallback>>>,
+        task_to_pool: Vec<PoolIndex>,
+        virtual_pools: Vec<VirtualPool>,
+        callback_executor_thread_count: usize,
+        start_time: FrameworkTime,
+        should_run: &Arc<AtomicBool>,
+    ) -> SimulationState {
+        let num_tasks = tasks.len();
+
+        // Each callback can send a response, and there's only one receiver in the state
+        let (exec_response_sender, exec_response_recv): (
+            Sender<CallbackExecutionResponse>,
+            Receiver<CallbackExecutionResponse>,
+        ) = mpsc::channel();
+
+        let mut state = SimulationState {
+            tasks,
+            callback_executor_threads: Vec::with_capacity(callback_executor_thread_count),
+            callback_exec_request_senders: Vec::with_capacity(callback_executor_thread_count),
+            callback_exec_response_receiver: exec_response_recv,
+            virtual_pools,
+            task_to_pool,
+            periodic_tasks: VecDeque::new(),
+            task_busy_until: vec![start_time; num_tasks],
+            task_ready_since: vec![None; num_tasks],
+            time: start_time,
+            step_count: Saturating(0),
+        };
+        for _ in 0..callback_executor_thread_count {
+            let should_run_clone = should_run.clone();
+
+            // The state will have a sender for each callback, each callback will have its own erceiver
+            let (request_sender, request_recv): (
+                Sender<CallbackExecutionRequest>,
+                Receiver<CallbackExecutionRequest>,
+            ) = mpsc::channel();
+            state.callback_exec_request_senders.push(request_sender);
+
+            let cloned_tasks = state.tasks.clone();
+
+            let response_sender_clone = exec_response_sender.clone();
+            state.callback_executor_threads.push(thread::spawn(move || {
+                callback_executor_thread(
+                    should_run_clone,
+                    request_recv,
+                    response_sender_clone,
+                    cloned_tasks,
+                );
+            }));
+        }
+
+        state
+    }
+}
+
 impl ExecutorStopSignal for StopSignal {
     fn request_stop(&self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+struct CallbackExecutionRequest {
+    /// Index of task to execute
+    index: TaskIndex,
+    /// Current simulation time
+    current_time: FrameworkTime,
+}
+
+#[derive(Debug)]
+struct CallbackExecutionResponse {
+    /// Task index that was executed
+    index: TaskIndex,
+    /// How long the task took in simulation
+    execution_duration: Duration,
+    /// Run result
+    run_result: Run,
+}
+
+/// Runs sim callbacks when work is provided
+fn callback_executor_thread(
+    should_run: Arc<AtomicBool>,
+    work_receiver: Receiver<CallbackExecutionRequest>,
+    response_sender: Sender<CallbackExecutionResponse>,
+    tasks: Vec<Arc<Mutex<ConnectedCallback>>>,
+) {
+    while should_run.load(Ordering::Relaxed) {
+        match work_receiver.recv() {
+            Ok(work_request) => {
+                let ctx = Context::new(work_request.current_time);
+                let task = &mut tasks[work_request.index].lock().unwrap();
+                let result = task.run(&ctx);
+
+                let response = CallbackExecutionResponse {
+                    index: work_request.index,
+                    execution_duration: task.get_execution_duration(),
+                    run_result: result,
+                };
+                if let Err(e) = response_sender.send(response) {
+                    panic!("Could not response to execution request: {}", e);
+                }
+            }
+            Err(e) => {
+                panic!("Callback executor failed to receive work: {}", e);
+            }
+        }
     }
 }
 
@@ -128,7 +238,7 @@ pub struct SimulationConfig {
     pub pools: Vec<ThreadPoolConfig>,
     /// Number of real OS threads used to execute tasks in parallel within a step.
     /// Independent of any virtual thread pool sizes.
-    pub execution_thread_count: usize,
+    pub callback_executor_thread_count: usize,
 }
 
 impl SimulationExecutor {
@@ -139,14 +249,14 @@ impl SimulationExecutor {
             // We can't create an instant from a fixed value, so any 'now' will be arbitrary
             start_time: FrameworkTime::from_wall_clock(),
             pools: vec![ThreadPoolConfig::new(num_virtual_threads, tasks)],
-            execution_thread_count: 1,
+            callback_executor_thread_count: 1,
         })
     }
 
     /// Create an executor from a [`SimulationConfig`], supporting multiple virtual
     /// pools and a configurable start time.
     pub fn new_with(config: SimulationConfig) -> Self {
-        let mut all_tasks: Vec<Mutex<ConnectedCallback>> = Vec::new();
+        let mut all_tasks: Vec<Arc<Mutex<ConnectedCallback>>> = vec![];
         let mut task_to_pool: Vec<usize> = Vec::new();
         let mut virtual_pools: Vec<VirtualPool> = Vec::new();
 
@@ -157,33 +267,20 @@ impl SimulationExecutor {
             });
             for task in pool.tasks {
                 task_to_pool.push(pool_idx);
-                all_tasks.push(Mutex::new(task));
+                all_tasks.push(Arc::new(Mutex::new(task)));
             }
         }
 
-        let num_tasks = all_tasks.len();
-        let thread_pool = if config.execution_thread_count > 1 {
-            Some(
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(config.execution_thread_count)
-                    .build()
-                    .expect("failed to build rayon thread pool"),
-            )
-        } else {
-            None
-        };
         let should_run = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(Mutex::new(SimulationState {
-            tasks: all_tasks,
-            thread_pool,
+
+        let state = Arc::new(Mutex::new(SimulationState::new(
+            all_tasks.clone(),
             task_to_pool,
-            pools: virtual_pools,
-            periodic_tasks: VecDeque::new(),
-            task_busy_until: vec![config.start_time; num_tasks],
-            task_ready_since: vec![None; num_tasks],
-            time: config.start_time,
-            step_count: Saturating(0),
-        }));
+            virtual_pools,
+            config.callback_executor_thread_count,
+            config.start_time,
+            &should_run,
+        )));
 
         SimulationExecutor {
             execution_threads: Vec::new(),
@@ -259,7 +356,7 @@ impl SimulationState {
         let mut runnable: Vec<TaskIndex> = vec![];
         for index in candidates {
             let pool_index = self.task_to_pool[index];
-            let pool = &mut self.pools[pool_index];
+            let pool = &mut self.virtual_pools[pool_index];
             if pool.num_threads_occupied < pool.virtual_thread_count {
                 pool.num_threads_occupied += 1;
                 self.task_ready_since[index] = None;
@@ -281,30 +378,37 @@ impl SimulationState {
         }
 
         let time = self.time;
-        let durations: Vec<(TaskIndex, std::time::Duration)> = match &self.thread_pool {
-            Some(pool) => pool.install(|| {
-                runnable_tasks
-                    .par_iter()
-                    .map(|&index| {
-                        let ctx = Context::new(time);
-                        let mut task = self.tasks[index].lock().unwrap();
-                        task.run(&ctx);
-                        (index, task.get_execution_duration())
-                    })
-                    .collect()
-            }),
-            None => runnable_tasks
-                .iter()
-                .map(|&index| {
-                    let ctx = Context::new(time);
-                    let mut task = self.tasks[index].lock().unwrap();
-                    task.run(&ctx);
-                    (index, task.get_execution_duration())
+
+        let mut sender_cycle_iter = self.callback_exec_request_senders.iter().cycle();
+        for index in &runnable_tasks {
+            // Send work to each callback executor, can send multiple items of work to a given executor if we have more tasks than callback threads
+            sender_cycle_iter
+                .next()
+                .expect("No senders are in callback executor")
+                .send(CallbackExecutionRequest {
+                    index: *index,
+                    current_time: time,
                 })
-                .collect(),
-        };
-        for (index, duration) in durations {
-            self.task_busy_until[index] = time + duration;
+                .expect("Could not send execution request to callback thread");
+        }
+
+        let mut execution_responses: Vec<CallbackExecutionResponse> = vec![];
+        for _ in &runnable_tasks {
+            // Expect a response per task
+            let response = self
+                .callback_exec_response_receiver
+                .recv()
+                .expect("Could not get response from callback thread");
+            execution_responses.push(response);
+        }
+
+        // If there's more responses left, that's unexpected
+        if let Ok(r) = self.callback_exec_response_receiver.try_recv() {
+            panic!("Received unexpected response: {:?}", r);
+        }
+
+        for response in execution_responses {
+            self.task_busy_until[response.index] = time + response.execution_duration;
         }
 
         for &index in &runnable_tasks {
@@ -350,7 +454,7 @@ impl SimulationState {
             if busy_until_time > old_sim_time && busy_until_time <= self.time {
                 // task is no longer busy as of the new sim time, so we can free up a thread
                 let pool_index = self.task_to_pool[index];
-                self.pools[pool_index].num_threads_occupied -= 1;
+                self.virtual_pools[pool_index].num_threads_occupied -= 1;
             }
         }
         println!("End step {}", self.step_count);
@@ -394,9 +498,6 @@ mod tests {
 
     use crate::{SimulationExecutor, SimulationState};
 
-    // Miri is suppressed here: the only violation is in rayon/crossbeam-epoch internals
-    // (crossbeam_epoch::collector::LocalHandle TLS destruction), not in our code.
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_simulation_exec() {
         let (callbacks, task_info) = build_fizz_buzz_tasks();
@@ -499,9 +600,6 @@ mod tests {
         step_history
     }
 
-    // Miri is suppressed here: the only violation is in rayon/crossbeam-epoch internals
-    // (crossbeam_epoch::collector::LocalHandle TLS destruction), not in our code.
-    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_determinism() {
         let history_first = run_fizz_buzz_for_n_steps(50, 2);

@@ -69,6 +69,7 @@ pub struct CallbackSignature {
     pub outputs: Vec<OutputKind>,
 }
 
+#[derive(Debug)]
 pub struct Run {
     pub num_iterations: usize,
 }
