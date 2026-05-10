@@ -17,7 +17,7 @@ impl TaskTest {
     pub fn new(tasks: Vec<ConnectedCallback>) -> Self {
         let pools = vec![ThreadPoolConfig {
             thread_count: 1,
-            tasks: tasks,
+            tasks,
         }];
         Self::new_with(TaskTestConfig {
             start_time: FrameworkTime::from_nanoseconds(0),
