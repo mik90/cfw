@@ -86,7 +86,6 @@ impl SimulationState {
         virtual_pools: Vec<VirtualPool>,
         callback_executor_thread_count: usize,
         start_time: FrameworkTime,
-        should_run: &Arc<AtomicBool>,
     ) -> SimulationState {
         let num_tasks = tasks.len();
 
@@ -110,8 +109,6 @@ impl SimulationState {
             step_count: Saturating(0),
         };
         for _ in 0..callback_executor_thread_count {
-            let should_run_clone = should_run.clone();
-
             // The state will have a sender for each callback, each callback will have its own erceiver
             let (request_sender, request_recv): (
                 Sender<CallbackExecutionRequest>,
@@ -123,12 +120,7 @@ impl SimulationState {
 
             let response_sender_clone = exec_response_sender.clone();
             state.callback_executor_threads.push(thread::spawn(move || {
-                callback_executor_thread(
-                    should_run_clone,
-                    request_recv,
-                    response_sender_clone,
-                    cloned_tasks,
-                );
+                callback_executor_thread(request_recv, response_sender_clone, cloned_tasks);
             }));
         }
 
@@ -147,6 +139,8 @@ struct CallbackExecutionRequest {
     index: TaskIndex,
     /// Current simulation time
     current_time: FrameworkTime,
+    /// Whether execution should continue
+    should_run: bool,
 }
 
 #[derive(Debug)]
@@ -162,32 +156,38 @@ struct CallbackExecutionResponse {
 
 /// Runs sim callbacks when work is provided
 fn callback_executor_thread(
-    should_run: Arc<AtomicBool>,
     work_receiver: Receiver<CallbackExecutionRequest>,
     response_sender: Sender<CallbackExecutionResponse>,
     tasks: Vec<Arc<Mutex<ConnectedCallback>>>,
 ) {
-    while should_run.load(Ordering::Relaxed) {
-        match work_receiver.recv() {
-            Ok(work_request) => {
-                let ctx = Context::new(work_request.current_time);
-                let task = &mut tasks[work_request.index].lock().unwrap();
-                let result = task.run(&ctx);
-
-                let response = CallbackExecutionResponse {
-                    index: work_request.index,
-                    execution_duration: task.get_execution_duration(),
-                    run_result: result,
-                };
-                if let Err(e) = response_sender.send(response) {
-                    panic!("Could not response to execution request: {}", e);
-                }
+    println!("Starting callback executor thread");
+    match work_receiver.recv() {
+        Ok(work_request) => {
+            println!("callback executor thread got work request");
+            if !work_request.should_run {
+                println!("Callback executor thread clean exit");
+                // Clean exit
+                return;
             }
-            Err(e) => {
-                panic!("Callback executor failed to receive work: {}", e);
+
+            let ctx = Context::new(work_request.current_time);
+            let task = &mut tasks[work_request.index].lock().unwrap();
+            let result = task.run(&ctx);
+
+            let response = CallbackExecutionResponse {
+                index: work_request.index,
+                execution_duration: task.get_execution_duration(),
+                run_result: result,
+            };
+            if let Err(e) = response_sender.send(response) {
+                panic!("Could not response to execution request: {}", e);
             }
         }
+        Err(e) => {
+            panic!("Callback executor failed to receive work: {}", e);
+        }
     }
+    println!("Ending callback executor thread");
 }
 
 impl Executor for SimulationExecutor {
@@ -205,6 +205,10 @@ impl Executor for SimulationExecutor {
     }
 
     fn stop(&mut self) -> Result<(), ExecutorError> {
+        if let Err(e) = self.state.lock().unwrap().stop() {
+            todo!("We now have two thread pools?");
+        }
+
         self.should_run.store(false, Ordering::Release);
 
         let mut thread_join_result = vec![];
@@ -280,7 +284,6 @@ impl SimulationExecutor {
             virtual_pools,
             config.callback_executor_thread_count,
             config.start_time,
-            &should_run,
         )));
 
         SimulationExecutor {
@@ -381,7 +384,12 @@ impl SimulationState {
         let time = self.time;
 
         let mut sender_cycle_iter = self.callback_exec_request_senders.iter().cycle();
+        println!(
+            "Exec sender size {}",
+            self.callback_exec_request_senders.len()
+        );
         for index in &runnable_tasks {
+            println!("Sending request to exec task index {}", index);
             // Send work to each callback executor, can send multiple items of work to a given executor if we have more tasks than callback threads
             sender_cycle_iter
                 .next()
@@ -389,12 +397,14 @@ impl SimulationState {
                 .send(CallbackExecutionRequest {
                     index: *index,
                     current_time: time,
+                    should_run: true,
                 })
                 .expect("Could not send execution request to callback thread");
         }
 
         let mut execution_responses: Vec<CallbackExecutionResponse> = vec![];
         for _ in &runnable_tasks {
+            println!("Expecting {} responses", runnable_tasks.len());
             // Expect a response per task
             let response = match self.callback_exec_response_receiver.recv() {
                 Ok(r) => r,
@@ -463,6 +473,32 @@ impl SimulationState {
         println!("End step {}", self.step_count);
         self.step_count += 1;
         runnable_tasks
+    }
+
+    pub fn stop(&mut self) -> Result<(), Vec<usize>> {
+        for sender in self.callback_exec_request_senders.iter_mut() {
+            sender
+                .send(CallbackExecutionRequest {
+                    index: 0,
+                    current_time: FrameworkTime::INVALID,
+                    should_run: false,
+                })
+                .expect("Cannot tell callback exec threads to stop");
+        }
+
+        let mut panicked_thread_indexes = vec![];
+        println!("Joining {} threads", self.callback_executor_threads.len());
+        for (thread_idx, t) in self.callback_executor_threads.drain(..).enumerate() {
+            println!("Joining thread {thread_idx}");
+            if let Err(_) = t.join() {
+                panicked_thread_indexes.push(thread_idx);
+            }
+        }
+
+        if panicked_thread_indexes.is_empty() {
+            return Ok(());
+        }
+        Err(panicked_thread_indexes)
     }
 
     pub fn get_step_count(&self) -> Saturating<usize> {
