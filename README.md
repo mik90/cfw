@@ -33,7 +33,8 @@ In order of priority
   - [x] start on this`
     - so, given a message B that was produced using contents of A, allow for message B to link to message A
     - this should allow us to defer logging of messages to a normal callback, we'd publish a message that has some handles and the timestamp in which they were seenA
-    - [ ] handle message headers, dont need to embed this in ArenaPtr, we can just have ArenaPtr take in a message + header
+    - [x] handle message headers, dont need to embed this in ArenaPtr, we can just have ArenaPtr take in a message + header
+    - [ ] integrate with Input/Output types
 - [ ] exact replay executor
   - prob should mimic thread pool constraints but we should be able to execute stuff in any order as long as callbacks aren't stateful
   - I'll need to consider logging executions and message queues for this
