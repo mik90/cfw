@@ -23,7 +23,7 @@ In order of priority
 - [x] allow for multiple thread pools in one process, could do multiple executors or somehow manage all this in one executor
   - one executor allows me to better utilize the periodic thread, so id rather have a mapping of callbacks to pools in one executor
 - [x] provide current time to callbacks via context object
-- [ ] simulation executor
+- [x] simulation executor
   - [x] Start w/ single thread, but consider multi-thread
   - [x] quick test for determinism
   - [x] honor thread pool constraints when it comes to whether a task is able to be executed in a group
@@ -84,4 +84,10 @@ To view live output of test binary
 
 ```bash
 cargo t test_thread_pool_exec -- --nocapture
+```
+
+Run tests in miri (these should pass)
+
+```bash
+cargo +nightly miri test
 ```
