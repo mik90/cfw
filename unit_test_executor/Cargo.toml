@@ -1,0 +1,12 @@
+[package]
+name = "exact_replay_executor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+task = { path = "../task" }
+# Unit testing is a thin wrapper over simulation
+simulation_executor = { path = "../simulation_executor" }
+
+[dev-dependencies]
+task = { path = "../task", features = ["test-utils"] }
