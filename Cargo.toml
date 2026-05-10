@@ -1,4 +1,13 @@
 
 [workspace]
-members = ["exact_replay_executor","simulation_executor","task", "task_builder", "task_macros", "live_executor"]
+members = [
+    "exact_replay_executor",
+    "simulation_executor",
+    "task",
+    "task_builder",
+    "task_macros",
+    "live_executor",
+    "live_replay_executor",
+    "testing",
+]
 resolver = "3"

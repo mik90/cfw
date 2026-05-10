@@ -86,6 +86,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "live_replay_executor"
+version = "0.1.0"
+dependencies = [
+ "task",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -163,6 +170,14 @@ version = "0.1.0"
 dependencies = [
  "quote",
  "syn",
+ "task",
+]
+
+[[package]]
+name = "testing"
+version = "0.1.0"
+dependencies = [
+ "simulation_executor",
  "task",
 ]
 
