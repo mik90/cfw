@@ -44,8 +44,9 @@ pub(crate) fn callback_executor_thread(
             index: work_request.index,
             execution_duration: task.get_execution_duration(),
         };
-        if let Err(e) = response_sender.send(response) {
-            panic!("Could not respond to execution request: {}", e);
+        // If the receiver is gone the step thread has exited; nothing left to do.
+        if response_sender.send(response).is_err() {
+            return;
         }
     }
 }

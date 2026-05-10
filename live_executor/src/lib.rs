@@ -8,10 +8,23 @@ use task::time::FrameworkTime;
 
 use task::callback::ConnectedCallback;
 use task::context::Context;
-use task::executor::{Executor, ExecutorError, ExecutorStopSignal, TaskEnqueuer, ThreadPoolConfig};
+use task::executor::{Executor, ExecutorStopSignal, TaskEnqueuer, ThreadPoolConfig};
 
 /// Sent into a pool's work channel to unblock workers on shutdown.
 const SHUTDOWN_SENTINEL: usize = usize::MAX;
+
+#[derive(Debug)]
+pub struct LiveExecutorError {
+    pub panicked_thread_indices: Vec<usize>,
+}
+
+impl std::fmt::Display for LiveExecutorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "threads panicked: {:?}", self.panicked_thread_indices)
+    }
+}
+
+impl std::error::Error for LiveExecutorError {}
 
 #[derive(Clone, Copy)]
 struct TimeTriggeredTask {
@@ -364,12 +377,15 @@ impl ExecutorStopSignal for StopSignal {
 }
 
 impl Executor for LiveExecutor {
+    type Error = LiveExecutorError;
+
     fn start(&mut self) {
         self.start_threads();
     }
 
-    fn stop(&mut self) -> Result<(), ExecutorError> {
-        self.stop_threads().map_err(ExecutorError::PanickedThreads)
+    fn stop(&mut self) -> Result<(), LiveExecutorError> {
+        self.stop_threads()
+            .map_err(|panicked_thread_indices| LiveExecutorError { panicked_thread_indices })
     }
 
     fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {

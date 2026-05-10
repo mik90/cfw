@@ -7,6 +7,18 @@ use crate::{
     ConnectedCallback, FrameworkTime, PoolIndex, SimulationConfig, TaskIndex, TimeTriggeredTask,
     VirtualPool,
 };
+
+#[derive(Debug)]
+pub enum StepError {
+    /// No callback executor threads are configured.
+    NoCallbackExecutors,
+    /// A callback executor thread disconnected, likely because it panicked.
+    CallbackThreadDisconnected,
+    /// Received more responses than expected from callback executor threads.
+    UnexpectedResponse,
+    /// The step loop thread panicked.
+    StepThreadPanicked,
+}
 use std::collections::VecDeque;
 use std::num::Saturating;
 use std::sync::mpsc;
@@ -191,7 +203,7 @@ impl SimulationState {
         runnable
     }
 
-    pub fn step(&mut self) -> Vec<TaskIndex> {
+    pub fn step(&mut self) -> Result<Vec<TaskIndex>, StepError> {
         let runnable_tasks = self.allocate_tasks_to_threads();
         // Only drain subscribers for tasks that actually got a thread, so that tasks
         // blocked by pool pressure keep their trigger data for the next step.
@@ -206,13 +218,13 @@ impl SimulationState {
             // Round-robin work across callback executor threads.
             sender_cycle_iter
                 .next()
-                .expect("No senders are in callback executor")
+                .ok_or(StepError::NoCallbackExecutors)?
                 .send(CallbackExecutionRequest {
                     index: *index,
                     current_time: time,
                     should_run: true,
                 })
-                .expect("Could not send execution request to callback thread");
+                .map_err(|_| StepError::CallbackThreadDisconnected)?;
         }
 
         let mut execution_responses: Vec<CallbackExecutionResponse> = vec![];
@@ -220,13 +232,12 @@ impl SimulationState {
             let response = self
                 .callback_exec_response_receiver
                 .recv()
-                .expect("Could not receive response from callback thread");
+                .map_err(|_| StepError::CallbackThreadDisconnected)?;
             execution_responses.push(response);
         }
 
-        // If there's more responses left, that's unexpected
-        if let Ok(r) = self.callback_exec_response_receiver.try_recv() {
-            panic!("Received unexpected response: {:?}", r);
+        if self.callback_exec_response_receiver.try_recv().is_ok() {
+            return Err(StepError::UnexpectedResponse);
         }
 
         for response in execution_responses {
@@ -280,7 +291,7 @@ impl SimulationState {
             }
         }
         self.step_count += 1;
-        runnable_tasks
+        Ok(runnable_tasks)
     }
 
     pub fn shutdown_callback_threads(&mut self) -> Result<(), Vec<usize>> {
@@ -348,7 +359,7 @@ mod tests {
         assert_eq!(periodic.index, 0);
         assert_eq!(periodic.requested_exec_time, start_time);
 
-        let executed_tasks = state.step();
+        let executed_tasks = state.step().unwrap();
         assert_eq!(executed_tasks, vec![task_info.integer_publisher_index]);
 
         // After first step, the publisher should want to run in the future
@@ -360,14 +371,14 @@ mod tests {
             "Publisher task takes 1ms to run and wants to run every 500ms"
         );
 
-        let executed_tasks = state.step();
+        let executed_tasks = state.step().unwrap();
         assert_eq!(
             executed_tasks,
             vec![task_info.fizz_buzz_index],
             "After the second step, the fizz-buzz task should have run"
         );
 
-        let executed_tasks = state.step();
+        let executed_tasks = state.step().unwrap();
         assert_eq!(
             executed_tasks,
             vec![task_info.string_store_index],

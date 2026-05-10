@@ -2,7 +2,7 @@ use std::fmt;
 use std::num::Saturating;
 
 use simulation_executor::SimulationConfig;
-use simulation_executor::state::SimulationState;
+use simulation_executor::state::{SimulationState, StepError};
 use task::callback::ConnectedCallback;
 use task::executor::ThreadPoolConfig;
 use task::time::FrameworkTime;
@@ -40,11 +40,18 @@ impl TaskTest {
     }
 
     /// Runs simulation, returning time before/after
+    /// Panics on step failure
     pub fn step(&mut self) -> StepResult {
+        self.try_step()
+            .unwrap_or_else(|e| panic!("Could not step: {:?}", e))
+    }
+
+    /// Runs simulation, returning time before/after
+    pub fn try_step(&mut self) -> Result<StepResult, StepError> {
         let before = self.simulation_state.get_simulation_time();
-        self.simulation_state.step();
+        self.simulation_state.step()?;
         let after = self.simulation_state.get_simulation_time();
-        StepResult { before, after }
+        Ok(StepResult { before, after })
     }
 
     pub fn get_step_count(&self) -> Saturating<usize> {

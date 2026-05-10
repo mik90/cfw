@@ -1,12 +1,32 @@
 use crate::state::SimulationState;
+pub use crate::state::StepError;
 use crate::{SimulationConfig, TaskIndex};
 use std::num::Saturating;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use task::callback::ConnectedCallback;
-use task::executor::{Executor, ExecutorError, ExecutorStopSignal, ThreadPoolConfig};
+use task::executor::{Executor, ExecutorStopSignal, ThreadPoolConfig};
 use task::time::FrameworkTime;
+
+#[derive(Debug)]
+pub enum SimulationExecutorError {
+    StepThreadPanicked,
+    CallbackThreadsPanicked(Vec<usize>),
+}
+
+impl std::fmt::Display for SimulationExecutorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SimulationExecutorError::StepThreadPanicked => write!(f, "step thread panicked"),
+            SimulationExecutorError::CallbackThreadsPanicked(idxs) => {
+                write!(f, "callback threads panicked: {idxs:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SimulationExecutorError {}
 
 pub struct StopSignal(Arc<AtomicBool>);
 
@@ -24,6 +44,9 @@ pub struct SimulationExecutor {
 
     /// Background thread running the step loop. Present after start(), absent before.
     step_thread: Option<JoinHandle<()>>,
+
+    /// Error produced by the step loop, if any. Set by the step thread; read by join().
+    step_error: Arc<Mutex<Option<StepError>>>,
 }
 
 impl SimulationExecutor {
@@ -47,24 +70,30 @@ impl SimulationExecutor {
             should_run,
             state: Arc::new(Mutex::new(SimulationState::new_with(config))),
             step_thread: None,
+            step_error: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Block until the step thread exits on its own (e.g. a callback fired the stop signal).
     /// Use this when you want to wait for natural completion without forcing a stop.
     /// Call [`stop`] afterwards to join the callback executor threads.
-    pub fn join(&mut self) -> Result<(), ExecutorError> {
+    /// Returns the step error if the loop stopped due to one.
+    pub fn join(&mut self) -> Result<(), StepError> {
         if let Some(t) = self.step_thread.take()
-            && t.join().is_err() {
-                return Err(ExecutorError::PanickedThreads(vec![0]));
-            }
+            && t.join().is_err()
+        {
+            return Err(StepError::StepThreadPanicked);
+        }
+        if let Some(e) = self.step_error.lock().unwrap().take() {
+            return Err(e);
+        }
         Ok(())
     }
 
     /// Run a single simulation step on the caller's thread. The caller is responsible
     /// for any one-time setup (see [`SimulationState::start`]) before the first call,
     /// and for cleanup once stepping is done.
-    pub fn step(&mut self) -> Vec<TaskIndex> {
+    pub fn step(&mut self) -> Result<Vec<TaskIndex>, StepError> {
         self.state.lock().unwrap().step()
     }
 
@@ -125,7 +154,7 @@ mod tests {
                 .get_simulation_time()
                 .checked_duration_since(start_time);
             assert!(maybe_offset.is_some());
-            let tasks_executed = state.step();
+            let tasks_executed = state.step().unwrap();
             step_history.push(StepState {
                 tasks_executed,
                 offset_from_start: maybe_offset.unwrap(),
@@ -160,7 +189,7 @@ mod tests {
 
         let mut run_counts = vec![0usize; 3];
         for _ in 0..6 {
-            for idx in state.step() {
+            for idx in state.step().unwrap() {
                 run_counts[idx] += 1;
             }
         }
@@ -181,35 +210,43 @@ mod tests {
 }
 
 impl Executor for SimulationExecutor {
+    type Error = SimulationExecutorError;
+
     /// Spawns a background thread that steps the simulation until something flips
     /// the stop signal (e.g. a callback calling [`ExecutorStopSignal::request_stop`]).
     /// Returns immediately; call [`stop`] to join the thread.
     fn start(&mut self) {
         let should_run = self.should_run.clone();
         let state = self.state.clone();
+        let step_error = self.step_error.clone();
 
         should_run.store(true, Ordering::Release);
         state.lock().unwrap().start();
 
         self.step_thread = Some(thread::spawn(move || {
             while should_run.load(Ordering::Acquire) {
-                state.lock().unwrap().step();
+                if let Err(e) = state.lock().unwrap().step() {
+                    should_run.store(false, Ordering::Release);
+                    *step_error.lock().unwrap() = Some(e);
+                    break;
+                }
             }
             state.lock().unwrap().cleanup();
         }));
     }
 
-    fn stop(&mut self) -> Result<(), ExecutorError> {
+    fn stop(&mut self) -> Result<(), SimulationExecutorError> {
         self.should_run.store(false, Ordering::Release);
         // Join the step thread before shutting down callback threads, so we don't
         // pull the rug out from under an in-progress step.
         if let Some(t) = self.step_thread.take()
-            && t.join().is_err() {
-                return Err(ExecutorError::PanickedThreads(vec![0]));
-            }
+            && t.join().is_err()
+        {
+            return Err(SimulationExecutorError::StepThreadPanicked);
+        }
         match self.state.lock().unwrap().shutdown_callback_threads() {
             Ok(()) => Ok(()),
-            Err(idxs) => Err(ExecutorError::PanickedThreads(idxs)),
+            Err(idxs) => Err(SimulationExecutorError::CallbackThreadsPanicked(idxs)),
         }
     }
 

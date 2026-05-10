@@ -16,10 +16,6 @@ impl ThreadPoolConfig {
     }
 }
 
-pub enum ExecutorError {
-    PanickedThreads(Vec<usize>),
-}
-
 /// Allows a publisher to enqueue a task onto an executor without holding a lock
 /// on the full executor state. Implementors must be Send + Sync.
 pub trait TaskEnqueuer: Send + Sync {
@@ -34,12 +30,13 @@ pub trait ExecutorStopSignal: Send + Sync {
 }
 
 pub trait Executor {
+    type Error: std::error::Error;
+
     /// Start the executor. Tasks will begin running after this call.
     fn start(&mut self);
 
     /// Signal shutdown and block until all threads have joined.
-    /// Returns Err with the indices of threads that panicked.
-    fn stop(&mut self) -> Result<(), ExecutorError>;
+    fn stop(&mut self) -> Result<(), Self::Error>;
 
     /// Return a shareable handle that can signal shutdown without blocking.
     fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal>;

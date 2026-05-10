@@ -2,9 +2,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use task::callback::ConnectedCallback;
-use task::executor::{Executor, ExecutorError, ExecutorStopSignal};
+use task::executor::{Executor, ExecutorStopSignal};
 
 pub struct StopSignal(Arc<AtomicBool>);
+
+#[derive(Debug)]
+pub struct ExactReplayExecutorError {
+    pub panicked_thread_indices: Vec<usize>,
+}
+
+impl std::fmt::Display for ExactReplayExecutorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "threads panicked: {:?}", self.panicked_thread_indices)
+    }
+}
+
+impl std::error::Error for ExactReplayExecutorError {}
 
 #[allow(dead_code)]
 pub struct ExactReplayExecutor {
@@ -26,7 +39,10 @@ impl ExecutorStopSignal for StopSignal {
         self.0.store(false, Ordering::Release);
     }
 }
+
 impl Executor for ExactReplayExecutor {
+    type Error = ExactReplayExecutorError;
+
     fn start(&mut self) {
         self.should_run.store(true, Ordering::Release);
         let should_run = self.should_run.clone();
@@ -37,25 +53,23 @@ impl Executor for ExactReplayExecutor {
         }));
     }
 
-    fn stop(&mut self) -> Result<(), ExecutorError> {
+    fn stop(&mut self) -> Result<(), ExactReplayExecutorError> {
         self.should_run.store(false, Ordering::Release);
 
-        let mut thread_join_result = vec![];
+        let mut panicked_thread_indices = vec![];
         println!("Joining {} threads", self.execution_threads.len());
         for (thread_idx, t) in self.execution_threads.drain(..).enumerate() {
-            match t.join() {
-                Ok(()) => {}
-                Err(_) => {
-                    thread_join_result.push(thread_idx);
-                }
+            if t.join().is_err() {
+                panicked_thread_indices.push(thread_idx);
             }
             println!("joined thread {thread_idx}");
         }
 
-        if thread_join_result.is_empty() {
-            return Ok(());
+        if panicked_thread_indices.is_empty() {
+            Ok(())
+        } else {
+            Err(ExactReplayExecutorError { panicked_thread_indices })
         }
-        Err(ExecutorError::PanickedThreads(thread_join_result))
     }
 
     fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
