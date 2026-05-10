@@ -43,7 +43,6 @@ In order of priority
   - [ ] see if we can avoid more allocations with Vecs in logging
   - [ ] create workflow to log data
   - [ ] add code to parse logged data and replay specific executions
-- [ ] normalize stop signal type between executors
 - [ ] provide a stop message that the executor can subscribe to
 - [ ] allow for foreign subscribers/publishers such as iceoryx2
   - we should be able to swap out foreign/native impls per task at build/configuration time
