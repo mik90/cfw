@@ -150,6 +150,7 @@ struct CallbackExecutionRequest {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct CallbackExecutionResponse {
     /// Task index that was executed
     index: TaskIndex,
@@ -395,10 +396,12 @@ impl SimulationState {
         let mut execution_responses: Vec<CallbackExecutionResponse> = vec![];
         for _ in &runnable_tasks {
             // Expect a response per task
-            let response = self
-                .callback_exec_response_receiver
-                .recv()
-                .expect("Could not get response from callback thread");
+            let response = match self.callback_exec_response_receiver.recv() {
+                Ok(r) => r,
+                Err(e) => {
+                    panic!("Could not receive response from callback thread: {}", e);
+                }
+            };
             execution_responses.push(response);
         }
 
@@ -489,14 +492,13 @@ impl Drop for SimulationState {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Mutex, OnceLock},
         thread::sleep,
-        time::{self, Duration, Instant},
+        time::{self, Duration},
     };
 
     use task::{executor::Executor, test_tasks::*};
 
-    use crate::{SimulationExecutor, SimulationState};
+    use crate::SimulationExecutor;
 
     #[test]
     fn test_simulation_exec() {

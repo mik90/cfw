@@ -21,6 +21,7 @@ pub struct SubscriberConfig {
     pub channel_name: ChannelName,
 }
 
+#[allow(dead_code)]
 pub struct Subscriber<T> {
     buffers: DoubleBuffer<ArenaPtr<Message<T>>>,
     writer_queue_drops: usize,
@@ -170,7 +171,10 @@ impl<'a, T: 'static> RequiredInput<'a, T> {
                 .expect("Required input storage should have been validated before construction")
                 as *const ArenaPtr<Message<T>>)
         };
-        RequiredInput { _subscriber: subscriber, ptr }
+        RequiredInput {
+            _subscriber: subscriber,
+            ptr,
+        }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> RequiredInput<'a, T> {
         let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
@@ -202,11 +206,7 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
         let guard = subscriber.get_read_buffer();
         // SAFETY: The read buffer VecDeque is not modified during task execution.
         // &'a Subscriber<T> ensures the subscriber (and its VecDeque allocation) lives for 'a.
-        let ptr = unsafe {
-            guard
-                .front()
-                .map(|p| &*(p as *const ArenaPtr<Message<T>>))
-        };
+        let ptr = unsafe { guard.front().map(|p| &*(p as *const ArenaPtr<Message<T>>)) };
         OptionalInput { subscriber, ptr }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> OptionalInput<'a, T> {
@@ -239,7 +239,10 @@ impl<'a, T: 'static> InputSpan<'a, T> {
         // SAFETY: The read buffer VecDeque is not modified during task execution.
         // &'a Subscriber<T> ensures the subscriber (and its VecDeque allocation) lives for 'a.
         let ptrs = unsafe { &*(guard.as_slice() as *const [ArenaPtr<Message<T>>]) };
-        InputSpan { _subscriber: subscriber, ptrs }
+        InputSpan {
+            _subscriber: subscriber,
+            ptrs,
+        }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> InputSpan<'a, T> {
         let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();

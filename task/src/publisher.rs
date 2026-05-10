@@ -51,6 +51,7 @@ impl<T> DerefMut for LoanedValue<T> {
     }
 }
 
+#[allow(dead_code)]
 struct SubscriberBuffer<T> {
     buffer: WriteBufferHandle<ArenaPtr<Message<T>>>,
     subscriber_config: SubscriberConfig,
@@ -237,6 +238,7 @@ impl<T: Default> Publisher<T> {
     }
 }
 
+#[allow(dead_code)]
 pub struct PublishFailureCallback(Arc<Mutex<dyn FnMut(SendError)>>);
 
 impl PublishFailureCallback {
