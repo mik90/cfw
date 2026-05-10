@@ -108,6 +108,7 @@ pub enum ChannelLogMode {
 
 /// A ready-to-use `ExecutionLogger` that covers the most common logging needs.
 /// Pre-allocates its internal buffer and reuses it each cycle to minimize allocation.
+#[allow(dead_code)] // just while these TODOs are here
 pub struct StandardExecutionLogger {
     subscriber_modes: Vec<ChannelLogMode>,
     publisher_modes: Vec<ChannelLogMode>,

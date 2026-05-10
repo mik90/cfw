@@ -1,4 +1,4 @@
-use crate::{ConnectedCallback, Context, FrameworkTime, Run, TaskIndex};
+use crate::{ConnectedCallback, Context, FrameworkTime, TaskIndex};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -18,8 +18,6 @@ pub(crate) struct CallbackExecutionResponse {
     pub index: TaskIndex,
     /// How long the task took in simulation
     pub execution_duration: Duration,
-    /// Run result
-    pub run_result: Run,
 }
 
 /// Runs sim callbacks when work is provided
@@ -40,12 +38,11 @@ pub(crate) fn callback_executor_thread(
 
         let ctx = Context::new(work_request.current_time);
         let task = &mut tasks[work_request.index].lock().unwrap();
-        let result = task.run(&ctx);
+        let _ = task.run(&ctx);
 
         let response = CallbackExecutionResponse {
             index: work_request.index,
             execution_duration: task.get_execution_duration(),
-            run_result: result,
         };
         if let Err(e) = response_sender.send(response) {
             panic!("Could not respond to execution request: {}", e);

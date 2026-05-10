@@ -1,16 +1,9 @@
-use std::collections::VecDeque;
 mod callback_executor;
 pub mod executor;
 pub mod state;
-use std::num::Saturating;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-use task::callback::{ConnectedCallback, Run};
+use task::callback::ConnectedCallback;
 use task::context::Context;
-use task::executor::{Executor, ExecutorError, ExecutorStopSignal, ThreadPoolConfig};
+use task::executor::ThreadPoolConfig;
 use task::time::FrameworkTime;
 
 #[derive(Clone, Copy)]

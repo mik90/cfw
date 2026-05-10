@@ -62,7 +62,6 @@ pub(crate) struct DoubleBuffer<T> {
     // No lock needed: read_buffer is only accessed during drain (before task runs)
     // or by the task itself — never concurrently.
     read_buffer: RefCell<Buffer<T>>,
-    overwrite_reader_buffer_values: bool,
 }
 
 impl<T> DoubleBuffer<T> {
@@ -73,12 +72,7 @@ impl<T> DoubleBuffer<T> {
                 storage: VecDeque::with_capacity(capacity),
                 drops: 0,
             }),
-            overwrite_reader_buffer_values: true,
         }
-    }
-
-    pub fn set_should_overwrite_reader_buffer(&mut self, overwrite_reader_buffer_values: bool) {
-        self.overwrite_reader_buffer_values = overwrite_reader_buffer_values;
     }
 
     pub fn get_write_buffer(&self) -> WriteBufferHandle<T> {

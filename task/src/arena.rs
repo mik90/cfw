@@ -124,10 +124,6 @@ impl<T> Arena<T> {
         self.storage.capacity()
     }
 
-    pub fn clear(&mut self) {
-        self.storage.clear();
-    }
-
     /// This will invalidate all ArenaPtrs
     pub fn update_capacity(&mut self, new_capacity: usize) {
         self.storage = Vec::with_capacity(new_capacity)

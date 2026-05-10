@@ -1,4 +1,3 @@
-use crate::executor;
 use crate::state::SimulationState;
 use crate::{SimulationConfig, TaskIndex};
 use std::num::Saturating;
