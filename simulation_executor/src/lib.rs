@@ -29,9 +29,6 @@ struct VirtualPool {
 }
 
 pub struct SimulationExecutor {
-    /// Thread(s) that step simulation state. Currently just one thread.
-    execution_threads: Vec<thread::JoinHandle<()>>,
-
     // Other threads may swap this on/off to stop
     should_run: Arc<AtomicBool>,
 
@@ -43,7 +40,7 @@ type TaskIndex = usize;
 
 struct SimulationState {
     /// Storage of all tasks. A task's index into this vec is used to index into other Vecs.
-    /// Each task is wrapped in a Mutex so the parallel execution block can lock individual
+    /// Each task is wrapped in a Mutex so the parallel callback executors can lock individual
     /// tasks without unsafe disjoint-index tricks.
     tasks: Vec<Arc<Mutex<ConnectedCallback>>>,
 
@@ -89,7 +86,7 @@ impl SimulationState {
     ) -> SimulationState {
         let num_tasks = tasks.len();
 
-        // Each callback can send a response, and there's only one receiver in the state
+        // One response channel shared by all callback executor threads
         let (exec_response_sender, exec_response_recv): (
             Sender<CallbackExecutionResponse>,
             Receiver<CallbackExecutionResponse>,
@@ -109,7 +106,7 @@ impl SimulationState {
             step_count: Saturating(0),
         };
         for _ in 0..callback_executor_thread_count {
-            // The state will have a sender for each callback, each callback will have its own erceiver
+            // Each thread has its own request receiver; the state owns the matching sender
             let (request_sender, request_recv): (
                 Sender<CallbackExecutionRequest>,
                 Receiver<CallbackExecutionRequest>,
@@ -139,7 +136,7 @@ struct CallbackExecutionRequest {
     index: TaskIndex,
     /// Current simulation time
     current_time: FrameworkTime,
-    /// Whether execution should continue
+    /// Whether execution should continue. False signals the thread to exit.
     should_run: bool,
 }
 
@@ -160,73 +157,44 @@ fn callback_executor_thread(
     response_sender: Sender<CallbackExecutionResponse>,
     tasks: Vec<Arc<Mutex<ConnectedCallback>>>,
 ) {
-    println!("Starting callback executor thread");
-    match work_receiver.recv() {
-        Ok(work_request) => {
-            println!("callback executor thread got work request");
-            if !work_request.should_run {
-                println!("Callback executor thread clean exit");
-                // Clean exit
-                return;
-            }
-
-            let ctx = Context::new(work_request.current_time);
-            let task = &mut tasks[work_request.index].lock().unwrap();
-            let result = task.run(&ctx);
-
-            let response = CallbackExecutionResponse {
-                index: work_request.index,
-                execution_duration: task.get_execution_duration(),
-                run_result: result,
-            };
-            if let Err(e) = response_sender.send(response) {
-                panic!("Could not response to execution request: {}", e);
-            }
+    loop {
+        let work_request = match work_receiver.recv() {
+            Ok(req) => req,
+            // Senders dropped: treat as clean exit
+            Err(_) => return,
+        };
+        if !work_request.should_run {
+            return;
         }
-        Err(e) => {
-            panic!("Callback executor failed to receive work: {}", e);
+
+        let ctx = Context::new(work_request.current_time);
+        let task = &mut tasks[work_request.index].lock().unwrap();
+        let result = task.run(&ctx);
+
+        let response = CallbackExecutionResponse {
+            index: work_request.index,
+            execution_duration: task.get_execution_duration(),
+            run_result: result,
+        };
+        if let Err(e) = response_sender.send(response) {
+            panic!("Could not respond to execution request: {}", e);
         }
     }
-    println!("Ending callback executor thread");
 }
 
 impl Executor for SimulationExecutor {
+    /// Blocks the caller's thread, stepping the simulation until something flips
+    /// the stop signal (e.g. a callback calling [`ExecutorStopSignal::request_stop`]).
     fn start(&mut self) {
-        self.should_run.store(true, Ordering::Release);
-        let state = self.state.clone();
-        let should_run = self.should_run.clone();
-        self.execution_threads.push(thread::spawn(move || {
-            state.lock().unwrap().start();
-            while should_run.load(Ordering::Acquire) {
-                state.lock().unwrap().step();
-            }
-            state.lock().unwrap().cleanup();
-        }));
+        self.step_loop();
     }
 
     fn stop(&mut self) -> Result<(), ExecutorError> {
-        if let Err(e) = self.state.lock().unwrap().stop() {
-            todo!("We now have two thread pools?");
-        }
-
         self.should_run.store(false, Ordering::Release);
-
-        let mut thread_join_result = vec![];
-        println!("Joining {} threads", self.execution_threads.len());
-        for (thread_idx, t) in self.execution_threads.drain(..).enumerate() {
-            match t.join() {
-                Ok(()) => {}
-                Err(_) => {
-                    thread_join_result.push(thread_idx);
-                }
-            }
-            println!("joined thread {thread_idx}");
+        match self.state.lock().unwrap().shutdown_callback_threads() {
+            Ok(()) => Ok(()),
+            Err(idxs) => Err(ExecutorError::PanickedThreads(idxs)),
         }
-
-        if thread_join_result.is_empty() {
-            return Ok(());
-        }
-        Err(ExecutorError::PanickedThreads(thread_join_result))
     }
 
     fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
@@ -241,7 +209,7 @@ impl Executor for SimulationExecutor {
 pub struct SimulationConfig {
     pub start_time: FrameworkTime,
     pub pools: Vec<ThreadPoolConfig>,
-    /// Number of real OS threads used to execute tasks in parallel within a step.
+    /// Number of real OS threads used to execute callbacks in parallel within a step.
     /// Independent of any virtual thread pool sizes.
     pub callback_executor_thread_count: usize,
 }
@@ -279,18 +247,36 @@ impl SimulationExecutor {
         let should_run = Arc::new(AtomicBool::new(false));
 
         let state = Arc::new(Mutex::new(SimulationState::new(
-            all_tasks.clone(),
+            all_tasks,
             task_to_pool,
             virtual_pools,
             config.callback_executor_thread_count,
             config.start_time,
         )));
 
-        SimulationExecutor {
-            execution_threads: Vec::new(),
-            should_run,
-            state,
+        SimulationExecutor { should_run, state }
+    }
+
+    /// Run the simulation on the caller's thread, blocking until something clears
+    /// the stop signal. Performs one-time periodic-task setup before the loop and
+    /// subscriber-buffer cleanup after.
+    pub fn step_loop(&mut self) {
+        self.should_run.store(true, Ordering::Release);
+        {
+            let mut state = self.state.lock().unwrap();
+            state.start();
         }
+        while self.should_run.load(Ordering::Acquire) {
+            self.state.lock().unwrap().step();
+        }
+        self.state.lock().unwrap().cleanup();
+    }
+
+    /// Run a single simulation step on the caller's thread. The caller is responsible
+    /// for any one-time setup (see [`SimulationState::start`]) before the first call,
+    /// and for cleanup once stepping is done.
+    pub fn step(&mut self) -> Vec<TaskIndex> {
+        self.state.lock().unwrap().step()
     }
 
     pub fn get_step_count(&self) -> Saturating<usize> {
@@ -372,8 +358,6 @@ impl SimulationState {
     }
 
     pub fn step(&mut self) -> Vec<TaskIndex> {
-        println!("Start step {}", self.step_count);
-
         let runnable_tasks = self.allocate_tasks_to_threads();
         // Only drain subscribers for tasks that actually got a thread, so that tasks
         // blocked by pool pressure keep their trigger data for the next step.
@@ -384,13 +368,8 @@ impl SimulationState {
         let time = self.time;
 
         let mut sender_cycle_iter = self.callback_exec_request_senders.iter().cycle();
-        println!(
-            "Exec sender size {}",
-            self.callback_exec_request_senders.len()
-        );
         for index in &runnable_tasks {
-            println!("Sending request to exec task index {}", index);
-            // Send work to each callback executor, can send multiple items of work to a given executor if we have more tasks than callback threads
+            // Round-robin work across callback executor threads.
             sender_cycle_iter
                 .next()
                 .expect("No senders are in callback executor")
@@ -404,14 +383,10 @@ impl SimulationState {
 
         let mut execution_responses: Vec<CallbackExecutionResponse> = vec![];
         for _ in &runnable_tasks {
-            println!("Expecting {} responses", runnable_tasks.len());
-            // Expect a response per task
-            let response = match self.callback_exec_response_receiver.recv() {
-                Ok(r) => r,
-                Err(e) => {
-                    panic!("Could not receive response from callback thread: {}", e);
-                }
-            };
+            let response = self
+                .callback_exec_response_receiver
+                .recv()
+                .expect("Could not receive response from callback thread");
             execution_responses.push(response);
         }
 
@@ -470,35 +445,32 @@ impl SimulationState {
                 self.virtual_pools[pool_index].num_threads_occupied -= 1;
             }
         }
-        println!("End step {}", self.step_count);
         self.step_count += 1;
         runnable_tasks
     }
 
-    pub fn stop(&mut self) -> Result<(), Vec<usize>> {
-        for sender in self.callback_exec_request_senders.iter_mut() {
-            sender
-                .send(CallbackExecutionRequest {
-                    index: 0,
-                    current_time: FrameworkTime::INVALID,
-                    should_run: false,
-                })
-                .expect("Cannot tell callback exec threads to stop");
+    fn shutdown_callback_threads(&mut self) -> Result<(), Vec<usize>> {
+        for sender in self.callback_exec_request_senders.drain(..) {
+            // Best-effort: thread may already have exited if its sender was dropped.
+            let _ = sender.send(CallbackExecutionRequest {
+                index: 0,
+                current_time: FrameworkTime::INVALID,
+                should_run: false,
+            });
         }
 
         let mut panicked_thread_indexes = vec![];
-        println!("Joining {} threads", self.callback_executor_threads.len());
         for (thread_idx, t) in self.callback_executor_threads.drain(..).enumerate() {
-            println!("Joining thread {thread_idx}");
-            if let Err(_) = t.join() {
+            if t.join().is_err() {
                 panicked_thread_indexes.push(thread_idx);
             }
         }
 
         if panicked_thread_indexes.is_empty() {
-            return Ok(());
+            Ok(())
+        } else {
+            Err(panicked_thread_indexes)
         }
-        Err(panicked_thread_indexes)
     }
 
     pub fn get_step_count(&self) -> Saturating<usize> {
@@ -521,16 +493,15 @@ impl SimulationState {
 
 impl Drop for SimulationState {
     fn drop(&mut self) {
+        // Make sure callback threads exit even if stop() was never called.
+        let _ = self.shutdown_callback_threads();
         self.cleanup();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        thread::sleep,
-        time::{self, Duration},
-    };
+    use std::time::Duration;
 
     use task::{executor::Executor, test_tasks::*};
 
@@ -543,16 +514,10 @@ mod tests {
         let mut exec = SimulationExecutor::new(1, callbacks);
 
         task_info.stop_signal.set(exec.stop_signal()).ok();
+        // start() now blocks on the caller's thread until a callback signals stop.
         exec.start();
 
-        let deadline = time::Instant::now() + time::Duration::from_secs(10);
-        while exec.is_running() && time::Instant::now() < deadline {
-            sleep(time::Duration::from_millis(10));
-        }
-        assert!(
-            !exec.is_running(),
-            "Executor did not stop itself within 10 seconds"
-        );
+        assert!(!exec.is_running());
 
         let stop_result = exec.stop();
         assert!(stop_result.is_ok());
@@ -560,7 +525,7 @@ mod tests {
         assert!(!task_info.get_stored_strings().is_empty());
     }
 
-    /// Lower level test that manually steps sim tsate
+    /// Lower level test that manually steps sim state
     #[test]
     fn test_simulation_state() {
         let (callbacks, task_info) = build_fizz_buzz_tasks();
@@ -603,8 +568,6 @@ mod tests {
         );
 
         assert_eq!(task_info.get_stored_strings(), vec!["FizzBuzz"]);
-
-        println!("Done");
     }
 
     #[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
