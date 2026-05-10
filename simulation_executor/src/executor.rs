@@ -1,3 +1,4 @@
+use crate::executor;
 use crate::state::SimulationState;
 use crate::{SimulationConfig, TaskIndex};
 use std::num::Saturating;
@@ -9,6 +10,7 @@ use task::executor::{Executor, ExecutorError, ExecutorStopSignal, ThreadPoolConf
 use task::time::FrameworkTime;
 
 pub struct StopSignal(Arc<AtomicBool>);
+
 impl ExecutorStopSignal for StopSignal {
     fn request_stop(&self) {
         self.0.store(false, Ordering::Release);
@@ -23,49 +25,6 @@ pub struct SimulationExecutor {
 
     /// Background thread running the step loop. Present after start(), absent before.
     step_thread: Option<JoinHandle<()>>,
-}
-
-impl Executor for SimulationExecutor {
-    /// Spawns a background thread that steps the simulation until something flips
-    /// the stop signal (e.g. a callback calling [`ExecutorStopSignal::request_stop`]).
-    /// Returns immediately; call [`stop`] to join the thread.
-    fn start(&mut self) {
-        let should_run = self.should_run.clone();
-        let state = self.state.clone();
-
-        should_run.store(true, Ordering::Release);
-        state.lock().unwrap().start();
-
-        self.step_thread = Some(thread::spawn(move || {
-            while should_run.load(Ordering::Acquire) {
-                state.lock().unwrap().step();
-            }
-            state.lock().unwrap().cleanup();
-        }));
-    }
-
-    fn stop(&mut self) -> Result<(), ExecutorError> {
-        self.should_run.store(false, Ordering::Release);
-        // Join the step thread before shutting down callback threads, so we don't
-        // pull the rug out from under an in-progress step.
-        if let Some(t) = self.step_thread.take() {
-            if t.join().is_err() {
-                return Err(ExecutorError::PanickedThreads(vec![0]));
-            }
-        }
-        match self.state.lock().unwrap().shutdown_callback_threads() {
-            Ok(()) => Ok(()),
-            Err(idxs) => Err(ExecutorError::PanickedThreads(idxs)),
-        }
-    }
-
-    fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
-        Arc::new(StopSignal(self.should_run.clone()))
-    }
-
-    fn is_running(&self) -> bool {
-        self.should_run.load(Ordering::Acquire)
-    }
 }
 
 impl SimulationExecutor {
@@ -220,5 +179,48 @@ mod tests {
             max - min <= 1,
             "tasks ran unequally: {run_counts:?} — scheduling is unfair"
         );
+    }
+}
+
+impl Executor for SimulationExecutor {
+    /// Spawns a background thread that steps the simulation until something flips
+    /// the stop signal (e.g. a callback calling [`ExecutorStopSignal::request_stop`]).
+    /// Returns immediately; call [`stop`] to join the thread.
+    fn start(&mut self) {
+        let should_run = self.should_run.clone();
+        let state = self.state.clone();
+
+        should_run.store(true, Ordering::Release);
+        state.lock().unwrap().start();
+
+        self.step_thread = Some(thread::spawn(move || {
+            while should_run.load(Ordering::Acquire) {
+                state.lock().unwrap().step();
+            }
+            state.lock().unwrap().cleanup();
+        }));
+    }
+
+    fn stop(&mut self) -> Result<(), ExecutorError> {
+        self.should_run.store(false, Ordering::Release);
+        // Join the step thread before shutting down callback threads, so we don't
+        // pull the rug out from under an in-progress step.
+        if let Some(t) = self.step_thread.take() {
+            if t.join().is_err() {
+                return Err(ExecutorError::PanickedThreads(vec![0]));
+            }
+        }
+        match self.state.lock().unwrap().shutdown_callback_threads() {
+            Ok(()) => Ok(()),
+            Err(idxs) => Err(ExecutorError::PanickedThreads(idxs)),
+        }
+    }
+
+    fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
+        Arc::new(StopSignal(self.should_run.clone()))
+    }
+
+    fn is_running(&self) -> bool {
+        self.should_run.load(Ordering::Acquire)
     }
 }

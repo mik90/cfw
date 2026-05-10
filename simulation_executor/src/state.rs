@@ -52,14 +52,6 @@ pub struct SimulationState {
     step_count: Saturating<usize>,
 }
 
-impl Drop for SimulationState {
-    fn drop(&mut self) {
-        // Make sure callback threads exit even if stop() was never called.
-        let _ = self.shutdown_callback_threads();
-        self.cleanup();
-    }
-}
-
 impl SimulationState {
     /// Create a single virtual pool with `num_virtual_threads` for all tasks,
     /// starting at simulation time zero
@@ -383,5 +375,13 @@ mod tests {
         );
 
         assert_eq!(task_info.get_stored_strings(), vec!["FizzBuzz"]);
+    }
+}
+
+impl Drop for SimulationState {
+    fn drop(&mut self) {
+        // Make sure callback threads exit even if stop() was never called.
+        let _ = self.shutdown_callback_threads();
+        self.cleanup();
     }
 }
