@@ -226,7 +226,7 @@ mod tests {
         // live somewhere the impl block can name directly.
         static DROP_STARTED: AtomicBool = AtomicBool::new(false);
         static DROP_CAN_FINISH: AtomicBool = AtomicBool::new(false);
-        // In case we re-run in the same-process, rese
+        // In case we re-run in the same-process, reset
         DROP_STARTED.store(false, Ordering::Release);
         DROP_CAN_FINISH.store(false, Ordering::Release);
 

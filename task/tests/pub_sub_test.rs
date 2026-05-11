@@ -1,12 +1,12 @@
 #[cfg(test)]
 
 mod tests {
+    /*
     use task::generic_publisher::*;
     use task::generic_subscriber::*;
     use task::publisher::*;
     use task::subscriber::*;
 
-    /*
     #[test]
     fn pub_sub() {
         let mut publisher: Publisher<u32> = Publisher::new(PublisherConfig {
