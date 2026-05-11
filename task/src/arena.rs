@@ -6,6 +6,11 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
 use std::vec::Vec;
 
+// Sentinel stored in ref_count while assume_init_drop is running. Prevents try_new
+// from claiming the slot in the window between the last decrement and destruction
+// completing. Never passes through 0 during destruction: 1 -> TOMBSTONE -> 0.
+const TOMBSTONE: usize = usize::MAX;
+
 pub struct ArenaPtr<T> {
     /// Holds a given slot in the arena
     ptr: NonNull<ArenaSlot<T>>,
@@ -27,17 +32,16 @@ impl<T> ArenaPtr<T> {
 
 impl<T: Default> ArenaPtr<T> {
     fn try_new(slot: &ArenaSlot<T>) -> Option<ArenaPtr<T>> {
-        let old_ref_count = slot.ref_count.fetch_add(1, atomic::Ordering::Relaxed);
-        if old_ref_count != 0 {
-            // this is an already initialized slot, decrement it and abort
-            slot.ref_count.fetch_sub(1, atomic::Ordering::Relaxed);
-            return None;
-        }
+        // Atomically claim the slot: 0 → 1. Fails if live refs or TOMBSTONE exist.
+        // Acquire syncs with the Release store that cleared a previous TOMBSTONE,
+        // ensuring a prior T's destructor fully completed before we write a new one.
+        slot.ref_count
+            .compare_exchange(0, 1, atomic::Ordering::Acquire, atomic::Ordering::Relaxed)
+            .ok()?;
 
-        // SAFETY: We have exclusive write access to this slot since the ref count was 0.
-        // If someone else tried to get it, they would've early returned due to the ref count.
+        // SAFETY: We have exclusive write access — the CAS guarantees no other thread
+        // holds a reference (count was 0) and no destructor is running (TOMBSTONE != 0).
         unsafe {
-            // We have no in-place construction, so we write the default T from the stack
             (*slot.payload.get()).write(T::default());
         }
         Some(ArenaPtr {
@@ -75,17 +79,39 @@ impl<T> DerefMut for ArenaPtr<T> {
 
 impl<T> Drop for ArenaPtr<T> {
     fn drop(&mut self) {
-        let old_ref_count = self
-            .slot()
-            .ref_count
-            .fetch_sub(1, atomic::Ordering::Release);
-
-        if old_ref_count == 1 {
-            atomic::fence(atomic::Ordering::Acquire);
-            // SAFETY: Once the counter is 0, nothing has use for this data anymore
-            // and we can consider it uninitialized and then dorp it
-            unsafe {
-                (*self.slot().payload.get()).assume_init_drop();
+        let slot = self.slot();
+        let mut current = slot.ref_count.load(atomic::Ordering::Relaxed);
+        loop {
+            if current == 1 {
+                // We're the last ref. Transition 1 -> TOMBSTONE atomically, skipping 0,
+                // so try_new cannot claim the slot while our destructor runs.
+                match slot.ref_count.compare_exchange_weak(
+                    1,
+                    TOMBSTONE,
+                    atomic::Ordering::Release,
+                    atomic::Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        atomic::fence(atomic::Ordering::Acquire);
+                        // SAFETY: TOMBSTONE guarantees exclusive access; no try_new can
+                        // claim this slot until we store(0) below.
+                        unsafe { (*slot.payload.get()).assume_init_drop() }
+                        // Release so the next try_new's Acquire CAS sees a clean slot.
+                        slot.ref_count.store(0, atomic::Ordering::Release);
+                        return;
+                    }
+                    Err(actual) => current = actual,
+                }
+            } else {
+                match slot.ref_count.compare_exchange_weak(
+                    current,
+                    current - 1,
+                    atomic::Ordering::Release,
+                    atomic::Ordering::Relaxed,
+                ) {
+                    Ok(_) => return,
+                    Err(actual) => current = actual,
+                }
             }
         }
     }
@@ -183,6 +209,75 @@ mod tests {
             (*ptr.payload.get()).write(10);
         }
         assert_eq!(ptr.ref_count.load(atomic::Ordering::Relaxed), 1);
+    }
+
+    // Demonstrates the drop/try_new race: if an ArenaPtr is dropped on thread A
+    // while thread B (the arena owner) calls try_allocate_default concurrently,
+    // try_new can see ref_count == 0 and begin writing T::default() to the slot
+    // while thread A's destructor is still running. Run with MIRI or ThreadSanitizer
+    // to observe this as a reported data race.
+    #[test]
+    fn test_drop_reuse_race() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+
+        // Statics rather than locals: Drop::drop only receives &mut self and cannot
+        // close over variables from the enclosing test function, so the signals must
+        // live somewhere the impl block can name directly.
+        static DROP_STARTED: AtomicBool = AtomicBool::new(false);
+        static DROP_CAN_FINISH: AtomicBool = AtomicBool::new(false);
+        // In case we re-run in the same-process, rese
+        DROP_STARTED.store(false, Ordering::Release);
+        DROP_CAN_FINISH.store(false, Ordering::Release);
+
+        struct SlowDrop {
+            value: u64,
+        }
+
+        impl Default for SlowDrop {
+            fn default() -> Self {
+                SlowDrop { value: 0xDEAD_BEEF }
+            }
+        }
+
+        impl Drop for SlowDrop {
+            fn drop(&mut self) {
+                // Pause here so the race window stays open after ref_count hits 0.
+                DROP_STARTED.store(true, Ordering::Release);
+                while !DROP_CAN_FINISH.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+                // Reading self.value here races with try_new's write of T::default()
+                // to the same memory — TSAN/MIRI will flag this.
+                let _ = std::hint::black_box(self.value);
+            }
+        }
+
+        let mut arena: Arena<SlowDrop> = Arena::new(1);
+        arena.allocate_slots();
+        let ptr = arena.try_allocate_default().unwrap();
+
+        // Thread A: drop the last ArenaPtr. Its destructor will signal and spin.
+        let handle = thread::spawn(move || {
+            drop(ptr);
+        });
+
+        // Wait until the tombstone is set but assume_init_drop hasn't finished.
+        while !DROP_STARTED.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+
+        // With the tombstone fix: try_new sees TOMBSTONE (not 0) and returns None.
+        // Without it: try_new would race with SlowDrop::drop still reading self.value.
+        let second_ptr = arena.try_allocate_default();
+
+        DROP_CAN_FINISH.store(true, Ordering::Release);
+        handle.join().unwrap();
+
+        assert!(
+            second_ptr.is_none(),
+            "tombstone should have blocked try_new while the destructor was running"
+        );
     }
 
     #[test]
