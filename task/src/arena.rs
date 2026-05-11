@@ -6,11 +6,6 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
 use std::vec::Vec;
 
-// Sentinel stored in ref_count while assume_init_drop is running. Prevents try_new
-// from claiming the slot in the window between the last decrement and destruction
-// completing. Never passes through 0 during destruction: 1 -> TOMBSTONE -> 0.
-const TOMBSTONE: usize = usize::MAX;
-
 pub struct ArenaPtr<T> {
     /// Holds a given slot in the arena
     ptr: NonNull<ArenaSlot<T>>,
@@ -83,35 +78,24 @@ impl<T> Drop for ArenaPtr<T> {
         let mut current = slot.ref_count.load(atomic::Ordering::Relaxed);
         loop {
             if current == 1 {
-                // We're the last ref. Transition 1 -> TOMBSTONE atomically, skipping 0,
-                // so try_new cannot claim the slot while our destructor runs.
-                match slot.ref_count.compare_exchange_weak(
-                    1,
-                    TOMBSTONE,
-                    atomic::Ordering::Release,
-                    atomic::Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        atomic::fence(atomic::Ordering::Acquire);
-                        // SAFETY: TOMBSTONE guarantees exclusive access; no try_new can
-                        // claim this slot until we store(0) below.
-                        unsafe { (*slot.payload.get()).assume_init_drop() }
-                        // Release so the next try_new's Acquire CAS sees a clean slot.
-                        slot.ref_count.store(0, atomic::Ordering::Release);
-                        return;
-                    }
-                    Err(actual) => current = actual,
-                }
-            } else {
-                match slot.ref_count.compare_exchange_weak(
-                    current,
-                    current - 1,
-                    atomic::Ordering::Release,
-                    atomic::Ordering::Relaxed,
-                ) {
-                    Ok(_) => return,
-                    Err(actual) => current = actual,
-                }
+                // We're the last ArenaPtr. No other ArenaPtr exists so no concurrent
+                // clone is possible, and try_new only claims slots at count 0 so it
+                // won't race with us here. Destroy before storing 0 so the slot is
+                // never visible as available while the destructor is still running.
+                atomic::fence(atomic::Ordering::Acquire);
+                // SAFETY: count == 1 guarantees exclusive access to the payload.
+                unsafe { (*slot.payload.get()).assume_init_drop() }
+                slot.ref_count.store(0, atomic::Ordering::Release);
+                return;
+            }
+            match slot.ref_count.compare_exchange_weak(
+                current,
+                current - 1,
+                atomic::Ordering::Release,
+                atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
             }
         }
     }
@@ -267,8 +251,8 @@ mod tests {
             std::hint::spin_loop();
         }
 
-        // With the tombstone fix: try_new sees TOMBSTONE (not 0) and returns None.
-        // Without it: try_new would race with SlowDrop::drop still reading self.value.
+        // try_new only claims when count == 0. While SlowDrop::drop runs, count is
+        // still 1 (we store 0 only after assume_init_drop returns), so try_new skips it.
         let second_ptr = arena.try_allocate_default();
 
         DROP_CAN_FINISH.store(true, Ordering::Release);
@@ -276,7 +260,7 @@ mod tests {
 
         assert!(
             second_ptr.is_none(),
-            "tombstone should have blocked try_new while the destructor was running"
+            "try_new should have seen count == 1 (not 0) and skipped the slot"
         );
     }
 
