@@ -88,6 +88,8 @@ impl<T> Drop for ArenaPtr<T> {
                 slot.ref_count.store(0, atomic::Ordering::Release);
                 return;
             }
+            // Keep trying to decrease ref count and stick in the loop if we haven't decreased it
+            // since we may have hit one if another thread decremented the ref count in parallel.
             match slot.ref_count.compare_exchange_weak(
                 current,
                 current - 1,
