@@ -103,7 +103,31 @@ impl<T> Drop for ArenaPtr<T> {
     }
 }
 
+/// SAFETY: Pub/sub enforces mutual exclusion on pointers
 unsafe impl<T: Send + Sync> Send for ArenaPtr<T> {}
+
+/// Pointer to a message that we assume is read-only based on pub/sub invariants
+#[derive(Clone)]
+pub struct ArenaReaderPtr<T> {
+    /// Holds a normal ArenaPtr, just marked as read-only
+    ptr: ArenaPtr<T>,
+}
+
+impl<T> ArenaReaderPtr<T> {
+    /// This should only be created on already-published ptrs
+    pub fn new(ptr: ArenaPtr<T>) -> Self {
+        Self { ptr }
+    }
+}
+
+impl<T> Deref for ArenaReaderPtr<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: The caller should have ensured that this ptr is on a message already published in the pub/sub system.
+        unsafe { (*self.ptr.payload.get()).assume_init_ref() }
+    }
+}
 
 /// Each entry is reserved via a mutex
 pub struct ArenaSlot<T> {
