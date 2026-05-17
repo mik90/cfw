@@ -1,6 +1,7 @@
 use crate::arena::{Arena, ArenaPtr};
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::WriteBufferHandle;
+use crate::forwarded_message::{ForwardMessageTrait, Forwardable, ForwardableTrait};
 use crate::generic_publisher::ConnectionTypeMismatch;
 pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
@@ -222,6 +223,12 @@ impl<T: 'static> Publisher<T> {
             readiness,
         });
         self.increase_arena_size(typed_subscriber.get_config().capacity);
+    }
+}
+
+impl<T: 'static + ForwardableTrait> Publisher<T> {
+    pub fn add_typed_forwarded_subscriber(&mut self, typed_subscriber: &mut Subscriber<T>) {
+        self.add_typed_subscriber(typed_subscriber)
     }
 }
 

@@ -35,6 +35,7 @@ In order of priority
     - this should allow us to defer logging of messages to a normal callback, we'd publish a message that has some handles and the timestamp in which they were seenA
     - [x] handle message headers, dont need to embed this in ArenaPtr, we can just have ArenaPtr take in a message + header
     - [ ] integrate with Input/Output types
+- [ ] integrate `ArenaReaderPtr` better to reduce number of `unsafe` sites
 - [ ] exact replay executor
   - prob should mimic thread pool constraints but we should be able to execute stuff in any order as long as callbacks aren't stateful
   - I'll need to consider logging executions and message queues for this
