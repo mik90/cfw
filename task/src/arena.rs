@@ -120,6 +120,13 @@ impl<T> ArenaReaderPtr<T> {
     }
 }
 
+/// This should only be created on already-published ptrs
+impl<T> From<ArenaPtr<T>> for ArenaReaderPtr<T> {
+    fn from(ptr: ArenaPtr<T>) -> Self {
+        Self { ptr }
+    }
+}
+
 impl<T> Deref for ArenaReaderPtr<T> {
     type Target = T;
 
@@ -133,6 +140,16 @@ impl<T> Deref for ArenaReaderPtr<T> {
 pub struct ArenaSlot<T> {
     pub ref_count: AtomicUsize,
     pub payload: UnsafeCell<MaybeUninit<T>>,
+}
+
+impl<T> ArenaSlot<T> {
+    /// Caller should ensure that this slot has already been initialized
+    pub unsafe fn assume_init_ref(&self) -> &T {
+        debug_assert!(self.ref_count.load(atomic::Ordering::Acquire) > 0);
+
+        // SAFETY: It is up to caller to manage invariant of pre-initialized arena slot
+        unsafe { (*self.payload.get()).assume_init_ref() }
+    }
 }
 
 impl<T> Default for ArenaSlot<T> {

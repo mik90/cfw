@@ -54,7 +54,7 @@ impl<T> DerefMut for LoanedValue<T> {
 
 #[allow(dead_code)]
 struct SubscriberBuffer<T> {
-    buffer: WriteBufferHandle<ArenaPtr<Message<T>>>,
+    buffer: WriteBufferHandle<Message<T>>,
     subscriber_config: SubscriberConfig,
     /// Readiness bitmask and bit index for the target ConnectedCallback, if the
     /// subscriber is a trigger+non-optional input (set during connection).

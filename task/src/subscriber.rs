@@ -1,10 +1,11 @@
-use crate::arena::ArenaPtr;
+use crate::arena::{ArenaPtr, ArenaReaderPtr};
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
 use crate::message::Message;
 use crate::pub_sub::ChannelName;
+use core::panic;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -23,7 +24,7 @@ pub struct SubscriberConfig {
 
 #[allow(dead_code)]
 pub struct Subscriber<T> {
-    buffers: DoubleBuffer<ArenaPtr<Message<T>>>,
+    buffers: DoubleBuffer<Message<T>>,
     writer_queue_drops: usize,
     reader_queue_drops: usize,
     queue_has_new_data: bool,
@@ -55,7 +56,7 @@ impl<T> Subscriber<T> {
         self.reader_queue_drops
     }
 
-    pub fn get_write_guard(&mut self) -> WriteBufferHandle<ArenaPtr<Message<T>>> {
+    pub fn get_write_guard(&mut self) -> WriteBufferHandle<Message<T>> {
         self.buffers.get_write_buffer()
     }
 
@@ -67,7 +68,7 @@ impl<T> Subscriber<T> {
         }
     }
 
-    pub fn get_read_buffer<'a>(&'a self) -> ReadBufferGuard<'a, ArenaPtr<Message<T>>> {
+    pub fn get_read_buffer<'a>(&'a self) -> ReadBufferGuard<'a, Message<T>> {
         self.buffers.get_read_buffer()
     }
 
@@ -157,23 +158,18 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
 
 pub struct RequiredInput<'a, T> {
     _subscriber: &'a Subscriber<T>,
-    ptr: &'a ArenaPtr<Message<T>>,
+    guard: ReadBufferGuard<'a, Message<T>>,
 }
 
 impl<'a, T: 'static> RequiredInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> RequiredInput<'a, T> {
         let guard = subscriber.get_read_buffer();
-        // SAFETY: The read buffer VecDeque is not modified during task execution.
-        // &'a Subscriber<T> ensures the subscriber (and its VecDeque allocation) lives for 'a.
-        let ptr = unsafe {
-            &*(guard
-                .front()
-                .expect("Required input storage should have been validated before construction")
-                as *const ArenaPtr<Message<T>>)
-        };
+        if guard.front().is_none() {
+            panic!("RequiredInput should only have been constructed on non-empty read-buffer");
+        }
         RequiredInput {
             _subscriber: subscriber,
-            ptr,
+            guard,
         }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> RequiredInput<'a, T> {
@@ -190,24 +186,25 @@ impl<T> Deref for RequiredInput<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: Publisher guarantees that the value has been initialized and
-        // any value in a subscriber queue cannot be modified by a publisher.
-        unsafe { &(*self.ptr.payload.get()).assume_init_ref().message }
+        // TODO can we just do this check once on construction and avoid this expect?
+        // We could use unwrap_unchecked(), but there has to be a safe way to store both the guard and the ref together
+        &self
+            .guard
+            .front()
+            .expect("RequiredInput should only have been constructed on non-empty read-buffer")
+            .message
     }
 }
 
 pub struct OptionalInput<'a, T> {
     subscriber: &'a Subscriber<T>,
-    ptr: Option<&'a ArenaPtr<Message<T>>>,
+    guard: ReadBufferGuard<'a, Message<T>>,
 }
 
 impl<'a, T: 'static> OptionalInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> OptionalInput<'a, T> {
         let guard = subscriber.get_read_buffer();
-        // SAFETY: The read buffer VecDeque is not modified during task execution.
-        // &'a Subscriber<T> ensures the subscriber (and its VecDeque allocation) lives for 'a.
-        let ptr = unsafe { guard.front().map(|p| &*(p as *const ArenaPtr<Message<T>>)) };
-        OptionalInput { subscriber, ptr }
+        OptionalInput { subscriber, guard }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> OptionalInput<'a, T> {
         let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
@@ -215,33 +212,25 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
     }
 
     pub fn value(&'a self) -> Option<&'a T> {
-        self.ptr.map(|ptr|
-            // SAFETY: Publisher guarantees that the value has been initialized and
-            // any value in a subscriber queue cannot be modified by a publisher.
-            unsafe { &(*ptr.payload.get()).assume_init_ref().message })
+        self.guard.front().map(|ptr| &ptr.message)
     }
 
     pub fn clear(&'a mut self) {
-        if self.ptr.take().is_some() {
-            self.subscriber.get_read_buffer().pop_front();
-        }
+        self.guard.pop_front();
     }
 }
 
 pub struct InputSpan<'a, T> {
     _subscriber: &'a Subscriber<T>,
-    ptrs: &'a [ArenaPtr<Message<T>>],
+    guard: ReadBufferGuard<'a, Message<T>>,
 }
 
 impl<'a, T: 'static> InputSpan<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> InputSpan<'a, T> {
-        let mut guard = subscriber.get_read_buffer();
-        // SAFETY: The read buffer VecDeque is not modified during task execution.
-        // &'a Subscriber<T> ensures the subscriber (and its VecDeque allocation) lives for 'a.
-        let ptrs = unsafe { &*(guard.as_slice() as *const [ArenaPtr<Message<T>>]) };
+        let guard = subscriber.get_read_buffer();
         InputSpan {
             _subscriber: subscriber,
-            ptrs,
+            guard: guard,
         }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> InputSpan<'a, T> {
@@ -249,10 +238,7 @@ impl<'a, T: 'static> InputSpan<'a, T> {
         InputSpan::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
     }
 
-    pub fn inputs(&self) -> impl Iterator<Item = &T> {
-        self.ptrs.iter().map(|ptr|
-            // SAFETY: Publisher guarantees that the value has been initialized and
-            // any value in a subscriber queue cannot be modified by a publisher.
-            unsafe { &(*ptr.payload.get()).assume_init_ref().message })
+    pub fn inputs(&mut self) -> impl Iterator<Item = &Message<T>> {
+        self.guard.as_slice()
     }
 }

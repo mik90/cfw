@@ -1,19 +1,20 @@
+use crate::arena::{ArenaPtr, ArenaReaderPtr};
 use crate::mpsc_queue::MpscQueue;
 use std::cell::{RefCell, RefMut};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 pub(crate) struct Buffer<T> {
-    pub storage: VecDeque<T>,
+    pub storage: VecDeque<ArenaPtr<T>>,
     pub drops: usize,
 }
 
 pub struct WriteBufferHandle<T> {
-    queue: Arc<MpscQueue<T>>,
+    queue: Arc<MpscQueue<ArenaPtr<T>>>,
 }
 
 impl<T> WriteBufferHandle<T> {
-    pub fn write(&self, element: T) {
+    pub fn write(&self, element: ArenaPtr<T>) {
         self.queue.push(element);
     }
 
@@ -41,15 +42,24 @@ impl<'a, T> ReadBufferGuard<'a, T> {
     }
 
     pub fn front(&'a self) -> Option<&'a T> {
-        self.buffer.storage.front()
+        self.buffer.storage.front().map(|ptr|
+            // SAFETY: We can assume that read buffers are only viewing already-initialized data
+            unsafe {
+                ptr.assume_init_ref()
+            })
     }
 
     pub fn len(&self) -> usize {
         self.buffer.storage.len()
     }
 
-    pub fn as_slice(&mut self) -> &[T] {
+    /// Mut because it makes the slice contiguous
+    pub fn as_slice(&mut self)  -> impl Iterator<Item = &T>  {
         self.buffer.storage.make_contiguous()
+            .iter()
+            .map(|ptr| 
+                // SAFETY: We can assume that messages in read buffers are already initialized
+                unsafe { ptr.assume_init_ref() })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -58,7 +68,7 @@ impl<'a, T> ReadBufferGuard<'a, T> {
 }
 
 pub(crate) struct DoubleBuffer<T> {
-    write_queue: Arc<MpscQueue<T>>,
+    write_queue: Arc<MpscQueue<ArenaPtr<T>>>,
     // No lock needed: read_buffer is only accessed during drain (before task runs)
     // or by the task itself — never concurrently.
     read_buffer: RefCell<Buffer<T>>,
