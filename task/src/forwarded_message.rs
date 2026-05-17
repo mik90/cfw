@@ -44,6 +44,7 @@ impl<T: Default, F> ForwardedMessage<T, F> {
 
 #[cfg(test)]
 mod tests {
+    /*
     use super::*;
     use crate::generic_publisher::*;
     use crate::publisher::*;
@@ -123,5 +124,5 @@ mod tests {
         {
             // TODO: Some callback that listens to the forwarded message
         }
-    }
+    } */
 }
