@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task" }
+
+[lints]
+workspace = true

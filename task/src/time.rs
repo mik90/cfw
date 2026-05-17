@@ -23,6 +23,7 @@ impl FrameworkTime {
             tv_nsec: 0,
         };
 
+        /// SAFETY: We check error return on libc call, and pass valid pointer
         let result = unsafe { libc::clock_gettime(CLOCK_MONOTONIC, &mut timespec) };
         if result == 0 {
             // TODO handle wrapping/overflow

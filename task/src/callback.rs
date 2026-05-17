@@ -307,7 +307,10 @@ pub struct ConnectedCallback {
 
     logger: Option<Box<dyn ExecutionLogger>>,
 }
+
+/// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
 unsafe impl Sync for ConnectedCallback {}
+/// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
 unsafe impl Send for ConnectedCallback {}
 
 impl ConnectedCallback {

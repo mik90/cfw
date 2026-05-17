@@ -12,3 +12,6 @@ syn = { version = "2.0.111", features = ["full"] }
 
 [dev-dependencies]
 task = { path = "../task" }
+
+[lints]
+workspace = true
