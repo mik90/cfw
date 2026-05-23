@@ -1,4 +1,4 @@
-use crate::arena::{ArenaPtr, ArenaReaderPtr};
+use crate::arena::ArenaPtr;
 use crate::mpsc_queue::MpscQueue;
 use std::cell::{RefCell, RefMut};
 use std::collections::VecDeque;

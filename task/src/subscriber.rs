@@ -1,4 +1,3 @@
-use crate::arena::{ArenaPtr, ArenaReaderPtr};
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
@@ -227,7 +226,7 @@ impl<'a, T: 'static> InputSpan<'a, T> {
         let guard = subscriber.get_read_buffer();
         InputSpan {
             _subscriber: subscriber,
-            guard: guard,
+            guard,
         }
     }
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> InputSpan<'a, T> {
