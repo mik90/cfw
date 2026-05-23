@@ -90,15 +90,18 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
     }
 
     fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
-        for mut loaned_value in &mut self.loaned_values.drain(..) {
+        for loaned_value in self.loaned_values.drain(..) {
             if loaned_value.sent {
                 let header = MessageHeader {
                     published_at: timestamp,
                 };
-                // SAFETY: For a loaned value to have been sent, it must have been initialized
+                // SAFETY: The loaned value was initialized on loan and `loaned_value` is
+                // the only ArenaPtr to this slot at this point — clones haven't been
+                // handed to subscribers yet (that happens in the loop below). Using
+                // UnsafeCell::get() instead of DerefMut avoids creating an aliasing
+                // &mut ArenaSlot<T>, which would be UB once clones exist.
                 unsafe {
-                    let maybe_uninit_payload = loaned_value.ptr.payload.get_mut();
-                    maybe_uninit_payload.assume_init_mut().header = header;
+                    (*loaned_value.ptr.payload.get()).assume_init_mut().header = header;
                 }
 
                 for subscriber_buffer in &mut self.subscriber_write_buffers {
@@ -444,8 +447,7 @@ mod tests {
         assert_eq!(read_buffer.len(), 1);
         let front = read_buffer.front();
         assert!(front.is_some());
-        // SAFETY: Subscribers should always see initialized values
-        let front_message = unsafe { (*front.unwrap().payload.get()).assume_init_ref() };
+        let front_message = front.unwrap();
         assert_eq!(
             (*front_message).header.published_at,
             time::FrameworkTime::from_nanoseconds(99)

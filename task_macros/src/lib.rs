@@ -44,9 +44,7 @@ impl MacroCallbackSignature {
                     ArgumentKind::Input((msg, InputKind::Optional)) => {
                         (msg, quote!(InputKind::Optional))
                     }
-                    ArgumentKind::Input((msg, InputKind::Span)) => {
-                        (msg, quote!(InputKind::Span))
-                    }
+                    ArgumentKind::Input((msg, InputKind::Span)) => (msg, quote!(InputKind::Span)),
                     _ => return None,
                 };
                 Some(parse_quote!(
@@ -95,30 +93,28 @@ fn get_message_type(pat_ty: &PatType) -> Result<Ident, syn::Error> {
         syn::Type::Path(p) => p,
         _ => return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type")),
     };
-    let last = type_path
-        .path
-        .segments
-        .last()
-        .ok_or_else(|| syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment"))?;
+    let last =
+        type_path.path.segments.last().ok_or_else(|| {
+            syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment")
+        })?;
     let angle_args = match &last.arguments {
         syn::PathArguments::AngleBracketed(a) => a,
         _ => {
             return Err(syn::Error::new_spanned(
                 &pat_ty.ty,
                 "expected angle-bracket generic (e.g. RequiredInput<MyType>)",
-            ))
+            ));
         }
     };
-    let last_arg = angle_args
-        .args
-        .last()
-        .ok_or_else(|| syn::Error::new_spanned(&pat_ty.ty, "expected at least one generic argument"))?;
+    let last_arg = angle_args.args.last().ok_or_else(|| {
+        syn::Error::new_spanned(&pat_ty.ty, "expected at least one generic argument")
+    })?;
     match last_arg {
-        syn::GenericArgument::Type(syn::Type::Path(p)) => p
-            .path
-            .get_ident()
-            .cloned()
-            .ok_or_else(|| syn::Error::new_spanned(&pat_ty.ty, "message type must be a simple identifier")),
+        syn::GenericArgument::Type(syn::Type::Path(p)) => {
+            p.path.get_ident().cloned().ok_or_else(|| {
+                syn::Error::new_spanned(&pat_ty.ty, "message type must be a simple identifier")
+            })
+        }
         _ => Err(syn::Error::new_spanned(
             &pat_ty.ty,
             "generic argument must be a simple type path",
@@ -139,7 +135,7 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
             return Err(syn::Error::new_spanned(
                 &item_impl.self_ty,
                 "expected a path for the impl type",
-            ))
+            ));
         }
     };
 
@@ -153,7 +149,9 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                 None
             }
         })
-        .ok_or_else(|| syn::Error::new_spanned(item_impl, "impl block must contain a run() function"))?;
+        .ok_or_else(|| {
+            syn::Error::new_spanned(item_impl, "impl block must contain a run() function")
+        })?;
 
     let mut arguments = Vec::new();
     for arg in run_fn.sig.inputs.iter() {
@@ -165,15 +163,17 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
             syn::Type::Path(p) => p,
             _ => return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type")),
         };
-        let last = type_path
-            .path
-            .segments
-            .last()
-            .ok_or_else(|| syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment"))?;
+        let last = type_path.path.segments.last().ok_or_else(|| {
+            syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment")
+        })?;
 
         let kind = match last.ident.to_string().as_str() {
-            "RequiredInput" => ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Required)),
-            "OptionalInput" => ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Optional)),
+            "RequiredInput" => {
+                ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Required))
+            }
+            "OptionalInput" => {
+                ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Optional))
+            }
             "InputSpan" => ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Span)),
             "Output" => ArgumentKind::Output((get_message_type(pat_ty)?, OutputKind::Default)),
             "OutputSpan" => ArgumentKind::Output((get_message_type(pat_ty)?, OutputKind::Span)),
@@ -185,7 +185,7 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                         "unknown task argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, Output, OutputSpan, or Context",
                         last.ident
                     ),
-                ))
+                ));
             }
         };
         arguments.push(kind);
@@ -206,8 +206,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let mut callback_arguments =
-        syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::new();
+    let mut callback_arguments = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::new();
     let mut subscriber_index: usize = 0;
     let mut publisher_index: usize = 0;
 

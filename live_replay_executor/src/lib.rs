@@ -72,7 +72,9 @@ impl Executor for LiveReplayExecutor {
         if panicked_thread_indices.is_empty() {
             Ok(())
         } else {
-            Err(LiveReplayExecutorError { panicked_thread_indices })
+            Err(LiveReplayExecutorError {
+                panicked_thread_indices,
+            })
         }
     }
 

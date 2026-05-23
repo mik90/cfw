@@ -385,7 +385,9 @@ impl Executor for LiveExecutor {
 
     fn stop(&mut self) -> Result<(), LiveExecutorError> {
         self.stop_threads()
-            .map_err(|panicked_thread_indices| LiveExecutorError { panicked_thread_indices })
+            .map_err(|panicked_thread_indices| LiveExecutorError {
+                panicked_thread_indices,
+            })
     }
 
     fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {

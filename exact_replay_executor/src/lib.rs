@@ -68,7 +68,9 @@ impl Executor for ExactReplayExecutor {
         if panicked_thread_indices.is_empty() {
             Ok(())
         } else {
-            Err(ExactReplayExecutorError { panicked_thread_indices })
+            Err(ExactReplayExecutorError {
+                panicked_thread_indices,
+            })
         }
     }
 

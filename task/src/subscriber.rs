@@ -148,10 +148,7 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
     fn for_each_queued_input(&self, f: &mut dyn FnMut(&dyn std::any::Any)) {
         let mut guard = self.buffers.get_read_buffer();
         for message_ptr in guard.as_slice() {
-            // SAFETY: Publisher guarantees that the value has been initialized and
-            // any value in a subscriber queue cannot be modified by a publisher.
-            let value: &Message<T> = unsafe { (*message_ptr.payload.get()).assume_init_ref() };
-            f(value as &dyn std::any::Any);
+            f(message_ptr as &dyn std::any::Any);
         }
     }
 }

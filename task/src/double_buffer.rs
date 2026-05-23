@@ -54,10 +54,8 @@ impl<'a, T> ReadBufferGuard<'a, T> {
     }
 
     /// Mut because it makes the slice contiguous
-    pub fn as_slice(&mut self)  -> impl Iterator<Item = &T>  {
-        self.buffer.storage.make_contiguous()
-            .iter()
-            .map(|ptr| 
+    pub fn as_slice(&mut self) -> impl Iterator<Item = &T> {
+        self.buffer.storage.make_contiguous().iter().map(|ptr| 
                 // SAFETY: We can assume that messages in read buffers are already initialized
                 unsafe { ptr.assume_init_ref() })
     }

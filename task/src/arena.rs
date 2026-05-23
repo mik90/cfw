@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
@@ -16,11 +16,6 @@ impl<T> ArenaPtr<T> {
         // SAFETY: the arena should always keep these alive, and pub-sub connections will be destroyed before
         // the arenas go away
         unsafe { self.ptr.as_ref() }
-    }
-    fn slot_mut(&mut self) -> &mut ArenaSlot<T> {
-        // SAFETY: the arena should always keep these alive, and pub-sub connections will be destroyed before
-        // the arenas go away
-        unsafe { self.ptr.as_mut() }
     }
     // TODO impl non-default try_new which allows you to forward args
 }
@@ -63,12 +58,6 @@ impl<T> Deref for ArenaPtr<T> {
     type Target = ArenaSlot<T>;
     fn deref(&self) -> &Self::Target {
         self.slot()
-    }
-}
-
-impl<T> DerefMut for ArenaPtr<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.slot_mut()
     }
 }
 
