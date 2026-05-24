@@ -27,8 +27,8 @@ impl<T, F> ForwardedMessage<T, F> {
         &mut self.message
     }
 
-    pub fn get_forwarded_message(&self) -> &F {
-        &self.forwarded_message.message
+    pub fn get_forwarded_message(&self) -> &Message<F> {
+        &self.forwarded_message
     }
 }
 
@@ -102,13 +102,14 @@ mod tests {
             vec![forwarded_channel]
         );
 
-        let timestamp = FrameworkTime::from_nanoseconds(42);
+        let t_original = FrameworkTime::from_nanoseconds(42);
+        let t_forwarding = FrameworkTime::from_nanoseconds(99);
         {
             // Publishes message that'll be forwarded downstream
             let mut output = Output::new_default(&mut normal_publisher);
             *output = 42u32;
             output.send();
-            normal_publisher.flush_loaned_values(timestamp);
+            normal_publisher.flush_loaned_values(t_original);
         }
         {
             // Callback that forwards from its subscriber to publisher, adding a bool payload
@@ -121,15 +122,18 @@ mod tests {
             let mut output = ForwardingOutput::new(&mut forwarding_publisher, forwarded_ptr);
             *output = true;
             output.send();
-            forwarding_publisher.flush_loaned_values(timestamp);
+            forwarding_publisher.flush_loaned_values(t_forwarding);
         }
         {
             // Callback that reads the forwarded message
             forwarded_subscriber.drain_writer_to_reader();
             let guard = forwarded_subscriber.get_read_buffer();
             let msg = guard.front().unwrap();
+            assert_eq!(msg.header.published_at, t_forwarding);
             assert_eq!(*msg.message.get_message(), true);
-            assert_eq!(*msg.message.get_forwarded_message(), 42u32);
+            let fwd = msg.message.get_forwarded_message();
+            assert_eq!(fwd.message, 42u32);
+            assert_eq!(fwd.header.published_at, t_original);
         }
     }
 }
