@@ -179,21 +179,29 @@ impl<T> Arena<T> {
     }
 }
 
-impl<T: Default> Arena<T> {
-    pub fn try_allocate_default(&mut self) -> Option<ArenaPtr<T>> {
+impl<T> Arena<T> {
+    pub fn try_allocate_with(&mut self, factory: impl FnOnce() -> T) -> Option<ArenaPtr<T>> {
         for slot in self.storage.iter() {
-            match ArenaPtr::try_new(slot) {
-                Some(ptr) => {
-                    return Some(ptr);
+            match slot.ref_count.compare_exchange(
+                0,
+                1,
+                atomic::Ordering::Acquire,
+                atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    unsafe { (*slot.payload.get()).write(factory()); }
+                    return Some(ArenaPtr {
+                        ptr: NonNull::from_ref(slot),
+                    });
                 }
-                None => continue,
+                Err(_) => continue,
             }
         }
         None
     }
 
-    pub fn allocate_default(&mut self) -> ArenaPtr<T> {
-        match self.try_allocate_default() {
+    pub fn allocate_with(&mut self, factory: impl FnOnce() -> T) -> ArenaPtr<T> {
+        match self.try_allocate_with(factory) {
             Some(v) => v,
             None => {
                 let slot_count = self.storage.len();
@@ -204,6 +212,16 @@ impl<T: Default> Arena<T> {
                 )
             }
         }
+    }
+}
+
+impl<T: Default> Arena<T> {
+    pub fn try_allocate_default(&mut self) -> Option<ArenaPtr<T>> {
+        self.try_allocate_with(T::default)
+    }
+
+    pub fn allocate_default(&mut self) -> ArenaPtr<T> {
+        self.allocate_with(T::default)
     }
 }
 

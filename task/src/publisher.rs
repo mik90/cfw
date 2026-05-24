@@ -1,7 +1,7 @@
-use crate::arena::{Arena, ArenaPtr};
+use crate::arena::{Arena, ArenaPtr, ArenaReaderPtr};
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::WriteBufferHandle;
-use crate::forwarded_message::ForwardableTrait;
+use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::ConnectionTypeMismatch;
 pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
@@ -204,6 +204,15 @@ impl<T> Publisher<T> {
         &mut self.loaned_values[start_index..=end_index]
     }
 
+    pub(self) fn loan_with(&mut self, factory: impl FnOnce() -> Message<T>) -> Result<usize, LoanError> {
+        if self.loaned_values.len() >= self.config.capacity {
+            return Err(LoanError::LoanCapacityReached);
+        }
+        let allocated_ptr = self.arena.allocate_with(factory);
+        self.loaned_values.push(LoanedValue::new(allocated_ptr));
+        Ok(self.loaned_values.len() - 1)
+    }
+
     // Loans cannot be held across runs
 }
 
@@ -319,32 +328,30 @@ impl<'a, T> Output<'a, T> {
             .loaned_value_at_mut(self.loaned_value_idx)
             .sent = true;
     }
+
+    pub(self) fn new_with_factory(
+        publisher: &'a mut Publisher<T>,
+        factory: impl FnOnce() -> Message<T>,
+    ) -> Self {
+        let loaned_value_idx = publisher
+            .loan_with(factory)
+            .expect("We expect loans to always be available");
+        Output {
+            publisher,
+            loaned_value_idx,
+            on_publish_failure: PublishFailureCallback::panic(),
+        }
+    }
 }
 
-pub struct OutputSpan<'a, T: Default> {
+pub struct OutputSpan<'a, T> {
     // TODO use some fixed size vec deque
     loaned_value_idx_start: usize,
     loaned_value_idx_end: usize,
     publisher: &'a mut Publisher<T>,
 }
 
-impl<'a, T: Default + 'static> OutputSpan<'a, T> {
-    pub fn new(publisher: &'a mut Publisher<T>) -> Self {
-        for _ in 0..publisher.get_config().capacity {
-            publisher.loan().unwrap();
-        }
-        OutputSpan {
-            loaned_value_idx_start: 0,
-            loaned_value_idx_end: publisher.get_config().capacity - 1,
-            publisher,
-        }
-    }
-
-    pub fn new_downcasted(publisher: &'a mut dyn GenericPublisher) -> OutputSpan<'a, T> {
-        let typed_publisher = publisher.as_any().downcast_mut::<Publisher<T>>();
-        OutputSpan::new(typed_publisher.expect("Expected proc macro to use the correct types"))
-    }
-
+impl<'a, T> OutputSpan<'a, T> {
     pub fn outputs(&self) -> impl Iterator<Item = &T> {
         self.publisher
             .loaned_values_at(self.loaned_value_idx_start, self.loaned_value_idx_end)
@@ -363,6 +370,143 @@ impl<'a, T: Default + 'static> OutputSpan<'a, T> {
                 // SAFETY: Publisher guarantees that the value has been initialized on loan
                 // and a loaned value is exclusive access.
                 unsafe { &mut (*loaned_value.ptr.payload.get()).assume_init_mut().message })
+    }
+
+    pub(self) fn new_with_factory(
+        publisher: &'a mut Publisher<T>,
+        mut factory: impl FnMut() -> Message<T>,
+    ) -> Self {
+        let count = publisher.get_config().capacity;
+        let start = publisher.loaned_values.len();
+        for _ in 0..count {
+            publisher.loan_with(|| factory()).unwrap();
+        }
+        OutputSpan {
+            loaned_value_idx_start: start,
+            loaned_value_idx_end: start + count - 1,
+            publisher,
+        }
+    }
+}
+
+impl<'a, T: Default + 'static> OutputSpan<'a, T> {
+    pub fn new(publisher: &'a mut Publisher<T>) -> Self {
+        for _ in 0..publisher.get_config().capacity {
+            publisher.loan().unwrap();
+        }
+        OutputSpan {
+            loaned_value_idx_start: 0,
+            loaned_value_idx_end: publisher.get_config().capacity - 1,
+            publisher,
+        }
+    }
+
+    pub fn new_downcasted(publisher: &'a mut dyn GenericPublisher) -> OutputSpan<'a, T> {
+        let typed_publisher = publisher.as_any().downcast_mut::<Publisher<T>>();
+        OutputSpan::new(typed_publisher.expect("Expected proc macro to use the correct types"))
+    }
+}
+
+pub struct ForwardingPublisher<T, F> {
+    inner: Publisher<ForwardedMessage<T, F>>,
+}
+
+impl<T: Default + 'static, F: 'static> ForwardingPublisher<T, F> {
+    pub fn new(config: PublisherConfig, forwarded_channels: Vec<ChannelName>) -> Self {
+        Self {
+            inner: Publisher::new_with_forwards(config, forwarded_channels),
+        }
+    }
+
+    pub fn add_typed_subscriber(&mut self, subscriber: &mut Subscriber<ForwardedMessage<T, F>>) {
+        self.inner.add_typed_subscriber(subscriber);
+    }
+
+    pub fn allocate_arena(&mut self) {
+        self.inner.allocate_arena();
+    }
+
+    pub fn get_forwarded_channels(&self) -> &[ChannelName] {
+        self.inner.forwarded_channels.as_slice()
+    }
+
+    pub fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
+        GenericPublisher::flush_loaned_values(&mut self.inner, timestamp);
+    }
+}
+
+fn forwarded_message_factory<T: Default, F>(
+    forwarded_ptr: ArenaReaderPtr<Message<F>>,
+) -> impl FnOnce() -> Message<ForwardedMessage<T, F>> {
+    || Message {
+        header: MessageHeader::default(),
+        message: ForwardedMessage::new_with_forward(forwarded_ptr),
+    }
+}
+
+pub struct ForwardingOutput<'a, T, F> {
+    inner: Output<'a, ForwardedMessage<T, F>>,
+}
+
+impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
+    pub fn new(
+        publisher: &'a mut ForwardingPublisher<T, F>,
+        forwarded_ptr: ArenaReaderPtr<Message<F>>,
+    ) -> Self {
+        ForwardingOutput {
+            inner: Output::new_with_factory(
+                &mut publisher.inner,
+                forwarded_message_factory(forwarded_ptr),
+            ),
+        }
+    }
+
+    pub fn send(self) {
+        self.inner.send();
+    }
+}
+
+impl<T, F> Deref for ForwardingOutput<'_, T, F> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &(*self.inner).message
+    }
+}
+
+impl<T, F> DerefMut for ForwardingOutput<'_, T, F> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut (*self.inner).message
+    }
+}
+
+pub struct ForwardingOutputSpan<'a, T, F> {
+    inner: OutputSpan<'a, ForwardedMessage<T, F>>,
+}
+
+impl<'a, T: Default + 'static, F: 'static> ForwardingOutputSpan<'a, T, F> {
+    pub fn new(
+        publisher: &'a mut ForwardingPublisher<T, F>,
+        forwarded_ptrs: impl IntoIterator<Item = ArenaReaderPtr<Message<F>>>,
+    ) -> Self {
+        let mut ptrs = forwarded_ptrs.into_iter();
+        ForwardingOutputSpan {
+            inner: OutputSpan::new_with_factory(&mut publisher.inner, || {
+                let ptr = ptrs.next().expect("not enough forwarded ptrs for span capacity");
+                Message {
+                    header: MessageHeader::default(),
+                    message: ForwardedMessage::new_with_forward(ptr),
+                }
+            }),
+        }
+    }
+
+    pub fn outputs(&self) -> impl Iterator<Item = &T> {
+        self.inner.outputs().map(|fwd| &fwd.message)
+    }
+
+    pub fn outputs_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.inner.outputs_mut().map(|fwd| &mut fwd.message)
     }
 }
 

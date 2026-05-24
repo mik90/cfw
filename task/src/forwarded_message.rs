@@ -1,4 +1,5 @@
 use crate::arena::ArenaReaderPtr;
+use crate::message::Message;
 
 pub trait ForwardableTrait {}
 
@@ -13,8 +14,8 @@ pub trait ForwardMessageTrait {}
 /// For multiple, i think i need multiple trait spceializations since we don't have variadics?
 /// And then the getters would need to be named more uniquely, or we return a tuple.
 pub struct ForwardedMessage<T, F> {
-    message: T,
-    forwarded_message: ArenaReaderPtr<F>,
+    pub(crate) message: T,
+    forwarded_message: ArenaReaderPtr<Message<F>>,
 }
 
 impl<T, F> ForwardedMessage<T, F> {
@@ -27,14 +28,14 @@ impl<T, F> ForwardedMessage<T, F> {
     }
 
     pub fn get_forwarded_message(&self) -> &F {
-        &self.forwarded_message
+        &self.forwarded_message.message
     }
 }
 
 impl<T, F> ForwardMessageTrait for ForwardedMessage<T, F> {}
 
 impl<T: Default, F> ForwardedMessage<T, F> {
-    pub(crate) fn new_default(forwarded_message: ArenaReaderPtr<F>) -> Self {
+    pub fn new_with_forward(forwarded_message: ArenaReaderPtr<Message<F>>) -> Self {
         Self {
             message: T::default(),
             forwarded_message,
@@ -72,8 +73,8 @@ mod tests {
             channel_name: normal_channel.into(),
         });
 
-        // Forwards normal message downstream
-        let mut forwarding_publisher = Publisher::<ForwardedMessage<bool, u32>>::new_with_forwards(
+        // Forwards normal message downstream with an additional bool payload
+        let mut forwarding_publisher = ForwardingPublisher::<bool, u32>::new(
             PublisherConfig {
                 capacity: 1,
                 channel_name: forwarded_channel.into(),
@@ -105,22 +106,30 @@ mod tests {
         {
             // Publishes message that'll be forwarded downstream
             let mut output = Output::new_default(&mut normal_publisher);
-            *output = 42;
+            *output = 42u32;
             output.send();
             normal_publisher.flush_loaned_values(timestamp);
         }
         {
-            // Callback that actually forwards from its subscriber to publisher
+            // Callback that forwards from its subscriber to publisher, adding a bool payload
             forwardable_subscriber.subscriber.drain_writer_to_reader();
             let input = ForwardableOptionalInput::new(&mut forwardable_subscriber);
             assert!(input.value().is_some());
-            assert_eq!(*input.value().unwrap(), 42);
+            assert_eq!(*input.value().unwrap(), 42u32);
 
-            let mut output = Output::new_default(&mut forwarding_publisher);
+            let forwarded_ptr = input.forward().unwrap();
+            let mut output = ForwardingOutput::new(&mut forwarding_publisher, forwarded_ptr);
+            *output = true;
+            output.send();
+            forwarding_publisher.flush_loaned_values(timestamp);
         }
-
         {
-            // TODO: Some callback that listens to the forwarded message
+            // Callback that reads the forwarded message
+            forwarded_subscriber.drain_writer_to_reader();
+            let guard = forwarded_subscriber.get_read_buffer();
+            let msg = guard.front().unwrap();
+            assert_eq!(*msg.message.get_message(), true);
+            assert_eq!(*msg.message.get_forwarded_message(), 42u32);
         }
     }
 }
