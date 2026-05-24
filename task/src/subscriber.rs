@@ -1,5 +1,7 @@
+use crate::arena::{Arena, ArenaReaderPtr};
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
+use crate::forwarded_message::{ForwardMessageTrait, Forwardable, ForwardedMessage};
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
 use crate::message::Message;
@@ -152,6 +154,18 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
     }
 }
 
+pub struct ForwardableSubscriber<T> {
+    pub subscriber: Subscriber<T>,
+}
+
+impl<T> ForwardableSubscriber<T> {
+    pub fn new(config: SubscriberConfig) -> Self {
+        Self {
+            subscriber: Subscriber::new(config),
+        }
+    }
+}
+
 pub struct RequiredInput<'a, T> {
     _subscriber: &'a Subscriber<T>,
     guard: ReadBufferGuard<'a, Message<T>>,
@@ -191,6 +205,34 @@ impl<T> Deref for RequiredInput<'_, T> {
             .message
     }
 }
+pub struct ForwardableRequiredInput<'a, T> {
+    input: RequiredInput<'a, T>,
+}
+
+impl<'a, T: 'static + ForwardMessageTrait> ForwardableRequiredInput<'a, T> {
+    pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
+        let input = RequiredInput::new(&forwardable_subscriber.subscriber);
+        Self { input }
+    }
+
+    /// TODO: Should we directly take in a subscriber to avoid the case where a user holds onto this?
+    /// Returns a forwardable pointer that can be used in a publisher's output
+    pub fn forward(mut self) -> ArenaReaderPtr<Message<T>> {
+        self.input
+            .guard
+            .pop_front_ptr()
+            .map(|ptr| ArenaReaderPtr::new(ptr))
+            .expect("Expected proc macro to use the correct types")
+    }
+}
+
+impl<T> Deref for ForwardableRequiredInput<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.input
+    }
+}
 
 pub struct OptionalInput<'a, T> {
     subscriber: &'a Subscriber<T>,
@@ -216,6 +258,34 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
     }
 }
 
+pub struct ForwardableOptionalInput<'a, T> {
+    input: OptionalInput<'a, T>,
+}
+
+impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
+    pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
+        let input = OptionalInput::new(&forwardable_subscriber.subscriber);
+        Self { input }
+    }
+
+    /// TODO: Should we directly take in a subscriber to avoid the case where a user holds onto this?
+    /// Returns an optional forwardable pointer that can be used in a publisher's output
+    pub fn forward(mut self) -> Option<ArenaReaderPtr<Message<T>>> {
+        self.input
+            .guard
+            .pop_front_ptr()
+            .map(|ptr| ArenaReaderPtr::new(ptr))
+    }
+
+    pub fn value(&'a self) -> Option<&'a T> {
+        self.input.value()
+    }
+
+    pub fn clear(&'a mut self) {
+        self.input.clear();
+    }
+}
+
 pub struct InputSpan<'a, T> {
     _subscriber: &'a Subscriber<T>,
     guard: ReadBufferGuard<'a, Message<T>>,
@@ -236,5 +306,23 @@ impl<'a, T: 'static> InputSpan<'a, T> {
 
     pub fn inputs(&mut self) -> impl Iterator<Item = &Message<T>> {
         self.guard.as_slice()
+    }
+}
+
+pub struct ForwardableInputSpan<'a, T> {
+    input: InputSpan<'a, T>,
+}
+
+impl<'a, T: 'static + ForwardMessageTrait> ForwardableInputSpan<'a, T> {
+    pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
+        let input = InputSpan::new(&forwardable_subscriber.subscriber);
+        Self { input }
+    }
+
+    /// TODO: Should we directly take in a subscriber to avoid the case where a user holds onto this?
+    /// TODO: Can we return some Drain wrapper that manages ownership instead of letting users call drain_forwards on the InputSpan twice?
+    /// Creates iterator that drains elements from storage
+    pub fn drain_forwards(&mut self) -> impl Iterator<Item = ArenaReaderPtr<Message<T>>> {
+        self.input.guard.drain_contiguous()
     }
 }

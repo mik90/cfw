@@ -7,7 +7,7 @@ pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
-use crate::subscriber::{Subscriber, SubscriberConfig};
+use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
 use crate::time::FrameworkTime;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
@@ -227,11 +227,12 @@ impl<T: 'static> Publisher<T> {
         });
         self.increase_arena_size(typed_subscriber.get_config().capacity);
     }
-}
 
-impl<T: 'static + ForwardableTrait> Publisher<T> {
-    pub fn add_typed_forwarded_subscriber(&mut self, typed_subscriber: &mut Subscriber<T>) {
-        self.add_typed_subscriber(typed_subscriber)
+    pub fn add_typed_forwarded_subscriber(
+        &mut self,
+        forwardable_subscriber: &mut ForwardableSubscriber<T>,
+    ) {
+        self.add_typed_subscriber(&mut forwardable_subscriber.subscriber)
     }
 }
 

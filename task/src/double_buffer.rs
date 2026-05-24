@@ -1,4 +1,4 @@
-use crate::arena::ArenaPtr;
+use crate::arena::{ArenaPtr, ArenaReaderPtr};
 use crate::mpsc_queue::MpscQueue;
 use std::cell::{RefCell, RefMut};
 use std::collections::VecDeque;
@@ -37,6 +37,10 @@ impl<'a, T> ReadBufferGuard<'a, T> {
         self.buffer.storage.pop_front();
     }
 
+    pub fn pop_front_ptr(&mut self) -> Option<ArenaPtr<T>> {
+        self.buffer.storage.pop_front()
+    }
+
     pub fn pop_back(&mut self) {
         self.buffer.storage.pop_back();
     }
@@ -58,6 +62,17 @@ impl<'a, T> ReadBufferGuard<'a, T> {
         self.buffer.storage.make_contiguous().iter().map(|ptr|
                 // SAFETY: We can assume that messages in read buffers are already initialized
                 unsafe { ptr.assume_init_ref() })
+    }
+
+    /// Mut because it makes the slice contiguous
+    pub fn drain_contiguous(&mut self) -> impl Iterator<Item = ArenaReaderPtr<T>> {
+        // Shuffle to get things in order before we give everything to the consumer
+        self.buffer.storage.make_contiguous();
+
+        self.buffer
+            .storage
+            .drain(..)
+            .map(|ptr| ArenaReaderPtr::new(ptr))
     }
 
     pub fn is_empty(&self) -> bool {

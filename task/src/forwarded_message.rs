@@ -44,7 +44,7 @@ impl<T: Default, F> ForwardedMessage<T, F> {
 
 #[cfg(test)]
 mod tests {
-    /*
+
     use super::*;
     use crate::generic_publisher::*;
     use crate::publisher::*;
@@ -58,34 +58,32 @@ mod tests {
         let forwarded_channel = "forwarded_channel";
 
         // Owner of messages being forwarded in the arena
-        let mut normal_publisher: Publisher<u32> = Publisher::new(PublisherConfig {
+        let mut normal_publisher = Publisher::<u32>::new(PublisherConfig {
             capacity: 1,
             channel_name: forwarded_channel.into(),
         });
 
         // Subscribes to message with intention of forwarding it
-        let mut normal_subscriber: Subscriber<Forwardable<u32>> =
-            Subscriber::new(SubscriberConfig {
-                is_optional: true,
-                capacity: 2,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: normal_channel.into(),
-            });
+        let mut forwardable_subscriber = ForwardableSubscriber::<u32>::new(SubscriberConfig {
+            is_optional: true,
+            capacity: 2,
+            is_trigger: true,
+            keep_across_runs: true,
+            channel_name: normal_channel.into(),
+        });
 
         // Forwards normal message downstream
-        let mut forwarding_publisher: Publisher<ForwardedMessage<bool, u32>> =
-            Publisher::new_with_forwards(
-                PublisherConfig {
-                    capacity: 1,
-                    channel_name: forwarded_channel.into(),
-                },
-                vec![forwarded_channel.into()],
-            );
+        let mut forwarding_publisher = Publisher::<ForwardedMessage<bool, u32>>::new_with_forwards(
+            PublisherConfig {
+                capacity: 1,
+                channel_name: forwarded_channel.into(),
+            },
+            vec![forwarded_channel.into()],
+        );
 
         // Listens to forwarded message
-        let mut forwarded_subscriber: Subscriber<ForwardedMessage<bool, u32>> =
-            Subscriber::new(SubscriberConfig {
+        let mut forwarded_subscriber =
+            Subscriber::<ForwardedMessage<bool, u32>>::new(SubscriberConfig {
                 is_optional: true,
                 capacity: 2,
                 is_trigger: true,
@@ -93,7 +91,7 @@ mod tests {
                 channel_name: forwarded_channel.into(),
             });
 
-        normal_publisher.add_typed_forwarded_subscriber(&mut normal_subscriber);
+        normal_publisher.add_typed_forwarded_subscriber(&mut forwardable_subscriber);
         normal_publisher.allocate_arena();
 
         forwarding_publisher.add_typed_subscriber(&mut forwarded_subscriber);
@@ -113,8 +111,8 @@ mod tests {
         }
         {
             // Callback that actually forwards from its subscriber to publisher
-            normal_subscriber.drain_writer_to_reader();
-            let input = OptionalInput::new(&mut normal_subscriber);
+            forwardable_subscriber.subscriber.drain_writer_to_reader();
+            let input = ForwardableOptionalInput::new(&mut forwardable_subscriber);
             assert!(input.value().is_some());
             assert_eq!(*input.value().unwrap(), 42);
 
@@ -124,5 +122,5 @@ mod tests {
         {
             // TODO: Some callback that listens to the forwarded message
         }
-    } */
+    }
 }
