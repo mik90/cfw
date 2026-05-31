@@ -1,7 +1,6 @@
 use crate::arena::ArenaReaderPtr;
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
-use crate::forwarded_message::ForwardMessageTrait;
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
 use crate::message::Message;
@@ -272,7 +271,7 @@ impl<'a, T: 'static> ForwardableRequiredInput<'a, T> {
     }
 }
 
-impl<'a, T: 'static + ForwardMessageTrait> ForwardableRequiredInput<'a, T> {
+impl<'a, T: 'static> ForwardableRequiredInput<'a, T> {
     pub fn forward<'b, UserData: Default + 'static>(
         mut self,
         publisher: &'b mut ForwardingPublisher<UserData, T>,
@@ -396,7 +395,7 @@ impl<'a, T: 'static> ForwardableInputSpan<'a, T> {
     }
 }
 
-impl<'a, T: 'static + ForwardMessageTrait> ForwardableInputSpan<'a, T> {
+impl<'a, T: 'static> ForwardableInputSpan<'a, T> {
     pub fn drain_forwards<'b, UserData: Default + 'static>(
         &mut self,
         publisher: &'b mut ForwardingPublisher<UserData, T>,

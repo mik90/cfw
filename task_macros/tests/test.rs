@@ -92,14 +92,10 @@ mod tests {
     // ForwardTask lives in its own module because two #[task_callback] expansions in the
     // same scope would emit duplicate `use` statements for the same names.
     mod forwarding {
-        use task::forwarded_message::{ForwardMessageTrait, ForwardedMessage};
+        use task::forwarded_message::ForwardedMessage;
         use task::publisher::*;
         use task::subscriber::*;
         use task_macros::task_callback;
-
-        #[derive(Default)]
-        struct Msg(i32);
-        impl ForwardMessageTrait for Msg {}
 
         struct ForwardTask {}
 
@@ -107,8 +103,8 @@ mod tests {
         impl ForwardTask {
             fn run(
                 &mut self,
-                input: ForwardableRequiredInput<Msg>,
-                fwd_pub: &mut ForwardingPublisher<bool, Msg>,
+                input: ForwardableRequiredInput<i32>,
+                fwd_pub: &mut ForwardingPublisher<bool, i32>,
             ) {
                 let mut output = input.forward(fwd_pub);
                 *output.value_mut() = true;
@@ -120,13 +116,13 @@ mod tests {
         fn test_forwarding_macro() {
             // test_publisher (Publisher<Msg>) → task_subscriber (ForwardableSubscriber<Msg>)
             // task_publisher (ForwardingPublisher<bool, Msg>) → test_subscriber (Subscriber<ForwardedMessage<bool, Msg>>)
-            let mut test_publisher = Publisher::<Msg>::new(PublisherConfig {
+            let mut test_publisher = Publisher::<i32>::new(PublisherConfig {
                 capacity: 1,
                 channel_name: "input_channel".into(),
             });
 
             let mut task_publishers: Vec<Box<dyn GenericPublisher + 'static>> =
-                vec![Box::new(ForwardingPublisher::<bool, Msg>::new(
+                vec![Box::new(ForwardingPublisher::<bool, i32>::new(
                     PublisherConfig {
                         capacity: 1,
                         channel_name: "forwarded_channel".into(),
@@ -135,7 +131,7 @@ mod tests {
                 ))];
 
             let mut task_subscribers: Vec<Box<dyn GenericSubscriber + 'static>> = vec![Box::new(
-                ForwardableSubscriber::<Msg>::new(SubscriberConfig {
+                ForwardableSubscriber::<i32>::new(SubscriberConfig {
                     is_optional: false,
                     capacity: 1,
                     is_trigger: true,
@@ -145,7 +141,7 @@ mod tests {
             )];
 
             let mut test_subscriber =
-                Subscriber::<ForwardedMessage<bool, Msg>>::new(SubscriberConfig {
+                Subscriber::<ForwardedMessage<bool, i32>>::new(SubscriberConfig {
                     is_optional: false,
                     capacity: 1,
                     is_trigger: true,
@@ -169,7 +165,7 @@ mod tests {
 
             {
                 let mut output = Output::new_default(&mut test_publisher);
-                *output = Msg(42);
+                *output = 42i32;
                 output.send();
             }
             test_publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
@@ -196,7 +192,7 @@ mod tests {
             let guard = test_subscriber.get_read_buffer();
             let msg = guard.front().unwrap();
             assert_eq!(*msg.message.get_message(), true);
-            assert_eq!(msg.message.get_forwarded_message().message.0, 42);
+            assert_eq!(msg.message.get_forwarded_message().message, 42i32);
         }
     }
 

@@ -1,14 +1,6 @@
 use crate::arena::ArenaReaderPtr;
 use crate::message::Message;
 
-pub trait ForwardableTrait {}
-
-pub struct Forwardable<T>(T);
-
-impl<T> ForwardMessageTrait for Forwardable<T> {}
-
-pub trait ForwardMessageTrait {}
-
 /// A single forwarded message.
 ///
 /// For multiple, i think i need multiple trait spceializations since we don't have variadics?
@@ -31,8 +23,6 @@ impl<T, F> ForwardedMessage<T, F> {
         &self.forwarded_message
     }
 }
-
-impl<T, F> ForwardMessageTrait for ForwardedMessage<T, F> {}
 
 impl<T: Default, F> ForwardedMessage<T, F> {
     pub fn new_with_forward(forwarded_message: ArenaReaderPtr<Message<F>>) -> Self {
