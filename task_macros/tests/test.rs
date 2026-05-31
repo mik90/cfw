@@ -104,10 +104,10 @@ mod tests {
             fn run(
                 &mut self,
                 input: ForwardableRequiredInput<i32>,
-                fwd_pub: &mut ForwardingPublisher<bool, i32>,
+                mut fwd_out: ForwardingOutput<bool, i32>,
             ) {
-                let mut output = input.forward(fwd_pub);
-                *output.value_mut() = true;
+                let mut output = input.forward(&mut fwd_out);
+                *output = true;
                 output.send();
             }
         }

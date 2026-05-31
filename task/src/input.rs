@@ -2,8 +2,7 @@ use crate::arena::ArenaReaderPtr;
 use crate::double_buffer::ReadBufferGuard;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::message::Message;
-use crate::output::{ForwardingOutput, ForwardingOutputSpan};
-use crate::publisher::ForwardingPublisher;
+use crate::output::{ForwardedOutput, ForwardedOutputSpan, ForwardingOutput};
 use crate::subscriber::{ForwardableSubscriber, Subscriber};
 use std::ops::Deref;
 
@@ -70,15 +69,15 @@ impl<'a, T: 'static> ForwardableRequiredInput<'a, T> {
 
     pub fn forward<'b, UserData: Default + 'static>(
         mut self,
-        publisher: &'b mut ForwardingPublisher<UserData, T>,
-    ) -> ForwardingOutput<'b, UserData, T> {
+        output: &'b mut ForwardingOutput<UserData, T>,
+    ) -> ForwardedOutput<'b, UserData, T> {
         let ptr = self
             .input
             .guard
             .pop_front_ptr()
             .map(ArenaReaderPtr::new)
             .expect("Expected proc macro to use the correct types");
-        ForwardingOutput::new(publisher, ptr)
+        ForwardedOutput::new(output.publisher, ptr)
     }
 }
 
@@ -138,10 +137,10 @@ impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
 
     pub fn forward<'b, UserData: Default + 'static>(
         mut self,
-        publisher: &'b mut ForwardingPublisher<UserData, T>,
-    ) -> Option<ForwardingOutput<'b, UserData, T>> {
+        output: &'b mut ForwardingOutput<UserData, T>,
+    ) -> Option<ForwardedOutput<'b, UserData, T>> {
         let ptr = self.input.guard.pop_front_ptr().map(ArenaReaderPtr::new)?;
-        Some(ForwardingOutput::new(publisher, ptr))
+        Some(ForwardedOutput::new(output.publisher, ptr))
     }
 
     pub fn value(&'a self) -> Option<&'a T> {
@@ -197,8 +196,8 @@ impl<'a, T: 'static> ForwardableInputSpan<'a, T> {
 
     pub fn drain_forwards<'b, UserData: Default + 'static>(
         &mut self,
-        publisher: &'b mut ForwardingPublisher<UserData, T>,
-    ) -> ForwardingOutputSpan<'b, UserData, T> {
-        ForwardingOutputSpan::new(publisher, self.input.guard.drain_contiguous())
+        output: &'b mut ForwardingOutput<UserData, T>,
+    ) -> ForwardedOutputSpan<'b, UserData, T> {
+        ForwardedOutputSpan::new(output.publisher, self.input.guard.drain_contiguous())
     }
 }

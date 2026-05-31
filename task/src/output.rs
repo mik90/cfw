@@ -7,6 +7,20 @@ use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
+pub struct ForwardingOutput<'a, T, F> {
+    pub(crate) publisher: &'a mut ForwardingPublisher<T, F>,
+}
+
+impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
+    pub fn new(publisher: &'a mut ForwardingPublisher<T, F>) -> Self {
+        Self { publisher }
+    }
+
+    pub fn new_downcasted(publisher: &'a mut dyn GenericPublisher) -> Self {
+        ForwardingOutput::new(ForwardingPublisher::new_downcasted(publisher))
+    }
+}
+
 #[allow(dead_code)]
 pub struct PublishFailureCallback(Arc<Mutex<dyn FnMut(SendError)>>);
 
@@ -165,11 +179,11 @@ impl<'a, T: Default + 'static> OutputSpan<'a, T> {
     }
 }
 
-pub struct ForwardingOutput<'a, T, F> {
+pub struct ForwardedOutput<'a, T, F> {
     inner: Output<'a, ForwardedMessage<T, F>>,
 }
 
-impl<'a, T: 'static, F: 'static> ForwardingOutput<'a, T, F> {
+impl<'a, T: 'static, F: 'static> ForwardedOutput<'a, T, F> {
     pub fn value(&self) -> &T {
         &self.inner.value().message
     }
@@ -179,7 +193,7 @@ impl<'a, T: 'static, F: 'static> ForwardingOutput<'a, T, F> {
     }
 }
 
-impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
+impl<'a, T: Default + 'static, F: 'static> ForwardedOutput<'a, T, F> {
     pub(crate) fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptr: ArenaReaderPtr<Message<F>>,
@@ -194,7 +208,7 @@ impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
             publisher: &mut publisher.inner,
             on_publish_failure: PublishFailureCallback::panic(),
         };
-        ForwardingOutput { inner: output }
+        ForwardedOutput { inner: output }
     }
 
     pub fn send(self) {
@@ -202,7 +216,7 @@ impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
     }
 }
 
-impl<T: 'static, F: 'static> Deref for ForwardingOutput<'_, T, F> {
+impl<T: 'static, F: 'static> Deref for ForwardedOutput<'_, T, F> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -210,23 +224,23 @@ impl<T: 'static, F: 'static> Deref for ForwardingOutput<'_, T, F> {
     }
 }
 
-impl<T: 'static, F: 'static> DerefMut for ForwardingOutput<'_, T, F> {
+impl<T: 'static, F: 'static> DerefMut for ForwardedOutput<'_, T, F> {
     fn deref_mut(&mut self) -> &mut T {
         self.value_mut()
     }
 }
 
-pub struct ForwardingOutputSpan<'a, T, F> {
+pub struct ForwardedOutputSpan<'a, T, F> {
     inner: OutputSpan<'a, ForwardedMessage<T, F>>,
 }
 
-impl<'a, T: Default + 'static, F: 'static> ForwardingOutputSpan<'a, T, F> {
+impl<'a, T: Default + 'static, F: 'static> ForwardedOutputSpan<'a, T, F> {
     pub(crate) fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptrs: impl IntoIterator<Item = ArenaReaderPtr<Message<F>>>,
     ) -> Self {
         let mut ptrs = forwarded_ptrs.into_iter();
-        ForwardingOutputSpan {
+        ForwardedOutputSpan {
             inner: OutputSpan::new_with_factory(&mut publisher.inner, |slot| {
                 let ptr = ptrs
                     .next()
