@@ -201,12 +201,22 @@ impl<T> Publisher<T> {
 
     pub(self) fn loan_with(
         &mut self,
-        factory: impl FnOnce(&mut MaybeUninit<Message<T>>),
+        factory: impl FnOnce(&mut MaybeUninit<T>),
     ) -> Result<usize, LoanError> {
         if self.loaned_values.len() >= self.config.capacity {
             return Err(LoanError::LoanCapacityReached);
         }
-        let allocated_ptr = self.arena.allocate_with(factory);
+        let allocated_ptr = self.arena.allocate_with(|slot| {
+            let msg_ptr = slot.as_mut_ptr();
+            // SAFETY: All fields of `Message<T>` are initialized before the slot is assumed init:
+            // header is written here; factory is responsible for fully initializing `message`.
+            unsafe {
+                let header = std::ptr::addr_of_mut!((*msg_ptr).header);
+                let message = std::ptr::addr_of_mut!((*msg_ptr).message).cast::<MaybeUninit<T>>();
+                header.write(MessageHeader::default());
+                factory(&mut *message);
+            }
+        });
         self.loaned_values.push(LoanedValue::new(allocated_ptr));
         Ok(self.loaned_values.len() - 1)
     }
@@ -246,28 +256,15 @@ impl<T: 'static> Publisher<T> {
         &mut self,
         initializer: impl FnOnce(&mut MaybeUninit<T>),
     ) -> Result<usize, LoanError> {
-        self.loan_with(|slot| {
-            let msg_ptr = slot.as_mut_ptr();
-            // SAFETY: Writing individual fields of an uninitialized struct via raw pointers
-            // is valid; caller guarantees `initializer` fully initializes `message`.
-            unsafe {
-                (&raw mut (*msg_ptr).header).write(MessageHeader::default());
-                initializer(&mut *(&raw mut (*msg_ptr).message).cast::<MaybeUninit<T>>());
-            }
-        })
+        self.loan_with(initializer)
     }
 }
 
 impl<T: Default> Publisher<T> {
-    // TODO impl loan_default and non-default mechanisms in case the underlying type is default-constructible
     pub fn loan_default(&mut self) -> Result<usize, LoanError> {
-        if self.loaned_values.len() >= self.config.capacity {
-            return Err(LoanError::LoanCapacityReached);
-        }
-        let allocated_ptr = self.arena.allocate_default();
-        self.loaned_values.push(LoanedValue::new(allocated_ptr));
-
-        Ok(self.loaned_values.len() - 1)
+        self.loan_with(|slot| {
+            slot.write(T::default());
+        })
     }
 }
 
@@ -276,18 +273,9 @@ impl<T: Default + 'static, F: 'static> Publisher<ForwardedMessage<T, F>> {
         &mut self,
         forwarded_ptr: ArenaReaderPtr<Message<F>>,
     ) -> Result<usize, LoanError> {
-        if self.loaned_values.len() >= self.config.capacity {
-            return Err(LoanError::LoanCapacityReached);
-        }
-        let allocated_ptr = self.arena.allocate_with(|slot| {
-            slot.write(Message {
-                header: forwarded_ptr.header.clone(),
-                message: ForwardedMessage::new_with_forward(forwarded_ptr),
-            });
-        });
-        self.loaned_values.push(LoanedValue::new(allocated_ptr));
-
-        Ok(self.loaned_values.len() - 1)
+        self.loan_with(|slot| {
+            slot.write(ForwardedMessage::new_with_forward(forwarded_ptr));
+        })
     }
 }
 
@@ -363,7 +351,7 @@ impl<'a, T> Output<'a, T> {
 
     pub(self) fn new_with_factory(
         publisher: &'a mut Publisher<T>,
-        factory: impl FnOnce(&mut MaybeUninit<Message<T>>),
+        factory: impl FnOnce(&mut MaybeUninit<T>),
     ) -> Self {
         let loaned_value_idx = publisher
             .loan_with(factory)
@@ -420,7 +408,7 @@ impl<'a, T> OutputSpan<'a, T> {
 
     pub(self) fn new_with_factory(
         publisher: &'a mut Publisher<T>,
-        mut factory: impl FnMut(&mut MaybeUninit<Message<T>>),
+        mut factory: impl FnMut(&mut MaybeUninit<T>),
     ) -> Self {
         let count = publisher.get_config().capacity;
         let start = publisher.loaned_values.len();
@@ -555,10 +543,7 @@ impl<'a, T: Default + 'static, F: 'static> ForwardingOutputSpan<'a, T, F> {
                 let ptr = ptrs
                     .next()
                     .expect("not enough forwarded ptrs for span capacity");
-                slot.write(Message {
-                    header: MessageHeader::default(),
-                    message: ForwardedMessage::new_with_forward(ptr),
-                });
+                slot.write(ForwardedMessage::new_with_forward(ptr));
             }),
         }
     }
