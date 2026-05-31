@@ -204,7 +204,10 @@ impl<T> Publisher<T> {
         &mut self.loaned_values[start_index..=end_index]
     }
 
-    pub(self) fn loan_with(&mut self, factory: impl FnOnce() -> Message<T>) -> Result<usize, LoanError> {
+    pub(self) fn loan_with(
+        &mut self,
+        factory: impl FnOnce() -> Message<T>,
+    ) -> Result<usize, LoanError> {
         if self.loaned_values.len() >= self.config.capacity {
             return Err(LoanError::LoanCapacityReached);
         }
@@ -439,7 +442,7 @@ fn forwarded_message_factory<T: Default, F>(
     forwarded_ptr: ArenaReaderPtr<Message<F>>,
 ) -> impl FnOnce() -> Message<ForwardedMessage<T, F>> {
     || Message {
-        header: MessageHeader::default(),
+        header: forwarded_ptr.header.clone(),
         message: ForwardedMessage::new_with_forward(forwarded_ptr),
     }
 }
@@ -492,7 +495,9 @@ impl<'a, T: Default + 'static, F: 'static> ForwardingOutputSpan<'a, T, F> {
         let mut ptrs = forwarded_ptrs.into_iter();
         ForwardingOutputSpan {
             inner: OutputSpan::new_with_factory(&mut publisher.inner, || {
-                let ptr = ptrs.next().expect("not enough forwarded ptrs for span capacity");
+                let ptr = ptrs
+                    .next()
+                    .expect("not enough forwarded ptrs for span capacity");
                 Message {
                     header: MessageHeader::default(),
                     message: ForwardedMessage::new_with_forward(ptr),
