@@ -7,7 +7,12 @@ use std::sync::atomic::AtomicUsize;
 use std::vec::Vec;
 
 pub struct ArenaPtr<T> {
-    /// Holds a given slot in the arena
+    /// Holds a given slot in the arena with pre-initialized data.
+    ptr: NonNull<ArenaSlot<T>>,
+}
+
+pub struct UninitArenaPtr<T> {
+    /// Holds a given slot in the arena, although the memory isn't initialized yet.
     ptr: NonNull<ArenaSlot<T>>,
 }
 
@@ -180,6 +185,26 @@ impl<T> Arena<T> {
 }
 
 impl<T> Arena<T> {
+    /// Allocates a slot without initializing memory
+    pub fn try_allocate_uninit(&mut self) -> Option<UninitArenaPtr<T>> {
+        for slot in self.storage.iter() {
+            match slot.ref_count.compare_exchange(
+                0,
+                1,
+                atomic::Ordering::Acquire,
+                atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(UninitArenaPtr {
+                        ptr: NonNull::from_ref(slot),
+                    });
+                }
+                Err(_) => continue,
+            }
+        }
+        None
+    }
+
     pub fn try_allocate_with(&mut self, factory: impl FnOnce() -> T) -> Option<ArenaPtr<T>> {
         for slot in self.storage.iter() {
             match slot.ref_count.compare_exchange(
