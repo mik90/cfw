@@ -206,25 +206,21 @@ impl<T> Arena<T> {
     }
 
     pub fn try_allocate_with(&mut self, factory: impl FnOnce() -> T) -> Option<ArenaPtr<T>> {
-        for slot in self.storage.iter() {
-            match slot.ref_count.compare_exchange(
-                0,
-                1,
-                atomic::Ordering::Acquire,
-                atomic::Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    unsafe {
-                        (*slot.payload.get()).write(factory());
-                    }
-                    return Some(ArenaPtr {
-                        ptr: NonNull::from_ref(slot),
-                    });
-                }
-                Err(_) => continue,
-            }
+        let uninit_ptr = self.try_allocate_uninit()?;
+        // SAFETY: We know this is a properly allocated pointer to uninitialized memory
+        let slot = unsafe {
+            // Ideally we'd use `as_uinit_ref`, but that's not stable yet
+            uninit_ptr.ptr.as_ref()
+        };
+        // SAFETY: We know this is uninitialized since we just constructed it
+        unsafe {
+            (*slot.payload.get()).write(factory());
         }
-        None
+
+        // Now that we've initialized the ptr, we can launder it to the pre-initialized ArenaPtr variant
+        Some(ArenaPtr {
+            ptr: uninit_ptr.ptr,
+        })
     }
 
     pub fn allocate_with(&mut self, factory: impl FnOnce() -> T) -> ArenaPtr<T> {
