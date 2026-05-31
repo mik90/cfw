@@ -189,7 +189,9 @@ impl<T> Arena<T> {
                 atomic::Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    unsafe { (*slot.payload.get()).write(factory()); }
+                    unsafe {
+                        (*slot.payload.get()).write(factory());
+                    }
                     return Some(ArenaPtr {
                         ptr: NonNull::from_ref(slot),
                     });

@@ -188,14 +188,6 @@ impl<'a, T: 'static> RequiredInput<'a, T> {
     }
 
     pub fn value(&self) -> &T {
-        self.deref()
-    }
-}
-
-impl<T> Deref for RequiredInput<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
         // TODO can we just do this check once on construction and avoid this expect?
         // We could use unwrap_unchecked(), but there has to be a safe way to store both the guard and the ref together
         &self
@@ -205,6 +197,15 @@ impl<T> Deref for RequiredInput<'_, T> {
             .message
     }
 }
+
+impl<'a, T: 'static> Deref for RequiredInput<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.value()
+    }
+}
+
 pub struct ForwardableRequiredInput<'a, T> {
     input: RequiredInput<'a, T>,
 }
@@ -224,13 +225,17 @@ impl<'a, T: 'static + ForwardMessageTrait> ForwardableRequiredInput<'a, T> {
             .map(|ptr| ArenaReaderPtr::new(ptr))
             .expect("Expected proc macro to use the correct types")
     }
+
+    pub fn value(&self) -> &T {
+        self.input.value()
+    }
 }
 
-impl<T> Deref for ForwardableRequiredInput<'_, T> {
+impl<'a, T: 'static> Deref for ForwardableRequiredInput<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.input
+        self.input.value()
     }
 }
 

@@ -34,20 +34,14 @@ impl<T> LoanedValue<T> {
     fn new(ptr: ArenaPtr<Message<T>>) -> Self {
         LoanedValue { ptr, sent: false }
     }
-}
 
-impl<T> Deref for LoanedValue<T> {
-    type Target = Message<T>;
-
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: For a loaned value to have been created, the MessageHeader should have been initialized
+    fn value(&self) -> &Message<T> {
+        // SAFETY: For a loaned value to have been created, the message should have been initialized
         unsafe { (*self.ptr.payload.get()).assume_init_ref() }
     }
-}
 
-impl<T> DerefMut for LoanedValue<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: For a loaned value to have been created, the MessageHeader should have been initialized
+    fn value_mut(&mut self) -> &mut Message<T> {
+        // SAFETY: For a loaned value to have been created, the message should have been initialized
         unsafe { (*self.ptr.payload.get()).assume_init_mut() }
     }
 }
@@ -286,21 +280,20 @@ pub struct Output<'a, T> {
     pub on_publish_failure: PublishFailureCallback,
 }
 
-impl<'a, T> Deref for Output<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
+impl<'a, T> Output<'a, T> {
+    pub fn value(&self) -> &T {
         &self
             .publisher
             .loaned_value_at(self.loaned_value_idx)
+            .value()
             .message
     }
-}
 
-impl<'a, T> DerefMut for Output<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    pub fn value_mut(&mut self) -> &mut T {
         &mut self
             .publisher
             .loaned_value_at_mut(self.loaned_value_idx)
+            .value_mut()
             .message
     }
 }
@@ -344,6 +337,20 @@ impl<'a, T> Output<'a, T> {
             loaned_value_idx,
             on_publish_failure: PublishFailureCallback::panic(),
         }
+    }
+}
+
+impl<T: 'static> Deref for Output<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value()
+    }
+}
+
+impl<T: 'static> DerefMut for Output<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.value_mut()
     }
 }
 
@@ -451,6 +458,15 @@ pub struct ForwardingOutput<'a, T, F> {
     inner: Output<'a, ForwardedMessage<T, F>>,
 }
 
+impl<'a, T: 'static, F: 'static> ForwardingOutput<'a, T, F> {
+    pub fn value(&self) -> &T {
+        &self.inner.value().message
+    }
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.inner.value_mut().message
+    }
+}
+
 impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
     pub fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
@@ -469,17 +485,17 @@ impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
     }
 }
 
-impl<T, F> Deref for ForwardingOutput<'_, T, F> {
+impl<T: 'static, F: 'static> Deref for ForwardingOutput<'_, T, F> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        &(*self.inner).message
+        self.value()
     }
 }
 
-impl<T, F> DerefMut for ForwardingOutput<'_, T, F> {
+impl<T: 'static, F: 'static> DerefMut for ForwardingOutput<'_, T, F> {
     fn deref_mut(&mut self) -> &mut T {
-        &mut (*self.inner).message
+        self.value_mut()
     }
 }
 
@@ -614,7 +630,7 @@ mod tests {
         publisher.allocate_arena();
         assert!(publisher.loan().is_ok());
         let value = publisher.loaned_value_at(0);
-        let header = &value.header;
+        let header = &value.value().header;
         assert_eq!(header.published_at, FrameworkTime::INVALID);
     }
 }
