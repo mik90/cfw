@@ -362,8 +362,9 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = &sig.callback_type;
 
     let quoted = quote! {
-        use task::subscriber::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
-        use task::publisher::{Output, OutputSpan, ForwardingPublisher};
+        use task::input::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
+        use task::output::{Output, OutputSpan};
+        use task::publisher::ForwardingPublisher;
         use task::generic_publisher::GenericPublisher;
         use task::generic_subscriber::GenericSubscriber;
         use task::callback::{Run, GenericCallback, CallbackSignature, InputKind, OutputKind};

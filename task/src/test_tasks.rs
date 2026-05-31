@@ -3,6 +3,8 @@ use crate::callback::{ConnectedCallback, connect_callbacks};
 use crate::executor::ExecutorStopSignal;
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
+use crate::input;
+use crate::output;
 use crate::publisher;
 use crate::subscriber;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -54,7 +56,7 @@ pub struct IncrementingIntegerPublisher {
     value: u64,
 }
 impl IncrementingIntegerPublisher {
-    pub fn run(&mut self, mut output: publisher::Output<u64>) {
+    pub fn run(&mut self, mut output: output::Output<u64>) {
         println!("IncrementingIntegerPublisher run");
         *output = self.value;
         self.value += 1;
@@ -89,9 +91,7 @@ impl callback::GenericCallback for IncrementingIntegerPublisher {
         publishers: &mut [Box<dyn crate::publisher::GenericPublisher>],
         _ctx: &crate::context::Context,
     ) -> crate::callback::Run {
-        self.run(publisher::Output::<u64>::new_downcasted(
-            &mut *publishers[0],
-        ));
+        self.run(output::Output::<u64>::new_downcasted(&mut *publishers[0]));
         crate::callback::Run::new(1)
     }
 
@@ -109,8 +109,8 @@ pub struct FizzBuzzCalculator {}
 impl FizzBuzzCalculator {
     pub fn run(
         &mut self,
-        integer: subscriber::RequiredInput<u64>,
-        mut fizz_buzz_string: publisher::Output<String>,
+        integer: input::RequiredInput<u64>,
+        mut fizz_buzz_string: output::Output<String>,
     ) {
         println!("FizzBuzzCalculator run");
         let is_fizz = (*integer % 3) == 0;
@@ -155,8 +155,8 @@ impl callback::GenericCallback for FizzBuzzCalculator {
         _ctx: &crate::context::Context,
     ) -> crate::callback::Run {
         self.run(
-            subscriber::RequiredInput::<u64>::new_downcasted(&mut *subscribers[0]),
-            publisher::Output::<String>::new_downcasted(&mut *publishers[0]),
+            input::RequiredInput::<u64>::new_downcasted(&mut *subscribers[0]),
+            output::Output::<String>::new_downcasted(&mut *publishers[0]),
         );
         crate::callback::Run::new(1)
     }
@@ -178,7 +178,7 @@ pub struct StringCollector {
     target_count: usize,
 }
 impl StringCollector {
-    pub fn run(&self, string: subscriber::RequiredInput<String>) {
+    pub fn run(&self, string: input::RequiredInput<String>) {
         println!("StringCollector run");
         let mut store = self.string_store.lock().unwrap();
         store.push(string.clone());
@@ -225,7 +225,7 @@ impl callback::GenericCallback for StringCollector {
         _publishers: &mut [Box<dyn crate::publisher::GenericPublisher>],
         _ctx: &crate::context::Context,
     ) -> crate::callback::Run {
-        self.run(subscriber::RequiredInput::<String>::new_downcasted(
+        self.run(input::RequiredInput::<String>::new_downcasted(
             &mut *subscribers[0],
         ));
         crate::callback::Run::new(1)

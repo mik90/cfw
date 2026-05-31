@@ -3,6 +3,8 @@
 mod tests {
     use task::generic_publisher::*;
     use task::generic_subscriber::*;
+    use task::input::*;
+    use task::output::*;
     use task::publisher::*;
     use task::subscriber::*;
     use task::time::FrameworkTime;

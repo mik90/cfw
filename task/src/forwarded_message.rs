@@ -38,6 +38,8 @@ mod tests {
 
     use super::*;
     use crate::generic_publisher::*;
+    use crate::input::*;
+    use crate::output::*;
     use crate::publisher::*;
     use crate::subscriber::*;
     use crate::time::FrameworkTime;
