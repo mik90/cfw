@@ -257,7 +257,7 @@ impl<T: 'static> Publisher<T> {
         self.add_typed_subscriber(&mut forwardable_subscriber.subscriber)
     }
 
-    pub unsafe fn loan_and_init(
+    pub fn loan_and_init(
         &mut self,
         initializer: impl FnOnce(&mut MaybeUninit<T>),
     ) -> Result<usize, LoanError> {
