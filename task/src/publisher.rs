@@ -244,7 +244,7 @@ impl<T: 'static> Publisher<T> {
 
 impl<T: Default> Publisher<T> {
     // TODO impl loan_default and non-default mechanisms in case the underlying type is default-constructible
-    pub fn loan(&mut self) -> Result<usize, LoanError> {
+    pub fn loan_default(&mut self) -> Result<usize, LoanError> {
         if self.loaned_values.len() >= self.config.capacity {
             return Err(LoanError::LoanCapacityReached);
         }
@@ -319,7 +319,7 @@ impl<'a, T> Output<'a, T> {
 impl<'a, T: Default + 'static> Output<'a, T> {
     pub fn new_default(publisher: &'a mut Publisher<T>) -> Self {
         let loaned_value_idx = publisher
-            .loan()
+            .loan_default()
             .expect("We expect loans to always be available");
 
         Output {
@@ -420,7 +420,7 @@ impl<'a, T> OutputSpan<'a, T> {
 impl<'a, T: Default + 'static> OutputSpan<'a, T> {
     pub fn new(publisher: &'a mut Publisher<T>) -> Self {
         for _ in 0..publisher.get_config().capacity {
-            publisher.loan().unwrap();
+            publisher.loan_default().unwrap();
         }
         OutputSpan {
             loaned_value_idx_start: 0,
@@ -566,8 +566,8 @@ mod tests {
             channel_name: "channel".into(),
         });
         publisher.allocate_arena();
-        assert!(publisher.loan().is_ok());
-        assert!(publisher.loan().is_err());
+        assert!(publisher.loan_default().is_ok());
+        assert!(publisher.loan_default().is_err());
     }
 
     #[test]
@@ -578,10 +578,10 @@ mod tests {
         };
         let mut publisher = Publisher::<i32>::new(config);
         publisher.allocate_arena();
-        assert!(publisher.loan().is_ok());
-        assert!(publisher.loan().is_ok());
-        assert!(publisher.loan().is_ok());
-        assert!(publisher.loan().is_err());
+        assert!(publisher.loan_default().is_ok());
+        assert!(publisher.loan_default().is_ok());
+        assert!(publisher.loan_default().is_ok());
+        assert!(publisher.loan_default().is_err());
     }
 
     #[test]
@@ -651,7 +651,7 @@ mod tests {
             channel_name: "channel".into(),
         });
         publisher.allocate_arena();
-        assert!(publisher.loan().is_ok());
+        assert!(publisher.loan_default().is_ok());
         let value = publisher.loaned_value_at(0);
         let header = &value.value().header;
         assert_eq!(header.published_at, FrameworkTime::INVALID);
