@@ -119,6 +119,7 @@ mod tests {
             assert_eq!(*input.value().unwrap(), 42u32);
 
             let forwarded_ptr = input.forward().unwrap();
+
             let mut output = ForwardingOutput::new(&mut forwarding_publisher, forwarded_ptr);
             *output = true;
             output.send();

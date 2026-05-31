@@ -1,7 +1,7 @@
 use crate::arena::{Arena, ArenaPtr, ArenaReaderPtr};
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::WriteBufferHandle;
-use crate::forwarded_message::ForwardedMessage;
+use crate::forwarded_message::{ForwardMessageTrait, ForwardedMessage};
 use crate::generic_publisher::ConnectionTypeMismatch;
 pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
@@ -255,6 +255,24 @@ impl<T: Default> Publisher<T> {
     }
 }
 
+impl<T: Default + 'static, F: 'static> Publisher<ForwardedMessage<T, F>> {
+    pub fn loan_forwarded(
+        &mut self,
+        forwarded_ptr: ArenaReaderPtr<Message<F>>,
+    ) -> Result<usize, LoanError> {
+        if self.loaned_values.len() >= self.config.capacity {
+            return Err(LoanError::LoanCapacityReached);
+        }
+        let allocated_ptr = self.arena.allocate_with(|| Message {
+            header: forwarded_ptr.header.clone(),
+            message: ForwardedMessage::new_with_forward(forwarded_ptr),
+        });
+        self.loaned_values.push(LoanedValue::new(allocated_ptr));
+
+        Ok(self.loaned_values.len() - 1)
+    }
+}
+
 #[allow(dead_code)]
 pub struct PublishFailureCallback(Arc<Mutex<dyn FnMut(SendError)>>);
 
@@ -472,12 +490,17 @@ impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptr: ArenaReaderPtr<Message<F>>,
     ) -> Self {
-        ForwardingOutput {
-            inner: Output::new_with_factory(
-                &mut publisher.inner,
-                forwarded_message_factory(forwarded_ptr),
-            ),
-        }
+        let loaned_value_idx = publisher
+            .inner
+            .loan_forwarded(forwarded_ptr)
+            .expect("We expect loans to always be available");
+
+        let output = Output {
+            loaned_value_idx,
+            publisher: &mut publisher.inner,
+            on_publish_failure: PublishFailureCallback::panic(),
+        };
+        ForwardingOutput { inner: output }
     }
 
     pub fn send(self) {
