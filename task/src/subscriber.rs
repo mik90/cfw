@@ -222,7 +222,7 @@ impl<'a, T: 'static + ForwardMessageTrait> ForwardableRequiredInput<'a, T> {
         self.input
             .guard
             .pop_front_ptr()
-            .map(|ptr| ArenaReaderPtr::new(ptr))
+            .map(ArenaReaderPtr::new)
             .expect("Expected proc macro to use the correct types")
     }
 
@@ -279,7 +279,7 @@ impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
         self.input
             .guard
             .pop_front_ptr()
-            .map(|ptr| ArenaReaderPtr::new(ptr))
+            .map(ArenaReaderPtr::new)
     }
 
     pub fn value(&'a self) -> Option<&'a T> {

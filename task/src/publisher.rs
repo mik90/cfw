@@ -1,7 +1,7 @@
 use crate::arena::{Arena, ArenaPtr, ArenaReaderPtr};
 use crate::callback::CallbackReadiness;
 use crate::double_buffer::WriteBufferHandle;
-use crate::forwarded_message::{ForwardMessageTrait, ForwardedMessage};
+use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::ConnectionTypeMismatch;
 pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
