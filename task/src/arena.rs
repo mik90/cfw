@@ -205,16 +205,34 @@ impl<T> Arena<T> {
         None
     }
 
-    pub fn try_allocate_with(&mut self, factory: impl FnOnce() -> T) -> Option<ArenaPtr<T>> {
+    pub fn allocate_uninit(&mut self) -> UninitArenaPtr<T> {
+        match self.try_allocate_uninit() {
+            Some(v) => v,
+            None => {
+                let slot_count = self.storage.len();
+                panic!(
+                    "The pub-sub system should avoid going beyond allocation capacity. Used {} slots out of capacity of {}",
+                    slot_count,
+                    self.capacity()
+                )
+            }
+        }
+    }
+
+    pub fn try_allocate_with(
+        &mut self,
+        factory: impl FnOnce(&mut MaybeUninit<T>),
+    ) -> Option<ArenaPtr<T>> {
         let uninit_ptr = self.try_allocate_uninit()?;
         // SAFETY: We know this is a properly allocated pointer to uninitialized memory
         let slot = unsafe {
-            // Ideally we'd use `as_uinit_ref`, but that's not stable yet
+            // Ideally we'd use `as_uninit_ref`, but that's not stable yet
             uninit_ptr.ptr.as_ref()
         };
-        // SAFETY: We know this is uninitialized since we just constructed it
+        // SAFETY: We know this is uninitialized since we just constructed it; the factory
+        // is responsible for fully initializing the MaybeUninit before returning.
         unsafe {
-            (*slot.payload.get()).write(factory());
+            factory(&mut *slot.payload.get());
         }
 
         // Now that we've initialized the ptr, we can launder it to the pre-initialized ArenaPtr variant
@@ -223,7 +241,7 @@ impl<T> Arena<T> {
         })
     }
 
-    pub fn allocate_with(&mut self, factory: impl FnOnce() -> T) -> ArenaPtr<T> {
+    pub fn allocate_with(&mut self, factory: impl FnOnce(&mut MaybeUninit<T>)) -> ArenaPtr<T> {
         match self.try_allocate_with(factory) {
             Some(v) => v,
             None => {
@@ -240,11 +258,15 @@ impl<T> Arena<T> {
 
 impl<T: Default> Arena<T> {
     pub fn try_allocate_default(&mut self) -> Option<ArenaPtr<T>> {
-        self.try_allocate_with(T::default)
+        self.try_allocate_with(|slot| {
+            slot.write(T::default());
+        })
     }
 
     pub fn allocate_default(&mut self) -> ArenaPtr<T> {
-        self.allocate_with(T::default)
+        self.allocate_with(|slot| {
+            slot.write(T::default());
+        })
     }
 }
 

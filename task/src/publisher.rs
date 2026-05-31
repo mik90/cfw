@@ -9,6 +9,7 @@ use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
 use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
 use crate::time::FrameworkTime;
+use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
@@ -200,7 +201,7 @@ impl<T> Publisher<T> {
 
     pub(self) fn loan_with(
         &mut self,
-        factory: impl FnOnce() -> Message<T>,
+        factory: impl FnOnce(&mut MaybeUninit<Message<T>>),
     ) -> Result<usize, LoanError> {
         if self.loaned_values.len() >= self.config.capacity {
             return Err(LoanError::LoanCapacityReached);
@@ -240,6 +241,21 @@ impl<T: 'static> Publisher<T> {
     ) {
         self.add_typed_subscriber(&mut forwardable_subscriber.subscriber)
     }
+
+    pub unsafe fn loan_and_init(
+        &mut self,
+        initializer: impl FnOnce(&mut MaybeUninit<T>),
+    ) -> Result<usize, LoanError> {
+        self.loan_with(|slot| {
+            let msg_ptr = slot.as_mut_ptr();
+            // SAFETY: Writing individual fields of an uninitialized struct via raw pointers
+            // is valid; caller guarantees `initializer` fully initializes `message`.
+            unsafe {
+                (&raw mut (*msg_ptr).header).write(MessageHeader::default());
+                initializer(&mut *(&raw mut (*msg_ptr).message).cast::<MaybeUninit<T>>());
+            }
+        })
+    }
 }
 
 impl<T: Default> Publisher<T> {
@@ -263,9 +279,11 @@ impl<T: Default + 'static, F: 'static> Publisher<ForwardedMessage<T, F>> {
         if self.loaned_values.len() >= self.config.capacity {
             return Err(LoanError::LoanCapacityReached);
         }
-        let allocated_ptr = self.arena.allocate_with(|| Message {
-            header: forwarded_ptr.header.clone(),
-            message: ForwardedMessage::new_with_forward(forwarded_ptr),
+        let allocated_ptr = self.arena.allocate_with(|slot| {
+            slot.write(Message {
+                header: forwarded_ptr.header.clone(),
+                message: ForwardedMessage::new_with_forward(forwarded_ptr),
+            });
         });
         self.loaned_values.push(LoanedValue::new(allocated_ptr));
 
@@ -345,7 +363,7 @@ impl<'a, T> Output<'a, T> {
 
     pub(self) fn new_with_factory(
         publisher: &'a mut Publisher<T>,
-        factory: impl FnOnce() -> Message<T>,
+        factory: impl FnOnce(&mut MaybeUninit<Message<T>>),
     ) -> Self {
         let loaned_value_idx = publisher
             .loan_with(factory)
@@ -402,12 +420,12 @@ impl<'a, T> OutputSpan<'a, T> {
 
     pub(self) fn new_with_factory(
         publisher: &'a mut Publisher<T>,
-        mut factory: impl FnMut() -> Message<T>,
+        mut factory: impl FnMut(&mut MaybeUninit<Message<T>>),
     ) -> Self {
         let count = publisher.get_config().capacity;
         let start = publisher.loaned_values.len();
         for _ in 0..count {
-            publisher.loan_with(|| factory()).unwrap();
+            publisher.loan_with(|slot| factory(slot)).unwrap();
         }
         OutputSpan {
             loaned_value_idx_start: start,
@@ -533,14 +551,14 @@ impl<'a, T: Default + 'static, F: 'static> ForwardingOutputSpan<'a, T, F> {
     ) -> Self {
         let mut ptrs = forwarded_ptrs.into_iter();
         ForwardingOutputSpan {
-            inner: OutputSpan::new_with_factory(&mut publisher.inner, || {
+            inner: OutputSpan::new_with_factory(&mut publisher.inner, |slot| {
                 let ptr = ptrs
                     .next()
                     .expect("not enough forwarded ptrs for span capacity");
-                Message {
+                slot.write(Message {
                     header: MessageHeader::default(),
                     message: ForwardedMessage::new_with_forward(ptr),
-                }
+                });
             }),
         }
     }
