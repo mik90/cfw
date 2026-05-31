@@ -21,7 +21,10 @@ enum OutputKind {
 #[derive(Clone)]
 enum ArgumentKind {
     Input((syn::Ident, InputKind)),
+    ForwardableInput((syn::Ident, InputKind)),
     Output((syn::Ident, OutputKind)),
+    /// (UserData type, ForwardedMessage type) — from `&mut ForwardingPublisher<UserData, F>`
+    ForwardingOutput((syn::Ident, syn::Ident)),
     Context,
 }
 
@@ -37,19 +40,36 @@ impl MacroCallbackSignature {
             .arguments
             .iter()
             .filter_map(|arg| {
-                let (msg, kind_tokens) = match arg {
+                let (msg, kind_tokens, forwardable) = match arg {
                     ArgumentKind::Input((msg, InputKind::Required)) => {
-                        (msg, quote!(InputKind::Required))
+                        (msg, quote!(InputKind::Required), false)
                     }
                     ArgumentKind::Input((msg, InputKind::Optional)) => {
-                        (msg, quote!(InputKind::Optional))
+                        (msg, quote!(InputKind::Optional), false)
                     }
-                    ArgumentKind::Input((msg, InputKind::Span)) => (msg, quote!(InputKind::Span)),
+                    ArgumentKind::Input((msg, InputKind::Span)) => {
+                        (msg, quote!(InputKind::Span), false)
+                    }
+                    ArgumentKind::ForwardableInput((msg, InputKind::Required)) => {
+                        (msg, quote!(InputKind::Required), true)
+                    }
+                    ArgumentKind::ForwardableInput((msg, InputKind::Optional)) => {
+                        (msg, quote!(InputKind::Optional), true)
+                    }
+                    ArgumentKind::ForwardableInput((msg, InputKind::Span)) => {
+                        (msg, quote!(InputKind::Span), true)
+                    }
                     _ => return None,
                 };
-                Some(parse_quote!(
-                    Box::new(task::subscriber::Subscriber::<#msg>::new(#kind_tokens.into()))
-                ))
+                if forwardable {
+                    Some(parse_quote!(
+                        Box::new(task::subscriber::ForwardableSubscriber::<#msg>::new(#kind_tokens.into()))
+                    ))
+                } else {
+                    Some(parse_quote!(
+                        Box::new(task::subscriber::Subscriber::<#msg>::new(#kind_tokens.into()))
+                    ))
+                }
             })
             .collect();
 
@@ -64,19 +84,20 @@ impl MacroCallbackSignature {
         let publishers: Vec<syn::Expr> = self
             .arguments
             .iter()
-            .filter_map(|arg| {
-                let (msg, kind_tokens) = match arg {
-                    ArgumentKind::Output((msg, OutputKind::Default)) => {
-                        (msg, quote!(OutputKind::Default))
-                    }
-                    ArgumentKind::Output((msg, OutputKind::Span)) => {
-                        (msg, quote!(OutputKind::Span))
-                    }
-                    _ => return None,
-                };
-                Some(parse_quote!(
-                    Box::new(task::publisher::Publisher::<#msg>::new(#kind_tokens.into()))
-                ))
+            .filter_map(|arg| match arg {
+                ArgumentKind::Output((msg, OutputKind::Default)) => Some(parse_quote!(
+                    Box::new(task::publisher::Publisher::<#msg>::new(OutputKind::Default.into()))
+                )),
+                ArgumentKind::Output((msg, OutputKind::Span)) => Some(parse_quote!(
+                    Box::new(task::publisher::Publisher::<#msg>::new(OutputKind::Span.into()))
+                )),
+                ArgumentKind::ForwardingOutput((user_data, forwarded)) => Some(parse_quote!(
+                    Box::new(task::publisher::ForwardingPublisher::<#user_data, #forwarded>::new(
+                        OutputKind::Default.into(),
+                        vec![]
+                    ))
+                )),
+                _ => None,
             })
             .collect();
 
@@ -86,6 +107,59 @@ impl MacroCallbackSignature {
             }
         }
     }
+}
+
+fn get_two_message_types_from_ref(pat_ty: &PatType) -> Result<(Ident, Ident), syn::Error> {
+    let type_path = match pat_ty.ty.as_ref() {
+        syn::Type::Reference(r) => match r.elem.as_ref() {
+            syn::Type::Path(p) => p,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &pat_ty.ty,
+                    "expected &mut TypeName<A, B>",
+                ));
+            }
+        },
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &pat_ty.ty,
+                "expected &mut reference",
+            ));
+        }
+    };
+    let last =
+        type_path.path.segments.last().ok_or_else(|| {
+            syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment")
+        })?;
+    let angle_args = match &last.arguments {
+        syn::PathArguments::AngleBracketed(a) => a,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &pat_ty.ty,
+                "expected angle-bracket generics (e.g. ForwardingPublisher<A, B>)",
+            ));
+        }
+    };
+    let args: Vec<_> = angle_args.args.iter().collect();
+    if args.len() < 2 {
+        return Err(syn::Error::new_spanned(
+            &pat_ty.ty,
+            "expected two generic type arguments",
+        ));
+    }
+    let to_ident = |arg: &&syn::GenericArgument| -> Result<Ident, syn::Error> {
+        if let syn::GenericArgument::Type(syn::Type::Path(p)) = arg {
+            p.path.get_ident().cloned().ok_or_else(|| {
+                syn::Error::new_spanned(&pat_ty.ty, "type argument must be a simple identifier")
+            })
+        } else {
+            Err(syn::Error::new_spanned(
+                &pat_ty.ty,
+                "type argument must be a simple type path",
+            ))
+        }
+    };
+    Ok((to_ident(&args[0])?, to_ident(&args[1])?))
 }
 
 fn get_message_type(pat_ty: &PatType) -> Result<Ident, syn::Error> {
@@ -159,30 +233,60 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
             FnArg::Typed(t) => t,
             FnArg::Receiver(_) => continue,
         };
-        let type_path = match pat_ty.ty.as_ref() {
-            syn::Type::Path(p) => p,
+
+        // Strip &mut to get the inner type path (used for ForwardingPublisher).
+        let (type_path, is_ref_mut) = match pat_ty.ty.as_ref() {
+            syn::Type::Path(p) => (p, false),
+            syn::Type::Reference(r) if r.mutability.is_some() => match r.elem.as_ref() {
+                syn::Type::Path(p) => (p, true),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &pat_ty.ty,
+                        "expected a path type inside &mut reference",
+                    ));
+                }
+            },
             _ => return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type")),
         };
         let last = type_path.path.segments.last().ok_or_else(|| {
             syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment")
         })?;
 
-        let kind = match last.ident.to_string().as_str() {
-            "RequiredInput" => {
+        let kind = match (last.ident.to_string().as_str(), is_ref_mut) {
+            ("RequiredInput", false) => {
                 ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Required))
             }
-            "OptionalInput" => {
+            ("OptionalInput", false) => {
                 ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Optional))
             }
-            "InputSpan" => ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Span)),
-            "Output" => ArgumentKind::Output((get_message_type(pat_ty)?, OutputKind::Default)),
-            "OutputSpan" => ArgumentKind::Output((get_message_type(pat_ty)?, OutputKind::Span)),
-            "Context" => ArgumentKind::Context,
+            ("InputSpan", false) => {
+                ArgumentKind::Input((get_message_type(pat_ty)?, InputKind::Span))
+            }
+            ("ForwardableRequiredInput", false) => {
+                ArgumentKind::ForwardableInput((get_message_type(pat_ty)?, InputKind::Required))
+            }
+            ("ForwardableOptionalInput", false) => {
+                ArgumentKind::ForwardableInput((get_message_type(pat_ty)?, InputKind::Optional))
+            }
+            ("ForwardableInputSpan", false) => {
+                ArgumentKind::ForwardableInput((get_message_type(pat_ty)?, InputKind::Span))
+            }
+            ("Output", false) => {
+                ArgumentKind::Output((get_message_type(pat_ty)?, OutputKind::Default))
+            }
+            ("OutputSpan", false) => {
+                ArgumentKind::Output((get_message_type(pat_ty)?, OutputKind::Span))
+            }
+            ("ForwardingPublisher", true) => {
+                let (user_data, forwarded) = get_two_message_types_from_ref(pat_ty)?;
+                ArgumentKind::ForwardingOutput((user_data, forwarded))
+            }
+            ("Context", false) => ArgumentKind::Context,
             _ => {
                 return Err(syn::Error::new_spanned(
                     &last.ident,
                     format!(
-                        "unknown task argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, Output, OutputSpan, or Context",
+                        "unknown task argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan, Output, OutputSpan, &mut ForwardingPublisher, or Context",
                         last.ident
                     ),
                 ));
@@ -222,12 +326,29 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 subscriber_index += 1;
                 expr
             }
+            ArgumentKind::ForwardableInput((msg, kind)) => {
+                let constructor = match kind {
+                    InputKind::Required => quote!(ForwardableRequiredInput::<#msg>::new_downcasted),
+                    InputKind::Optional => quote!(ForwardableOptionalInput::<#msg>::new_downcasted),
+                    InputKind::Span => quote!(ForwardableInputSpan::<#msg>::new_downcasted),
+                };
+                let expr = parse_quote!(#constructor(&mut *subscribers[#subscriber_index]));
+                subscriber_index += 1;
+                expr
+            }
             ArgumentKind::Output((msg, kind)) => {
                 let constructor = match kind {
                     OutputKind::Default => quote!(Output::<#msg>::new_downcasted),
                     OutputKind::Span => quote!(OutputSpan::<#msg>::new_downcasted),
                 };
                 let expr = parse_quote!(#constructor(&mut *publishers[#publisher_index]));
+                publisher_index += 1;
+                expr
+            }
+            ArgumentKind::ForwardingOutput((user_data, forwarded)) => {
+                let expr = parse_quote!(
+                    ForwardingPublisher::<#user_data, #forwarded>::new_downcasted(&mut *publishers[#publisher_index])
+                );
                 publisher_index += 1;
                 expr
             }
@@ -241,8 +362,8 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = &sig.callback_type;
 
     let quoted = quote! {
-        use task::subscriber::{RequiredInput, OptionalInput, InputSpan};
-        use task::publisher::{Output, OutputSpan};
+        use task::subscriber::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
+        use task::publisher::{Output, OutputSpan, ForwardingPublisher};
         use task::generic_publisher::GenericPublisher;
         use task::generic_subscriber::GenericSubscriber;
         use task::callback::{Run, GenericCallback, CallbackSignature, InputKind, OutputKind};

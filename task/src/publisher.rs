@@ -134,16 +134,21 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         &mut self,
         subscriber: &mut dyn GenericSubscriber,
     ) -> Result<(), ConnectionTypeMismatch> {
-        match subscriber
+        if let Some(typed) = subscriber
             .as_any()
             .downcast_mut::<crate::subscriber::Subscriber<T>>()
         {
-            Some(typed_subscriber) => {
-                self.add_typed_subscriber(typed_subscriber);
-                Ok(())
-            }
-            None => Err(ConnectionTypeMismatch {}),
+            self.add_typed_subscriber(typed);
+            return Ok(());
         }
+        if let Some(typed) = subscriber
+            .as_any()
+            .downcast_mut::<ForwardableSubscriber<T>>()
+        {
+            self.add_typed_forwarded_subscriber(typed);
+            return Ok(());
+        }
+        Err(ConnectionTypeMismatch {})
     }
 }
 
@@ -466,6 +471,50 @@ impl<T: Default + 'static, F: 'static> ForwardingPublisher<T, F> {
 
     pub fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
         GenericPublisher::flush_loaned_values(&mut self.inner, timestamp);
+    }
+
+    pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> &mut Self {
+        publisher
+            .as_any()
+            .downcast_mut::<ForwardingPublisher<T, F>>()
+            .expect("Expected proc macro to use the correct types")
+    }
+}
+
+impl<T: Default + 'static, F: 'static> GenericPublisher for ForwardingPublisher<T, F> {
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn get_config(&self) -> &PublisherConfig {
+        self.inner.get_config()
+    }
+
+    fn get_config_mut(&mut self) -> &mut PublisherConfig {
+        self.inner.get_config_mut()
+    }
+
+    fn get_forwarded_channels(&self) -> &[ChannelName] {
+        GenericPublisher::get_forwarded_channels(&self.inner)
+    }
+
+    fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
+        GenericPublisher::flush_loaned_values(&mut self.inner, timestamp);
+    }
+
+    fn allocate_arena(&mut self) {
+        self.inner.allocate_arena();
+    }
+
+    fn increase_arena_size(&mut self, additional_capacity: usize) {
+        self.inner.increase_arena_size(additional_capacity);
+    }
+
+    fn connect_to_subscriber(
+        &mut self,
+        subscriber: &mut dyn GenericSubscriber,
+    ) -> Result<(), ConnectionTypeMismatch> {
+        self.inner.connect_to_subscriber(subscriber)
     }
 }
 

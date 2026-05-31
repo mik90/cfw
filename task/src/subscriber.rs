@@ -167,6 +167,48 @@ impl<T> ForwardableSubscriber<T> {
     }
 }
 
+impl<T: 'static> GenericSubscriber for ForwardableSubscriber<T> {
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn get_config(&self) -> &SubscriberConfig {
+        self.subscriber.get_config()
+    }
+
+    fn get_config_mut(&mut self) -> &mut SubscriberConfig {
+        self.subscriber.get_config_mut()
+    }
+
+    fn able_to_run(&self) -> bool {
+        GenericSubscriber::able_to_run(&self.subscriber)
+    }
+
+    fn requests_execution(&self) -> bool {
+        GenericSubscriber::requests_execution(&self.subscriber)
+    }
+
+    fn drain_writer_to_reader(&self) {
+        self.subscriber.drain_writer_to_reader();
+    }
+
+    fn get_queue_info(&self) -> generic_subscriber::QueueInfo {
+        GenericSubscriber::get_queue_info(&self.subscriber)
+    }
+
+    fn cleanup_buffers(&self) {
+        self.subscriber.cleanup_buffers();
+    }
+
+    fn set_readiness_state(&mut self, state: Arc<CallbackReadiness>, bit_index: usize) {
+        self.subscriber.set_readiness_state(state, bit_index);
+    }
+
+    fn get_readiness_state(&self) -> Option<(Arc<CallbackReadiness>, usize)> {
+        self.subscriber.get_readiness_state()
+    }
+}
+
 pub struct RequiredInput<'a, T> {
     _subscriber: &'a Subscriber<T>,
     guard: ReadBufferGuard<'a, Message<T>>,
@@ -211,12 +253,26 @@ pub struct ForwardableRequiredInput<'a, T> {
     input: RequiredInput<'a, T>,
 }
 
-impl<'a, T: 'static + ForwardMessageTrait> ForwardableRequiredInput<'a, T> {
+impl<'a, T: 'static> ForwardableRequiredInput<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = RequiredInput::new(&forwardable_subscriber.subscriber);
         Self { input }
     }
 
+    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> Self {
+        let typed = subscriber
+            .as_any()
+            .downcast_mut::<ForwardableSubscriber<T>>()
+            .expect("Expected proc macro to use the correct types");
+        ForwardableRequiredInput::new(typed)
+    }
+
+    pub fn value(&self) -> &T {
+        self.input.value()
+    }
+}
+
+impl<'a, T: 'static + ForwardMessageTrait> ForwardableRequiredInput<'a, T> {
     pub fn forward<'b, UserData: Default + 'static>(
         mut self,
         publisher: &'b mut ForwardingPublisher<UserData, T>,
@@ -228,10 +284,6 @@ impl<'a, T: 'static + ForwardMessageTrait> ForwardableRequiredInput<'a, T> {
             .map(ArenaReaderPtr::new)
             .expect("Expected proc macro to use the correct types");
         ForwardingOutput::new(publisher, ptr)
-    }
-
-    pub fn value(&self) -> &T {
-        self.input.value()
     }
 }
 
@@ -275,6 +327,14 @@ impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = OptionalInput::new(&forwardable_subscriber.subscriber);
         Self { input }
+    }
+
+    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> Self {
+        let typed = subscriber
+            .as_any()
+            .downcast_mut::<ForwardableSubscriber<T>>()
+            .expect("Expected proc macro to use the correct types");
+        ForwardableOptionalInput::new(typed)
     }
 
     pub fn forward<'b, UserData: Default + 'static>(
@@ -321,12 +381,22 @@ pub struct ForwardableInputSpan<'a, T> {
     input: InputSpan<'a, T>,
 }
 
-impl<'a, T: 'static + ForwardMessageTrait> ForwardableInputSpan<'a, T> {
+impl<'a, T: 'static> ForwardableInputSpan<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = InputSpan::new(&forwardable_subscriber.subscriber);
         Self { input }
     }
 
+    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> Self {
+        let typed = subscriber
+            .as_any()
+            .downcast_mut::<ForwardableSubscriber<T>>()
+            .expect("Expected proc macro to use the correct types");
+        ForwardableInputSpan::new(typed)
+    }
+}
+
+impl<'a, T: 'static + ForwardMessageTrait> ForwardableInputSpan<'a, T> {
     pub fn drain_forwards<'b, UserData: Default + 'static>(
         &mut self,
         publisher: &'b mut ForwardingPublisher<UserData, T>,

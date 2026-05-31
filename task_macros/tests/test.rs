@@ -89,6 +89,117 @@ mod tests {
 
         assert_eq!(result.num_iterations, 1);
     }
+    // ForwardTask lives in its own module because two #[task_callback] expansions in the
+    // same scope would emit duplicate `use` statements for the same names.
+    mod forwarding {
+        use task::forwarded_message::{ForwardMessageTrait, ForwardedMessage};
+        use task::publisher::*;
+        use task::subscriber::*;
+        use task_macros::task_callback;
+
+        #[derive(Default)]
+        struct Msg(i32);
+        impl ForwardMessageTrait for Msg {}
+
+        struct ForwardTask {}
+
+        #[task_callback]
+        impl ForwardTask {
+            fn run(
+                &mut self,
+                input: ForwardableRequiredInput<Msg>,
+                fwd_pub: &mut ForwardingPublisher<bool, Msg>,
+            ) {
+                let mut output = input.forward(fwd_pub);
+                *output.value_mut() = true;
+                output.send();
+            }
+        }
+
+        #[test]
+        fn test_forwarding_macro() {
+            // test_publisher (Publisher<Msg>) → task_subscriber (ForwardableSubscriber<Msg>)
+            // task_publisher (ForwardingPublisher<bool, Msg>) → test_subscriber (Subscriber<ForwardedMessage<bool, Msg>>)
+            let mut test_publisher = Publisher::<Msg>::new(PublisherConfig {
+                capacity: 1,
+                channel_name: "input_channel".into(),
+            });
+
+            let mut task_publishers: Vec<Box<dyn GenericPublisher + 'static>> =
+                vec![Box::new(ForwardingPublisher::<bool, Msg>::new(
+                    PublisherConfig {
+                        capacity: 1,
+                        channel_name: "forwarded_channel".into(),
+                    },
+                    vec!["input_channel".into()],
+                ))];
+
+            let mut task_subscribers: Vec<Box<dyn GenericSubscriber + 'static>> = vec![Box::new(
+                ForwardableSubscriber::<Msg>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: "input_channel".into(),
+                }),
+            )];
+
+            let mut test_subscriber =
+                Subscriber::<ForwardedMessage<bool, Msg>>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: "forwarded_channel".into(),
+                });
+
+            assert!(
+                test_publisher
+                    .connect_to_subscriber(task_subscribers[0].as_mut())
+                    .is_ok()
+            );
+            assert!(
+                task_publishers[0]
+                    .connect_to_subscriber(&mut test_subscriber as &mut dyn GenericSubscriber)
+                    .is_ok()
+            );
+
+            test_publisher.allocate_arena();
+            task_publishers[0].allocate_arena();
+
+            {
+                let mut output = Output::new_default(&mut test_publisher);
+                *output = Msg(42);
+                output.send();
+            }
+            test_publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
+
+            for subscriber in task_subscribers.iter_mut() {
+                subscriber.drain_writer_to_reader();
+            }
+
+            let mut task = ForwardTask {};
+            let ctx = task::context::Context::new(task::time::FrameworkTime::from_wall_clock());
+            let result = task.run_generic(
+                task_subscribers.as_mut_slice(),
+                task_publishers.as_mut_slice(),
+                &ctx,
+            );
+
+            for publisher in task_publishers.iter_mut() {
+                publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
+            }
+
+            assert_eq!(result.num_iterations, 1);
+
+            test_subscriber.drain_writer_to_reader();
+            let guard = test_subscriber.get_read_buffer();
+            let msg = guard.front().unwrap();
+            assert_eq!(*msg.message.get_message(), true);
+            assert_eq!(msg.message.get_forwarded_message().message.0, 42);
+        }
+    }
+
     #[test]
     fn make_pub_sub() {
         let task = MyTask {};
