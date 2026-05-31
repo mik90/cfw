@@ -118,9 +118,7 @@ mod tests {
             assert!(input.value().is_some());
             assert_eq!(*input.value().unwrap(), 42u32);
 
-            let forwarded_ptr = input.forward().unwrap();
-
-            let mut output = ForwardingOutput::new(&mut forwarding_publisher, forwarded_ptr);
+            let mut output = input.forward(&mut forwarding_publisher).unwrap();
             *output = true;
             output.send();
             forwarding_publisher.flush_loaned_values(t_forwarding);

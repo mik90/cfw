@@ -6,6 +6,7 @@ use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
 use crate::message::Message;
 use crate::pub_sub::ChannelName;
+use crate::publisher::{ForwardingOutput, ForwardingOutputSpan, ForwardingPublisher};
 use core::panic;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -216,14 +217,17 @@ impl<'a, T: 'static + ForwardMessageTrait> ForwardableRequiredInput<'a, T> {
         Self { input }
     }
 
-    /// TODO: Should we directly take in a subscriber to avoid the case where a user holds onto this?
-    /// Returns a forwardable pointer that can be used in a publisher's output
-    pub fn forward(mut self) -> ArenaReaderPtr<Message<T>> {
-        self.input
+    pub fn forward<'b, UserData: Default + 'static>(
+        mut self,
+        publisher: &'b mut ForwardingPublisher<UserData, T>,
+    ) -> ForwardingOutput<'b, UserData, T> {
+        let ptr = self
+            .input
             .guard
             .pop_front_ptr()
             .map(ArenaReaderPtr::new)
-            .expect("Expected proc macro to use the correct types")
+            .expect("Expected proc macro to use the correct types");
+        ForwardingOutput::new(publisher, ptr)
     }
 
     pub fn value(&self) -> &T {
@@ -273,13 +277,12 @@ impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
         Self { input }
     }
 
-    /// TODO: Should we directly take in a subscriber to avoid the case where a user holds onto this?
-    /// Returns an optional forwardable pointer that can be used in a publisher's output
-    pub fn forward(mut self) -> Option<ArenaReaderPtr<Message<T>>> {
-        self.input
-            .guard
-            .pop_front_ptr()
-            .map(ArenaReaderPtr::new)
+    pub fn forward<'b, UserData: Default + 'static>(
+        mut self,
+        publisher: &'b mut ForwardingPublisher<UserData, T>,
+    ) -> Option<ForwardingOutput<'b, UserData, T>> {
+        let ptr = self.input.guard.pop_front_ptr().map(ArenaReaderPtr::new)?;
+        Some(ForwardingOutput::new(publisher, ptr))
     }
 
     pub fn value(&'a self) -> Option<&'a T> {
@@ -324,10 +327,10 @@ impl<'a, T: 'static + ForwardMessageTrait> ForwardableInputSpan<'a, T> {
         Self { input }
     }
 
-    /// TODO: Should we directly take in a subscriber to avoid the case where a user holds onto this?
-    /// TODO: Can we return some Drain wrapper that manages ownership instead of letting users call drain_forwards on the InputSpan twice?
-    /// Creates iterator that drains elements from storage
-    pub fn drain_forwards(&mut self) -> impl Iterator<Item = ArenaReaderPtr<Message<T>>> {
-        self.input.guard.drain_contiguous()
+    pub fn drain_forwards<'b, UserData: Default + 'static>(
+        &mut self,
+        publisher: &'b mut ForwardingPublisher<UserData, T>,
+    ) -> ForwardingOutputSpan<'b, UserData, T> {
+        ForwardingOutputSpan::new(publisher, self.input.guard.drain_contiguous())
     }
 }

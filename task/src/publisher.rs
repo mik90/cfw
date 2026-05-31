@@ -469,15 +469,6 @@ impl<T: Default + 'static, F: 'static> ForwardingPublisher<T, F> {
     }
 }
 
-fn forwarded_message_factory<T: Default, F>(
-    forwarded_ptr: ArenaReaderPtr<Message<F>>,
-) -> impl FnOnce() -> Message<ForwardedMessage<T, F>> {
-    || Message {
-        header: forwarded_ptr.header.clone(),
-        message: ForwardedMessage::new_with_forward(forwarded_ptr),
-    }
-}
-
 pub struct ForwardingOutput<'a, T, F> {
     inner: Output<'a, ForwardedMessage<T, F>>,
 }
@@ -492,7 +483,7 @@ impl<'a, T: 'static, F: 'static> ForwardingOutput<'a, T, F> {
 }
 
 impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
-    pub fn new(
+    pub(crate) fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptr: ArenaReaderPtr<Message<F>>,
     ) -> Self {
@@ -533,7 +524,7 @@ pub struct ForwardingOutputSpan<'a, T, F> {
 }
 
 impl<'a, T: Default + 'static, F: 'static> ForwardingOutputSpan<'a, T, F> {
-    pub fn new(
+    pub(crate) fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptrs: impl IntoIterator<Item = ArenaReaderPtr<Message<F>>>,
     ) -> Self {
