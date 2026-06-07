@@ -1,14 +1,14 @@
-use crate::callback;
-use crate::callback::{ConnectedCallback, connect_callbacks};
-use crate::executor::ExecutorStopSignal;
-use crate::generic_publisher::GenericPublisher;
-use crate::generic_subscriber::GenericSubscriber;
-use crate::input;
-use crate::output;
-use crate::publisher;
-use crate::subscriber;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use task::callback;
+use task::callback::{ConnectedCallback, connect_callbacks};
+use task::executor::ExecutorStopSignal;
+use task::generic_publisher::GenericPublisher;
+use task::generic_subscriber::GenericSubscriber;
+use task::input;
+use task::output;
+use task::publisher;
+use task::subscriber;
 
 pub struct FizzBuzzTaskInfo {
     string_store: Arc<Mutex<Vec<String>>>,
@@ -87,15 +87,15 @@ impl IncrementingIntegerPublisher {
 impl callback::GenericCallback for IncrementingIntegerPublisher {
     fn run_generic(
         &mut self,
-        _subscribers: &mut [Box<dyn crate::subscriber::GenericSubscriber>],
-        publishers: &mut [Box<dyn crate::publisher::GenericPublisher>],
-        _ctx: &crate::context::Context,
-    ) -> crate::callback::Run {
+        _subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
+        publishers: &mut [Box<dyn task::publisher::GenericPublisher>],
+        _ctx: &task::context::Context,
+    ) -> task::callback::Run {
         self.run(output::Output::<u64>::new_downcasted(&mut *publishers[0]));
-        crate::callback::Run::new(1)
+        task::callback::Run::new(1)
     }
 
-    fn build_subscribers(&self) -> Vec<Box<dyn crate::subscriber::GenericSubscriber>> {
+    fn build_subscribers(&self) -> Vec<Box<dyn task::subscriber::GenericSubscriber>> {
         vec![]
     }
     fn build_publishers(&self) -> Vec<Box<dyn publisher::GenericPublisher>> {
@@ -150,18 +150,18 @@ impl FizzBuzzCalculator {
 impl callback::GenericCallback for FizzBuzzCalculator {
     fn run_generic(
         &mut self,
-        subscribers: &mut [Box<dyn crate::subscriber::GenericSubscriber>],
-        publishers: &mut [Box<dyn crate::publisher::GenericPublisher>],
-        _ctx: &crate::context::Context,
-    ) -> crate::callback::Run {
+        subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
+        publishers: &mut [Box<dyn task::publisher::GenericPublisher>],
+        _ctx: &task::context::Context,
+    ) -> task::callback::Run {
         self.run(
             input::RequiredInput::<u64>::new_downcasted(&mut *subscribers[0]),
             output::Output::<String>::new_downcasted(&mut *publishers[0]),
         );
-        crate::callback::Run::new(1)
+        task::callback::Run::new(1)
     }
 
-    fn build_subscribers(&self) -> Vec<Box<dyn crate::subscriber::GenericSubscriber>> {
+    fn build_subscribers(&self) -> Vec<Box<dyn task::subscriber::GenericSubscriber>> {
         vec![Box::new(subscriber::Subscriber::<u64>::new(
             callback::InputKind::Required.into(),
         ))]
@@ -221,17 +221,17 @@ impl StringCollector {
 impl callback::GenericCallback for StringCollector {
     fn run_generic(
         &mut self,
-        subscribers: &mut [Box<dyn crate::subscriber::GenericSubscriber>],
-        _publishers: &mut [Box<dyn crate::publisher::GenericPublisher>],
-        _ctx: &crate::context::Context,
-    ) -> crate::callback::Run {
+        subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
+        _publishers: &mut [Box<dyn task::publisher::GenericPublisher>],
+        _ctx: &task::context::Context,
+    ) -> task::callback::Run {
         self.run(input::RequiredInput::<String>::new_downcasted(
             &mut *subscribers[0],
         ));
-        crate::callback::Run::new(1)
+        task::callback::Run::new(1)
     }
 
-    fn build_subscribers(&self) -> Vec<Box<dyn crate::subscriber::GenericSubscriber>> {
+    fn build_subscribers(&self) -> Vec<Box<dyn task::subscriber::GenericSubscriber>> {
         vec![Box::new(subscriber::Subscriber::<String>::new(
             callback::InputKind::Required.into(),
         ))]
@@ -249,7 +249,7 @@ impl callback::GenericCallback for NoOpTask {
         &mut self,
         _subscribers: &mut [Box<dyn GenericSubscriber>],
         _publishers: &mut [Box<dyn GenericPublisher>],
-        _ctx: &crate::context::Context,
+        _ctx: &task::context::Context,
     ) -> callback::Run {
         callback::Run::new(1)
     }

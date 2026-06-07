@@ -15,8 +15,8 @@ pub mod pub_sub;
 pub mod pub_sub_factory;
 pub mod publisher;
 pub mod subscriber;
-#[cfg(feature = "test-utils")]
-pub mod test_tasks;
+#[cfg(feature = "testing")]
+pub mod testing_publisher;
 #[cfg(feature = "testing")]
 pub mod testing_subscriber;
 pub mod time;

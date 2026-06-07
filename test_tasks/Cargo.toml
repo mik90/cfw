@@ -1,7 +1,9 @@
 [package]
-name = "exact_replay_executor"
+name = "test_tasks"
 version = "0.1.0"
 edition = "2024"
+# This is just some tasks for testing
+publish = false
 
 [dependencies]
 task = { path = "../task" }

@@ -86,7 +86,7 @@ impl fmt::Display for StepResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use task::test_tasks::*;
+    use test_tasks::*;
 
     #[test]
     fn step_time_before_after() {

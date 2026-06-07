@@ -340,7 +340,7 @@ impl SimulationState {
 mod tests {
     use std::time::Duration;
 
-    use task::test_tasks::*;
+    use test_tasks::*;
 
     use super::SimulationState;
 

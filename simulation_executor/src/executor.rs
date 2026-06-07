@@ -110,7 +110,8 @@ impl SimulationExecutor {
 mod tests {
     use std::time::Duration;
 
-    use task::{executor::Executor, test_tasks::*};
+    use task::executor::Executor;
+    use test_tasks::*;
 
     use super::SimulationExecutor;
 

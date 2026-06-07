@@ -6,6 +6,7 @@ members = [
     "task",
     "task_builder",
     "task_macros",
+    "test_tasks",
     "live_executor",
     "live_replay_executor",
     "testing",

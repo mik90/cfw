@@ -410,8 +410,8 @@ mod tests {
     use task::{
         callback::connect_callbacks,
         executor::{Executor, ThreadPoolConfig},
-        test_tasks::*,
     };
+    use test_tasks::*;
 
     use crate::LiveExecutor;
 

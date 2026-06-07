@@ -10,7 +10,7 @@ task = { path = "../task" }
 crossbeam = "0.8"
 
 [dev-dependencies]
-task = { path = "../task", features = ["test-utils"] }
+test_tasks = { path = "../test_tasks" }
 
 [lints]
 workspace = true

@@ -6,8 +6,5 @@ edition = "2024"
 [dependencies]
 task = { path = "../task" }
 
-[dev-dependencies]
-task = { path = "../task", features = ["test-utils"] }
-
 [lints]
 workspace = true

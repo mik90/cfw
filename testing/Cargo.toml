@@ -9,4 +9,4 @@ task = { path = "../task", features = ["testing"] }
 simulation_executor = { path = "../simulation_executor" }
 
 [dev-dependencies]
-task = { path = "../task", features = ["test-utils"] }
+test_tasks = { path = "../test_tasks" }
