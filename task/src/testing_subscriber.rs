@@ -3,13 +3,16 @@ use crate::{
     callback::CallbackReadiness,
     generic_subscriber::QueueInfo,
     message::Message,
+    mpsc_queue::MpscQueue,
     subscriber::{GenericSubscriber, SubscriberConfig},
 };
 use std::sync::Arc;
 
 /// Subscriber that can listen to messages. Has 'infinite' heap buffer.
 pub struct TestSubscriber<T> {
-    queue: Vec<ArenaReaderPtr<Message<T>>>,
+    /// Must be MPSC since, even in unit test, tasks may run in separate threads
+    queue: MpscQueue<ArenaReaderPtr<Message<T>>>,
+
     config: SubscriberConfig,
 }
 
@@ -34,7 +37,7 @@ impl<T: 'static + Clone> TestSubscriber<T> {
     /// Consumes all queued messages and clones them as boxed
     pub fn messages(&'_ mut self) -> Vec<Box<Message<T>>> {
         let mut messages = vec![];
-        for buffer_message in self.queue.drain(..) {
+        while let Some(buffer_message) = self.queue.pop() {
             let message: &Message<T> = &buffer_message;
             let boxed_message = Box::<Message<T>>::new(message.clone());
             messages.push(boxed_message);

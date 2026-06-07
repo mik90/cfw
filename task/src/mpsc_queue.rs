@@ -30,6 +30,12 @@ impl<T> MpscQueue<T> {
         self.inner.is_empty()
     }
 
+    pub fn clear(&self) {
+        while let Some(_) = self.pop() {
+            // Keep popping while there's inputs
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.inner.len()
     }
