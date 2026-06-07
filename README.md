@@ -29,13 +29,18 @@ In order of priority
   - [x] honor thread pool constraints when it comes to whether a task is able to be executed in a group
   - [x] multi-thread execution, flush loans at end of step
 - [x] create custom time type, SystemTime doesn't make sense (we'd want monotonic), Instant doesn't have enough flexibility (no default init, no max value), third party crates are probably not worth it
-- [ ] forwarded messages, publish a message alongside a handle to a message it was produced with
+- [x] forwarded messages, publish a message alongside a handle to a message it was produced with
   - [x] start on this`
     - so, given a message B that was produced using contents of A, allow for message B to link to message A
     - this should allow us to defer logging of messages to a normal callback, we'd publish a message that has some handles and the timestamp in which they were seenA
     - [x] handle message headers, dont need to embed this in ArenaPtr, we can just have ArenaPtr take in a message + header
-    - [ ] integrate with Input/Output types
-- [ ] integrate `ArenaReaderPtr` better to reduce number of `unsafe` sites
+    - [x] integrate with Input/Output types
+- [x] integrate `ArenaReaderPtr`  to reduce number of `unsafe` sites
+  - still some `unsafe`s we could centralize better, but at least the subscriber doesn't have to do it now
+- more advanced forwarding configurations
+  - [x] forward message without extra data (so, as-is onto another channel)
+    - maybe we can just use `()` as the T?
+  - [ ] forwrded message that includes messages from multiple subscribers (with or without extra data)
 - [ ] exact replay executor
   - prob should mimic thread pool constraints but we should be able to execute stuff in any order as long as callbacks aren't stateful
   - I'll need to consider logging executions and message queues for this
