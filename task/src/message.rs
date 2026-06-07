@@ -22,6 +22,15 @@ pub struct Message<T> {
     pub message: T,
 }
 
+impl<T: Clone> Clone for Message<T> {
+    fn clone(&self) -> Self {
+        Self {
+            header: self.header.clone(),
+            message: self.message.clone(),
+        }
+    }
+}
+
 /// Default constructible T means Message is default constructible
 impl<T: Default> Default for Message<T> {
     fn default() -> Self {

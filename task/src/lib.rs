@@ -17,4 +17,6 @@ pub mod publisher;
 pub mod subscriber;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod test_tasks;
+#[cfg(test)]
+pub mod testing_subscriber;
 pub mod time;

@@ -155,5 +155,9 @@ mod tests {
     #[test]
     fn test_individual_callback() {
         // test single callback using test_publisher and test_subscriber
+
+        let mut calculator = FizzBuzzCalculator::build_connected_callback();
+
+        let mut executor = UnitTestExecutor::new(vec![calculator]);
     }
 }
