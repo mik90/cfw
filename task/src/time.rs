@@ -1,4 +1,7 @@
-use std::{ops::Add, time::Duration};
+use std::{
+    ops::{Add, AddAssign},
+    time::Duration,
+};
 
 use libc::{self, CLOCK_MONOTONIC};
 /// Monotonic clock with fixed size
@@ -59,10 +62,20 @@ impl Add<std::time::Duration> for FrameworkTime {
         FrameworkTime::from_nanoseconds(sum_nanos)
     }
 }
+impl AddAssign<std::time::Duration> for FrameworkTime {
+    fn add_assign(&mut self, rhs: std::time::Duration) {
+        self.nanoseconds = self.add(rhs).nanoseconds;
+    }
+}
 
 impl std::fmt::Display for FrameworkTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // TODO: split by SECONDS.NANOS w/ fixed width nanos when formatting?
         write!(f, "{}ns", self.to_nanoseconds())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    // TODO test all the add/substract/etc
 }

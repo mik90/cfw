@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub struct FizzBuzzTaskInfo {
-    pub string_store: Arc<Mutex<Vec<String>>>,
+    string_store: Arc<Mutex<Vec<String>>>,
     pub stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
     pub integer_publisher_index: usize,
     pub fizz_buzz_index: usize,

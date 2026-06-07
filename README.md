@@ -64,7 +64,7 @@ In order of priority
   - cleanup subscriber buffers before publishers
   - allow for indexing with some strong types
   - but will this be portable across all use-cases?
-- [ ] unit test executor
+- [x] unit test executor (in `testing`)
   - allows for testing whole tasks in unit test, based on sim executor
 - [ ] dump connections in graphviz or some other diagram tool
 - [ ] live replay executor
