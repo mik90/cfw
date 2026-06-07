@@ -158,6 +158,10 @@ mod tests {
 
         let mut calculator = FizzBuzzCalculator::build_connected_callback();
 
+        // TODO add test publisher for 'integer' channel
+
+        // TODO add test subscriber for 'fizz_buzz_string' channel
+
         let mut executor = UnitTestExecutor::new(vec![calculator]);
     }
 }
