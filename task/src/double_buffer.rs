@@ -104,6 +104,12 @@ impl<T> DoubleBuffer<T> {
         }
     }
 
+    /// How many elements have been displaced from the write queue (due to overflow —
+    /// the consumer didn't drain often enough to keep up) since it was created.
+    pub fn writer_drops(&self) -> usize {
+        self.write_queue.dropped()
+    }
+
     pub fn get_write_buffer(&self) -> WriteBufferHandle<T> {
         WriteBufferHandle {
             queue: self.write_queue.clone(),

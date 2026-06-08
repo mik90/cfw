@@ -41,6 +41,12 @@ impl<T> Subscriber<T> {
         &self.config
     }
 
+    /// How many messages have been displaced from the write queue (due to overflow —
+    /// the consumer didn't drain often enough to keep up) since creation.
+    pub fn get_writer_queue_drops(&self) -> usize {
+        self.buffers.writer_drops()
+    }
+
     /// How many messages have been displaced from the read buffer (due to overflow —
     /// more arrived than `capacity` allows before being drained) since creation.
     pub fn get_reader_queue_drops(&self) -> usize {

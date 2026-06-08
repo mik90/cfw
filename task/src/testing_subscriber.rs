@@ -11,6 +11,28 @@ use std::sync::Arc;
 /// single-step unit tests without forcing every test to think about sizing.
 pub const DEFAULT_TEST_SUBSCRIBER_CAPACITY: usize = 10;
 
+/// Counts of messages displaced due to overflow on either side of a subscriber's
+/// double buffer — i.e. messages that arrived but were silently dropped to make room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DroppedMessages {
+    /// Displaced from the write queue before ever reaching the read buffer — the
+    /// subscriber wasn't drained often enough to keep up with what was published.
+    pub writer: usize,
+    /// Displaced from the read buffer after draining — more messages arrived than
+    /// `capacity` allows before being consumed via `messages`/`try_messages`.
+    pub reader: usize,
+}
+
+impl DroppedMessages {
+    /// Whether any drops occurred on either side. Note `writer` and `reader` counts
+    /// are deliberately not summed — they describe distinct failure modes (the
+    /// subscriber falling behind the publisher vs. the test falling behind the
+    /// subscriber) and a combined number wouldn't mean anything useful.
+    pub fn any(&self) -> bool {
+        self.writer > 0 || self.reader > 0
+    }
+}
+
 fn make_test_config(channel: ChannelName, capacity: usize) -> SubscriberConfig {
     SubscriberConfig {
         is_optional: true,
@@ -53,22 +75,34 @@ impl<T: 'static + Clone> TestSubscriber<T> {
     /// rather inspect the situation than panic.
     pub fn messages(&mut self) -> Vec<Box<Message<T>>> {
         let (messages, dropped) = self.try_messages();
-        assert_eq!(
-            dropped,
-            0,
-            "TestSubscriber on channel '{}' dropped {dropped} message(s) — queue capacity ({}) \
-             was exceeded; use `with_capacity` to size it for what this test actually sends, or \
+        assert!(
+            dropped.writer == 0,
+            "TestSubscriber on channel '{}' dropped {} message(s) before they were ever drained \
+             — the subscriber fell behind the publisher; queue capacity ({}) was exceeded. Use \
+             `with_capacity` to size it for what this test actually sends, or call \
+             `try_messages` if drops are expected",
+            self.subscriber.get_config().channel_name,
+            dropped.writer,
+            self.subscriber.get_config().capacity,
+        );
+        assert!(
+            dropped.reader == 0,
+            "TestSubscriber on channel '{}' dropped {} message(s) after draining but before \
+             being read — the test fell behind the subscriber; queue capacity ({}) was \
+             exceeded. Use `with_capacity` to size it for what this test actually sends, or \
              call `try_messages` if drops are expected",
             self.subscriber.get_config().channel_name,
+            dropped.reader,
             self.subscriber.get_config().capacity,
         );
         messages
     }
 
     /// Like [`TestSubscriber::messages`], but never panics on drops — instead returns
-    /// the drained messages alongside the total number of messages ever displaced due
-    /// to overflow, for tests that want to assert on drop behavior directly.
-    pub fn try_messages(&mut self) -> (Vec<Box<Message<T>>>, usize) {
+    /// the drained messages alongside counts of how many were ever displaced due to
+    /// overflow (split by which side of the buffer they were dropped on), for tests
+    /// that want to assert on drop behavior directly.
+    pub fn try_messages(&mut self) -> (Vec<Box<Message<T>>>, DroppedMessages) {
         self.subscriber.drain_writer_to_reader();
         let mut guard = self.subscriber.get_read_buffer();
         let messages = guard
@@ -76,7 +110,11 @@ impl<T: 'static + Clone> TestSubscriber<T> {
             .map(|ptr| Box::new((*ptr).clone()))
             .collect();
         drop(guard);
-        (messages, self.subscriber.get_reader_queue_drops())
+        let dropped = DroppedMessages {
+            writer: self.subscriber.get_writer_queue_drops(),
+            reader: self.subscriber.get_reader_queue_drops(),
+        };
+        (messages, dropped)
     }
 }
 
@@ -185,7 +223,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "dropped 1 message")]
-    fn messages_panics_on_overflow() {
+    fn messages_panics_on_reader_side_overflow() {
         let mut subscriber = TestSubscriber::<i32>::with_capacity("channel".into(), 1);
         let mut publisher = connected_publisher("channel", &mut subscriber);
 
@@ -197,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn try_messages_reports_drops_without_panicking() {
+    fn try_messages_reports_reader_side_drops_without_panicking() {
         let mut subscriber = TestSubscriber::<i32>::with_capacity("channel".into(), 1);
         let mut publisher = connected_publisher("channel", &mut subscriber);
 
@@ -206,7 +244,35 @@ mod tests {
         send(&mut publisher, 2, 2);
 
         let (messages, dropped) = subscriber.try_messages();
-        assert_eq!(dropped, 1);
+        assert_eq!(
+            dropped,
+            DroppedMessages {
+                writer: 0,
+                reader: 1
+            }
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message, 2);
+    }
+
+    #[test]
+    fn try_messages_reports_writer_side_drops_without_panicking() {
+        let mut subscriber = TestSubscriber::<i32>::with_capacity("channel".into(), 1);
+        let mut publisher = connected_publisher("channel", &mut subscriber);
+
+        // Two sends without an intervening drain — the second displaces the first
+        // from the *write* queue, before it ever reaches the read buffer.
+        send(&mut publisher, 1, 1);
+        send(&mut publisher, 2, 2);
+
+        let (messages, dropped) = subscriber.try_messages();
+        assert_eq!(
+            dropped,
+            DroppedMessages {
+                writer: 1,
+                reader: 0
+            }
+        );
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message, 2);
     }
