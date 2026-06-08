@@ -426,6 +426,26 @@ impl ConnectedCallback {
         &self.subscribers
     }
 
+    /// Finds the subscriber connected to the given channel, by name.
+    pub fn find_subscriber_mut(
+        &mut self,
+        channel_name: &str,
+    ) -> Option<&mut Box<dyn GenericSubscriber>> {
+        self.subscribers
+            .iter_mut()
+            .find(|subscriber| subscriber.get_config().channel_name == channel_name)
+    }
+
+    /// Finds the publisher connected to the given channel, by name.
+    pub fn find_publisher_mut(
+        &mut self,
+        channel_name: &str,
+    ) -> Option<&mut Box<dyn GenericPublisher>> {
+        self.publishers
+            .iter_mut()
+            .find(|publisher| publisher.get_config().channel_name == channel_name)
+    }
+
     /// Called by the executor after construction to wire up the enqueue mechanism.
     pub fn register_with_executor(&self, task_index: usize, enqueuer: Arc<dyn TaskEnqueuer>) {
         self.readiness.register(task_index, enqueuer);

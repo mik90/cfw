@@ -6,8 +6,11 @@ use crate::generic_publisher::ConnectionTypeMismatch;
 pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::message::{Message, MessageHeader};
+use crate::mpsc_queue::MpscQueue;
 use crate::pub_sub::ChannelName;
 use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
+#[cfg(feature = "testing")]
+use crate::testing_subscriber::TestSubscriber;
 use crate::time::FrameworkTime;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
@@ -60,6 +63,10 @@ pub struct Publisher<T> {
     /// Drop ordering is relevant here, arena must be dropped last since loaned values are pointers into the arena
     pub(crate) loaned_values: Vec<LoanedValue<T>>,
     subscriber_write_buffers: Vec<SubscriberBuffer<T>>,
+    /// Zero-copy sinks for "foreign" subscribers (e.g. `TestSubscriber`) that sit outside the
+    /// normal `Subscriber`/`DoubleBuffer` machinery. Each holds `ArenaReaderPtr`s directly,
+    /// bounded by its own capacity (oldest entries are displaced as new ones arrive).
+    foreign_subscriber_queues: Vec<Arc<MpscQueue<ArenaReaderPtr<Message<T>>>>>,
     arena: Arena<Message<T>>,
     /// This _could_ be part of the publisher config but it's something tied to `T` so it's better to keep it outside of a
     /// user-configurable thing like publisher config (probably).
@@ -107,6 +114,12 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
                         readiness.set_bit(*bit_index);
                     }
                 }
+
+                for foreign_queue in &self.foreign_subscriber_queues {
+                    // Same zero-copy hand-off as above, just routed to a plain bounded
+                    // queue instead of a `WriteBufferHandle`/`DoubleBuffer`.
+                    foreign_queue.push(ArenaReaderPtr::from(loaned_value.ptr.clone()));
+                }
             }
         }
     }
@@ -147,6 +160,11 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
             self.add_typed_forwarded_subscriber(typed);
             return Ok(());
         }
+        #[cfg(feature = "testing")]
+        if let Some(typed) = subscriber.as_any().downcast_mut::<TestSubscriber<T>>() {
+            self.add_foreign_subscriber(typed);
+            return Ok(());
+        }
         Err(ConnectionTypeMismatch {})
     }
 }
@@ -159,6 +177,7 @@ impl<T> Publisher<T> {
             // Arena will be resized to allow for enough data for subscribers
             arena: Arena::new(capacity),
             subscriber_write_buffers: vec![],
+            foreign_subscriber_queues: vec![],
             loaned_values: Vec::with_capacity(capacity),
             forwarded_channels: vec![],
         }
@@ -174,6 +193,7 @@ impl<T> Publisher<T> {
             // Arena will be resized to allow for enough data for subscribers
             arena: Arena::new(capacity),
             subscriber_write_buffers: vec![],
+            foreign_subscriber_queues: vec![],
             loaned_values: Vec::with_capacity(capacity),
             forwarded_channels,
         }
@@ -262,6 +282,19 @@ impl<T: 'static> Publisher<T> {
         forwardable_subscriber: &mut ForwardableSubscriber<T>,
     ) {
         self.add_typed_subscriber(&mut forwardable_subscriber.subscriber)
+    }
+
+    /// Connects a "foreign" subscriber — one that lives outside the normal
+    /// `Subscriber`/`DoubleBuffer` machinery (e.g. `TestSubscriber`). Delivery stays
+    /// zero-copy: the subscriber receives `ArenaReaderPtr`s directly through a small
+    /// bounded queue, so — just like `add_typed_subscriber` — the arena must grow by
+    /// the subscriber's capacity to cover the slots it can hold concurrently.
+    #[cfg(feature = "testing")]
+    pub fn add_foreign_subscriber(&mut self, foreign_subscriber: &mut TestSubscriber<T>) {
+        let capacity = foreign_subscriber.get_config().capacity;
+        self.foreign_subscriber_queues
+            .push(foreign_subscriber.queue_handle());
+        self.increase_arena_size(capacity);
     }
 
     pub fn loan_and_init(
@@ -466,5 +499,48 @@ mod tests {
         let value = publisher.loaned_value_at(0);
         let header = &value.value().header;
         assert_eq!(header.published_at, FrameworkTime::INVALID);
+    }
+
+    #[cfg(feature = "testing")]
+    #[test]
+    fn send_to_foreign_subscriber() {
+        let mut publisher = Publisher::<i32>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "channel".into(),
+        });
+
+        let mut subscriber = TestSubscriber::<i32>::new("channel".into(), 4);
+        assert!(publisher.connect_to_subscriber(&mut subscriber).is_ok());
+        publisher.allocate_arena();
+
+        let mut output = Output::new_default(&mut publisher);
+        *output = 42;
+        output.send();
+
+        publisher.flush_loaned_values(time::FrameworkTime::from_nanoseconds(99));
+
+        assert_eq!(subscriber.queue_len(), 1);
+        let messages = subscriber.messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].header.published_at, time::FrameworkTime::from_nanoseconds(99));
+        assert_eq!(messages[0].message, 42);
+        assert_eq!(subscriber.queue_len(), 0);
+    }
+
+    #[cfg(feature = "testing")]
+    #[test]
+    fn foreign_subscriber_bumps_arena_size() {
+        let mut publisher = Publisher::<i32>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "channel".into(),
+        });
+
+        let mut subscriber = TestSubscriber::<i32>::new("channel".into(), 4);
+        assert!(publisher.connect_to_subscriber(&mut subscriber).is_ok());
+
+        // The publisher's own loan capacity (1) is unaffected, but the arena must have
+        // grown to also cover the foreign subscriber's queue capacity (4) — otherwise
+        // a slow-draining subscriber could starve the publisher's own allocations.
+        assert_eq!(publisher.arena.capacity(), 1 + 4);
     }
 }

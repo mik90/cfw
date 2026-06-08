@@ -4,22 +4,28 @@ use crate::{
     generic_subscriber::QueueInfo,
     message::Message,
     mpsc_queue::MpscQueue,
+    pub_sub::ChannelName,
     subscriber::{GenericSubscriber, SubscriberConfig},
 };
 use std::sync::Arc;
 
-/// Subscriber that can listen to messages. Has 'infinite' heap buffer.
+/// Subscriber that captures messages published on a channel for inspection in tests.
+/// Connects to a real `Publisher` as a "foreign" (zero-copy, non-arena) subscriber —
+/// see `Publisher::add_foreign_subscriber`. Holds `ArenaReaderPtr`s in a small bounded
+/// queue; once full, the oldest entry is displaced (and its arena slot released).
 pub struct TestSubscriber<T> {
-    /// Must be MPSC since, even in unit test, tasks may run in separate threads
-    queue: MpscQueue<ArenaReaderPtr<Message<T>>>,
+    /// Shared with the publisher's foreign-subscriber sink list, so messages can be
+    /// pushed in directly without going through the `Subscriber`/`DoubleBuffer` machinery.
+    /// Must be MPSC since, even in unit test, tasks may run in separate threads.
+    queue: Arc<MpscQueue<ArenaReaderPtr<Message<T>>>>,
 
     config: SubscriberConfig,
 }
 
-fn make_test_config(channel: String) -> SubscriberConfig {
+fn make_test_config(channel: ChannelName, capacity: usize) -> SubscriberConfig {
     SubscriberConfig {
         is_optional: true,
-        capacity: usize::MAX,
+        capacity,
         is_trigger: false,
         keep_across_runs: true,
         channel_name: channel,
@@ -27,9 +33,22 @@ fn make_test_config(channel: String) -> SubscriberConfig {
 }
 
 impl<T> TestSubscriber<T> {
+    pub fn new(channel_name: ChannelName, capacity: usize) -> Self {
+        TestSubscriber {
+            queue: Arc::new(MpscQueue::new(capacity)),
+            config: make_test_config(channel_name, capacity),
+        }
+    }
+
     /// How many messages are in the queue
     pub fn queue_len(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Handle to the underlying queue, for the publisher to push zero-copy
+    /// `ArenaReaderPtr`s into directly during connection.
+    pub(crate) fn queue_handle(&self) -> Arc<MpscQueue<ArenaReaderPtr<Message<T>>>> {
+        self.queue.clone()
     }
 }
 
