@@ -12,5 +12,12 @@ testing = []
 crossbeam-queue = "0.3"
 libc = "0.2.186"
 
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "pub_sub_latency"
+harness = false
+
 [lints]
 workspace = true
