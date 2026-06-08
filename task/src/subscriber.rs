@@ -22,8 +22,6 @@ pub struct SubscriberConfig {
 #[allow(dead_code)]
 pub struct Subscriber<T> {
     buffers: DoubleBuffer<Message<T>>,
-    writer_queue_drops: usize,
-    reader_queue_drops: usize,
     queue_has_new_data: bool,
     config: SubscriberConfig,
     readiness_state: Option<(Arc<CallbackReadiness>, usize)>,
@@ -34,8 +32,6 @@ impl<T> Subscriber<T> {
         Subscriber {
             buffers: DoubleBuffer::new(config.capacity),
             config,
-            writer_queue_drops: 0,
-            reader_queue_drops: 0,
             queue_has_new_data: false,
             readiness_state: None,
         }
@@ -45,12 +41,10 @@ impl<T> Subscriber<T> {
         &self.config
     }
 
-    pub fn get_writer_queue_drops(&self) -> usize {
-        self.writer_queue_drops
-    }
-
+    /// How many messages have been displaced from the read buffer (due to overflow —
+    /// more arrived than `capacity` allows before being drained) since creation.
     pub fn get_reader_queue_drops(&self) -> usize {
-        self.reader_queue_drops
+        self.buffers.get_read_buffer().drops()
     }
 
     pub fn get_write_guard(&mut self) -> WriteBufferHandle<Message<T>> {

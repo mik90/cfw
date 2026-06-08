@@ -78,6 +78,12 @@ impl<'a, T> ReadBufferGuard<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.buffer.storage.is_empty()
     }
+
+    /// How many entries have been displaced from this read buffer (due to overflow)
+    /// since it was created.
+    pub fn drops(&self) -> usize {
+        self.buffer.drops
+    }
 }
 
 pub(crate) struct DoubleBuffer<T> {

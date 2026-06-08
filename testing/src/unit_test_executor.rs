@@ -8,14 +8,8 @@ use task::callback::{ConnectedCallback, connect_callbacks};
 use task::executor::ThreadPoolConfig;
 use task::generic_publisher::GenericPublisher;
 use task::testing_publisher::TestPublisher;
-use task::testing_subscriber::TestSubscriber;
+use task::testing_subscriber::{DEFAULT_TEST_SUBSCRIBER_CAPACITY, TestSubscriber};
 use task::time::FrameworkTime;
-
-/// Capacity used for `TestSubscriber`s built by `UnitTestExecutorBuilder`. Small and
-/// finite — the underlying queue (and the arena slots it requires, see
-/// `Publisher::add_foreign_subscriber`) must be bounded, and unit tests only ever
-/// push through a handful of messages at a time.
-const TEST_SUBSCRIBER_CAPACITY: usize = 64;
 
 /// Struct for running unit tests against tasks
 pub struct UnitTestExecutor {
@@ -125,44 +119,68 @@ impl UnitTestExecutorBuilder {
         let time_source: Arc<Mutex<Box<dyn Fn() -> FrameworkTime>>> =
             Arc::new(Mutex::new(Box::new(move || *current_time.lock().unwrap())));
 
+        let task_name = self.tasks[task_index].get_name().to_string();
         let subscriber = self.tasks[task_index]
             .find_subscriber_mut(channel_name)
             .unwrap_or_else(|| {
-                panic!("No subscriber for channel '{channel_name}' on task {task_index}")
+                panic!(
+                    "No subscriber for channel '{channel_name}' on task '{task_name}' (index {task_index})"
+                )
             });
         let capacity = subscriber.get_config().capacity;
 
-        let mut publisher = TestPublisher::<T>::new(channel_name.to_string(), capacity, time_source);
+        let mut publisher =
+            TestPublisher::<T>::new(channel_name.to_string(), capacity, time_source);
         publisher
             .connect_to_subscriber(subscriber.as_mut())
             .unwrap_or_else(|_| {
-                panic!("Type mismatch connecting TestPublisher to channel '{channel_name}'")
+                panic!(
+                    "Type mismatch connecting TestPublisher to channel '{channel_name}' on task '{task_name}'"
+                )
             });
         publisher.allocate_arena();
         publisher
     }
 
     /// Connects a `TestSubscriber<T>` directly to the named publisher on the callback at
-    /// `task_index`, capturing its output in isolation. Connects as a "foreign" (zero-copy,
-    /// non-arena) subscriber — see `Publisher::add_foreign_subscriber` — which bumps the
-    /// publisher's arena size by `TEST_SUBSCRIBER_CAPACITY`; `connect_callbacks`'s later
-    /// `allocate_arena` picks up that bump along with any other connections.
+    /// `task_index`, capturing its output in isolation, with the default queue depth
+    /// ([`DEFAULT_TEST_SUBSCRIBER_CAPACITY`]). Use [`Self::add_test_subscriber_with_capacity`]
+    /// if a test pushes through more messages than that comfortably holds.
     pub fn add_test_subscriber<T: 'static + Clone>(
         &mut self,
         task_index: usize,
         channel_name: &str,
     ) -> TestSubscriber<T> {
+        self.add_test_subscriber_with_capacity(
+            task_index,
+            channel_name,
+            DEFAULT_TEST_SUBSCRIBER_CAPACITY,
+        )
+    }
+
+    /// Like [`Self::add_test_subscriber`], but with a caller-chosen queue depth.
+    pub fn add_test_subscriber_with_capacity<T: 'static + Clone>(
+        &mut self,
+        task_index: usize,
+        channel_name: &str,
+        capacity: usize,
+    ) -> TestSubscriber<T> {
+        let task_name = self.tasks[task_index].get_name().to_string();
         let publisher = self.tasks[task_index]
             .find_publisher_mut(channel_name)
             .unwrap_or_else(|| {
-                panic!("No publisher for channel '{channel_name}' on task {task_index}")
+                panic!(
+                    "No publisher for channel '{channel_name}' on task '{task_name}' (index {task_index})"
+                )
             });
 
-        let mut subscriber = TestSubscriber::<T>::new(channel_name.to_string(), TEST_SUBSCRIBER_CAPACITY);
+        let mut subscriber = TestSubscriber::<T>::with_capacity(channel_name.to_string(), capacity);
         publisher
             .connect_to_subscriber(&mut subscriber)
             .unwrap_or_else(|_| {
-                panic!("Type mismatch connecting TestSubscriber to channel '{channel_name}'")
+                panic!(
+                    "Type mismatch connecting TestSubscriber to channel '{channel_name}' on task '{task_name}'"
+                )
             });
         subscriber
     }
