@@ -158,7 +158,15 @@ fn periodic_trigger_thread(
             .unwrap();
     }
 
-    if now <= time_triggered_task.requested_exec_time {
+    // Re-sample the clock after waking: `wait_timeout` can return early (spurious
+    // wakeup, shutdown notification) or late (OS scheduling slop), so the `now`
+    // captured before waiting may no longer reflect reality. Comparing — and
+    // rescheduling — against a fresh timestamp is essential: comparing against the
+    // stale `now` can make the task look "not due yet" forever once it actually
+    // becomes overdue, permanently livelocking its periodic trigger.
+    let now = task::time::FrameworkTime::from_wall_clock();
+
+    if now >= time_triggered_task.requested_exec_time {
         shared_state
             .enqueue_state
             .trigger_task(time_triggered_task.index);
@@ -402,18 +410,58 @@ impl Executor for LiveExecutor {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, OnceLock},
+        sync::{
+            Arc, OnceLock,
+            atomic::{AtomicUsize, Ordering},
+        },
         thread::sleep,
         time,
     };
 
     use task::{
-        callback::connect_callbacks,
-        executor::{Executor, ThreadPoolConfig},
+        callback::{ConnectedCallback, GenericCallback, Run, connect_callbacks},
+        context::Context,
+        executor::{Executor, ExecutorStopSignal, ThreadPoolConfig},
+        generic_publisher::GenericPublisher,
+        generic_subscriber::GenericSubscriber,
     };
     use test_tasks::*;
 
     use crate::LiveExecutor;
+
+    /// A callback with no inputs that runs purely off its periodic trigger,
+    /// counting how many times it has run and requesting a stop once it
+    /// reaches `target_runs`. Used to exercise sustained periodic scheduling.
+    struct PeriodicCounter {
+        run_count: Arc<AtomicUsize>,
+        target_runs: usize,
+        stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+    }
+
+    impl GenericCallback for PeriodicCounter {
+        fn run_generic(
+            &mut self,
+            _subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let run_number = self.run_count.fetch_add(1, Ordering::SeqCst) + 1;
+            if run_number >= self.target_runs {
+                if let Some(signal) = self.stop_signal.get() {
+                    signal.request_stop();
+                }
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
 
     #[test]
     fn test_thread_pool_exec() {
@@ -503,5 +551,54 @@ mod tests {
         assert!(stop_result.is_ok());
 
         assert!(!string_store.lock().unwrap().is_empty());
+    }
+
+    /// Regression test for a livelock in `periodic_trigger_thread`: a task driven
+    /// purely by its periodic schedule (no subscribers to trigger it) must keep
+    /// being re-triggered indefinitely, not just once or twice.
+    #[test]
+    fn test_sustained_periodic_trigger() {
+        const TARGET_RUNS: usize = 50;
+
+        let run_count = Arc::new(AtomicUsize::new(0));
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let callback: Box<dyn GenericCallback> = Box::new(PeriodicCounter {
+            run_count: run_count.clone(),
+            target_runs: TARGET_RUNS,
+            stop_signal: stop_signal_cell.clone(),
+        });
+        let subscribers = callback.build_subscribers();
+        let publishers = callback.build_publishers();
+        let mut connected = ConnectedCallback::new_with(
+            callback,
+            subscribers,
+            publishers,
+            "PeriodicCounter".into(),
+        );
+        connected.set_execution_time_callback(Box::new(|now| {
+            Some(now + time::Duration::from_millis(2))
+        }));
+        connected.set_execution_duration_callback(Box::new(|| time::Duration::ZERO));
+
+        let mut exec = LiveExecutor::new(1, vec![connected]);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(10);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not reach {TARGET_RUNS} periodic runs within 10 seconds (stuck at {})",
+            run_count.load(Ordering::SeqCst)
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(run_count.load(Ordering::SeqCst) >= TARGET_RUNS);
     }
 }
