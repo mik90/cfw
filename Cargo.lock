@@ -312,6 +312,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "logging"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "task",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

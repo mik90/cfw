@@ -1,0 +1,15 @@
+[package]
+name = "logging"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+task = { path = "../task" }
+# We allow serde serialization for those that want it
+serde = { version = "1.0.228", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[lints]
+workspace = true

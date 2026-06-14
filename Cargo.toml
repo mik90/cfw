@@ -9,7 +9,8 @@ members = [
     "test_tasks",
     "live_executor",
     "live_replay_executor",
-    "testing",
+    "testing", 
+    "logging",
 ]
 resolver = "3"
 
