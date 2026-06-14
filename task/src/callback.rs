@@ -106,6 +106,7 @@ pub trait GenericCallback {
     }
 }
 
+#[derive(Debug)]
 pub struct MismatchTypeError {
     channel_name: ChannelName,
     publisher_callback: CallbackName,
@@ -121,6 +122,8 @@ impl std::fmt::Display for MismatchTypeError {
         )
     }
 }
+
+impl std::error::Error for MismatchTypeError {}
 
 /// Returns a mapping of the forwarded channel to the depth of subscriber queues listening to it
 fn find_forwarded_channel_usage(callbacks: &[ConnectedCallback]) -> HashMap<ChannelName, usize> {

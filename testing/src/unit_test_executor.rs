@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fmt;
 use std::num::Saturating;
 use std::sync::{Arc, Mutex};
@@ -188,23 +189,32 @@ impl UnitTestExecutorBuilder {
     /// Wires up any remaining real connections (and allocates the callbacks' own publisher
     /// arenas, now correctly sized — test connections above already bumped capacities where
     /// needed), then constructs the executor.
-    pub fn build(mut self) -> UnitTestExecutor {
-        connect_callbacks(&mut self.tasks).unwrap_or_else(|e| {
-            panic!("Failed to connect callbacks: {e}");
-        });
+    pub fn build(self) -> UnitTestExecutor {
+        match self.try_build() {
+            Ok(e) => e,
+            Err(e) => {
+                panic!("Could not build unit test executor: {e}");
+            }
+        }
+    }
+
+    /// Same as build(), but exposes error cases.
+    pub fn try_build(mut self) -> Result<UnitTestExecutor, Box<dyn Error>> {
+        connect_callbacks(&mut self.tasks)?;
 
         let pools = vec![ThreadPoolConfig {
             thread_count: 1,
             tasks: self.tasks,
         }];
-        UnitTestExecutor::new_with_time_cell(
+        let executor = UnitTestExecutor::new_with_time_cell(
             UnitTestExecutorConfig {
                 start_time: self.start_time,
                 pools,
                 callback_executor_thread_count: 1,
             },
             Some(self.current_time),
-        )
+        );
+        Ok(executor)
     }
 }
 
@@ -314,5 +324,29 @@ mod tests {
         let messages = string_subscriber.messages();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message, "FizzBuzz");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Type mismatch connecting TestPublisher to channel 'integer' on task 'FizzBuzzCalculator'"
+    )]
+    fn test_publisher_type_mismatch_fails() {
+        let calculator = FizzBuzzCalculator::build_connected_callback();
+        let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
+
+        // Should panic since integer doesn't take a string
+        let _ = builder.add_test_publisher::<String>(0, "integer");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Type mismatch connecting TestSubscriber to channel 'fizz_buzz_string' on task 'FizzBuzzCalculator'"
+    )]
+    fn test_susbcriber_type_mismatch_fails() {
+        let calculator = FizzBuzzCalculator::build_connected_callback();
+        let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
+
+        // Should panic since integer doesn't take a string
+        let _ = builder.add_test_subscriber::<u8>(0, "fizz_buzz_string");
     }
 }
