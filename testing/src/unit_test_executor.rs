@@ -9,7 +9,7 @@ use simulation_executor::state::{SimulationState, StepError};
 use task::callback::{ConnectedCallback, connect_callbacks};
 use task::executor::ThreadPoolConfig;
 use task::generic_publisher::GenericPublisher;
-use task::pub_sub::{CallbackName, ChannelName};
+use task::pub_sub::CallbackName;
 use task::subscriber::GenericSubscriber;
 use task::testing_publisher::TestPublisher;
 use task::testing_subscriber::{DEFAULT_TEST_SUBSCRIBER_CAPACITY, TestSubscriber};
@@ -121,15 +121,15 @@ impl UnitTestExecutorBuilder {
             .flat_map(|callback| {
                 // Get all publishers matching the requested channel and the name of the task they're on
                 let callback_name = callback.get_name().to_owned();
-                let publisher_and_callback_name = callback
+                
+
+                callback
                     .get_publishers_mut()
                     .iter_mut()
                     // only take in publishers with the given channel name
                     .filter(|publisher| publisher.get_config().channel_name == *channel_name)
                     // Deref the box so callers don't need to care about it
-                    .map(move |p| (p.deref_mut(), callback_name.clone()));
-
-                publisher_and_callback_name
+                    .map(move |p| (p.deref_mut(), callback_name.clone()))
             })
             .collect()
     }
@@ -144,15 +144,15 @@ impl UnitTestExecutorBuilder {
             .flat_map(|callback| {
                 // Get all subscribers matching the requested channel and the name of the task they're on
                 let callback_name = callback.get_name().to_owned();
-                let subscriber_and_callback_name = callback
+                
+
+                callback
                     .get_subscribers_mut()
                     .iter_mut()
                     // only take in subscribers with the given channel name
                     .filter(|subscriber| subscriber.get_config().channel_name == *channel_name)
                     // Deref the box so callers don't need to care about it
-                    .map(move |p| (p.deref_mut(), callback_name.clone()));
-
-                subscriber_and_callback_name
+                    .map(move |p| (p.deref_mut(), callback_name.clone()))
             })
             .collect()
     }
