@@ -425,8 +425,16 @@ impl ConnectedCallback {
         &self.publishers
     }
 
+    pub fn get_publishers_mut(&mut self) -> &mut [Box<dyn GenericPublisher>] {
+        &mut self.publishers
+    }
+
     pub fn get_subscribers(&self) -> &[Box<dyn GenericSubscriber>] {
         &self.subscribers
+    }
+
+    pub fn get_subscribers_mut(&mut self) -> &mut [Box<dyn GenericSubscriber>] {
+        &mut self.subscribers
     }
 
     /// Finds the subscriber connected to the given channel, by name.

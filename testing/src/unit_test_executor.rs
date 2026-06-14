@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt;
 use std::num::Saturating;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
 use simulation_executor::SimulationConfig;
@@ -8,6 +9,8 @@ use simulation_executor::state::{SimulationState, StepError};
 use task::callback::{ConnectedCallback, connect_callbacks};
 use task::executor::ThreadPoolConfig;
 use task::generic_publisher::GenericPublisher;
+use task::pub_sub::{CallbackName, ChannelName};
+use task::subscriber::GenericSubscriber;
 use task::testing_publisher::TestPublisher;
 use task::testing_subscriber::{DEFAULT_TEST_SUBSCRIBER_CAPACITY, TestSubscriber};
 use task::time::FrameworkTime;
@@ -108,6 +111,29 @@ impl UnitTestExecutorBuilder {
         }
     }
 
+    /// Find all publishers on the given channel
+    fn find_publishers_mut(
+        &mut self,
+        channel_name: &str,
+    ) -> Vec<(&mut (dyn GenericPublisher + 'static), CallbackName)> {
+        self.tasks
+            .iter_mut()
+            .flat_map(|callback| {
+                // Get all publishers matching the requested channel and the name of the task they're on
+                let callback_name = callback.get_name().to_owned();
+                let publisher_and_callback_name = callback
+                    .get_publishers_mut()
+                    .iter_mut()
+                    // only take in publishers with the given channel name
+                    .filter(|publisher| publisher.get_config().channel_name == *channel_name)
+                    // Deref the box so callers don't need to care about it
+                    .map(move |p| (p.deref_mut(), callback_name.clone()));
+
+                publisher_and_callback_name
+            })
+            .collect()
+    }
+
     /// Connects a `TestPublisher<T>` directly to the named subscriber on the callback at
     /// `task_index`, feeding it input in isolation. Since a test publisher feeds exactly
     /// one subscriber, its arena can be allocated immediately.
@@ -125,7 +151,7 @@ impl UnitTestExecutorBuilder {
             .find_subscriber_mut(channel_name)
             .unwrap_or_else(|| {
                 panic!(
-                    "No subscriber for channel '{channel_name}' on task '{task_name}' (index {task_index})"
+                    "No subscriber for channel '{channel_name}' on callback '{task_name}' (index {task_index})"
                 )
             });
         let capacity = subscriber.get_config().capacity;
@@ -136,53 +162,44 @@ impl UnitTestExecutorBuilder {
             .connect_to_subscriber(subscriber.as_mut())
             .unwrap_or_else(|_| {
                 panic!(
-                    "Type mismatch connecting TestPublisher to channel '{channel_name}' on task '{task_name}'"
+                    "Type mismatch connecting TestPublisher to channel '{channel_name}' on callback '{task_name}'"
                 )
             });
         publisher.allocate_arena();
         publisher
     }
 
-    /// Connects a `TestSubscriber<T>` directly to the named publisher on the callback at
-    /// `task_index`, capturing its output in isolation, with the default queue depth
+    /// Connects a `TestSubscriber<T>` to `channel_name`, capturing its output in isolation, with the default queue depth
     /// ([`DEFAULT_TEST_SUBSCRIBER_CAPACITY`]). Use [`Self::add_test_subscriber_with_capacity`]
     /// if a test pushes through more messages than that comfortably holds.
     pub fn add_test_subscriber<T: 'static + Clone>(
         &mut self,
-        task_index: usize,
         channel_name: &str,
     ) -> TestSubscriber<T> {
-        self.add_test_subscriber_with_capacity(
-            task_index,
-            channel_name,
-            DEFAULT_TEST_SUBSCRIBER_CAPACITY,
-        )
+        self.add_test_subscriber_with_capacity(channel_name, DEFAULT_TEST_SUBSCRIBER_CAPACITY)
     }
 
     /// Like [`Self::add_test_subscriber`], but with a caller-chosen queue depth.
     pub fn add_test_subscriber_with_capacity<T: 'static + Clone>(
         &mut self,
-        task_index: usize,
         channel_name: &str,
         capacity: usize,
     ) -> TestSubscriber<T> {
-        let task_name = self.tasks[task_index].get_name().to_string();
-        let publisher = self.tasks[task_index]
-            .find_publisher_mut(channel_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "No publisher for channel '{channel_name}' on task '{task_name}' (index {task_index})"
-                )
-            });
+        let publishers = self.find_publishers_mut(channel_name);
+        if publishers.is_empty() {
+            panic!("No publisher for channel '{channel_name}'")
+        }
 
         let mut subscriber = TestSubscriber::<T>::with_capacity(channel_name.to_string(), capacity);
-        publisher
-            .connect_to_subscriber(&mut subscriber)
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Type mismatch connecting TestSubscriber to channel '{channel_name}' on task '{task_name}'"
-                )
-            });
+
+        for (publisher, callback_name) in publishers {
+            publisher
+                .connect_to_subscriber(&mut subscriber)
+                .unwrap_or_else(|_| {
+                    panic!("Type mismatch connecting TestSubscriber to channel '{channel_name}' on callback '{callback_name}'")
+                });
+        }
+
         subscriber
     }
 
@@ -315,7 +332,7 @@ mod tests {
 
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
         let mut integer_publisher = builder.add_test_publisher::<u64>(0, "integer");
-        let mut string_subscriber = builder.add_test_subscriber::<String>(0, "fizz_buzz_string");
+        let mut string_subscriber = builder.add_test_subscriber::<String>("fizz_buzz_string");
         let mut executor = builder.build();
 
         integer_publisher.send(15);
@@ -328,7 +345,7 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "Type mismatch connecting TestPublisher to channel 'integer' on task 'FizzBuzzCalculator'"
+        expected = "Type mismatch connecting TestPublisher to channel 'integer' on callback 'FizzBuzzCalculator'"
     )]
     fn test_publisher_type_mismatch_fails() {
         let calculator = FizzBuzzCalculator::build_connected_callback();
@@ -340,13 +357,13 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "Type mismatch connecting TestSubscriber to channel 'fizz_buzz_string' on task 'FizzBuzzCalculator'"
+        expected = "Type mismatch connecting TestSubscriber to channel 'fizz_buzz_string' on callback 'FizzBuzzCalculator'"
     )]
     fn test_susbcriber_type_mismatch_fails() {
         let calculator = FizzBuzzCalculator::build_connected_callback();
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
 
         // Should panic since integer doesn't take a string
-        let _ = builder.add_test_subscriber::<u8>(0, "fizz_buzz_string");
+        let _ = builder.add_test_subscriber::<u8>("fizz_buzz_string");
     }
 }
