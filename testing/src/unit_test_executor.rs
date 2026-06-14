@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 use std::num::Saturating;
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 
 use simulation_executor::SimulationConfig;
@@ -121,7 +121,6 @@ impl UnitTestExecutorBuilder {
             .flat_map(|callback| {
                 // Get all publishers matching the requested channel and the name of the task they're on
                 let callback_name = callback.get_name().to_owned();
-                
 
                 callback
                     .get_publishers_mut()
@@ -144,7 +143,6 @@ impl UnitTestExecutorBuilder {
             .flat_map(|callback| {
                 // Get all subscribers matching the requested channel and the name of the task they're on
                 let callback_name = callback.get_name().to_owned();
-                
 
                 callback
                     .get_subscribers_mut()
@@ -165,6 +163,7 @@ impl UnitTestExecutorBuilder {
         channel_name: &str,
     ) -> TestPublisher<T> {
         let current_time = self.current_time.clone();
+        // TODO: The time source is send and sync, we should just make some wrapper type for it
         let time_source: Arc<Mutex<Box<dyn Fn() -> FrameworkTime>>> =
             Arc::new(Mutex::new(Box::new(move || *current_time.lock().unwrap())));
 
