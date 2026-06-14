@@ -29,7 +29,9 @@ fn bench_publish_to_receive(c: &mut Criterion) {
 
     let mut value: u64 = 0;
 
-    c.bench_function("pub_sub_publish_to_receive", |b| {
+    let mut group = c.benchmark_group("pub_to_recv");
+
+    group.bench_function("no_downcast", |b| {
         b.iter(|| {
             value = value.wrapping_add(1);
 
@@ -43,6 +45,26 @@ fn bench_publish_to_receive(c: &mut Criterion) {
 
             let received = {
                 let input = OptionalInput::new(&mut subscriber);
+                *input.value().expect("sent value should be readable")
+            };
+            subscriber.get_read_buffer().pop_front();
+            black_box(received)
+        });
+    });
+    group.bench_function("with_downcast", |b| {
+        b.iter(|| {
+            value = value.wrapping_add(1);
+
+            {
+                let mut output = Output::new_downcasted(&mut publisher);
+                *output = value;
+                output.send();
+            }
+            publisher.flush_loaned_values(FrameworkTime::from_nanoseconds(value as i64));
+            subscriber.drain_writer_to_reader();
+
+            let received: u64 = {
+                let input = OptionalInput::new_downcasted(&mut subscriber);
                 *input.value().expect("sent value should be readable")
             };
             subscriber.get_read_buffer().pop_front();
