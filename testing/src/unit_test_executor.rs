@@ -134,37 +134,66 @@ impl UnitTestExecutorBuilder {
             .collect()
     }
 
+    /// Find all publishers on the given channel
+    fn find_subscribers_mut(
+        &mut self,
+        channel_name: &str,
+    ) -> Vec<(&mut (dyn GenericSubscriber + 'static), CallbackName)> {
+        self.tasks
+            .iter_mut()
+            .flat_map(|callback| {
+                // Get all subscribers matching the requested channel and the name of the task they're on
+                let callback_name = callback.get_name().to_owned();
+                let subscriber_and_callback_name = callback
+                    .get_subscribers_mut()
+                    .iter_mut()
+                    // only take in subscribers with the given channel name
+                    .filter(|subscriber| subscriber.get_config().channel_name == *channel_name)
+                    // Deref the box so callers don't need to care about it
+                    .map(move |p| (p.deref_mut(), callback_name.clone()));
+
+                subscriber_and_callback_name
+            })
+            .collect()
+    }
+
     /// Connects a `TestPublisher<T>` directly to the named subscriber on the callback at
     /// `task_index`, feeding it input in isolation. Since a test publisher feeds exactly
     /// one subscriber, its arena can be allocated immediately.
     pub fn add_test_publisher<T: Default + 'static>(
         &mut self,
-        task_index: usize,
         channel_name: &str,
     ) -> TestPublisher<T> {
         let current_time = self.current_time.clone();
         let time_source: Arc<Mutex<Box<dyn Fn() -> FrameworkTime>>> =
             Arc::new(Mutex::new(Box::new(move || *current_time.lock().unwrap())));
 
-        let task_name = self.tasks[task_index].get_name().to_string();
-        let subscriber = self.tasks[task_index]
-            .find_subscriber_mut(channel_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "No subscriber for channel '{channel_name}' on callback '{task_name}' (index {task_index})"
-                )
-            });
-        let capacity = subscriber.get_config().capacity;
+        let subscribers = self.find_subscribers_mut(channel_name);
+        if subscribers.is_empty() {
+            panic!("No subscriber for channel '{channel_name}'")
+        }
 
-        let mut publisher =
-            TestPublisher::<T>::new(channel_name.to_string(), capacity, time_source);
-        publisher
-            .connect_to_subscriber(subscriber.as_mut())
+        let capacity_of_all_subscribers = subscribers
+            .iter()
+            .map(|(subscriber, _)| subscriber.get_config().capacity)
+            .sum();
+
+        let mut publisher = TestPublisher::<T>::new(
+            channel_name.to_string(),
+            capacity_of_all_subscribers,
+            time_source,
+        );
+
+        // find capacity for our publisher
+        for (subscriber, callback_name) in subscribers {
+            publisher
+            .connect_to_subscriber(subscriber)
             .unwrap_or_else(|_| {
                 panic!(
-                    "Type mismatch connecting TestPublisher to channel '{channel_name}' on callback '{task_name}'"
+                    "Type mismatch connecting TestPublisher to channel '{channel_name}' on callback '{callback_name}'"
                 )
             });
+        }
         publisher.allocate_arena();
         publisher
     }
@@ -331,7 +360,7 @@ mod tests {
         let calculator = FizzBuzzCalculator::build_connected_callback();
 
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
-        let mut integer_publisher = builder.add_test_publisher::<u64>(0, "integer");
+        let mut integer_publisher = builder.add_test_publisher::<u64>("integer");
         let mut string_subscriber = builder.add_test_subscriber::<String>("fizz_buzz_string");
         let mut executor = builder.build();
 
@@ -352,7 +381,7 @@ mod tests {
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
 
         // Should panic since integer doesn't take a string
-        let _ = builder.add_test_publisher::<String>(0, "integer");
+        let _ = builder.add_test_publisher::<String>("integer");
     }
 
     #[test]
