@@ -76,6 +76,7 @@ In order of priority
 - [ ] add tests to make sure we aren't dynamically allocating after everything is connected
 - [ ] more consistent handling of MaybeUninit in subscriber, maybe specialize on it in read buffer?
 - [ ] better stress testing for multi-threaded determinism in sim 
+- [ ] inputs should just store ref or optional ref of type instead of entire subscriber
 
 ## Debugging tips
 
