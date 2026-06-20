@@ -5,11 +5,11 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task" }
-# We allow serde serialization for those that want it
-serde = { version = "1.0.228", features = ["derive"], optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:serde_json"]
 
 [lints]
 workspace = true

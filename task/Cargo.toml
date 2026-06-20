@@ -7,10 +7,12 @@ edition = "2024"
 
 [features]
 testing = []
+serde = ["dep:serde"]
 
 [dependencies]
-crossbeam-queue = "0.3"
-libc = "0.2.186"
+crossbeam-queue = "0.3"                       # Used for thread-safe pub/sub queues
+libc = "0.2.186"                              # Used for retreiving time from the system
+serde = { workspace = true, optional = true } # Allows serde loggability for task types
 
 [dev-dependencies]
 criterion = "0.5"

@@ -6,6 +6,7 @@ use std::{
 use libc::{self, CLOCK_MONOTONIC};
 /// Monotonic clock with fixed size
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FrameworkTime {
     nanoseconds: i64,
 }

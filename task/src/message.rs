@@ -3,6 +3,7 @@ use crate::time::FrameworkTime;
 /// Metadata attached to every message as it passes through the pub/sub system.
 /// Set by the executor at flush time — the executor is the sole source of time.
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MessageHeader {
     pub published_at: FrameworkTime,
 }

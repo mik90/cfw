@@ -1,3 +1,8 @@
+[package]
+name = "cfw"
+version = "0.0.0"
+edition = "2024"
+publish = false
 
 [workspace]
 members = [
@@ -9,10 +14,16 @@ members = [
     "test_tasks",
     "live_executor",
     "live_replay_executor",
-    "testing", 
+    "testing",
     "logging",
 ]
 resolver = "3"
+
+[dependencies]
+logging = { path = "logging" }
+
+[features]
+dev = ["logging/serde"]
 
 [workspace.lints.clippy]
 all = "deny"
@@ -21,3 +32,7 @@ undocumented_unsafe_blocks = "deny"
 
 [workspace.lints.rust]
 dead_code = "allow" # Not ideal, but im iterating a lot and this is getting chatty
+
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] } # Opt-in feature for a few crates. Useful for development
+serde_json = "1.0"
