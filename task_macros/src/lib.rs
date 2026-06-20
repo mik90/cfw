@@ -366,29 +366,32 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = &sig.callback_type;
 
     let quoted = quote! {
-        use task::input::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
-        use task::output::{Output, OutputSpan, ForwardingOutput};
-        use task::generic_publisher::GenericPublisher;
-        use task::generic_subscriber::GenericSubscriber;
-        use task::callback::{Run, GenericCallback, CallbackSignature, InputKind, OutputKind};
-
         #item_impl
 
-        impl GenericCallback for #struct_name {
-            fn run_generic(
-                &mut self,
-                subscribers: &mut [Box<dyn GenericSubscriber>],
-                publishers: &mut [Box<dyn GenericPublisher>],
-                ctx: &task::context::Context,
-            ) -> task::callback::Run {
-                self.run(#callback_arguments);
-                task::callback::Run::new(1)
+        // Avoid exporting `use`s to user code
+        const _: () = {
+            use task::input::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
+            use task::output::{Output, OutputSpan, ForwardingOutput};
+            use task::generic_publisher::GenericPublisher;
+            use task::generic_subscriber::GenericSubscriber;
+            use task::callback::{Run, GenericCallback, CallbackSignature, InputKind, OutputKind};
+
+            impl GenericCallback for #struct_name {
+                fn run_generic(
+                    &mut self,
+                    subscribers: &mut [Box<dyn GenericSubscriber>],
+                    publishers: &mut [Box<dyn GenericPublisher>],
+                    ctx: &task::context::Context,
+                ) -> task::callback::Run {
+                    self.run(#callback_arguments);
+                    task::callback::Run::new(1)
+                }
+
+                #build_subscribers_impl
+
+                #build_publishers_impl
             }
-
-            #build_subscribers_impl
-
-            #build_publishers_impl
-        }
+        };
     };
 
     TokenStream::from(quoted)

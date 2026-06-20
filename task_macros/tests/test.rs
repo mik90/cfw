@@ -1,6 +1,10 @@
 #[cfg(test)]
 
 mod tests {
+    use task::callback::GenericCallback;
+    use task::forwarded_message::ForwardedMessage;
+    use task::input::{ForwardableRequiredInput, RequiredInput};
+    use task::output::{ForwardingOutput, Output};
     use task::publisher::*;
     use task::subscriber::*;
     use task_macros::task_callback;
@@ -14,6 +18,21 @@ mod tests {
             let value = *my_input + 10;
             *my_output = value;
             my_output.send();
+        }
+    }
+
+    struct ForwardTask {}
+
+    #[task_callback]
+    impl ForwardTask {
+        fn run(
+            &mut self,
+            input: ForwardableRequiredInput<i32>,
+            mut fwd_out: ForwardingOutput<bool, i32>,
+        ) {
+            let mut output = input.forward(&mut fwd_out);
+            *output = true;
+            output.send();
         }
     }
 
@@ -89,111 +108,88 @@ mod tests {
 
         assert_eq!(result.num_iterations, 1);
     }
-    // ForwardTask lives in its own module because two #[task_callback] expansions in the
-    // same scope would emit duplicate `use` statements for the same names.
-    mod forwarding {
-        use task::forwarded_message::ForwardedMessage;
-        use task::publisher::*;
-        use task::subscriber::*;
-        use task_macros::task_callback;
 
-        struct ForwardTask {}
+    #[test]
+    fn test_forwarding_macro() {
+        // test_publisher (Publisher<Msg>) → task_subscriber (ForwardableSubscriber<Msg>)
+        // task_publisher (ForwardingPublisher<bool, Msg>) → test_subscriber (Subscriber<ForwardedMessage<bool, Msg>>)
+        let mut test_publisher = Publisher::<i32>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "input_channel".into(),
+        });
 
-        #[task_callback]
-        impl ForwardTask {
-            fn run(
-                &mut self,
-                input: ForwardableRequiredInput<i32>,
-                mut fwd_out: ForwardingOutput<bool, i32>,
-            ) {
-                let mut output = input.forward(&mut fwd_out);
-                *output = true;
-                output.send();
-            }
-        }
+        let mut task_publishers: Vec<Box<dyn GenericPublisher + 'static>> =
+            vec![Box::new(ForwardingPublisher::<bool, i32>::new(
+                PublisherConfig {
+                    capacity: 1,
+                    channel_name: "forwarded_channel".into(),
+                },
+                vec!["input_channel".into()],
+            ))];
 
-        #[test]
-        fn test_forwarding_macro() {
-            // test_publisher (Publisher<Msg>) → task_subscriber (ForwardableSubscriber<Msg>)
-            // task_publisher (ForwardingPublisher<bool, Msg>) → test_subscriber (Subscriber<ForwardedMessage<bool, Msg>>)
-            let mut test_publisher = Publisher::<i32>::new(PublisherConfig {
+        let mut task_subscribers: Vec<Box<dyn GenericSubscriber + 'static>> = vec![Box::new(
+            ForwardableSubscriber::<i32>::new(SubscriberConfig {
+                is_optional: false,
                 capacity: 1,
+                is_trigger: true,
+                keep_across_runs: true,
                 channel_name: "input_channel".into(),
+            }),
+        )];
+
+        let mut test_subscriber =
+            Subscriber::<ForwardedMessage<bool, i32>>::new(SubscriberConfig {
+                is_optional: false,
+                capacity: 1,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: "forwarded_channel".into(),
             });
 
-            let mut task_publishers: Vec<Box<dyn GenericPublisher + 'static>> =
-                vec![Box::new(ForwardingPublisher::<bool, i32>::new(
-                    PublisherConfig {
-                        capacity: 1,
-                        channel_name: "forwarded_channel".into(),
-                    },
-                    vec!["input_channel".into()],
-                ))];
+        assert!(
+            test_publisher
+                .connect_to_subscriber(task_subscribers[0].as_mut())
+                .is_ok()
+        );
+        assert!(
+            task_publishers[0]
+                .connect_to_subscriber(&mut test_subscriber as &mut dyn GenericSubscriber)
+                .is_ok()
+        );
 
-            let mut task_subscribers: Vec<Box<dyn GenericSubscriber + 'static>> = vec![Box::new(
-                ForwardableSubscriber::<i32>::new(SubscriberConfig {
-                    is_optional: false,
-                    capacity: 1,
-                    is_trigger: true,
-                    keep_across_runs: true,
-                    channel_name: "input_channel".into(),
-                }),
-            )];
+        test_publisher.allocate_arena();
+        task_publishers[0].allocate_arena();
 
-            let mut test_subscriber =
-                Subscriber::<ForwardedMessage<bool, i32>>::new(SubscriberConfig {
-                    is_optional: false,
-                    capacity: 1,
-                    is_trigger: true,
-                    keep_across_runs: true,
-                    channel_name: "forwarded_channel".into(),
-                });
-
-            assert!(
-                test_publisher
-                    .connect_to_subscriber(task_subscribers[0].as_mut())
-                    .is_ok()
-            );
-            assert!(
-                task_publishers[0]
-                    .connect_to_subscriber(&mut test_subscriber as &mut dyn GenericSubscriber)
-                    .is_ok()
-            );
-
-            test_publisher.allocate_arena();
-            task_publishers[0].allocate_arena();
-
-            {
-                let mut output = Output::new_default(&mut test_publisher);
-                *output = 42i32;
-                output.send();
-            }
-            test_publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
-
-            for subscriber in task_subscribers.iter_mut() {
-                subscriber.drain_writer_to_reader();
-            }
-
-            let mut task = ForwardTask {};
-            let ctx = task::context::Context::new(task::time::FrameworkTime::from_wall_clock());
-            let result = task.run_generic(
-                task_subscribers.as_mut_slice(),
-                task_publishers.as_mut_slice(),
-                &ctx,
-            );
-
-            for publisher in task_publishers.iter_mut() {
-                publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
-            }
-
-            assert_eq!(result.num_iterations, 1);
-
-            test_subscriber.drain_writer_to_reader();
-            let guard = test_subscriber.get_read_buffer();
-            let msg = guard.front().unwrap();
-            assert_eq!(*msg.message.get_message(), true);
-            assert_eq!(msg.message.get_forwarded_message().message, 42i32);
+        {
+            let mut output = Output::new_default(&mut test_publisher);
+            *output = 42i32;
+            output.send();
         }
+        test_publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
+
+        for subscriber in task_subscribers.iter_mut() {
+            subscriber.drain_writer_to_reader();
+        }
+
+        let mut task = ForwardTask {};
+        let ctx = task::context::Context::new(task::time::FrameworkTime::from_wall_clock());
+        let result = task.run_generic(
+            task_subscribers.as_mut_slice(),
+            task_publishers.as_mut_slice(),
+            &ctx,
+        );
+
+        for publisher in task_publishers.iter_mut() {
+            publisher.flush_loaned_values(task::time::FrameworkTime::from_wall_clock());
+        }
+
+        assert_eq!(result.num_iterations, 1);
+
+        test_subscriber.drain_writer_to_reader();
+        let guard = test_subscriber.get_read_buffer();
+        let msg = guard.front().unwrap();
+        assert_eq!(*msg.message.get_message(), true);
+        assert_eq!(msg.message.get_forwarded_message().message, 42i32);
     }
 
     #[test]
