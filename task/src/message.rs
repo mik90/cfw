@@ -2,10 +2,16 @@ use crate::time::FrameworkTime;
 
 /// Metadata attached to every message as it passes through the pub/sub system.
 /// Set by the executor at flush time — the executor is the sole source of time.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MessageHeader {
     pub published_at: FrameworkTime,
+}
+
+impl MessageHeader {
+    pub fn new(published_at: FrameworkTime) -> Self {
+        MessageHeader { published_at }
+    }
 }
 
 impl Default for MessageHeader {
@@ -18,6 +24,8 @@ impl Default for MessageHeader {
 
 /// Contiguous message struct for payload and header.
 /// Meant for allocation in arenas
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Message<T> {
     pub header: MessageHeader,
     pub message: T,

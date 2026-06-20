@@ -74,4 +74,52 @@ where
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::Loggable;
+    use task::{message::Message, message::MessageHeader, time::FrameworkTime};
+
+    #[test]
+    fn test_header_logging() {
+        let header = MessageHeader::new(FrameworkTime::from_nanoseconds(42));
+
+        let mut buf = Vec::new();
+        header.serialize(&mut buf).unwrap();
+
+        let deserialized = MessageHeader::deserialize(&buf).unwrap();
+        assert_eq!(
+            deserialized.published_at,
+            FrameworkTime::from_nanoseconds(42)
+        );
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct MyMessage {
+        pub my_string: String,
+        pub my_bool: bool,
+    }
+
+    #[test]
+    fn test_message_logging() {
+        let header = MessageHeader::new(FrameworkTime::from_nanoseconds(42));
+        let payload = MyMessage {
+            my_string: "Hello".to_owned(),
+            my_bool: true,
+        };
+
+        let message = task::message::Message {
+            header,
+            message: payload,
+        };
+
+        let mut buf = Vec::new();
+        message.serialize(&mut buf).unwrap();
+
+        let deserialized = Message::<MyMessage>::deserialize(&buf).unwrap();
+        assert_eq!(
+            deserialized.header.published_at,
+            FrameworkTime::from_nanoseconds(42)
+        );
+        assert_eq!(deserialized.message.my_string, "Hello",);
+        assert_eq!(deserialized.message.my_bool, true);
+    }
+}
