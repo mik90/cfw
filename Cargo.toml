@@ -17,13 +17,27 @@ members = [
     "testing",
     "logging",
 ]
+
+# Exclude root package so `cargo t` builds all our workspace members without needing `--workspace`
+default-members = [
+    "exact_replay_executor",
+    "simulation_executor",
+    "task",
+    "task_builder",
+    "task_macros",
+    "test_tasks",
+    "live_executor",
+    "live_replay_executor",
+    "testing",
+    "logging",
+]
 resolver = "3"
 
 [dependencies]
 logging = { path = "logging" }
 
 [features]
-dev = ["logging/serde"]
+dev = ["logging/serde"] # it's useful to have some default (de)serialization support for testing
 
 [workspace.lints.clippy]
 all = "deny"
@@ -35,4 +49,4 @@ dead_code = "allow" # Not ideal, but im iterating a lot and this is getting chat
 
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] } # Opt-in feature for a few crates. Useful for development
-serde_json = "1.0"
+serde_json = "1.0.150" # Helps with `serde` support
