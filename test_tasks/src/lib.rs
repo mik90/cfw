@@ -183,9 +183,10 @@ impl StringCollector {
         let mut store = self.string_store.lock().unwrap();
         store.push(string.clone());
         if store.len() >= self.target_count
-            && let Some(signal) = self.stop_signal.get() {
-                signal.request_stop();
-            }
+            && let Some(signal) = self.stop_signal.get()
+        {
+            signal.request_stop();
+        }
     }
 
     pub fn make_string_store() -> Arc<Mutex<Vec<String>>> {

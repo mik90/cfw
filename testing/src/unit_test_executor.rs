@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::num::Saturating;
 use std::ops::DerefMut;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use simulation_executor::SimulationConfig;
 use simulation_executor::state::{SimulationState, StepError};
@@ -13,15 +13,15 @@ use task::pub_sub::CallbackName;
 use task::subscriber::GenericSubscriber;
 use task::testing_publisher::TestPublisher;
 use task::testing_subscriber::{DEFAULT_TEST_SUBSCRIBER_CAPACITY, TestSubscriber};
+use task::testing_time::TimeSource;
 use task::time::FrameworkTime;
 
 /// Struct for running unit tests against tasks
 pub struct UnitTestExecutor {
     simulation_state: SimulationState,
-    /// Mirrors the simulation's current time so `TestPublisher`s (which flush outside
-    /// the normal step loop) can timestamp their messages with "now" rather than
-    /// `start_time`. Updated at the end of every `try_step`.
-    current_time: Arc<Mutex<FrameworkTime>>,
+    /// Shared time cell updated at the end of every `try_step`. `TestPublisher`s
+    /// created by the builder hold a clone so they timestamp messages with "now".
+    time_source: Arc<TimeSource>,
 }
 
 impl UnitTestExecutor {
@@ -40,12 +40,12 @@ impl UnitTestExecutor {
 
     /// Create task tester with custom config
     pub fn new_with(config: UnitTestExecutorConfig) -> Self {
-        Self::new_with_time_cell(config, None)
+        Self::new_with_time_source(config, None)
     }
 
-    fn new_with_time_cell(
+    fn new_with_time_source(
         config: UnitTestExecutorConfig,
-        current_time: Option<Arc<Mutex<FrameworkTime>>>,
+        time_source: Option<Arc<TimeSource>>,
     ) -> Self {
         let start_time = config.start_time;
         let mut task_test = Self {
@@ -54,7 +54,7 @@ impl UnitTestExecutor {
                 pools: config.pools,
                 callback_executor_thread_count: config.callback_executor_thread_count,
             }),
-            current_time: current_time.unwrap_or_else(|| Arc::new(Mutex::new(start_time))),
+            time_source: time_source.unwrap_or_else(|| Arc::new(TimeSource::new(start_time))),
         };
         task_test.simulation_state.start();
         task_test
@@ -72,7 +72,7 @@ impl UnitTestExecutor {
         let before = self.simulation_state.get_simulation_time();
         self.simulation_state.step()?;
         let after = self.simulation_state.get_simulation_time();
-        *self.current_time.lock().unwrap() = after;
+        self.time_source.set(after);
         Ok(StepResult { before, after })
     }
 
@@ -96,9 +96,9 @@ impl UnitTestExecutor {
 pub struct UnitTestExecutorBuilder {
     tasks: Vec<ConnectedCallback>,
     start_time: FrameworkTime,
-    /// Shared with every `TestPublisher` created via this builder, and later handed to
-    /// the resulting `UnitTestExecutor` so both stay in sync on "current sim time".
-    current_time: Arc<Mutex<FrameworkTime>>,
+    /// Shared with every `TestPublisher` created via this builder, and later
+    /// handed to the resulting `UnitTestExecutor` so both stay in sync.
+    time_source: Arc<TimeSource>,
 }
 
 impl UnitTestExecutorBuilder {
@@ -107,7 +107,7 @@ impl UnitTestExecutorBuilder {
         UnitTestExecutorBuilder {
             tasks,
             start_time,
-            current_time: Arc::new(Mutex::new(start_time)),
+            time_source: Arc::new(TimeSource::new(start_time)),
         }
     }
 
@@ -162,10 +162,7 @@ impl UnitTestExecutorBuilder {
         &mut self,
         channel_name: &str,
     ) -> TestPublisher<T> {
-        let current_time = self.current_time.clone();
-        // TODO: The time source is send and sync, we should just make some wrapper type for it
-        let time_source: Arc<Mutex<Box<dyn Fn() -> FrameworkTime>>> =
-            Arc::new(Mutex::new(Box::new(move || *current_time.lock().unwrap())));
+        let time_source = self.time_source.clone();
 
         let subscribers = self.find_subscribers_mut(channel_name);
         if subscribers.is_empty() {
@@ -251,13 +248,13 @@ impl UnitTestExecutorBuilder {
             thread_count: 1,
             tasks: self.tasks,
         }];
-        let executor = UnitTestExecutor::new_with_time_cell(
+        let executor = UnitTestExecutor::new_with_time_source(
             UnitTestExecutorConfig {
                 start_time: self.start_time,
                 pools,
                 callback_executor_thread_count: 1,
             },
-            Some(self.current_time),
+            Some(self.time_source),
         );
         Ok(executor)
     }

@@ -19,4 +19,6 @@ pub mod subscriber;
 pub mod testing_publisher;
 #[cfg(feature = "testing")]
 pub mod testing_subscriber;
+#[cfg(feature = "testing")]
+pub mod testing_time;
 pub mod time;

@@ -4,26 +4,23 @@ use crate::{
     output::Output,
     pub_sub::ChannelName,
     publisher::{GenericPublisher, Publisher, PublisherConfig},
+    testing_time::TimeSource,
     time::FrameworkTime,
 };
 
 use std::any::Any;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Publisher that can send messages to a ConnectedCallback
 pub struct TestPublisher<T> {
     publisher: Publisher<T>,
 
     /// Callback for getting time from the executor
-    executor_time_source: Arc<Mutex<Box<dyn Fn() -> FrameworkTime>>>,
+    executor_time_source: Arc<TimeSource>,
 }
 
 impl<T> TestPublisher<T> {
-    pub fn new(
-        channel_name: ChannelName,
-        capacity: usize,
-        time_source: Arc<Mutex<Box<dyn Fn() -> FrameworkTime>>>,
-    ) -> Self {
+    pub fn new(channel_name: ChannelName, capacity: usize, time_source: Arc<TimeSource>) -> Self {
         TestPublisher {
             publisher: Publisher::new(PublisherConfig {
                 capacity,
@@ -82,9 +79,7 @@ impl<T: Default + 'static> TestPublisher<T> {
     }
 
     fn flush_loaned_values(&mut self) {
-        let callback_guard = self.executor_time_source.lock().unwrap();
-
-        let timestamp = callback_guard();
+        let timestamp = self.executor_time_source.get();
         self.publisher.flush_loaned_values(timestamp);
     }
 }
