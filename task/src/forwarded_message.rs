@@ -1,5 +1,21 @@
 use crate::arena::ArenaReaderPtr;
 use crate::message::Message;
+use std::ops::Deref;
+
+enum ForwardedMessagePtr<T> {
+    Arena(ArenaReaderPtr<T>),
+    Owned(Box<T>), // Mainly used for log deserialization
+}
+
+impl<T> Deref for ForwardedMessagePtr<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        match self {
+            ForwardedMessagePtr::Arena(ptr) => ptr,
+            ForwardedMessagePtr::Owned(b) => b,
+        }
+    }
+}
 
 /// A single forwarded message.
 ///
@@ -9,7 +25,7 @@ use crate::message::Message;
 /// And then the getters would need to be named more uniquely, or we return a tuple.
 pub struct ForwardedMessage<UserData, ForwardedData> {
     pub(crate) message: UserData,
-    forwarded_message: ArenaReaderPtr<Message<ForwardedData>>,
+    forwarded_message: ForwardedMessagePtr<Message<ForwardedData>>,
 }
 
 impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
@@ -26,11 +42,48 @@ impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<UserData, ForwardedData> serde::Serialize for ForwardedMessage<UserData, ForwardedData>
+where
+    UserData: serde::Serialize,
+    ForwardedData: serde::Serialize,
+{
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ForwardedMessage", 2)?;
+        state.serialize_field("message", &self.message)?;
+        state.serialize_field("forwarded_message", &*self.forwarded_message)?;
+        state.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, UserData, ForwardedData> serde::Deserialize<'de>
+    for ForwardedMessage<UserData, ForwardedData>
+where
+    UserData: serde::Deserialize<'de>,
+    ForwardedData: serde::Deserialize<'de>,
+{
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Raw<U, F> {
+            message: U,
+            forwarded_message: Message<F>,
+        }
+
+        let raw = Raw::<UserData, ForwardedData>::deserialize(deserializer)?;
+        Ok(ForwardedMessage {
+            message: raw.message,
+            forwarded_message: ForwardedMessagePtr::Owned(Box::new(raw.forwarded_message)),
+        })
+    }
+}
+
 impl<UserData: Default, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
     pub fn new_with_forward(forwarded_message: ArenaReaderPtr<Message<ForwardedData>>) -> Self {
         Self {
             message: UserData::default(),
-            forwarded_message,
+            forwarded_message: ForwardedMessagePtr::Arena(forwarded_message),
         }
     }
 }
