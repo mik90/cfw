@@ -29,6 +29,8 @@ pub struct ForwardedMessage<UserData, ForwardedData> {
 }
 
 impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
+    /// Creating a forwarded message via the arena is a bit annoying, but we do have a Boxed setup used for deserialization
+    /// which is also helpful for testing.
     #[cfg(feature = "testing")]
     pub fn new_boxed_forward(
         message: UserData,
