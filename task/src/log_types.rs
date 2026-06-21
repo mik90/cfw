@@ -6,6 +6,9 @@ use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::message::MessageHeader;
 
+// TODO: Remove this. Loggable is a better place for this. I still need a notion of ExecutionLogger though
+// before i can actually delete this file.
+
 // ── Serialization traits ─────────────────────────────────────────────────────
 
 /// Pluggable serialization — no external dependencies required by this trait.
