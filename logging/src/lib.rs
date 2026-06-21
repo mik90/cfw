@@ -73,7 +73,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::Loggable;
     use task::{message::Message, message::MessageHeader, time::FrameworkTime};
