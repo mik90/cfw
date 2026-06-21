@@ -40,7 +40,8 @@ In order of priority
 - more advanced forwarding configurations
   - [x] forward message without extra data (so, as-is onto another channel)
     - maybe we can just use `()` as the T?
-  - [ ] forwrded message that includes messages from multiple subscribers (with or without extra data)
+  - [ ] forwarded message that includes messages from multiple subscribers (with or without extra data)
+    - [ ] probably need declarative macros and have something like `ForwardedMessageTuple${N}` for each arity
 - [ ] exact replay executor
   - prob should mimic thread pool constraints but we should be able to execute stuff in any order as long as callbacks aren't stateful
   - I'll need to consider logging executions and message queues for this
