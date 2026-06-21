@@ -29,10 +29,8 @@ pub struct ForwardedMessage<UserData, ForwardedData> {
 }
 
 impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
-    /// Creating a forwarded message via the arena is a bit annoying, but we do have a Boxed setup used for deserialization
-    /// which is also helpful for testing.
-    #[cfg(feature = "testing")]
-    pub fn new_boxed_forward(
+    // Mainly relevant for deserialization
+    pub(crate) fn new_boxed_forward(
         message: UserData,
         forwarded_message: Box<Message<ForwardedData>>,
     ) -> Self {
@@ -54,43 +52,6 @@ impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
 
     pub fn get_forwarded_message(&self) -> &Message<ForwardedData> {
         &self.forwarded_message
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<UserData, ForwardedData> serde::Serialize for ForwardedMessage<UserData, ForwardedData>
-where
-    UserData: serde::Serialize,
-    ForwardedData: serde::Serialize,
-{
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("ForwardedMessage", 2)?;
-        state.serialize_field("message", &self.message)?;
-        state.serialize_field("forwarded_message", &*self.forwarded_message)?;
-        state.end()
-    }
-}
-
-#[cfg(feature = "serde")]
-impl<'de, UserData, ForwardedData> serde::Deserialize<'de>
-    for ForwardedMessage<UserData, ForwardedData>
-where
-    UserData: serde::Deserialize<'de>,
-    ForwardedData: serde::Deserialize<'de>,
-{
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(serde::Deserialize)]
-        struct Raw<U, F> {
-            message: U,
-            forwarded_message: Message<F>,
-        }
-
-        let raw = Raw::<UserData, ForwardedData>::deserialize(deserializer)?;
-        Ok(ForwardedMessage {
-            message: raw.message,
-            forwarded_message: ForwardedMessagePtr::Owned(Box::new(raw.forwarded_message)),
-        })
     }
 }
 

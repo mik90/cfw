@@ -539,6 +539,7 @@ dependencies = [
  "crossbeam-queue",
  "libc",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
