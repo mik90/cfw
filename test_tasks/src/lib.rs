@@ -113,8 +113,8 @@ impl FizzBuzzCalculator {
         mut fizz_buzz_string: output::Output<String>,
     ) {
         println!("FizzBuzzCalculator run");
-        let is_fizz = (*integer % 3) == 0;
-        let is_buzz = (*integer % 5) == 0;
+        let is_fizz = (*integer).is_multiple_of(3);
+        let is_buzz = (*integer).is_multiple_of(5);
         let is_fizz_buzz = is_fizz && is_buzz;
 
         if is_fizz_buzz {
@@ -124,7 +124,7 @@ impl FizzBuzzCalculator {
         } else if is_buzz {
             *fizz_buzz_string = String::from("Buzz");
         } else {
-            *fizz_buzz_string = String::from(integer.to_string());
+            *fizz_buzz_string = integer.to_string();
         }
         fizz_buzz_string.send();
     }
@@ -182,11 +182,10 @@ impl StringCollector {
         println!("StringCollector run");
         let mut store = self.string_store.lock().unwrap();
         store.push(string.clone());
-        if store.len() >= self.target_count {
-            if let Some(signal) = self.stop_signal.get() {
+        if store.len() >= self.target_count
+            && let Some(signal) = self.stop_signal.get() {
                 signal.request_stop();
             }
-        }
     }
 
     pub fn make_string_store() -> Arc<Mutex<Vec<String>>> {
@@ -268,7 +267,7 @@ pub fn build_no_op_callback() -> ConnectedCallback {
     let subs = cb.build_subscribers();
     let pubs = cb.build_publishers();
     let mut connected = ConnectedCallback::new_with(cb, subs, pubs, "no-op".into());
-    connected.set_execution_time_callback(Box::new(|t| Some(t)));
+    connected.set_execution_time_callback(Box::new(Some));
     connected.set_execution_duration_callback(Box::new(|| Duration::from_millis(1)));
     connected
 }

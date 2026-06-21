@@ -44,8 +44,8 @@ impl<T> MpscQueue<T> {
     }
 
     pub fn clear(&self) {
-        while let Some(_) = self.pop() {
-            // Keep popping while there's inputs
+        while self.pop().is_some() {
+            // Keep popping while there are inputs
         }
     }
 
