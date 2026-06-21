@@ -29,6 +29,19 @@ pub struct ForwardedMessage<UserData, ForwardedData> {
 }
 
 impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
+    #[cfg(feature = "testing")]
+    pub fn new_boxed_forward(
+        message: UserData,
+        forwarded_message: Box<Message<ForwardedData>>,
+    ) -> Self {
+        ForwardedMessage {
+            message,
+            forwarded_message: ForwardedMessagePtr::Owned(forwarded_message),
+        }
+    }
+}
+
+impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
     pub fn get_message(&self) -> &UserData {
         &self.message
     }
