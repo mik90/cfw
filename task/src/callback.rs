@@ -553,6 +553,102 @@ mod test {
     }
 
     #[test]
+    fn test_loopback_self_subscribe() {
+        use crate::context::Context;
+        use crate::input::OptionalInput;
+        use crate::output::Output;
+        use crate::publisher::{Publisher, PublisherConfig};
+        use crate::time::FrameworkTime;
+
+        struct LoopbackTask {
+            value_to_publish: u64,
+            received: Vec<u64>,
+        }
+
+        impl GenericCallback for LoopbackTask {
+            fn run_generic(
+                &mut self,
+                subscribers: &mut [Box<dyn GenericSubscriber>],
+                publishers: &mut [Box<dyn GenericPublisher>],
+                _ctx: &Context,
+            ) -> Run {
+                // Read any looped-back messages
+                let input = OptionalInput::<u64>::new_downcasted(&mut *subscribers[0]);
+                if let Some(msg) = input.value() {
+                    self.received.push(*msg);
+                }
+
+                // Publish a new value
+                let mut output = Output::<u64>::new_downcasted(&mut *publishers[0]);
+                *output = self.value_to_publish;
+                output.send();
+                self.value_to_publish += 1;
+
+                Run::new(1)
+            }
+
+            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+                vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: true,
+                    capacity: 1,
+                    is_trigger: false,
+                    keep_across_runs: true,
+                    channel_name: "loopback".into(),
+                }))]
+            }
+
+            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+                vec![Box::new(Publisher::<u64>::new(PublisherConfig {
+                    capacity: 1,
+                    channel_name: "loopback".into(),
+                }))]
+            }
+        }
+
+        let task = LoopbackTask {
+            value_to_publish: 10,
+            received: vec![],
+        };
+
+        let mut callbacks = vec![ConnectedCallback::new_named(
+            Box::new(task),
+            "LoopbackTask".into(),
+        )];
+
+        connect_callbacks(&mut callbacks).expect("loopback connection should succeed");
+
+        let ctx = Context {
+            now: FrameworkTime::from_nanoseconds(1),
+        };
+
+        // Run 1: publishes 10, no loopback data yet (first run)
+        callbacks[0].run(&ctx);
+        callbacks[0].flush_publishers(ctx.now);
+
+        // The published message should be in the subscriber's write buffer now
+        callbacks[0].drain_subscribers();
+
+        // Run 2: should receive 10 from the loopback, publishes 11
+        callbacks[0].run(&ctx);
+        callbacks[0].flush_publishers(ctx.now);
+
+        // After flush, the published message from run 2 is in the write buffer
+        let sub_info = callbacks[0].get_subscribers()[0].get_queue_info();
+        assert_eq!(
+            sub_info.writer_size, 1,
+            "loopback: published message should be in subscriber's write buffer"
+        );
+
+        callbacks[0].drain_subscribers();
+
+        let sub_info = callbacks[0].get_subscribers()[0].get_queue_info();
+        assert_eq!(
+            sub_info.reader_size, 1,
+            "loopback: message should have drained to read buffer"
+        );
+    }
+
+    #[test]
     fn test_subscriber_bitmask() {
         // No subscribers → all bits 1 (nothing blocks us)
         compare_bitmask(vec![], usize::MAX);
