@@ -187,28 +187,32 @@ fn periodic_trigger_thread(
     }
 }
 
-fn executor_cycle(pool_state: &PoolState, shared_state: &SharedThreadPoolState) {
-    let index = match pool_state.work_rx.recv() {
-        Ok(idx) if idx == SHUTDOWN_SENTINEL => return,
-        Ok(idx) => idx,
-        Err(_) => return, // channel disconnected
-    };
+fn run_executor_thread(pool_state: &PoolState, shared_state: &SharedThreadPoolState) {
+    loop {
+        // Block waiting on work
+        let index = match pool_state.work_rx.recv() {
+            Ok(SHUTDOWN_SENTINEL) => break,
+            Ok(idx) => idx,
+            Err(_) => break, // channel disconnected
+        };
 
-    if !shared_state.should_run.load(Ordering::Relaxed) {
-        return;
+        // should_run may have flipped during the blocking recv.
+        if !shared_state.should_run.load(Ordering::Relaxed) {
+            break;
+        }
+
+        // Clear the enqueued flag before running so any triggers that arrive during
+        // execution are captured, not dropped
+        shared_state.enqueue_state.task_enqueued[index].store(false, Ordering::Release);
+
+        let mut task_guard = shared_state.tasks[index].lock().unwrap();
+        println!("Found runnable task {}", task_guard.get_name());
+        let ctx = Context::new(task::time::FrameworkTime::from_wall_clock());
+        task_guard.drain_subscribers();
+        let _ = task_guard.run(&ctx);
+        task_guard.flush_publishers(ctx.now);
+        println!("Finished running {}", task_guard.get_name());
     }
-
-    // Clear the enqueued flag before running so any triggers that arrive during
-    // execution are captured, not dropped
-    shared_state.enqueue_state.task_enqueued[index].store(false, Ordering::Release);
-
-    let mut task_guard = shared_state.tasks[index].lock().unwrap();
-    println!("Found runnable task {}", task_guard.get_name());
-    let ctx = Context::new(task::time::FrameworkTime::from_wall_clock());
-    task_guard.drain_subscribers();
-    let _ = task_guard.run(&ctx);
-    task_guard.flush_publishers(ctx.now);
-    println!("Finished running {}", task_guard.get_name());
 }
 
 impl LiveExecutor {
@@ -291,9 +295,7 @@ impl LiveExecutor {
                 let shared = self.shared_state.clone();
                 let thread = thread::spawn(move || {
                     println!("Starting thread");
-                    while shared.should_run.load(Ordering::Relaxed) {
-                        executor_cycle(pool.as_ref(), shared.as_ref());
-                    }
+                    run_executor_thread(pool.as_ref(), shared.as_ref());
                     println!("leaving exec cycle");
                 });
                 self.threads.push(thread);
@@ -323,10 +325,13 @@ impl LiveExecutor {
     pub fn stop_threads(&mut self) -> Result<(), Vec<usize>> {
         self.shared_state.should_run.store(false, Ordering::Relaxed);
 
-        // Send one shutdown sentinel per worker so every blocked recv() unblocks
+        // Send one shutdown sentinel per worker so every blocked recv() unblocks.
+        // try_send: if the bounded channel is full, a sentinel (or a real task the
+        // worker will drain then exit on) is already in flight — skip rather than
+        // block, since stop_threads must never hang waiting on a full queue.
         for pool in self.shared_state.enqueue_state.pools.iter() {
             for _ in 0..pool.thread_count {
-                let _ = pool.work_tx.send(SHUTDOWN_SENTINEL);
+                let _ = pool.work_tx.try_send(SHUTDOWN_SENTINEL);
             }
         }
 
@@ -374,12 +379,11 @@ impl ExecutorStopSignal for StopSignal {
         let Some(state) = self.0.upgrade() else {
             return;
         };
+        // Just signal the intent to stop. Sentinel injection is `stop_threads`'
+        // job — having both paths push sentinels can overflow a bounded pool
+        // channel. The caller is expected to invoke `stop_threads` to unblock
+        // and join the workers.
         state.should_run.store(false, Ordering::Relaxed);
-        for pool in state.enqueue_state.pools.iter() {
-            for _ in 0..pool.thread_count {
-                let _ = pool.work_tx.send(SHUTDOWN_SENTINEL);
-            }
-        }
         state.periodic_cond_var.notify_all();
     }
 }
