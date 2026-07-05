@@ -13,9 +13,6 @@ pub type BuildStepError = Box<dyn std::error::Error>;
 /// It is possible to run a given step multiple times. For example, if we run logging, then diagnostics, then logging again,
 /// we're able to log the diagnostic channels as well as handle diagnostics of the logging. However, this can be tricky to reason about.
 pub trait BuildStep {
-    /// Name of the build step.
-    fn name(&self) -> &str;
-
     /// Exposes access to all existing callbacks.
     ///
     /// Allows step to return additional callbacks to add, if desired.
