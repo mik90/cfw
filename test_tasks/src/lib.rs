@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use task::callback;
 use task::callback::{ConnectedCallback, connect_callbacks};
+use task::callback_builder::CallbackBuilder;
 use task::executor::ExecutorStopSignal;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
@@ -64,22 +65,16 @@ impl IncrementingIntegerPublisher {
     }
 
     pub fn build_connected_callback() -> callback::ConnectedCallback {
-        let callback: Box<dyn callback::GenericCallback> =
-            Box::new(IncrementingIntegerPublisher { value: 0 });
-        let subscribers = callback.build_subscribers();
-        let mut publishers = callback.build_publishers();
-        publishers[0].get_config_mut().channel_name = "integer".into();
+        let callback = CallbackBuilder::new(
+            "IncrementingIbtegerPublisher".into(),
+            Box::new(IncrementingIntegerPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["integer"])
+        .with_next_execution_time_callback(|t| Some(t + std::time::Duration::from_millis(500)))
+        .with_execution_duration_callback(|| std::time::Duration::from_millis(1))
+        .build()
+        .unwrap();
 
-        let mut callback = callback::ConnectedCallback::new_with(
-            callback,
-            subscribers,
-            publishers,
-            "IncrementingIntegerPublisher".into(),
-        );
-        callback.set_execution_time_callback(Box::new(|t| {
-            Some(t + std::time::Duration::from_millis(500))
-        }));
-        callback.set_execution_duration_callback(Box::new(|| std::time::Duration::from_millis(1)));
         callback
     }
 }
@@ -129,20 +124,13 @@ impl FizzBuzzCalculator {
         fizz_buzz_string.send();
     }
     pub fn build_connected_callback() -> callback::ConnectedCallback {
-        let callback: Box<dyn callback::GenericCallback> = Box::new(FizzBuzzCalculator {});
-        let mut subscribers = callback.build_subscribers();
-        subscribers[0].get_config_mut().channel_name = "integer".into();
-
-        let mut publishers = callback.build_publishers();
-        publishers[0].get_config_mut().channel_name = "fizz_buzz_string".into();
-
-        let mut callback = callback::ConnectedCallback::new_with(
-            callback,
-            subscribers,
-            publishers,
-            "FizzBuzzCalculator".into(),
-        );
-        callback.set_execution_duration_callback(Box::new(|| std::time::Duration::from_millis(5)));
+        let callback =
+            CallbackBuilder::new("FizzBuzzCalculator".into(), Box::new(FizzBuzzCalculator {}))
+                .with_subscriber_channels(&["integer"])
+                .with_publisher_channels(&["fizz_buzz_string"])
+                .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
+                .build()
+                .unwrap();
         callback
     }
 }
@@ -198,22 +186,18 @@ impl StringCollector {
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target_count: usize,
     ) -> callback::ConnectedCallback {
-        let callback: Box<dyn callback::GenericCallback> = Box::new(StringCollector {
-            string_store,
-            stop_signal,
-            target_count,
-        });
-        let mut subscribers = callback.build_subscribers();
-        subscribers[0].get_config_mut().channel_name = "fizz_buzz_string".into();
-        let publishers = callback.build_publishers();
-
-        let mut callback = callback::ConnectedCallback::new_with(
-            callback,
-            subscribers,
-            publishers,
+        let callback = CallbackBuilder::new(
             "StringCollector".into(),
-        );
-        callback.set_execution_duration_callback(Box::new(|| std::time::Duration::from_millis(2)));
+            Box::new(StringCollector {
+                string_store,
+                stop_signal,
+                target_count,
+            }),
+        )
+        .with_subscriber_channels(&["fuzz_buzz_string"])
+        .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
+        .build()
+        .unwrap();
         callback
     }
 }
@@ -264,11 +248,9 @@ impl callback::GenericCallback for NoOpTask {
 /// Build a [`ConnectedCallback`] wrapping a [`NoOpTask`] that reschedules itself
 /// for the instant it finishes (period = 0), so it is always immediately re-ready.
 pub fn build_no_op_callback() -> ConnectedCallback {
-    let cb: Box<dyn callback::GenericCallback> = Box::new(NoOpTask);
-    let subs = cb.build_subscribers();
-    let pubs = cb.build_publishers();
-    let mut connected = ConnectedCallback::new_with(cb, subs, pubs, "no-op".into());
-    connected.set_execution_time_callback(Box::new(Some));
-    connected.set_execution_duration_callback(Box::new(|| Duration::from_millis(1)));
-    connected
+    let callback = CallbackBuilder::new("no-op".into(), Box::new(NoOpTask))
+        .with_execution_duration_callback(|| Duration::from_millis(1))
+        .build()
+        .unwrap();
+    callback
 }

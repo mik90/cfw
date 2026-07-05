@@ -95,11 +95,20 @@ impl CallbackBuilder {
         self
     }
 
+    /// TODO: Why use impl intead of box here and not elsewhere?
     pub fn with_execution_duration_callback(
         mut self,
         callback: impl Fn() -> Duration + 'static,
     ) -> CallbackBuilder {
         self.execution_duration_callback = Some(Box::new(callback));
+        self
+    }
+
+    pub fn with_next_execution_time_callback(
+        mut self,
+        callback: impl Fn(FrameworkTime) -> Option<FrameworkTime> + 'static,
+    ) -> CallbackBuilder {
+        self.next_execution_time_callback = Some(Box::new(callback));
         self
     }
 
