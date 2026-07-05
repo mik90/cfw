@@ -11,7 +11,6 @@ use task::output;
 use task::publisher;
 use task::subscriber;
 use task::task_builder::TaskBuilder;
-use task::time::FrameworkTime;
 
 pub struct FizzBuzzTaskInfo {
     string_store: Arc<Mutex<Vec<String>>>,
@@ -252,7 +251,7 @@ impl callback::GenericCallback for NoOpTask {
 pub fn build_no_op_callback() -> ConnectedCallback {
     CallbackBuilder::new("no-op".into(), Box::new(NoOpTask))
         .with_execution_duration_callback(|| Duration::from_millis(1))
-        .with_next_execution_time_callback(|t| Some(t))
+        .with_next_execution_time_callback(Some) // forward the time we're given to execute immediately
         .build()
         .unwrap()
 }

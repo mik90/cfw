@@ -1,6 +1,9 @@
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
-use crate::callback::{ConnectedCallback, MismatchTypeError, connect_callbacks};
+use crate::{
+    callback::{ConnectedCallback, MismatchTypeError, connect_callbacks},
+    pub_sub::ChannelName,
+};
 
 pub type BuildStepError = Box<dyn std::error::Error>;
 
@@ -31,6 +34,12 @@ pub struct BuiltTasks {
     pub callbacks: Vec<ConnectedCallback>,
 }
 
+pub struct BuiltTasksWithDebugInfo {
+    pub callbacks: Vec<ConnectedCallback>,
+    pub dangling_subscribers: Vec<ChannelName>,
+    pub dangling_publishers: Vec<ChannelName>,
+}
+
 #[derive(Debug)]
 pub enum TaskBuildError {
     ConnectionError(MismatchTypeError), // Error hit during callback connection
@@ -50,6 +59,40 @@ impl Default for TaskBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn find_dangling_subscribers(callbacks: &[ConnectedCallback]) -> Vec<ChannelName> {
+    let mut channel_to_subscriber_count = HashMap::<&str, usize>::new();
+
+    for callback in callbacks {
+        for input in callback.get_subscribers().iter() {
+            let channel = input.get_config().channel_name.as_str();
+            *channel_to_subscriber_count.entry(channel).or_default() += 1;
+        }
+    }
+
+    channel_to_subscriber_count
+        .into_iter()
+        .filter(|(_, count)| *count == 0)
+        .map(|(channel, _)| channel.to_owned())
+        .collect()
+}
+
+fn find_dangling_publishers(callbacks: &[ConnectedCallback]) -> Vec<ChannelName> {
+    let mut channel_to_publisher_count = HashMap::<&str, usize>::new();
+
+    for callback in callbacks {
+        for input in callback.get_publishers().iter() {
+            let channel = input.get_config().channel_name.as_str();
+            *channel_to_publisher_count.entry(channel).or_default() += 1;
+        }
+    }
+
+    channel_to_publisher_count
+        .into_iter()
+        .filter(|(_, count)| *count == 0)
+        .map(|(channel, _)| channel.to_owned())
+        .collect()
 }
 
 impl TaskBuilder {
@@ -81,8 +124,21 @@ impl TaskBuilder {
         }
 
         connect_callbacks(&mut self.callbacks).map_err(TaskBuildError::ConnectionError)?;
+
         Ok(BuiltTasks {
             callbacks: self.callbacks,
+        })
+    }
+
+    pub fn build_with_debug_info(self) -> Result<BuiltTasksWithDebugInfo, TaskBuildError> {
+        let built_tasks = self.build()?;
+
+        let dangling_subscribers = find_dangling_subscribers(&built_tasks.callbacks);
+        let dangling_publishers = find_dangling_publishers(&built_tasks.callbacks);
+        Ok(BuiltTasksWithDebugInfo {
+            callbacks: built_tasks.callbacks,
+            dangling_subscribers,
+            dangling_publishers,
         })
     }
 }
