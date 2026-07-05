@@ -1,4 +1,4 @@
-use crate::callback::CallbackReadiness;
+use crate::callback::CallbackNodeReadiness;
 use crate::subscriber::SubscriberConfig;
 use std::sync::Arc;
 
@@ -32,11 +32,11 @@ pub trait GenericSubscriber {
     fn for_each_queued_input(&self, _f: &mut dyn FnMut(&dyn std::any::Any)) {}
 
     /// Inject the shared readiness bitmask and this subscriber's bit index.
-    /// Called by ConnectedCallback::new_with after creating the bitmask Arc.
-    fn set_readiness_state(&mut self, _state: Arc<CallbackReadiness>, _bit_index: usize) {}
+    /// Called by CallbackNode::new_with after creating the bitmask Arc.
+    fn set_readiness_state(&mut self, _state: Arc<CallbackNodeReadiness>, _bit_index: usize) {}
 
     /// Return the readiness state so that a connecting publisher can store it.
-    fn get_readiness_state(&self) -> Option<(Arc<CallbackReadiness>, usize)> {
+    fn get_readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
         None
     }
 }

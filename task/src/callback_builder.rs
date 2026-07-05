@@ -1,7 +1,7 @@
-use crate::callback::{ConnectedCallback, GenericCallback};
+use crate::callback::{Callback, CallbackNode};
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
-use crate::pub_sub::CallbackName;
+use crate::pub_sub::CallbackNodeName;
 use crate::time::FrameworkTime;
 use std::fmt;
 use std::time::Duration;
@@ -10,12 +10,12 @@ pub struct CallbackBuilder {
     subscribers: Vec<Box<dyn GenericSubscriber>>,
     publishers: Vec<Box<dyn GenericPublisher>>,
     /// Type-erased callback
-    generic_callback: Box<dyn GenericCallback>,
+    generic_callback: Box<dyn Callback>,
 
     next_execution_time_callback: Option<Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>>,
     execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
 
-    name: CallbackName,
+    name: CallbackNodeName,
 
     /// First error seen in build tree.
     first_error: Option<CallbackBuildError>,
@@ -35,8 +35,8 @@ impl fmt::Display for ExpectedVsActual {
 
 #[derive(Debug)]
 pub enum CallbackBuildError {
-    MismatchedSubscriberCount(ExpectedVsActual), // Number of configured subscribers doesn't match generic callback
-    MismatchedPublisherCount(ExpectedVsActual), // Number of configured publisher doesn't match generic callback
+    MismatchedSubscriberCount(ExpectedVsActual), // Number of configured subscribers doesn't match callback
+    MismatchedPublisherCount(ExpectedVsActual), // Number of configured publisher doesn't match callback
     MissingExecutionDurationCallback,           // No execution duration callback was added.
 }
 
@@ -45,12 +45,12 @@ impl fmt::Display for CallbackBuildError {
         match self {
             Self::MismatchedPublisherCount(e) => write!(
                 f,
-                "Number of configured subscribers doesn't match generic callback {}",
+                "Number of configured subscribers doesn't match callback {}",
                 e
             ),
             Self::MismatchedSubscriberCount(e) => write!(
                 f,
-                "Number of configured publisher doesn't match generic callback {}",
+                "Number of configured publisher doesn't match callback {}",
                 e
             ),
             Self::MissingExecutionDurationCallback => {
@@ -61,8 +61,8 @@ impl fmt::Display for CallbackBuildError {
 }
 
 impl CallbackBuilder {
-    pub fn new(name: CallbackName, callback: Box<dyn GenericCallback>) -> CallbackBuilder {
-        // Build the default subscribers/publishers from the generic callback,
+    pub fn new(name: CallbackNodeName, callback: Box<dyn Callback>) -> CallbackBuilder {
+        // Build the default subscribers/publishers from the callback,
         // the type in the function's signature should allow for some reasonable defaults.
         let subscribers = callback.build_subscribers();
         let publishers = callback.build_publishers();
@@ -131,12 +131,12 @@ impl CallbackBuilder {
         self
     }
 
-    pub fn build(self) -> Result<ConnectedCallback, CallbackBuildError> {
+    pub fn build(self) -> Result<CallbackNode, CallbackBuildError> {
         if let Some(error) = self.first_error {
             return Err(error);
         }
 
-        let mut callback = ConnectedCallback::new_with(
+        let mut callback = CallbackNode::new_with(
             self.generic_callback,
             self.subscribers,
             self.publishers,
@@ -162,7 +162,7 @@ mod test {
     use std::assert_matches;
 
     use super::*;
-    use crate::callback::{GenericCallback, Run};
+    use crate::callback::{Callback, Run};
     use crate::context::Context;
     use crate::generic_publisher::GenericPublisher;
     use crate::generic_subscriber::GenericSubscriber;
@@ -170,13 +170,13 @@ mod test {
     use crate::subscriber::{Subscriber, SubscriberConfig};
     use crate::time::FrameworkTime;
 
-    /// A generic callback with a configurable number of default subscribers/publishers.
+    /// A callback with a configurable number of default subscribers/publishers.
     struct DummyCallback {
         num_subscribers: usize,
         num_publishers: usize,
     }
 
-    impl GenericCallback for DummyCallback {
+    impl Callback for DummyCallback {
         fn run_generic(
             &mut self,
             _subscribers: &mut [Box<dyn GenericSubscriber>],
@@ -212,7 +212,7 @@ mod test {
         }
     }
 
-    fn make_callback(num_subscribers: usize, num_publishers: usize) -> Box<dyn GenericCallback> {
+    fn make_callback(num_subscribers: usize, num_publishers: usize) -> Box<dyn Callback> {
         Box::new(DummyCallback {
             num_subscribers,
             num_publishers,

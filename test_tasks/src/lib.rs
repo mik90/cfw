@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use task::callback;
-use task::callback::ConnectedCallback;
+use task::callback::CallbackNode;
 use task::callback_builder::CallbackBuilder;
 use task::executor::ExecutorStopSignal;
 use task::generic_publisher::GenericPublisher;
@@ -10,7 +10,7 @@ use task::input;
 use task::output;
 use task::publisher;
 use task::subscriber;
-use task::task_builder::TaskBuilder;
+use task::task_graph_builder::TaskGraphBuilder;
 
 pub struct FizzBuzzTaskInfo {
     string_store: Arc<Mutex<Vec<String>>>,
@@ -28,27 +28,27 @@ impl FizzBuzzTaskInfo {
     }
 }
 
-pub fn build_fizz_buzz_tasks() -> (Vec<ConnectedCallback>, FizzBuzzTaskInfo) {
+pub fn build_fizz_buzz_callback_nodes() -> (Vec<CallbackNode>, FizzBuzzTaskInfo) {
     let string_store = StringCollector::make_string_store();
     let stop_signal = Arc::new(OnceLock::new());
 
-    let build_result = TaskBuilder::new()
-        .add_callback(IncrementingIntegerPublisher::build_connected_callback())
-        .add_callback(FizzBuzzCalculator::build_connected_callback())
-        .add_callback(StringCollector::build_connected_callback(
+    let build_result = TaskGraphBuilder::new()
+        .add_callback(IncrementingIntegerPublisher::build_callback_node())
+        .add_callback(FizzBuzzCalculator::build_callback_node())
+        .add_callback(StringCollector::build_callback_node(
             string_store.clone(),
             stop_signal.clone(),
             1,
         ))
         .build();
 
-    let callbacks = match build_result {
-        Ok(result) => result.callbacks,
+    let nodes = match build_result {
+        Ok(result) => result.nodes,
         Err(err) => panic!("Build result was {}", err),
     };
 
     (
-        callbacks,
+        nodes,
         FizzBuzzTaskInfo {
             string_store,
             stop_signal,
@@ -70,7 +70,7 @@ impl IncrementingIntegerPublisher {
         output.send();
     }
 
-    pub fn build_connected_callback() -> callback::ConnectedCallback {
+    pub fn build_callback_node() -> callback::CallbackNode {
         CallbackBuilder::new(
             "IncrementingIntegerPublisher".into(),
             Box::new(IncrementingIntegerPublisher { value: 0 }),
@@ -83,7 +83,7 @@ impl IncrementingIntegerPublisher {
     }
 }
 
-impl callback::GenericCallback for IncrementingIntegerPublisher {
+impl callback::Callback for IncrementingIntegerPublisher {
     fn run_generic(
         &mut self,
         _subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
@@ -127,7 +127,7 @@ impl FizzBuzzCalculator {
         }
         fizz_buzz_string.send();
     }
-    pub fn build_connected_callback() -> callback::ConnectedCallback {
+    pub fn build_callback_node() -> callback::CallbackNode {
         CallbackBuilder::new("FizzBuzzCalculator".into(), Box::new(FizzBuzzCalculator {}))
             .with_subscriber_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
             .with_publisher_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
@@ -137,7 +137,7 @@ impl FizzBuzzCalculator {
     }
 }
 
-impl callback::GenericCallback for FizzBuzzCalculator {
+impl callback::Callback for FizzBuzzCalculator {
     fn run_generic(
         &mut self,
         subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
@@ -183,11 +183,11 @@ impl StringCollector {
         Arc::new(Mutex::new(vec![]))
     }
 
-    pub fn build_connected_callback(
+    pub fn build_callback_node(
         string_store: Arc<Mutex<Vec<String>>>,
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target_count: usize,
-    ) -> callback::ConnectedCallback {
+    ) -> callback::CallbackNode {
         CallbackBuilder::new(
             "StringCollector".into(),
             Box::new(StringCollector {
@@ -203,7 +203,7 @@ impl StringCollector {
     }
 }
 
-impl callback::GenericCallback for StringCollector {
+impl callback::Callback for StringCollector {
     fn run_generic(
         &mut self,
         subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
@@ -226,10 +226,10 @@ impl callback::GenericCallback for StringCollector {
     }
 }
 
-/// A minimal no-op task with no subscribers or publishers.
-pub struct NoOpTask;
+/// A minimal no-op callback with no subscribers or publishers.
+pub struct NoOpCallback;
 
-impl callback::GenericCallback for NoOpTask {
+impl callback::Callback for NoOpCallback {
     fn run_generic(
         &mut self,
         _subscribers: &mut [Box<dyn GenericSubscriber>],
@@ -246,10 +246,10 @@ impl callback::GenericCallback for NoOpTask {
     }
 }
 
-/// Build a [`ConnectedCallback`] wrapping a [`NoOpTask`] that reschedules itself
+/// Build a [`CallbackNode`] wrapping a [`NoOpCallback`] that reschedules itself
 /// for the instant it finishes (period = 0), so it is always immediately re-ready.
-pub fn build_no_op_callback() -> ConnectedCallback {
-    CallbackBuilder::new("no-op".into(), Box::new(NoOpTask))
+pub fn build_no_op_callback_node() -> CallbackNode {
+    CallbackBuilder::new("no-op".into(), Box::new(NoOpCallback))
         .with_execution_duration_callback(|| Duration::from_millis(1))
         .with_next_execution_time_callback(Some) // forward the time we're given to execute immediately
         .build()

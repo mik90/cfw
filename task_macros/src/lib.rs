@@ -290,7 +290,7 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                 return Err(syn::Error::new_spanned(
                     &last.ident,
                     format!(
-                        "unknown task argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan, Output, OutputSpan, ForwardingOutput, or Context",
+                        "unknown callback argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan, Output, OutputSpan, ForwardingOutput, or Context",
                         last.ident
                     ),
                 ));
@@ -374,9 +374,9 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
             use task::output::{Output, OutputSpan, ForwardingOutput};
             use task::generic_publisher::GenericPublisher;
             use task::generic_subscriber::GenericSubscriber;
-            use task::callback::{Run, GenericCallback, CallbackSignature, InputKind, OutputKind};
+            use task::callback::{Run, Callback, CallbackSignature, InputKind, OutputKind};
 
-            impl GenericCallback for #struct_name {
+            impl Callback for #struct_name {
                 fn run_generic(
                     &mut self,
                     subscribers: &mut [Box<dyn GenericSubscriber>],

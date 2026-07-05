@@ -1,5 +1,5 @@
 use crate::{
-    callback::CallbackReadiness,
+    callback::CallbackNodeReadiness,
     generic_subscriber::QueueInfo,
     message::Message,
     pub_sub::ChannelName,
@@ -154,11 +154,11 @@ impl<T: 'static> GenericSubscriber for TestSubscriber<T> {
         self.subscriber.cleanup_buffers();
     }
 
-    fn set_readiness_state(&mut self, state: Arc<CallbackReadiness>, bit_index: usize) {
+    fn set_readiness_state(&mut self, state: Arc<CallbackNodeReadiness>, bit_index: usize) {
         self.subscriber.set_readiness_state(state, bit_index)
     }
 
-    fn get_readiness_state(&self) -> Option<(Arc<CallbackReadiness>, usize)> {
+    fn get_readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
         self.subscriber.get_readiness_state()
     }
 }

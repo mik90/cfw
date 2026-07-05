@@ -1,7 +1,7 @@
 #[cfg(test)]
 
 mod tests {
-    use task::callback::GenericCallback;
+    use task::callback::Callback;
     use task::forwarded_message::ForwardedMessage;
     use task::input::{ForwardableRequiredInput, RequiredInput};
     use task::output::{ForwardingOutput, Output};
@@ -9,22 +9,22 @@ mod tests {
     use task::subscriber::*;
     use task_macros::task_callback;
 
-    struct MyTask {}
+    struct MyCallback {}
 
     #[task_callback]
-    impl MyTask {
+    impl MyCallback {
         fn run(&self, my_input: RequiredInput<i32>, mut my_output: Output<i32>) {
-            // Task logic here
+            // Callback logic here
             let value = *my_input + 10;
             *my_output = value;
             my_output.send();
         }
     }
 
-    struct ForwardTask {}
+    struct ForwardCallback {}
 
     #[task_callback]
-    impl ForwardTask {
+    impl ForwardCallback {
         fn run(
             &mut self,
             input: ForwardableRequiredInput<i32>,
@@ -93,7 +93,7 @@ mod tests {
             subscriber.drain_writer_to_reader();
         }
 
-        let mut task = MyTask {};
+        let mut task = MyCallback {};
 
         let ctx = task::context::Context::new(task::time::FrameworkTime::from_wall_clock());
         let result = task.run_generic(
@@ -171,7 +171,7 @@ mod tests {
             subscriber.drain_writer_to_reader();
         }
 
-        let mut task = ForwardTask {};
+        let mut task = ForwardCallback {};
         let ctx = task::context::Context::new(task::time::FrameworkTime::from_wall_clock());
         let result = task.run_generic(
             task_subscribers.as_mut_slice(),
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn make_pub_sub() {
-        let task = MyTask {};
+        let task = MyCallback {};
 
         let mut subscribers = task.build_subscribers();
         assert!(subscribers.len() == 1);

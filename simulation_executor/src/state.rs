@@ -1,20 +1,18 @@
 use task::executor::ThreadPoolConfig;
 
-use crate::callback_executor::{
-    CallbackExecutionRequest, CallbackExecutionResponse, callback_executor_thread,
-};
+use crate::node_executor::{NodeExecutionRequest, NodeExecutionResponse, node_executor_thread};
 use crate::{
-    ConnectedCallback, FrameworkTime, PoolIndex, SimulationConfig, TaskIndex, TimeTriggeredTask,
+    CallbackNode, CallbackNodeIndex, FrameworkTime, PoolIndex, SimulationConfig, TimeTriggeredNode,
     VirtualPool,
 };
 
 #[derive(Debug)]
 pub enum StepError {
-    /// No callback executor threads are configured.
-    NoCallbackExecutors,
-    /// A callback executor thread disconnected, likely because it panicked.
-    CallbackThreadDisconnected,
-    /// Received more responses than expected from callback executor threads.
+    /// No node executor threads are configured.
+    NoNodeExecutors,
+    /// A node executor thread disconnected, likely because it panicked.
+    NodeExecutorThreadDisconnected,
+    /// Received more responses than expected from node executor threads.
     UnexpectedResponse,
     /// The step loop thread panicked.
     StepThreadPanicked,
@@ -27,35 +25,35 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub struct SimulationState {
-    /// Storage of all tasks. A task's index into this vec is used to index into other Vecs.
-    /// Each task is wrapped in a Mutex so the parallel callback executors can lock individual
-    /// tasks without unsafe disjoint-index tricks.
-    tasks: Vec<Arc<Mutex<ConnectedCallback>>>,
+    /// Storage of all callback nodes. A node's index into this vec is used to index into other Vecs.
+    /// Each node is wrapped in a Mutex so the parallel node executors can lock individual
+    /// nodes without unsafe disjoint-index tricks.
+    nodes: Vec<Arc<Mutex<CallbackNode>>>,
 
-    /// Threads that execute callbacks in parallel.
-    callback_executor_threads: Vec<thread::JoinHandle<()>>,
+    /// Threads that execute callback nodes in parallel.
+    node_executor_threads: Vec<thread::JoinHandle<()>>,
 
-    /// Tells callback executors to do work
-    callback_exec_request_senders: Vec<Sender<CallbackExecutionRequest>>,
+    /// Tells node executors to do work
+    node_exec_request_senders: Vec<Sender<NodeExecutionRequest>>,
 
     /// Mono channel with all results of execution
-    callback_exec_response_receiver: Receiver<CallbackExecutionResponse>,
+    node_exec_response_receiver: Receiver<NodeExecutionResponse>,
 
-    /// Maps each global task index to its pool index
-    task_to_pool: Vec<PoolIndex>,
+    /// Maps each global callback node index to its pool index
+    node_to_pool: Vec<PoolIndex>,
 
     /// Virtual pools — no real threads, but models concurrency boundaries
     virtual_pools: Vec<VirtualPool>,
 
     /// TODO should this be a sorted queue?
-    periodic_tasks: VecDeque<TimeTriggeredTask>,
+    periodic_nodes: VecDeque<TimeTriggeredNode>,
 
-    /// Per-task sim-time when each task's last execution finishes. Initialized to start_time.
-    task_busy_until: Vec<FrameworkTime>,
+    /// Per-node sim-time when each node's last execution finishes. Initialized to start_time.
+    node_busy_until: Vec<FrameworkTime>,
 
-    /// Sim-time when each task first became ready but hadn't yet been allocated a thread.
-    /// None if the task is not currently waiting. Used to prioritize longest-waiting tasks.
-    task_ready_since: Vec<Option<FrameworkTime>>,
+    /// Sim-time when each node first became ready but hadn't yet been allocated a thread.
+    /// None if the node is not currently waiting. Used to prioritize longest-waiting nodes.
+    node_ready_since: Vec<Option<FrameworkTime>>,
 
     /// Current simulation time
     time: FrameworkTime,
@@ -65,21 +63,21 @@ pub struct SimulationState {
 }
 
 impl SimulationState {
-    /// Create a single virtual pool with `num_virtual_threads` for all tasks,
+    /// Create a single virtual pool with `num_virtual_threads` for all callback nodes,
     /// starting at simulation time zero
-    pub fn new(num_virtual_threads: usize, tasks: Vec<ConnectedCallback>) -> Self {
+    pub fn new(num_virtual_threads: usize, nodes: Vec<CallbackNode>) -> Self {
         Self::new_with(SimulationConfig {
             start_time: FrameworkTime::from_nanoseconds(0),
-            pools: vec![ThreadPoolConfig::new(num_virtual_threads, tasks)],
-            callback_executor_thread_count: 1,
+            pools: vec![ThreadPoolConfig::new(num_virtual_threads, nodes)],
+            node_executor_thread_count: 1,
         })
     }
 
     /// Create an new state from a [`SimulationConfig`], supporting multiple virtual
     /// pools and a configurable start time.
     pub fn new_with(config: SimulationConfig) -> SimulationState {
-        let mut all_tasks: Vec<Arc<Mutex<ConnectedCallback>>> = vec![];
-        let mut task_to_pool: Vec<usize> = Vec::new();
+        let mut all_nodes: Vec<Arc<Mutex<CallbackNode>>> = vec![];
+        let mut node_to_pool: Vec<usize> = Vec::new();
         let mut virtual_pools: Vec<VirtualPool> = Vec::new();
 
         for (pool_idx, pool) in config.pools.into_iter().enumerate() {
@@ -87,48 +85,46 @@ impl SimulationState {
                 virtual_thread_count: pool.thread_count,
                 num_threads_occupied: 0,
             });
-            for task in pool.tasks {
-                task_to_pool.push(pool_idx);
-                all_tasks.push(Arc::new(Mutex::new(task)));
+            for node in pool.nodes {
+                node_to_pool.push(pool_idx);
+                all_nodes.push(Arc::new(Mutex::new(node)));
             }
         }
 
-        let num_tasks = all_tasks.len();
+        let num_nodes = all_nodes.len();
 
-        // One response channel shared by all callback executor threads
+        // One response channel shared by all node executor threads
         let (exec_response_sender, exec_response_recv): (
-            Sender<CallbackExecutionResponse>,
-            Receiver<CallbackExecutionResponse>,
+            Sender<NodeExecutionResponse>,
+            Receiver<NodeExecutionResponse>,
         ) = mpsc::channel();
 
         let mut state = SimulationState {
-            tasks: all_tasks,
-            callback_executor_threads: Vec::with_capacity(config.callback_executor_thread_count),
-            callback_exec_request_senders: Vec::with_capacity(
-                config.callback_executor_thread_count,
-            ),
-            callback_exec_response_receiver: exec_response_recv,
+            nodes: all_nodes,
+            node_executor_threads: Vec::with_capacity(config.node_executor_thread_count),
+            node_exec_request_senders: Vec::with_capacity(config.node_executor_thread_count),
+            node_exec_response_receiver: exec_response_recv,
             virtual_pools,
-            task_to_pool,
-            periodic_tasks: VecDeque::new(),
-            task_busy_until: vec![config.start_time; num_tasks],
-            task_ready_since: vec![None; num_tasks],
+            node_to_pool,
+            periodic_nodes: VecDeque::new(),
+            node_busy_until: vec![config.start_time; num_nodes],
+            node_ready_since: vec![None; num_nodes],
             time: config.start_time,
             step_count: Saturating(0),
         };
-        for _ in 0..config.callback_executor_thread_count {
+        for _ in 0..config.node_executor_thread_count {
             // Each thread has its own request receiver; the state owns the matching sender
             let (request_sender, request_recv): (
-                Sender<CallbackExecutionRequest>,
-                Receiver<CallbackExecutionRequest>,
+                Sender<NodeExecutionRequest>,
+                Receiver<NodeExecutionRequest>,
             ) = mpsc::channel();
-            state.callback_exec_request_senders.push(request_sender);
+            state.node_exec_request_senders.push(request_sender);
 
-            let cloned_tasks = state.tasks.clone();
+            let cloned_nodes = state.nodes.clone();
 
             let response_sender_clone = exec_response_sender.clone();
-            state.callback_executor_threads.push(thread::spawn(move || {
-                callback_executor_thread(request_recv, response_sender_clone, cloned_tasks);
+            state.node_executor_threads.push(thread::spawn(move || {
+                node_executor_thread(request_recv, response_sender_clone, cloned_nodes);
             }));
         }
 
@@ -137,65 +133,65 @@ impl SimulationState {
 
     pub fn start(&mut self) {
         // Set up periodic execution
-        for (index, callback) in self.tasks.iter().enumerate() {
-            if callback
+        for (index, node) in self.nodes.iter().enumerate() {
+            if node
                 .lock()
                 .unwrap()
                 .get_next_requested_execution_time(self.time)
                 .is_some()
             {
-                self.periodic_tasks.push_back(TimeTriggeredTask {
+                self.periodic_nodes.push_back(TimeTriggeredNode {
                     index,
-                    // Periodic tasks will run on startup, and then their requested times will be honored
+                    // Periodic nodes will run on startup, and then their requested times will be honored
                     requested_exec_time: self.time,
                 });
             }
         }
     }
 
-    /// Finds tasks that should run this step, allocates a thread from their pool to each,
+    /// Finds callback nodes that should run this step, allocates a thread from their pool to each,
     /// and drains their subscribers (write → read) so data is available when they run.
     ///
-    /// A task is a candidate if it has new trigger data in its write buffer and isn't busy,
-    /// or it is a periodic task that is due and isn't busy. Among candidates, only those
+    /// A node is a candidate if it has new trigger data in its write buffer and isn't busy,
+    /// or it is a periodic node that is due and isn't busy. Among candidates, only those
     /// whose pool has a free thread are returned. Drain is deferred until after thread
-    /// allocation so that tasks which can't run don't consume their trigger data.
-    fn allocate_tasks_to_threads(&mut self) -> Vec<TaskIndex> {
-        let mut candidates: Vec<TaskIndex> = vec![];
+    /// allocation so that nodes which can't run don't consume their trigger data.
+    fn allocate_nodes_to_threads(&mut self) -> Vec<CallbackNodeIndex> {
+        let mut candidates: Vec<CallbackNodeIndex> = vec![];
 
-        for index in 0..self.tasks.len() {
-            if self.tasks[index]
+        for index in 0..self.nodes.len() {
+            if self.nodes[index]
                 .lock()
                 .unwrap()
                 .subscribers_request_execution()
-                && self.time >= self.task_busy_until[index]
+                && self.time >= self.node_busy_until[index]
             {
                 candidates.push(index);
             }
         }
-        for periodic in &self.periodic_tasks {
+        for periodic in &self.periodic_nodes {
             if periodic.requested_exec_time <= self.time
-                && self.time >= self.task_busy_until[periodic.index]
+                && self.time >= self.node_busy_until[periodic.index]
                 && !candidates.contains(&periodic.index)
             {
                 candidates.push(periodic.index);
             }
         }
 
-        // Record when each task first became ready, then sort by wait time (oldest first)
-        // with task index as a tiebreaker to preserve determinism.
+        // Record when each node first became ready, then sort by wait time (oldest first)
+        // with node index as a tiebreaker to preserve determinism.
         for &index in &candidates {
-            self.task_ready_since[index].get_or_insert(self.time);
+            self.node_ready_since[index].get_or_insert(self.time);
         }
-        candidates.sort_by_key(|&index| (self.task_ready_since[index], index));
+        candidates.sort_by_key(|&index| (self.node_ready_since[index], index));
 
-        let mut runnable: Vec<TaskIndex> = vec![];
+        let mut runnable: Vec<CallbackNodeIndex> = vec![];
         for index in candidates {
-            let pool_index = self.task_to_pool[index];
+            let pool_index = self.node_to_pool[index];
             let pool = &mut self.virtual_pools[pool_index];
             if pool.num_threads_occupied < pool.virtual_thread_count {
                 pool.num_threads_occupied += 1;
-                self.task_ready_since[index] = None;
+                self.node_ready_since[index] = None;
                 runnable.push(index);
             }
         }
@@ -203,56 +199,56 @@ impl SimulationState {
         runnable
     }
 
-    pub fn step(&mut self) -> Result<Vec<TaskIndex>, StepError> {
-        let runnable_tasks = self.allocate_tasks_to_threads();
-        // Only drain subscribers for tasks that actually got a thread, so that tasks
+    pub fn step(&mut self) -> Result<Vec<CallbackNodeIndex>, StepError> {
+        let runnable_nodes = self.allocate_nodes_to_threads();
+        // Only drain subscribers for nodes that actually got a thread, so that nodes
         // blocked by pool pressure keep their trigger data for the next step.
-        for &index in &runnable_tasks {
-            self.tasks[index].lock().unwrap().drain_subscribers();
+        for &index in &runnable_nodes {
+            self.nodes[index].lock().unwrap().drain_subscribers();
         }
 
         let time = self.time;
 
-        let mut sender_cycle_iter = self.callback_exec_request_senders.iter().cycle();
-        for index in &runnable_tasks {
-            // Round-robin work across callback executor threads.
+        let mut sender_cycle_iter = self.node_exec_request_senders.iter().cycle();
+        for index in &runnable_nodes {
+            // Round-robin work across node executor threads.
             sender_cycle_iter
                 .next()
-                .ok_or(StepError::NoCallbackExecutors)?
-                .send(CallbackExecutionRequest {
+                .ok_or(StepError::NoNodeExecutors)?
+                .send(NodeExecutionRequest {
                     index: *index,
                     current_time: time,
                     should_run: true,
                 })
-                .map_err(|_| StepError::CallbackThreadDisconnected)?;
+                .map_err(|_| StepError::NodeExecutorThreadDisconnected)?;
         }
 
-        let mut execution_responses: Vec<CallbackExecutionResponse> = vec![];
-        for _ in &runnable_tasks {
+        let mut execution_responses: Vec<NodeExecutionResponse> = vec![];
+        for _ in &runnable_nodes {
             let response = self
-                .callback_exec_response_receiver
+                .node_exec_response_receiver
                 .recv()
-                .map_err(|_| StepError::CallbackThreadDisconnected)?;
+                .map_err(|_| StepError::NodeExecutorThreadDisconnected)?;
             execution_responses.push(response);
         }
 
-        if self.callback_exec_response_receiver.try_recv().is_ok() {
+        if self.node_exec_response_receiver.try_recv().is_ok() {
             return Err(StepError::UnexpectedResponse);
         }
 
         for response in execution_responses {
-            self.task_busy_until[response.index] = time + response.execution_duration;
+            self.node_busy_until[response.index] = time + response.execution_duration;
         }
 
-        for &index in &runnable_tasks {
-            self.tasks[index].lock().unwrap().flush_publishers(time);
+        for &index in &runnable_nodes {
+            self.nodes[index].lock().unwrap().flush_publishers(time);
         }
 
-        // Update periodic task next-run times from their no-longer-busy instant
-        for periodic in &mut self.periodic_tasks {
-            if runnable_tasks.contains(&periodic.index) {
-                let no_longer_busy = self.task_busy_until[periodic.index];
-                if let Some(next_time) = self.tasks[periodic.index]
+        // Update periodic node next-run times from their no-longer-busy instant
+        for periodic in &mut self.periodic_nodes {
+            if runnable_nodes.contains(&periodic.index) {
+                let no_longer_busy = self.node_busy_until[periodic.index];
+                if let Some(next_time) = self.nodes[periodic.index]
                     .lock()
                     .unwrap()
                     .get_next_requested_execution_time(no_longer_busy)
@@ -265,12 +261,12 @@ impl SimulationState {
         let old_sim_time = self.time;
 
         // Advance sim time to earliest next event
-        let next_busy = runnable_tasks
+        let next_busy = runnable_nodes
             .iter()
-            .map(|&i| self.task_busy_until[i])
+            .map(|&i| self.node_busy_until[i])
             .min();
         let next_periodic = self
-            .periodic_tasks
+            .periodic_nodes
             .iter()
             .map(|p| p.requested_exec_time)
             .filter(|&t| t > self.time)
@@ -281,23 +277,23 @@ impl SimulationState {
             self.time = t;
         }
 
-        // See if any tasks are no longer busy, and if they aren't, free up a thread from their pool
-        for (index, t) in self.task_busy_until.iter().enumerate() {
+        // See if any nodes are no longer busy, and if they aren't, free up a thread from their pool
+        for (index, t) in self.node_busy_until.iter().enumerate() {
             let busy_until_time = *t;
             if busy_until_time > old_sim_time && busy_until_time <= self.time {
-                // task is no longer busy as of the new sim time, so we can free up a thread
-                let pool_index = self.task_to_pool[index];
+                // node is no longer busy as of the new sim time, so we can free up a thread
+                let pool_index = self.node_to_pool[index];
                 self.virtual_pools[pool_index].num_threads_occupied -= 1;
             }
         }
         self.step_count += 1;
-        Ok(runnable_tasks)
+        Ok(runnable_nodes)
     }
 
-    pub fn shutdown_callback_threads(&mut self) -> Result<(), Vec<usize>> {
-        for sender in self.callback_exec_request_senders.drain(..) {
+    pub fn shutdown_node_executor_threads(&mut self) -> Result<(), Vec<usize>> {
+        for sender in self.node_exec_request_senders.drain(..) {
             // Best-effort: thread may already have exited if its sender was dropped.
-            let _ = sender.send(CallbackExecutionRequest {
+            let _ = sender.send(NodeExecutionRequest {
                 index: 0,
                 current_time: FrameworkTime::INVALID,
                 should_run: false,
@@ -305,7 +301,7 @@ impl SimulationState {
         }
 
         let mut panicked_thread_indexes = vec![];
-        for (thread_idx, t) in self.callback_executor_threads.drain(..).enumerate() {
+        for (thread_idx, t) in self.node_executor_threads.drain(..).enumerate() {
             if t.join().is_err() {
                 panicked_thread_indexes.push(thread_idx);
             }
@@ -328,8 +324,8 @@ impl SimulationState {
 
     pub fn cleanup(&mut self) {
         // Clean up subscriber buffers so we can destroy publisher message storage
-        for task in self.tasks.iter() {
-            for subscriber in task.lock().unwrap().get_subscribers().iter() {
+        for node in self.nodes.iter() {
+            for subscriber in node.lock().unwrap().get_subscribers().iter() {
                 subscriber.cleanup_buffers();
             }
         }
@@ -347,42 +343,42 @@ mod tests {
     /// Lower level test that manually steps sim state
     #[test]
     fn test_simulation_state() {
-        let (callbacks, task_info) = build_fizz_buzz_tasks();
+        let (nodes, task_info) = build_fizz_buzz_callback_nodes();
 
-        let mut state = SimulationState::new(1, callbacks);
+        let mut state = SimulationState::new(1, nodes);
         state.start();
         let start_time = state.get_simulation_time();
 
-        assert_eq!(state.tasks.len(), 3);
+        assert_eq!(state.nodes.len(), 3);
 
-        let periodic = state.periodic_tasks.front().unwrap();
+        let periodic = state.periodic_nodes.front().unwrap();
         assert_eq!(periodic.index, 0);
         assert_eq!(periodic.requested_exec_time, start_time);
 
-        let executed_tasks = state.step().unwrap();
-        assert_eq!(executed_tasks, vec![task_info.integer_publisher_index]);
+        let executed_nodes = state.step().unwrap();
+        assert_eq!(executed_nodes, vec![task_info.integer_publisher_index]);
 
         // After first step, the publisher should want to run in the future
-        let periodic = state.periodic_tasks.front().unwrap();
+        let periodic = state.periodic_nodes.front().unwrap();
         assert_eq!(periodic.index, 0);
         assert_eq!(
             periodic.requested_exec_time,
             start_time + Duration::from_millis(1) + Duration::from_millis(500),
-            "Publisher task takes 1ms to run and wants to run every 500ms"
+            "Publisher callback node takes 1ms to run and wants to run every 500ms"
         );
 
-        let executed_tasks = state.step().unwrap();
+        let executed_nodes = state.step().unwrap();
         assert_eq!(
-            executed_tasks,
+            executed_nodes,
             vec![task_info.fizz_buzz_index],
-            "After the second step, the fizz-buzz task should have run"
+            "After the second step, the fizz-buzz callback node should have run"
         );
 
-        let executed_tasks = state.step().unwrap();
+        let executed_nodes = state.step().unwrap();
         assert_eq!(
-            executed_tasks,
+            executed_nodes,
             vec![task_info.string_store_index],
-            "After the third step, the string store task should've run"
+            "After the third step, the string store callback node should've run"
         );
 
         assert_eq!(task_info.get_stored_strings(), vec!["FizzBuzz"]);
@@ -391,8 +387,8 @@ mod tests {
 
 impl Drop for SimulationState {
     fn drop(&mut self) {
-        // Make sure callback threads exit even if stop() was never called.
-        let _ = self.shutdown_callback_threads();
+        // Make sure node executor threads exit even if stop() was never called.
+        let _ = self.shutdown_node_executor_threads();
         self.cleanup();
     }
 }

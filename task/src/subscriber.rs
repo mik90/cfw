@@ -1,4 +1,4 @@
-use crate::callback::CallbackReadiness;
+use crate::callback::CallbackNodeReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
@@ -24,7 +24,7 @@ pub struct Subscriber<T> {
     buffers: DoubleBuffer<Message<T>>,
     queue_has_new_data: bool,
     config: SubscriberConfig,
-    readiness_state: Option<(Arc<CallbackReadiness>, usize)>,
+    readiness_state: Option<(Arc<CallbackNodeReadiness>, usize)>,
 }
 
 impl<T> Subscriber<T> {
@@ -120,11 +120,11 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         self.buffers.clear();
     }
 
-    fn set_readiness_state(&mut self, state: Arc<CallbackReadiness>, bit_index: usize) {
+    fn set_readiness_state(&mut self, state: Arc<CallbackNodeReadiness>, bit_index: usize) {
         self.readiness_state = Some((state, bit_index));
     }
 
-    fn get_readiness_state(&self) -> Option<(Arc<CallbackReadiness>, usize)> {
+    fn get_readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
         self.readiness_state.clone()
     }
 
@@ -181,11 +181,11 @@ impl<T: 'static> GenericSubscriber for ForwardableSubscriber<T> {
         self.subscriber.cleanup_buffers();
     }
 
-    fn set_readiness_state(&mut self, state: Arc<CallbackReadiness>, bit_index: usize) {
+    fn set_readiness_state(&mut self, state: Arc<CallbackNodeReadiness>, bit_index: usize) {
         self.subscriber.set_readiness_state(state, bit_index);
     }
 
-    fn get_readiness_state(&self) -> Option<(Arc<CallbackReadiness>, usize)> {
+    fn get_readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
         self.subscriber.get_readiness_state()
     }
 }

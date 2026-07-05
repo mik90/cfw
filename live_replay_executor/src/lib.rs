@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use task::callback::ConnectedCallback;
+use task::callback::CallbackNode;
 use task::executor::{Executor, ExecutorStopSignal};
 
 pub struct StopSignal(Arc<AtomicBool>);
@@ -21,8 +21,8 @@ impl std::error::Error for LiveReplayExecutorError {}
 
 #[allow(dead_code)]
 pub struct LiveReplayExecutor {
-    // All tasks, regardless of if they're run or not
-    tasks: Vec<ConnectedCallback>,
+    // All callback nodes, regardless of if they're run or not
+    nodes: Vec<CallbackNode>,
 
     // Threads where execution is run off of
     execution_threads: Vec<thread::JoinHandle<()>>,
@@ -88,9 +88,9 @@ impl Executor for LiveReplayExecutor {
 }
 
 impl LiveReplayExecutor {
-    pub fn new(tasks: Vec<ConnectedCallback>) -> Self {
+    pub fn new(nodes: Vec<CallbackNode>) -> Self {
         Self {
-            tasks,
+            nodes,
             execution_threads: Vec::new(),
             should_run: Arc::new(AtomicBool::new(false)),
         }

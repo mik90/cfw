@@ -1,26 +1,26 @@
 use crate::state::SimulationState;
 pub use crate::state::StepError;
-use crate::{SimulationConfig, TaskIndex};
+use crate::{CallbackNodeIndex, SimulationConfig};
 use std::num::Saturating;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use task::callback::ConnectedCallback;
+use task::callback::CallbackNode;
 use task::executor::{Executor, ExecutorStopSignal, ThreadPoolConfig};
 use task::time::FrameworkTime;
 
 #[derive(Debug)]
 pub enum SimulationExecutorError {
     StepThreadPanicked,
-    CallbackThreadsPanicked(Vec<usize>),
+    NodeExecutorThreadsPanicked(Vec<usize>),
 }
 
 impl std::fmt::Display for SimulationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SimulationExecutorError::StepThreadPanicked => write!(f, "step thread panicked"),
-            SimulationExecutorError::CallbackThreadsPanicked(idxs) => {
-                write!(f, "callback threads panicked: {idxs:?}")
+            SimulationExecutorError::NodeExecutorThreadsPanicked(idxs) => {
+                write!(f, "node executor threads panicked: {idxs:?}")
             }
         }
     }
@@ -50,14 +50,14 @@ pub struct SimulationExecutor {
 }
 
 impl SimulationExecutor {
-    /// Create a single virtual pool with `num_virtual_threads` for all tasks,
+    /// Create a single virtual pool with `num_virtual_threads` for all callback nodes,
     /// starting at simulation time zero
-    pub fn new(num_virtual_threads: usize, tasks: Vec<ConnectedCallback>) -> Self {
+    pub fn new(num_virtual_threads: usize, nodes: Vec<CallbackNode>) -> Self {
         Self::new_with(SimulationConfig {
             // We can't create an instant from a fixed value, so any 'now' will be arbitrary
             start_time: FrameworkTime::from_wall_clock(),
-            pools: vec![ThreadPoolConfig::new(num_virtual_threads, tasks)],
-            callback_executor_thread_count: 1,
+            pools: vec![ThreadPoolConfig::new(num_virtual_threads, nodes)],
+            node_executor_thread_count: 1,
         })
     }
 
@@ -74,9 +74,9 @@ impl SimulationExecutor {
         }
     }
 
-    /// Block until the step thread exits on its own (e.g. a callback fired the stop signal).
+    /// Block until the step thread exits on its own (e.g. a callback node fired the stop signal).
     /// Use this when you want to wait for natural completion without forcing a stop.
-    /// Call [`stop`] afterwards to join the callback executor threads.
+    /// Call [`stop`] afterwards to join the node executor threads.
     /// Returns the step error if the loop stopped due to one.
     pub fn join(&mut self) -> Result<(), StepError> {
         if let Some(t) = self.step_thread.take()
@@ -93,7 +93,7 @@ impl SimulationExecutor {
     /// Run a single simulation step on the caller's thread. The caller is responsible
     /// for any one-time setup (see [`SimulationState::start`]) before the first call,
     /// and for cleanup once stepping is done.
-    pub fn step(&mut self) -> Result<Vec<TaskIndex>, StepError> {
+    pub fn step(&mut self) -> Result<Vec<CallbackNodeIndex>, StepError> {
         self.state.lock().unwrap().step()
     }
 
@@ -117,16 +117,16 @@ mod tests {
 
     #[test]
     fn test_simulation_exec() {
-        let (callbacks, task_info) = build_fizz_buzz_tasks();
+        let (nodes, task_info) = build_fizz_buzz_callback_nodes();
 
-        let mut exec = SimulationExecutor::new(1, callbacks);
+        let mut exec = SimulationExecutor::new(1, nodes);
 
         task_info.stop_signal.set(exec.stop_signal()).ok();
         // start() spawns the step loop thread and returns immediately.
         exec.start();
-        // join() blocks until a callback fires the stop signal and the thread exits.
+        // join() blocks until a callback node fires the stop signal and the thread exits.
         assert!(exec.join().is_ok());
-        // stop() shuts down the callback executor threads.
+        // stop() shuts down the node executor threads.
         let stop_result = exec.stop();
         assert!(stop_result.is_ok());
 
@@ -136,15 +136,15 @@ mod tests {
 
     #[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
     struct StepState {
-        tasks_executed: Vec<usize>,
+        nodes_executed: Vec<usize>,
         offset_from_start: Duration,
         string_store: Vec<String>,
     }
 
     fn run_fizz_buzz_for_n_steps(step_count: usize, thread_count: usize) -> Vec<StepState> {
-        let (callbacks, task_info) = build_fizz_buzz_tasks();
+        let (nodes, task_info) = build_fizz_buzz_callback_nodes();
 
-        let exec = SimulationExecutor::new(thread_count, callbacks);
+        let exec = SimulationExecutor::new(thread_count, nodes);
         let mut state = exec.state.lock().unwrap();
         let start_time = state.get_simulation_time();
         state.start();
@@ -155,9 +155,9 @@ mod tests {
                 .get_simulation_time()
                 .checked_duration_since(start_time);
             assert!(maybe_offset.is_some());
-            let tasks_executed = state.step().unwrap();
+            let nodes_executed = state.step().unwrap();
             step_history.push(StepState {
-                tasks_executed,
+                nodes_executed,
                 offset_from_start: maybe_offset.unwrap(),
                 string_store: task_info.get_stored_strings(),
             });
@@ -174,17 +174,17 @@ mod tests {
 
     /// Verify that fair (longest-wait-first) scheduling prevents starvation.
     ///
-    /// Three tasks compete for a single virtual thread. Each task re-schedules itself
+    /// Three callback nodes compete for a single virtual thread. Each node re-schedules itself
     /// for the instant it finishes (period = 0), so all three are always simultaneously
-    /// ready. Without fair scheduling, task 0 would win every step due to index order;
-    /// tasks 1 and 2 would never run. With fair scheduling, tasks 1 and 2 are served
-    /// first on steps 2 and 3 because they have been waiting since t=0 while task 0
+    /// ready. Without fair scheduling, node 0 would win every step due to index order;
+    /// nodes 1 and 2 would never run. With fair scheduling, nodes 1 and 2 are served
+    /// first on steps 2 and 3 because they have been waiting since t=0 while node 0
     /// only became ready again at t=1ms.
     #[test]
     fn test_no_starvation() {
-        let callbacks = (0..3).map(|_| build_no_op_callback()).collect();
+        let nodes = (0..3).map(|_| build_no_op_callback_node()).collect();
 
-        let exec = SimulationExecutor::new(1, callbacks); // 1 virtual thread, 3 tasks
+        let exec = SimulationExecutor::new(1, nodes); // 1 virtual thread, 3 callback nodes
         let mut state = exec.state.lock().unwrap();
         state.start();
 
@@ -196,16 +196,19 @@ mod tests {
         }
 
         for (i, &count) in run_counts.iter().enumerate() {
-            assert!(count > 0, "task {i} never ran — starvation detected");
+            assert!(
+                count > 0,
+                "callback node {i} never ran — starvation detected"
+            );
         }
 
-        // Each task should have run roughly equally (within 1 of each other),
+        // Each callback node should have run roughly equally (within 1 of each other),
         // since they are identical and always simultaneously ready.
         let min = *run_counts.iter().min().unwrap();
         let max = *run_counts.iter().max().unwrap();
         assert!(
             max - min <= 1,
-            "tasks ran unequally: {run_counts:?} — scheduling is unfair"
+            "callback nodes ran unequally: {run_counts:?} — scheduling is unfair"
         );
     }
 }
@@ -214,7 +217,7 @@ impl Executor for SimulationExecutor {
     type Error = SimulationExecutorError;
 
     /// Spawns a background thread that steps the simulation until something flips
-    /// the stop signal (e.g. a callback calling [`ExecutorStopSignal::request_stop`]).
+    /// the stop signal (e.g. a callback node calling [`ExecutorStopSignal::request_stop`]).
     /// Returns immediately; call [`stop`] to join the thread.
     fn start(&mut self) {
         let should_run = self.should_run.clone();
@@ -238,16 +241,16 @@ impl Executor for SimulationExecutor {
 
     fn stop(&mut self) -> Result<(), SimulationExecutorError> {
         self.should_run.store(false, Ordering::Release);
-        // Join the step thread before shutting down callback threads, so we don't
+        // Join the step thread before shutting down node executor threads, so we don't
         // pull the rug out from under an in-progress step.
         if let Some(t) = self.step_thread.take()
             && t.join().is_err()
         {
             return Err(SimulationExecutorError::StepThreadPanicked);
         }
-        match self.state.lock().unwrap().shutdown_callback_threads() {
+        match self.state.lock().unwrap().shutdown_node_executor_threads() {
             Ok(()) => Ok(()),
-            Err(idxs) => Err(SimulationExecutorError::CallbackThreadsPanicked(idxs)),
+            Err(idxs) => Err(SimulationExecutorError::NodeExecutorThreadsPanicked(idxs)),
         }
     }
 

@@ -1,5 +1,5 @@
 use crate::arena::{Arena, ArenaPtr, ArenaReaderPtr};
-use crate::callback::CallbackReadiness;
+use crate::callback::CallbackNodeReadiness;
 use crate::double_buffer::WriteBufferHandle;
 use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::ConnectionTypeMismatch;
@@ -50,9 +50,9 @@ impl<T> LoanedValue<T> {
 struct SubscriberBuffer<T> {
     buffer: WriteBufferHandle<Message<T>>,
     subscriber_config: SubscriberConfig,
-    /// Readiness bitmask and bit index for the target ConnectedCallback, if the
+    /// Readiness bitmask and bit index for the target CallbackNode, if the
     /// subscriber is a trigger+non-optional input (set during connection).
-    readiness: Option<(Arc<CallbackReadiness>, usize)>,
+    readiness: Option<(Arc<CallbackNodeReadiness>, usize)>,
 }
 
 pub struct Publisher<T> {
@@ -102,7 +102,7 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
                     // Copy the arena pointer to each subscriber buffer
                     subscriber_buffer.buffer.write(loaned_value.ptr.clone());
 
-                    // Notify the target ConnectedCallback's readiness bitmask
+                    // Notify the target CallbackNode's readiness bitmask
                     if let Some((readiness, bit_index)) = &subscriber_buffer.readiness {
                         readiness.set_bit(*bit_index);
                     }

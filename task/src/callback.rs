@@ -1,8 +1,8 @@
-use crate::executor::TaskEnqueuer;
+use crate::executor::CallbackNodeEnqueuer;
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::log_types::ExecutionLogger;
-use crate::pub_sub::{CallbackName, ChannelName};
+use crate::pub_sub::{CallbackNodeName, ChannelName};
 use crate::publisher::PublisherConfig;
 use crate::subscriber::SubscriberConfig;
 use crate::time::FrameworkTime;
@@ -80,12 +80,12 @@ impl Run {
     }
 }
 
-pub trait GenericCallback {
-    // Generic interface for calling the task. Used by the framework to trigger things
+pub trait Callback {
+    // Generic interface for calling the callback. Used by the framework to trigger things
     // Can provide information about inputs/outputs per index
     // - what inputs request execution
     // - input queue capacity
-    // returns number of times the task was run
+    // returns number of times the callback node was run
     fn run_generic(
         &mut self,
         subscribers: &mut [Box<dyn GenericSubscriber>],
@@ -111,16 +111,16 @@ pub trait GenericCallback {
 #[derive(Debug)]
 pub struct MismatchTypeError {
     channel_name: ChannelName,
-    publisher_callback: CallbackName,
-    subscriber_callback: CallbackName,
+    publisher_callback_node: CallbackNodeName,
+    subscriber_callback_node: CallbackNodeName,
 }
 
 impl std::fmt::Display for MismatchTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Callback '{}' publishes on '{}' but subscriber '{}' has a different type for that channel",
-            self.publisher_callback, self.channel_name, self.subscriber_callback
+            "Callback node '{}' publishes on '{}' but subscriber callback node '{}' has a different type for that channel",
+            self.publisher_callback_node, self.channel_name, self.subscriber_callback_node
         )
     }
 }
@@ -128,7 +128,7 @@ impl std::fmt::Display for MismatchTypeError {
 impl std::error::Error for MismatchTypeError {}
 
 /// Returns a mapping of the forwarded channel to the depth of subscriber queues listening to it
-fn find_forwarded_channel_usage(callbacks: &[ConnectedCallback]) -> HashMap<ChannelName, usize> {
+fn find_forwarded_channel_usage(callbacks: &[CallbackNode]) -> HashMap<ChannelName, usize> {
     let mut channel_to_usage = HashMap::<ChannelName, usize>::new();
 
     // Find all channels that are forwarded
@@ -157,7 +157,7 @@ fn find_forwarded_channel_usage(callbacks: &[ConnectedCallback]) -> HashMap<Chan
 }
 
 /// Connects publishers to subscribers and sizes arenas accordingly
-pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), MismatchTypeError> {
+pub fn connect_callback_nodes(callbacks: &mut [CallbackNode]) -> Result<(), MismatchTypeError> {
     let forwarded_channel_to_usage = find_forwarded_channel_usage(callbacks);
 
     // Connect publishers to everyone who is subscribing to their output
@@ -175,7 +175,7 @@ pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), Mism
                         == other_callback_subscriber.get_config().channel_name
                     {
                         println!(
-                            "Connecting task '{}' to task '{}' on channel '{}'",
+                            "Connecting callback node '{}' to callback node '{}' on channel '{}'",
                             callback_name,
                             other_callback_name,
                             publisher.get_config().channel_name
@@ -185,8 +185,8 @@ pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), Mism
                         {
                             return Err(MismatchTypeError {
                                 channel_name: publisher.get_config().channel_name.clone(),
-                                publisher_callback: callbacks[callback_idx].get_name().into(),
-                                subscriber_callback: callbacks[other_callback_idx]
+                                publisher_callback_node: callbacks[callback_idx].get_name().into(),
+                                subscriber_callback_node: callbacks[other_callback_idx]
                                     .get_name()
                                     .into(),
                             });
@@ -194,7 +194,7 @@ pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), Mism
                     }
                 }
 
-                // This task has its channel forwarded to a bunch of subscriber slots, so we must bump its size accordingly
+                // This callback node has its channel forwarded to a bunch of subscriber slots, so we must bump its size accordingly
                 match forwarded_channel_to_usage.get(&publisher.get_config().channel_name) {
                     Some(usage) => {
                         publisher.increase_arena_size(*usage);
@@ -217,26 +217,26 @@ pub fn connect_callbacks(callbacks: &mut [ConnectedCallback]) -> Result<(), Mism
     Ok(())
 }
 
-/// Tracks readiness of all subscribers in a ConnectedCallback via an atomic bitmask.
+/// Tracks readiness of all subscribers in a CallbackNode via an atomic bitmask.
 /// Each subscriber bit is 0 (not ready) or 1 (ready). Unused high bits are always 1.
-/// When the bitmask reaches usize::MAX, all trigger subscribers have data and the task
+/// When the bitmask reaches usize::MAX, all trigger subscribers have data and the callback node
 /// can be enqueued.
-pub struct CallbackReadiness {
+pub struct CallbackNodeReadiness {
     bitmask: AtomicUsize,
-    task_index: OnceLock<usize>,
-    enqueuer: OnceLock<Arc<dyn TaskEnqueuer>>,
+    node_index: OnceLock<usize>,
+    enqueuer: OnceLock<Arc<dyn CallbackNodeEnqueuer>>,
 }
 
-impl CallbackReadiness {
+impl CallbackNodeReadiness {
     fn new(initial_bitmask: usize) -> Arc<Self> {
-        Arc::new(CallbackReadiness {
+        Arc::new(CallbackNodeReadiness {
             bitmask: AtomicUsize::new(initial_bitmask),
-            task_index: OnceLock::new(),
+            node_index: OnceLock::new(),
             enqueuer: OnceLock::new(),
         })
     }
 
-    /// Set bit `index`, then enqueue the task if this was the transition to usize::MAX.
+    /// Set bit `index`, then enqueue the callback node if this was the transition to usize::MAX.
     /// Only enqueues when the bitmask was not already MAX before this call.
     pub fn set_bit(&self, index: usize) {
         let bit = 1usize << index;
@@ -244,29 +244,29 @@ impl CallbackReadiness {
         // Only enqueue on the transition: previous was not MAX but now is
         if prev != usize::MAX
             && prev | bit == usize::MAX
-            && let (Some(enqueuer), Some(&task_index)) =
-                (self.enqueuer.get(), self.task_index.get())
+            && let (Some(enqueuer), Some(&node_index)) =
+                (self.enqueuer.get(), self.node_index.get())
         {
-            enqueuer.enqueue_task(task_index);
+            enqueuer.enqueue_node(node_index);
         }
     }
 
-    /// Clear bit `index` (called when the task drains write→read for this subscriber).
+    /// Clear bit `index` (called when the callback node drains write→read for this subscriber).
     pub fn clear_bit(&self, index: usize) {
         let mask = !(1usize << index);
         self.bitmask.fetch_and(mask, Ordering::AcqRel);
     }
 
-    /// Register the executor enqueuer and task index. If the bitmask is already MAX
+    /// Register the executor enqueuer and node index. If the bitmask is already MAX
     /// (e.g., startup with pre-loaded data), immediately enqueue.
-    pub fn register(&self, task_index: usize, enqueuer: Arc<dyn TaskEnqueuer>) {
-        let _ = self.task_index.set(task_index);
+    pub fn register(&self, node_index: usize, enqueuer: Arc<dyn CallbackNodeEnqueuer>) {
+        let _ = self.node_index.set(node_index);
         let _ = self.enqueuer.set(enqueuer);
         // Startup case: if already ready, enqueue now
         if self.bitmask.load(Ordering::Acquire) == usize::MAX
-            && let (Some(enqueuer), Some(&idx)) = (self.enqueuer.get(), self.task_index.get())
+            && let (Some(enqueuer), Some(&idx)) = (self.enqueuer.get(), self.node_index.get())
         {
-            enqueuer.enqueue_task(idx);
+            enqueuer.enqueue_node(idx);
         }
     }
 }
@@ -299,57 +299,57 @@ fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> us
 
 /// TODO: Maybe rename? The callback isn't necessarily connected at this point. It just has the pub/sub components.
 /// We could use strong types and 'cleanse' it as a connected callback
-pub struct ConnectedCallback {
+pub struct CallbackNode {
     subscribers: Vec<Box<dyn GenericSubscriber>>,
     publishers: Vec<Box<dyn GenericPublisher>>,
-    callback: Box<dyn GenericCallback>,
+    callback: Box<dyn Callback>,
 
-    // Ideally this would be apart of GenericCallback, but I dont have a good way to store it
+    // Ideally this would be apart of Callback, but I dont have a good way to store it
     next_execution_time_callback: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>,
     execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
 
-    name: CallbackName,
+    name: CallbackNodeName,
 
-    readiness: Arc<CallbackReadiness>,
+    readiness: Arc<CallbackNodeReadiness>,
 
     logger: Option<Box<dyn ExecutionLogger>>,
 }
 
-impl std::fmt::Debug for ConnectedCallback {
+impl std::fmt::Debug for CallbackNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConnectedCallback")
+        f.debug_struct("CallbackNode")
             .field("name", &self.name)
             .finish_non_exhaustive()
     }
 }
 
 /// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
-unsafe impl Sync for ConnectedCallback {}
+unsafe impl Sync for CallbackNode {}
 /// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
-unsafe impl Send for ConnectedCallback {}
+unsafe impl Send for CallbackNode {}
 
-impl ConnectedCallback {
-    pub fn new_named(callback: Box<dyn GenericCallback>, name: CallbackName) -> Self {
+impl CallbackNode {
+    pub fn new_named(callback: Box<dyn Callback>, name: CallbackNodeName) -> Self {
         let subscribers = callback.build_subscribers();
         let publishers = callback.build_publishers();
-        ConnectedCallback::new_with(callback, subscribers, publishers, name)
+        CallbackNode::new_with(callback, subscribers, publishers, name)
     }
 
     pub fn new_with(
-        callback: Box<dyn GenericCallback>,
+        callback: Box<dyn Callback>,
         mut subscribers: Vec<Box<dyn GenericSubscriber>>,
         publishers: Vec<Box<dyn GenericPublisher>>,
-        name: CallbackName,
+        name: CallbackNodeName,
     ) -> Self {
         let initial_bitmask = starting_subscriber_bitmask(&subscribers);
-        let readiness = CallbackReadiness::new(initial_bitmask);
+        let readiness = CallbackNodeReadiness::new(initial_bitmask);
 
         // Inject bitmask Arc and bit index into each subscriber
         for (index, subscriber) in subscribers.iter_mut().enumerate() {
             subscriber.set_readiness_state(readiness.clone(), index);
         }
 
-        ConnectedCallback {
+        CallbackNode {
             subscribers,
             publishers,
             callback,
@@ -373,7 +373,7 @@ impl ConnectedCallback {
         (self
             .execution_duration_callback
             .as_ref()
-            .expect("execution_duration_callback not set on this ConnectedCallback"))()
+            .expect("execution_duration_callback not set on this CallbackNode"))()
     }
 
     pub fn set_execution_time_callback(
@@ -465,8 +465,12 @@ impl ConnectedCallback {
     }
 
     /// Called by the executor after construction to wire up the enqueue mechanism.
-    pub fn register_with_executor(&self, task_index: usize, enqueuer: Arc<dyn TaskEnqueuer>) {
-        self.readiness.register(task_index, enqueuer);
+    pub fn register_with_executor(
+        &self,
+        node_index: usize,
+        enqueuer: Arc<dyn CallbackNodeEnqueuer>,
+    ) {
+        self.readiness.register(node_index, enqueuer);
     }
 }
 
@@ -498,22 +502,23 @@ mod test {
         );
     }
 
-    /// A TaskEnqueuer that counts how many times it has been called.
+    /// A CallbackNodeEnqueuer that counts how many times it has been called.
     struct CountingEnqueuer(Arc<AtomicUsize>);
-    impl TaskEnqueuer for CountingEnqueuer {
-        fn enqueue_task(&self, _task_index: usize) {
+    impl CallbackNodeEnqueuer for CountingEnqueuer {
+        fn enqueue_node(&self, _node_index: usize) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     #[test]
     fn test_two_trigger_subscribers_both_must_be_set() {
-        // Build a CallbackReadiness for two required-trigger subscribers.
+        // Build a CallbackNodeReadiness for two required-trigger subscribers.
         // Bits 0 and 1 start at 0; all other bits are 1. The enqueuer should
         // only fire once BOTH bits are set (i.e., bitmask == usize::MAX).
 
         let enqueue_count = Arc::new(AtomicUsize::new(0));
-        let enqueuer = Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn TaskEnqueuer>;
+        let enqueuer =
+            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
 
         let initial = starting_subscriber_bitmask(&[
             Box::new(Subscriber::<u64>::new(SubscriberConfig {
@@ -531,7 +536,7 @@ mod test {
                 channel_name: "b".into(),
             })),
         ]);
-        let readiness = CallbackReadiness::new(initial);
+        let readiness = CallbackNodeReadiness::new(initial);
         readiness.register(0, enqueuer);
 
         // Only subscriber 0 is ready — should NOT enqueue yet
@@ -567,12 +572,12 @@ mod test {
         use crate::publisher::{Publisher, PublisherConfig};
         use crate::time::FrameworkTime;
 
-        struct LoopbackTask {
+        struct LoopbackCallback {
             value_to_publish: u64,
             received: Vec<u64>,
         }
 
-        impl GenericCallback for LoopbackTask {
+        impl Callback for LoopbackCallback {
             fn run_generic(
                 &mut self,
                 subscribers: &mut [Box<dyn GenericSubscriber>],
@@ -612,43 +617,43 @@ mod test {
             }
         }
 
-        let task = LoopbackTask {
+        let callback = LoopbackCallback {
             value_to_publish: 10,
             received: vec![],
         };
 
-        let mut callbacks = vec![ConnectedCallback::new_named(
-            Box::new(task),
-            "LoopbackTask".into(),
+        let mut nodes = vec![CallbackNode::new_named(
+            Box::new(callback),
+            "LoopbackCallback".into(),
         )];
 
-        connect_callbacks(&mut callbacks).expect("loopback connection should succeed");
+        connect_callback_nodes(&mut nodes).expect("loopback connection should succeed");
 
         let ctx = Context {
             now: FrameworkTime::from_nanoseconds(1),
         };
 
         // Run 1: publishes 10, no loopback data yet (first run)
-        callbacks[0].run(&ctx);
-        callbacks[0].flush_publishers(ctx.now);
+        nodes[0].run(&ctx);
+        nodes[0].flush_publishers(ctx.now);
 
         // The published message should be in the subscriber's write buffer now
-        callbacks[0].drain_subscribers();
+        nodes[0].drain_subscribers();
 
         // Run 2: should receive 10 from the loopback, publishes 11
-        callbacks[0].run(&ctx);
-        callbacks[0].flush_publishers(ctx.now);
+        nodes[0].run(&ctx);
+        nodes[0].flush_publishers(ctx.now);
 
         // After flush, the published message from run 2 is in the write buffer
-        let sub_info = callbacks[0].get_subscribers()[0].get_queue_info();
+        let sub_info = nodes[0].get_subscribers()[0].get_queue_info();
         assert_eq!(
             sub_info.writer_size, 1,
             "loopback: published message should be in subscriber's write buffer"
         );
 
-        callbacks[0].drain_subscribers();
+        nodes[0].drain_subscribers();
 
-        let sub_info = callbacks[0].get_subscribers()[0].get_queue_info();
+        let sub_info = nodes[0].get_subscribers()[0].get_queue_info();
         assert_eq!(
             sub_info.reader_size, 1,
             "loopback: message should have drained to read buffer"

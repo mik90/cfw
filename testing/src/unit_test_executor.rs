@@ -6,17 +6,17 @@ use std::sync::Arc;
 
 use simulation_executor::SimulationConfig;
 use simulation_executor::state::{SimulationState, StepError};
-use task::callback::{ConnectedCallback, connect_callbacks};
+use task::callback::{CallbackNode, connect_callback_nodes};
 use task::executor::ThreadPoolConfig;
 use task::generic_publisher::GenericPublisher;
-use task::pub_sub::CallbackName;
+use task::pub_sub::CallbackNodeName;
 use task::subscriber::GenericSubscriber;
 use task::testing_publisher::TestPublisher;
 use task::testing_subscriber::{DEFAULT_TEST_SUBSCRIBER_CAPACITY, TestSubscriber};
 use task::testing_time::TimeSource;
 use task::time::FrameworkTime;
 
-/// Struct for running unit tests against tasks
+/// Struct for running unit tests against callback nodes
 pub struct UnitTestExecutor {
     simulation_state: SimulationState,
     /// Shared time cell updated at the end of every `try_step`. `TestPublisher`s
@@ -25,20 +25,20 @@ pub struct UnitTestExecutor {
 }
 
 impl UnitTestExecutor {
-    /// Create simple task tester
-    pub fn new(tasks: Vec<ConnectedCallback>) -> Self {
+    /// Create simple callback node tester
+    pub fn new(nodes: Vec<CallbackNode>) -> Self {
         let pools = vec![ThreadPoolConfig {
             thread_count: 1,
-            tasks,
+            nodes,
         }];
         Self::new_with(UnitTestExecutorConfig {
             start_time: FrameworkTime::from_nanoseconds(0),
             pools,
-            callback_executor_thread_count: 1,
+            node_executor_thread_count: 1,
         })
     }
 
-    /// Create task tester with custom config
+    /// Create callback node tester with custom config
     pub fn new_with(config: UnitTestExecutorConfig) -> Self {
         Self::new_with_time_source(config, None)
     }
@@ -52,7 +52,7 @@ impl UnitTestExecutor {
             simulation_state: SimulationState::new_with(SimulationConfig {
                 start_time: config.start_time,
                 pools: config.pools,
-                callback_executor_thread_count: config.callback_executor_thread_count,
+                node_executor_thread_count: config.node_executor_thread_count,
             }),
             time_source: time_source.unwrap_or_else(|| Arc::new(TimeSource::new(start_time))),
         };
@@ -86,15 +86,15 @@ impl UnitTestExecutor {
 }
 
 /// Builds a `UnitTestExecutor` while allowing `TestPublisher`/`TestSubscriber` fixtures
-/// to be wired directly into a `ConnectedCallback`'s subscriber/publisher arenas.
+/// to be wired directly into a `CallbackNode`'s subscriber/publisher arenas.
 ///
-/// This must happen *before* `connect_callbacks` runs: a freshly built `ConnectedCallback`
-/// is unconnected (its arenas aren't allocated until `connect_callbacks` wires remaining
-/// matches and sizes/allocates based on final capacities — see `connect_callbacks` in
-/// `task::callback`). The builder owns the unconnected callbacks, lets the test attach
+/// This must happen *before* `connect_callback_nodes` runs: a freshly built `CallbackNode`
+/// is unconnected (its arenas aren't allocated until `connect_callback_nodes` wires remaining
+/// matches and sizes/allocates based on final capacities — see `connect_callback_nodes` in
+/// `task::callback`). The builder owns the unconnected callback nodes, lets the test attach
 /// fixtures (which bump capacities as a side effect of connecting), and only then finalizes.
 pub struct UnitTestExecutorBuilder {
-    tasks: Vec<ConnectedCallback>,
+    nodes: Vec<CallbackNode>,
     start_time: FrameworkTime,
     /// Shared with every `TestPublisher` created via this builder, and later
     /// handed to the resulting `UnitTestExecutor` so both stay in sync.
@@ -102,10 +102,10 @@ pub struct UnitTestExecutorBuilder {
 }
 
 impl UnitTestExecutorBuilder {
-    pub fn new(tasks: Vec<ConnectedCallback>) -> Self {
+    pub fn new(nodes: Vec<CallbackNode>) -> Self {
         let start_time = FrameworkTime::from_nanoseconds(0);
         UnitTestExecutorBuilder {
-            tasks,
+            nodes,
             start_time,
             time_source: Arc::new(TimeSource::new(start_time)),
         }
@@ -115,20 +115,19 @@ impl UnitTestExecutorBuilder {
     fn find_publishers_mut(
         &mut self,
         channel_name: &str,
-    ) -> Vec<(&mut (dyn GenericPublisher + 'static), CallbackName)> {
-        self.tasks
+    ) -> Vec<(&mut (dyn GenericPublisher + 'static), CallbackNodeName)> {
+        self.nodes
             .iter_mut()
-            .flat_map(|callback| {
-                // Get all publishers matching the requested channel and the name of the task they're on
-                let callback_name = callback.get_name().to_owned();
+            .flat_map(|node| {
+                // Get all publishers matching the requested channel and the name of the node they're on
+                let node_name = node.get_name().to_owned();
 
-                callback
-                    .get_publishers_mut()
+                node.get_publishers_mut()
                     .iter_mut()
                     // only take in publishers with the given channel name
                     .filter(|publisher| publisher.get_config().channel_name == *channel_name)
                     // Deref the box so callers don't need to care about it
-                    .map(move |p| (p.deref_mut(), callback_name.clone()))
+                    .map(move |p| (p.deref_mut(), node_name.clone()))
             })
             .collect()
     }
@@ -137,26 +136,25 @@ impl UnitTestExecutorBuilder {
     fn find_subscribers_mut(
         &mut self,
         channel_name: &str,
-    ) -> Vec<(&mut (dyn GenericSubscriber + 'static), CallbackName)> {
-        self.tasks
+    ) -> Vec<(&mut (dyn GenericSubscriber + 'static), CallbackNodeName)> {
+        self.nodes
             .iter_mut()
-            .flat_map(|callback| {
-                // Get all subscribers matching the requested channel and the name of the task they're on
-                let callback_name = callback.get_name().to_owned();
+            .flat_map(|node| {
+                // Get all subscribers matching the requested channel and the name of the node they're on
+                let node_name = node.get_name().to_owned();
 
-                callback
-                    .get_subscribers_mut()
+                node.get_subscribers_mut()
                     .iter_mut()
                     // only take in subscribers with the given channel name
                     .filter(|subscriber| subscriber.get_config().channel_name == *channel_name)
                     // Deref the box so callers don't need to care about it
-                    .map(move |p| (p.deref_mut(), callback_name.clone()))
+                    .map(move |p| (p.deref_mut(), node_name.clone()))
             })
             .collect()
     }
 
-    /// Connects a `TestPublisher<T>` directly to the named subscriber on the callback at
-    /// `task_index`, feeding it input in isolation. Since a test publisher feeds exactly
+    /// Connects a `TestPublisher<T>` directly to the named subscriber on the callback node at
+    /// `node_index`, feeding it input in isolation. Since a test publisher feeds exactly
     /// one subscriber, its arena can be allocated immediately.
     pub fn add_test_publisher<T: Default + 'static>(
         &mut self,
@@ -181,12 +179,12 @@ impl UnitTestExecutorBuilder {
         );
 
         // find capacity for our publisher
-        for (subscriber, callback_name) in subscribers {
+        for (subscriber, node_name) in subscribers {
             publisher
             .connect_to_subscriber(subscriber)
             .unwrap_or_else(|_| {
                 panic!(
-                    "Type mismatch connecting TestPublisher to channel '{channel_name}' on callback '{callback_name}'"
+                    "Type mismatch connecting TestPublisher to channel '{channel_name}' on callback node '{node_name}'"
                 )
             });
         }
@@ -217,18 +215,18 @@ impl UnitTestExecutorBuilder {
 
         let mut subscriber = TestSubscriber::<T>::with_capacity(channel_name.to_string(), capacity);
 
-        for (publisher, callback_name) in publishers {
+        for (publisher, node_name) in publishers {
             publisher
                 .connect_to_subscriber(&mut subscriber)
                 .unwrap_or_else(|_| {
-                    panic!("Type mismatch connecting TestSubscriber to channel '{channel_name}' on callback '{callback_name}'")
+                    panic!("Type mismatch connecting TestSubscriber to channel '{channel_name}' on callback node '{node_name}'")
                 });
         }
 
         subscriber
     }
 
-    /// Wires up any remaining real connections (and allocates the callbacks' own publisher
+    /// Wires up any remaining real connections (and allocates the callback nodes' own publisher
     /// arenas, now correctly sized — test connections above already bumped capacities where
     /// needed), then constructs the executor.
     pub fn build(self) -> UnitTestExecutor {
@@ -242,17 +240,17 @@ impl UnitTestExecutorBuilder {
 
     /// Same as build(), but exposes error cases.
     pub fn try_build(mut self) -> Result<UnitTestExecutor, Box<dyn Error>> {
-        connect_callbacks(&mut self.tasks)?;
+        connect_callback_nodes(&mut self.nodes)?;
 
         let pools = vec![ThreadPoolConfig {
             thread_count: 1,
-            tasks: self.tasks,
+            nodes: self.nodes,
         }];
         let executor = UnitTestExecutor::new_with_time_source(
             UnitTestExecutorConfig {
                 start_time: self.start_time,
                 pools,
-                callback_executor_thread_count: 1,
+                node_executor_thread_count: 1,
             },
             Some(self.time_source),
         );
@@ -260,13 +258,13 @@ impl UnitTestExecutorBuilder {
     }
 }
 
-/// Configuration for running tasks
+/// Configuration for running callback nodes
 pub struct UnitTestExecutorConfig {
     pub start_time: FrameworkTime,
     pub pools: Vec<ThreadPoolConfig>,
-    /// Number of real OS threads used to execute callbacks in parallel within a step.
+    /// Number of real OS threads used to execute callback nodes in parallel within a step.
     /// Independent of any virtual thread pool sizes.
-    pub callback_executor_thread_count: usize,
+    pub node_executor_thread_count: usize,
 }
 
 pub struct StepResult {
@@ -287,13 +285,13 @@ mod tests {
 
     #[test]
     fn step_time_before_after() {
-        let (tasks_under_test, task_info) = build_fizz_buzz_tasks();
+        let (nodes_under_test, task_info) = build_fizz_buzz_callback_nodes();
         let publisher_runtime =
-            tasks_under_test[task_info.integer_publisher_index].get_execution_duration();
+            nodes_under_test[task_info.integer_publisher_index].get_execution_duration();
 
         let mut expected_time = FrameworkTime::from_nanoseconds(0);
 
-        let mut executor = UnitTestExecutor::new(tasks_under_test);
+        let mut executor = UnitTestExecutor::new(nodes_under_test);
 
         assert_eq!(
             task_info.get_stored_strings(),
@@ -317,17 +315,17 @@ mod tests {
 
     #[test]
     fn step_all_callbacks() {
-        let (tasks_under_test, task_info) = build_fizz_buzz_tasks();
+        let (nodes_under_test, task_info) = build_fizz_buzz_callback_nodes();
         let publisher_runtime =
-            tasks_under_test[task_info.integer_publisher_index].get_execution_duration();
+            nodes_under_test[task_info.integer_publisher_index].get_execution_duration();
         let fizz_buzz_runtime =
-            tasks_under_test[task_info.fizz_buzz_index].get_execution_duration();
+            nodes_under_test[task_info.fizz_buzz_index].get_execution_duration();
         let string_store_runtime =
-            tasks_under_test[task_info.string_store_index].get_execution_duration();
+            nodes_under_test[task_info.string_store_index].get_execution_duration();
 
         let mut expected_time = FrameworkTime::from_nanoseconds(0);
 
-        let mut executor = UnitTestExecutor::new(tasks_under_test);
+        let mut executor = UnitTestExecutor::new(nodes_under_test);
 
         let mut step_result = executor.step();
 
@@ -351,9 +349,9 @@ mod tests {
 
     #[test]
     fn test_individual_callback() {
-        // test single callback using test_publisher and test_subscriber
+        // test single callback node using test_publisher and test_subscriber
 
-        let calculator = FizzBuzzCalculator::build_connected_callback();
+        let calculator = FizzBuzzCalculator::build_callback_node();
 
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
         let mut integer_publisher = builder.add_test_publisher::<u64>("integer");
@@ -370,10 +368,10 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "Type mismatch connecting TestPublisher to channel 'integer' on callback 'FizzBuzzCalculator'"
+        expected = "Type mismatch connecting TestPublisher to channel 'integer' on callback node 'FizzBuzzCalculator'"
     )]
     fn test_publisher_type_mismatch_fails() {
-        let calculator = FizzBuzzCalculator::build_connected_callback();
+        let calculator = FizzBuzzCalculator::build_callback_node();
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
 
         // Should panic since integer doesn't take a string
@@ -382,10 +380,10 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "Type mismatch connecting TestSubscriber to channel 'fizz_buzz_string' on callback 'FizzBuzzCalculator'"
+        expected = "Type mismatch connecting TestSubscriber to channel 'fizz_buzz_string' on callback node 'FizzBuzzCalculator'"
     )]
     fn test_susbcriber_type_mismatch_fails() {
-        let calculator = FizzBuzzCalculator::build_connected_callback();
+        let calculator = FizzBuzzCalculator::build_callback_node();
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
 
         // Should panic since integer doesn't take a string

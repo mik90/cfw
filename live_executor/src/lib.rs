@@ -6,9 +6,9 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
 use task::time::FrameworkTime;
 
-use task::callback::ConnectedCallback;
+use task::callback::CallbackNode;
 use task::context::Context;
-use task::executor::{Executor, ExecutorStopSignal, TaskEnqueuer, ThreadPoolConfig};
+use task::executor::{CallbackNodeEnqueuer, Executor, ExecutorStopSignal, ThreadPoolConfig};
 
 /// Sent into a pool's work channel to unblock workers on shutdown.
 const SHUTDOWN_SENTINEL: usize = usize::MAX;
@@ -27,7 +27,7 @@ impl std::fmt::Display for LiveExecutorError {
 impl std::error::Error for LiveExecutorError {}
 
 #[derive(Clone, Copy)]
-struct TimeTriggeredTask {
+struct TimeTriggeredNode {
     index: usize,
     requested_exec_time: FrameworkTime,
 }
@@ -38,33 +38,33 @@ struct PoolState {
     work_rx: Receiver<usize>,
 }
 
-/// Everything tasks need to enqueue work. Owns no tasks, so tasks can hold
+/// Everything callback nodes need to enqueue work. Owns no nodes, so nodes can hold
 /// a strong Arc<EnqueueState> without creating a reference cycle.
 struct EnqueueState {
     pools: Vec<Arc<PoolState>>,
-    task_to_pool: Vec<usize>,
-    /// One flag per task: true while the task index is sitting in the work channel.
+    node_to_pool: Vec<usize>,
+    /// One flag per node: true while the node index is sitting in the work channel.
     /// CAS'd to true on enqueue, cleared to false before execution begins, preventing
     /// duplicate entries in the channel.
-    task_enqueued: Vec<AtomicBool>,
+    node_enqueued: Vec<AtomicBool>,
 }
 
 impl EnqueueState {
-    fn trigger_task(&self, index: usize) {
-        if self.task_enqueued[index]
+    fn trigger_node(&self, index: usize) {
+        if self.node_enqueued[index]
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
-            let pool = &self.pools[self.task_to_pool[index]];
+            let pool = &self.pools[self.node_to_pool[index]];
             let _ = pool.work_tx.send(index);
-            println!("Triggering task index {}", index);
+            println!("Triggering callback node index {}", index);
         }
     }
 }
 
-impl TaskEnqueuer for EnqueueState {
-    fn enqueue_task(&self, task_index: usize) {
-        self.trigger_task(task_index);
+impl CallbackNodeEnqueuer for EnqueueState {
+    fn enqueue_node(&self, node_index: usize) {
+        self.trigger_node(node_index);
     }
 }
 
@@ -75,9 +75,9 @@ struct SharedThreadPoolState {
     periodic_mutex: Mutex<()>,
     periodic_cond_var: Condvar,
 
-    /// Storage of all tasks across all pools - each task has its own mutex
+    /// Storage of all callback nodes across all pools - each node has its own mutex
     /// for fine-grained locking, allowing concurrent execution across pools.
-    tasks: Vec<Arc<Mutex<ConnectedCallback>>>,
+    nodes: Vec<Arc<Mutex<CallbackNode>>>,
 
     /// Whether the thread pool should continue running
     should_run: AtomicBool,
@@ -86,25 +86,25 @@ struct SharedThreadPoolState {
 impl fmt::Display for SharedThreadPoolState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Should run: {}", self.should_run.load(Ordering::Relaxed))?;
-        writeln!(f, "All tasks:")?;
-        for (index, arc_task) in self.tasks.iter().enumerate() {
-            let task = arc_task.lock().unwrap();
+        writeln!(f, "All callback nodes:")?;
+        for (index, arc_node) in self.nodes.iter().enumerate() {
+            let node = arc_node.lock().unwrap();
             writeln!(f, "\t ----------------------------------")?;
             writeln!(
                 f,
                 "\t Index:{}, Name: {}, Pool: {}",
                 index,
-                task.get_name(),
-                self.enqueue_state.task_to_pool[index]
+                node.get_name(),
+                self.enqueue_state.node_to_pool[index]
             )?;
-            writeln!(f, "\t Able to run: {}", task.able_to_run())?;
+            writeln!(f, "\t Able to run: {}", node.able_to_run())?;
             writeln!(
                 f,
                 "\t Subscribers request execution: {}",
-                task.subscribers_request_execution()
+                node.subscribers_request_execution()
             )?;
             writeln!(f, "\t Subscribers")?;
-            for s in task.get_subscribers().iter() {
+            for s in node.get_subscribers().iter() {
                 writeln!(f, "\t\t Channel: {}", s.get_config().channel_name)?;
                 let queue_info = s.get_queue_info();
                 writeln!(
@@ -126,31 +126,31 @@ pub struct LiveExecutor {
 
 fn periodic_trigger_thread(
     shared_state: &SharedThreadPoolState,
-    exec_times: &mut VecDeque<TimeTriggeredTask>,
+    exec_times: &mut VecDeque<TimeTriggeredNode>,
 ) {
     let now = task::time::FrameworkTime::from_wall_clock();
 
     let maybe_earliest = exec_times
         .iter()
-        .min_by_key(|task| task.requested_exec_time)
+        .min_by_key(|node| node.requested_exec_time)
         .copied();
 
-    let time_triggered_task = match maybe_earliest {
+    let time_triggered_node = match maybe_earliest {
         Some(t) => t,
         None => {
-            println!("No task had a periodic trigger");
-            // No timed tasks — wait until stopped
+            println!("No callback node had a periodic trigger");
+            // No timed nodes — wait until stopped
             let guard = shared_state.periodic_mutex.lock().unwrap();
             drop(shared_state.periodic_cond_var.wait(guard));
             return;
         }
     };
 
-    if let Some(duration) = time_triggered_task
+    if let Some(duration) = time_triggered_node
         .requested_exec_time
         .checked_duration_since(now)
     {
-        // Wait until it's time to run the earliest task, or until woken early (e.g. shutdown)
+        // Wait until it's time to run the earliest node, or until woken early (e.g. shutdown)
         let guard = shared_state.periodic_mutex.lock().unwrap();
         let _ = shared_state
             .periodic_cond_var
@@ -162,26 +162,26 @@ fn periodic_trigger_thread(
     // wakeup, shutdown notification) or late (OS scheduling slop), so the `now`
     // captured before waiting may no longer reflect reality. Comparing — and
     // rescheduling — against a fresh timestamp is essential: comparing against the
-    // stale `now` can make the task look "not due yet" forever once it actually
+    // stale `now` can make the node look "not due yet" forever once it actually
     // becomes overdue, permanently livelocking its periodic trigger.
     let now = task::time::FrameworkTime::from_wall_clock();
 
-    if now >= time_triggered_task.requested_exec_time {
+    if now >= time_triggered_node.requested_exec_time {
         shared_state
             .enqueue_state
-            .trigger_task(time_triggered_task.index);
+            .trigger_node(time_triggered_node.index);
 
-        let task_guard = shared_state.tasks[time_triggered_task.index]
+        let node_guard = shared_state.nodes[time_triggered_node.index]
             .lock()
             .unwrap();
 
-        let next_exec_time = task_guard
+        let next_exec_time = node_guard
             .get_next_requested_execution_time(now)
             .unwrap_or(task::time::FrameworkTime::MAX);
 
-        for t in exec_times.iter_mut() {
-            if t.index == time_triggered_task.index {
-                t.requested_exec_time = next_exec_time;
+        for node in exec_times.iter_mut() {
+            if node.index == time_triggered_node.index {
+                node.requested_exec_time = next_exec_time;
             }
         }
     }
@@ -203,39 +203,39 @@ fn run_executor_thread(pool_state: &PoolState, shared_state: &SharedThreadPoolSt
 
         // Clear the enqueued flag before running so any triggers that arrive during
         // execution are captured, not dropped
-        shared_state.enqueue_state.task_enqueued[index].store(false, Ordering::Release);
+        shared_state.enqueue_state.node_enqueued[index].store(false, Ordering::Release);
 
-        let mut task_guard = shared_state.tasks[index].lock().unwrap();
-        println!("Found runnable task {}", task_guard.get_name());
+        let mut node_guard = shared_state.nodes[index].lock().unwrap();
+        println!("Found runnable callback node {}", node_guard.get_name());
         let ctx = Context::new(task::time::FrameworkTime::from_wall_clock());
-        task_guard.drain_subscribers();
-        let _ = task_guard.run(&ctx);
-        task_guard.flush_publishers(ctx.now);
-        println!("Finished running {}", task_guard.get_name());
+        node_guard.drain_subscribers();
+        let _ = node_guard.run(&ctx);
+        node_guard.flush_publishers(ctx.now);
+        println!("Finished running {}", node_guard.get_name());
     }
 }
 
 impl LiveExecutor {
-    /// Create a single shared thread pool with `num_threads` workers for all tasks.
-    pub fn new(num_threads: usize, tasks: Vec<ConnectedCallback>) -> Self {
-        Self::new_multi_pool(vec![ThreadPoolConfig::new(num_threads, tasks)])
+    /// Create a single shared thread pool with `num_threads` workers for all callback nodes.
+    pub fn new(num_threads: usize, nodes: Vec<CallbackNode>) -> Self {
+        Self::new_multi_pool(vec![ThreadPoolConfig::new(num_threads, nodes)])
     }
 
     /// Create multiple independent thread pools in one executor.
     ///
-    /// Tasks in different pools execute on separate worker threads, enabling
-    /// priority separation: put latency-sensitive tasks in a pool with dedicated
-    /// threads and background tasks in another. The periodic trigger thread and
-    /// task storage are shared across all pools to minimise overhead.
+    /// Callback nodes in different pools execute on separate worker threads, enabling
+    /// priority separation: put latency-sensitive nodes in a pool with dedicated
+    /// threads and background nodes in another. The periodic trigger thread and
+    /// node storage are shared across all pools to minimise overhead.
     pub fn new_multi_pool(pools: Vec<ThreadPoolConfig>) -> Self {
-        let mut all_arc_tasks: Vec<Arc<Mutex<ConnectedCallback>>> = Vec::new();
-        let mut task_to_pool: Vec<usize> = Vec::new();
+        let mut all_arc_nodes: Vec<Arc<Mutex<CallbackNode>>> = Vec::new();
+        let mut node_to_pool: Vec<usize> = Vec::new();
         let mut pool_states: Vec<Arc<PoolState>> = Vec::new();
 
         for (pool_idx, pool) in pools.into_iter().enumerate() {
-            // Channel capacity: one slot per task in this pool (AtomicBool dedup ensures
-            // at most one entry per task) plus one per worker thread for shutdown sentinels
-            let capacity = pool.tasks.len() + pool.thread_count;
+            // Channel capacity: one slot per node in this pool (AtomicBool dedup ensures
+            // at most one entry per node) plus one per worker thread for shutdown sentinels
+            let capacity = pool.nodes.len() + pool.thread_count;
             let (work_tx, work_rx) = channel::bounded(capacity.max(1));
 
             pool_states.push(Arc::new(PoolState {
@@ -244,29 +244,29 @@ impl LiveExecutor {
                 work_rx,
             }));
 
-            for task in pool.tasks {
-                task_to_pool.push(pool_idx);
-                all_arc_tasks.push(Arc::new(Mutex::new(task)));
+            for node in pool.nodes {
+                node_to_pool.push(pool_idx);
+                all_arc_nodes.push(Arc::new(Mutex::new(node)));
             }
         }
 
-        let num_tasks = all_arc_tasks.len();
+        let num_nodes = all_arc_nodes.len();
         let enqueue_state = Arc::new(EnqueueState {
             pools: pool_states,
-            task_to_pool,
-            task_enqueued: (0..num_tasks).map(|_| AtomicBool::new(false)).collect(),
+            node_to_pool,
+            node_enqueued: (0..num_nodes).map(|_| AtomicBool::new(false)).collect(),
         });
         let shared_state = Arc::new(SharedThreadPoolState {
             enqueue_state: enqueue_state.clone(),
             periodic_mutex: Mutex::new(()),
             periodic_cond_var: Condvar::new(),
-            tasks: all_arc_tasks,
+            nodes: all_arc_nodes,
             should_run: true.into(),
         });
 
-        let enqueuer = enqueue_state as Arc<dyn TaskEnqueuer>;
-        for (index, arc_task) in shared_state.tasks.iter().enumerate() {
-            arc_task
+        let enqueuer = enqueue_state as Arc<dyn CallbackNodeEnqueuer>;
+        for (index, arc_node) in shared_state.nodes.iter().enumerate() {
+            arc_node
                 .lock()
                 .unwrap()
                 .register_with_executor(index, enqueuer.clone());
@@ -279,12 +279,12 @@ impl LiveExecutor {
     }
 
     pub fn start_threads(&mut self) {
-        // Seed each pool's work queue for tasks that want to start immediately
-        for index in 0..self.shared_state.tasks.len() {
-            let task = self.shared_state.tasks[index].lock().unwrap();
-            if task.subscribers_request_execution() && task.able_to_run() {
-                drop(task);
-                self.shared_state.enqueue_state.trigger_task(index);
+        // Seed each pool's work queue for nodes that want to start immediately
+        for index in 0..self.shared_state.nodes.len() {
+            let node = self.shared_state.nodes[index].lock().unwrap();
+            if node.subscribers_request_execution() && node.able_to_run() {
+                drop(node);
+                self.shared_state.enqueue_state.trigger_node(index);
             }
         }
 
@@ -306,10 +306,10 @@ impl LiveExecutor {
         let shared_state = self.shared_state.clone();
         let thread = thread::spawn(move || {
             let now = task::time::FrameworkTime::from_wall_clock();
-            let mut exec_times: VecDeque<TimeTriggeredTask> = VecDeque::new();
-            for (index, task) in shared_state.tasks.iter().enumerate() {
-                if let Some(t) = task.lock().unwrap().get_next_requested_execution_time(now) {
-                    exec_times.push_back(TimeTriggeredTask {
+            let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
+            for (index, node) in shared_state.nodes.iter().enumerate() {
+                if let Some(t) = node.lock().unwrap().get_next_requested_execution_time(now) {
+                    exec_times.push_back(TimeTriggeredNode {
                         index,
                         requested_exec_time: t,
                     });
@@ -326,7 +326,7 @@ impl LiveExecutor {
         self.shared_state.should_run.store(false, Ordering::Relaxed);
 
         // Send one shutdown sentinel per worker so every blocked recv() unblocks.
-        // try_send: if the bounded channel is full, a sentinel (or a real task the
+        // try_send: if the bounded channel is full, a sentinel (or a real node the
         // worker will drain then exit on) is already in flight — skip rather than
         // block, since stop_threads must never hang waiting on a full queue.
         for pool in self.shared_state.enqueue_state.pools.iter() {
@@ -360,9 +360,9 @@ impl LiveExecutor {
     }
 
     fn cleanup_buffers(&mut self) {
-        for arc_task in self.shared_state.tasks.iter() {
-            let task = arc_task.lock().unwrap();
-            for subscriber in task.get_subscribers().iter() {
+        for arc_node in self.shared_state.nodes.iter() {
+            let node = arc_node.lock().unwrap();
+            for subscriber in node.get_subscribers().iter() {
                 subscriber.cleanup_buffers();
             }
         }
@@ -370,8 +370,8 @@ impl LiveExecutor {
 }
 
 /// A lightweight, cloneable handle that can signal the executor to stop.
-/// Holds a Weak<SharedThreadPoolState> so tasks can own a StopSignal without
-/// creating a reference cycle back through the executor's task list.
+/// Holds a Weak<SharedThreadPoolState> so callback nodes can own a StopSignal without
+/// creating a reference cycle back through the executor's node list.
 pub struct StopSignal(Weak<SharedThreadPoolState>);
 
 impl ExecutorStopSignal for StopSignal {
@@ -423,7 +423,7 @@ mod tests {
     };
 
     use task::{
-        callback::{ConnectedCallback, GenericCallback, Run, connect_callbacks},
+        callback::{Callback, CallbackNode, Run, connect_callback_nodes},
         context::Context,
         executor::{Executor, ExecutorStopSignal, ThreadPoolConfig},
         generic_publisher::GenericPublisher,
@@ -442,7 +442,7 @@ mod tests {
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
     }
 
-    impl GenericCallback for PeriodicCounter {
+    impl Callback for PeriodicCounter {
         fn run_generic(
             &mut self,
             _subscribers: &mut [Box<dyn GenericSubscriber>],
@@ -472,25 +472,21 @@ mod tests {
         let string_store = StringCollector::make_string_store();
         let stop_signal_cell = Arc::new(OnceLock::new());
 
-        let mut callbacks = vec![
-            IncrementingIntegerPublisher::build_connected_callback(),
-            FizzBuzzCalculator::build_connected_callback(),
-            StringCollector::build_connected_callback(
-                string_store.clone(),
-                stop_signal_cell.clone(),
-                1,
-            ),
+        let mut nodes = vec![
+            IncrementingIntegerPublisher::build_callback_node(),
+            FizzBuzzCalculator::build_callback_node(),
+            StringCollector::build_callback_node(string_store.clone(), stop_signal_cell.clone(), 1),
         ];
-        let connect_result = connect_callbacks(&mut callbacks);
+        let connect_result = connect_callback_nodes(&mut nodes);
         assert!(
             connect_result.is_ok(),
             "Result was {}",
             connect_result.unwrap_err()
         );
-        assert!(callbacks[0].get_publishers()[0].get_config().channel_name == "integer");
-        assert!(callbacks[1].get_subscribers()[0].get_config().channel_name == "integer");
+        assert!(nodes[0].get_publishers()[0].get_config().channel_name == "integer");
+        assert!(nodes[1].get_subscribers()[0].get_config().channel_name == "integer");
 
-        let mut exec = LiveExecutor::new(1, callbacks);
+        let mut exec = LiveExecutor::new(1, nodes);
 
         stop_signal_cell.set(exec.stop_signal()).ok();
         exec.start_threads();
@@ -515,24 +511,20 @@ mod tests {
         let string_store = StringCollector::make_string_store();
         let stop_signal_cell = Arc::new(OnceLock::new());
 
-        let mut all_callbacks = vec![
-            IncrementingIntegerPublisher::build_connected_callback(),
-            FizzBuzzCalculator::build_connected_callback(),
-            StringCollector::build_connected_callback(
-                string_store.clone(),
-                stop_signal_cell.clone(),
-                1,
-            ),
+        let mut all_nodes = vec![
+            IncrementingIntegerPublisher::build_callback_node(),
+            FizzBuzzCalculator::build_callback_node(),
+            StringCollector::build_callback_node(string_store.clone(), stop_signal_cell.clone(), 1),
         ];
-        let connect_result = connect_callbacks(&mut all_callbacks);
+        let connect_result = connect_callback_nodes(&mut all_nodes);
         assert!(
             connect_result.is_ok(),
             "Result was {}",
             connect_result.unwrap_err()
         );
 
-        let pool1 = vec![all_callbacks.remove(0)];
-        let pool2 = all_callbacks;
+        let pool1 = vec![all_nodes.remove(0)];
+        let pool2 = all_nodes;
 
         let mut exec = LiveExecutor::new_multi_pool(vec![
             ThreadPoolConfig::new(1, pool1),
@@ -557,7 +549,7 @@ mod tests {
         assert!(!string_store.lock().unwrap().is_empty());
     }
 
-    /// Regression test for a livelock in `periodic_trigger_thread`: a task driven
+    /// Regression test for a livelock in `periodic_trigger_thread`: a callback node driven
     /// purely by its periodic schedule (no subscribers to trigger it) must keep
     /// being re-triggered indefinitely, not just once or twice.
     #[test]
@@ -567,19 +559,15 @@ mod tests {
         let run_count = Arc::new(AtomicUsize::new(0));
         let stop_signal_cell = Arc::new(OnceLock::new());
 
-        let callback: Box<dyn GenericCallback> = Box::new(PeriodicCounter {
+        let callback: Box<dyn Callback> = Box::new(PeriodicCounter {
             run_count: run_count.clone(),
             target_runs: TARGET_RUNS,
             stop_signal: stop_signal_cell.clone(),
         });
         let subscribers = callback.build_subscribers();
         let publishers = callback.build_publishers();
-        let mut connected = ConnectedCallback::new_with(
-            callback,
-            subscribers,
-            publishers,
-            "PeriodicCounter".into(),
-        );
+        let mut connected =
+            CallbackNode::new_with(callback, subscribers, publishers, "PeriodicCounter".into());
         connected.set_execution_time_callback(Box::new(|now| {
             Some(now + time::Duration::from_millis(2))
         }));

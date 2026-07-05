@@ -17,7 +17,7 @@ pub mod pub_sub;
 pub mod pub_sub_factory;
 pub mod publisher;
 pub mod subscriber;
-pub mod task_builder;
+pub mod task_graph_builder;
 #[cfg(feature = "testing")]
 pub mod testing_publisher;
 #[cfg(feature = "testing")]

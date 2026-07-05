@@ -66,7 +66,7 @@ pub struct PublisherLog {
 }
 
 /// One record per callback execution. `subscribers` and `publishers` are indexed
-/// to match the order in `ConnectedCallback`.
+/// to match the order in `CallbackNode`.
 #[derive(Clone)]
 pub struct CallbackExecutionLog {
     pub execution_time: FrameworkTime,

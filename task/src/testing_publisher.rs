@@ -11,7 +11,7 @@ use crate::{
 use std::any::Any;
 use std::sync::Arc;
 
-/// Publisher that can send messages to a ConnectedCallback
+/// Publisher that can send messages to a CallbackNode
 pub struct TestPublisher<T> {
     publisher: Publisher<T>,
 
