@@ -295,6 +295,8 @@ fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> us
     bitmask
 }
 
+/// TODO: Maybe rename? The callback isn't necessarily connected at this point. It just has the pub/sub components.
+/// We could use strong types and 'cleanse' it as a connected callback
 pub struct ConnectedCallback {
     subscribers: Vec<Box<dyn GenericSubscriber>>,
     publishers: Vec<Box<dyn GenericPublisher>>,
@@ -317,11 +319,6 @@ unsafe impl Sync for ConnectedCallback {}
 unsafe impl Send for ConnectedCallback {}
 
 impl ConnectedCallback {
-    // TODO remove this constructor, users should always provide names
-    pub fn new(callback: Box<dyn GenericCallback>) -> Self {
-        ConnectedCallback::new_named(callback, "CallbackName".into())
-    }
-
     pub fn new_named(callback: Box<dyn GenericCallback>, name: CallbackName) -> Self {
         let subscribers = callback.build_subscribers();
         let publishers = callback.build_publishers();
