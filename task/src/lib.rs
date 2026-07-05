@@ -1,5 +1,6 @@
 mod arena;
 pub mod callback;
+pub mod callback_builder;
 pub mod context;
 mod double_buffer;
 pub mod executor;

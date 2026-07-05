@@ -35,6 +35,13 @@ pub enum TaskBuildError {
 }
 
 impl TaskBuilder {
+    pub fn new() -> TaskBuilder {
+        TaskBuilder {
+            callbacks: vec![],
+            build_steps: vec![],
+        }
+    }
+
     pub fn add_callback(mut self, callback: ConnectedCallback) -> TaskBuilder {
         self.callbacks.push(callback);
         self
@@ -61,8 +68,6 @@ impl TaskBuilder {
         })
     }
 }
-
-// TODO maybe also a callback builder?
 
 #[cfg(test)]
 mod test {}
