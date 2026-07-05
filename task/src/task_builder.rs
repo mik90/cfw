@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::callback::{ConnectedCallback, MismatchTypeError, connect_callbacks};
 
 pub type BuildStepError = Box<dyn std::error::Error>;
@@ -29,9 +31,19 @@ pub struct BuiltTasks {
     pub callbacks: Vec<ConnectedCallback>,
 }
 
+#[derive(Debug)]
 pub enum TaskBuildError {
     ConnectionError(MismatchTypeError), // Error hit during callback connection
     BuildStepError(BuildStepError),     // More generic error hit during build step
+}
+
+impl fmt::Display for TaskBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConnectionError(e) => write!(f, "{}", e),
+            Self::BuildStepError(e) => write!(f, "Build step failed with {}", e),
+        }
+    }
 }
 
 impl Default for TaskBuilder {

@@ -37,8 +37,27 @@ impl fmt::Display for ExpectedVsActual {
 pub enum CallbackBuildError {
     MismatchedSubscriberCount(ExpectedVsActual), // Number of configured subscribers doesn't match generic callback
     MismatchedPublisherCount(ExpectedVsActual), // Number of configured publisher doesn't match generic callback
-    MissingCallback,                            // No generic callback was added.
     MissingExecutionDurationCallback,           // No execution duration callback was added.
+}
+
+impl fmt::Display for CallbackBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MismatchedPublisherCount(e) => write!(
+                f,
+                "Number of configured subscribers doesn't match generic callback {}",
+                e
+            ),
+            Self::MismatchedSubscriberCount(e) => write!(
+                f,
+                "Number of configured publisher doesn't match generic callback {}",
+                e
+            ),
+            Self::MissingExecutionDurationCallback => {
+                write!(f, "No execution duration callback was added.")
+            }
+        }
+    }
 }
 
 impl CallbackBuilder {
@@ -115,16 +134,22 @@ impl CallbackBuilder {
             return Err(error);
         }
 
-        if self.execution_duration_callback.is_none() {
-            return Err(CallbackBuildError::MissingExecutionDurationCallback);
-        }
-
-        let callback = ConnectedCallback::new_with(
+        let mut callback = ConnectedCallback::new_with(
             self.generic_callback,
             self.subscribers,
             self.publishers,
             self.name,
         );
+
+        if let Some(execution_duration_callback) = self.execution_duration_callback {
+            callback.set_execution_duration_callback(execution_duration_callback);
+        } else {
+            return Err(CallbackBuildError::MissingExecutionDurationCallback);
+        }
+
+        if let Some(next_execution_time_callback) = self.next_execution_time_callback {
+            callback.set_execution_time_callback(next_execution_time_callback);
+        }
 
         Ok(callback)
     }

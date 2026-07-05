@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use task::callback;
-use task::callback::{ConnectedCallback, connect_callbacks};
+use task::callback::ConnectedCallback;
 use task::callback_builder::CallbackBuilder;
 use task::executor::ExecutorStopSignal;
 use task::generic_publisher::GenericPublisher;
@@ -10,6 +10,8 @@ use task::input;
 use task::output;
 use task::publisher;
 use task::subscriber;
+use task::task_builder::TaskBuilder;
+use task::time::FrameworkTime;
 
 pub struct FizzBuzzTaskInfo {
     string_store: Arc<Mutex<Vec<String>>>,
@@ -29,17 +31,20 @@ pub fn build_fizz_buzz_tasks() -> (Vec<ConnectedCallback>, FizzBuzzTaskInfo) {
     let string_store = StringCollector::make_string_store();
     let stop_signal = Arc::new(OnceLock::new());
 
-    let mut callbacks = vec![
-        IncrementingIntegerPublisher::build_connected_callback(),
-        FizzBuzzCalculator::build_connected_callback(),
-        StringCollector::build_connected_callback(string_store.clone(), stop_signal.clone(), 1),
-    ];
-    let connect_result = connect_callbacks(&mut callbacks);
-    assert!(
-        connect_result.is_ok(),
-        "Result was {}",
-        connect_result.unwrap_err()
-    );
+    let build_result = TaskBuilder::new()
+        .add_callback(IncrementingIntegerPublisher::build_connected_callback())
+        .add_callback(FizzBuzzCalculator::build_connected_callback())
+        .add_callback(StringCollector::build_connected_callback(
+            string_store.clone(),
+            stop_signal.clone(),
+            1,
+        ))
+        .build();
+
+    let callbacks = match build_result {
+        Ok(result) => result.callbacks,
+        Err(err) => panic!("Build result was {}", err),
+    };
 
     (
         callbacks,
@@ -245,6 +250,7 @@ impl callback::GenericCallback for NoOpTask {
 pub fn build_no_op_callback() -> ConnectedCallback {
     CallbackBuilder::new("no-op".into(), Box::new(NoOpTask))
         .with_execution_duration_callback(|| Duration::from_millis(1))
+        .with_next_execution_time_callback(|t| Some(t))
         .build()
         .unwrap()
 }
