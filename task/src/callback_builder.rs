@@ -61,6 +61,10 @@ impl fmt::Display for CallbackBuildError {
 }
 
 impl CallbackBuilder {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn new(name: CallbackNodeName, callback: Box<dyn Callback>) -> CallbackBuilder {
         // Build the default subscribers/publishers from the callback,
         // the type in the function's signature should allow for some reasonable defaults.

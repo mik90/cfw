@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt};
 use crate::{
     callback::{CallbackNode, MismatchTypeError, connect_callback_nodes},
     callback_builder::CallbackBuilder,
-    pub_sub::ChannelName,
+    pub_sub::{CallbackNodeName, ChannelName},
 };
 
 pub type TaskGraphBuildStepError = Box<dyn std::error::Error>;
@@ -17,6 +17,9 @@ pub type TaskGraphBuildStepError = Box<dyn std::error::Error>;
 /// diagnostics, then logging again, we're able to log the diagnostic channels as well as handle
 /// diagnostics of the logging. However, this can be tricky to reason about.
 pub trait TaskGraphBuildStep {
+    /// Human-readable name for this build step, used in error messages.
+    fn name(&self) -> &str;
+
     /// Exposes access to all existing callback nodes.
     ///
     /// Allows the step to return additional callback nodes to add, if desired.
@@ -46,17 +49,41 @@ pub struct BuiltTaskGraphWithDebugInfo {
 
 #[derive(Debug)]
 pub enum TaskGraphBuildError {
-    ConnectionError(MismatchTypeError), // Error hit during callback node connection
-    BuildStepError(TaskGraphBuildStepError), // More generic error hit during build step
-    CallbackBuildError(crate::callback_builder::CallbackBuildError), // Error hit building a callback node
+    /// Error hit during callback node connection.
+    ConnectionError(MismatchTypeError),
+    /// Error hit during a graph build step.
+    BuildStepError {
+        /// Name of the build step that failed.
+        step_name: String,
+        /// The error returned by the build step.
+        error: TaskGraphBuildStepError,
+    },
+    /// Error hit building a callback node from a queued [`CallbackBuilder`].
+    CallbackBuildError {
+        /// Name of the callback node that failed to build.
+        callback_name: CallbackNodeName,
+        /// The error returned by [`CallbackBuilder::build`].
+        error: crate::callback_builder::CallbackBuildError,
+    },
 }
 
 impl fmt::Display for TaskGraphBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ConnectionError(e) => write!(f, "{}", e),
-            Self::BuildStepError(e) => write!(f, "Build step failed with {}", e),
-            Self::CallbackBuildError(e) => write!(f, "Callback build failed with {}", e),
+            Self::BuildStepError { step_name, error } => {
+                write!(f, "Build step '{step_name}' failed with {}", error)
+            }
+            Self::CallbackBuildError {
+                callback_name,
+                error,
+            } => {
+                write!(
+                    f,
+                    "Callback node '{}' build failed with {}",
+                    callback_name, error
+                )
+            }
         }
     }
 }
@@ -133,17 +160,26 @@ impl TaskGraphBuilder {
     pub fn build(mut self) -> Result<BuiltTaskGraph, TaskGraphBuildError> {
         // Build any callback builders that were queued before running graph-level build steps.
         for builder in self.pending_builders.drain(..) {
-            let node = builder
-                .build()
-                .map_err(TaskGraphBuildError::CallbackBuildError)?;
+            let callback_name = builder.name().to_owned();
+            let node =
+                builder
+                    .build()
+                    .map_err(|error| TaskGraphBuildError::CallbackBuildError {
+                        callback_name,
+                        error,
+                    })?;
             self.nodes.push(node);
         }
 
         // Run all build steps
         for step in self.build_steps.drain(..) {
-            let mut additional_nodes = step
-                .build_step(&self.nodes)
-                .map_err(TaskGraphBuildError::BuildStepError)?;
+            let step_name = step.name();
+            let mut additional_nodes = step.build_step(&self.nodes).map_err(|error| {
+                TaskGraphBuildError::BuildStepError {
+                    step_name: step_name.to_owned(),
+                    error,
+                }
+            })?;
             self.nodes.append(&mut additional_nodes);
         }
 
@@ -293,6 +329,10 @@ mod test {
     fn build_step_can_add_callbacks() {
         struct AddStep;
         impl TaskGraphBuildStep for AddStep {
+            fn name(&self) -> &str {
+                "add-step"
+            }
+
             fn build_step(
                 &self,
                 nodes: &[CallbackNode],
@@ -318,6 +358,10 @@ mod test {
     fn build_step_error_is_propagated() {
         struct FailingStep;
         impl TaskGraphBuildStep for FailingStep {
+            fn name(&self) -> &str {
+                "failing-step"
+            }
+
             fn build_step(
                 &self,
                 _nodes: &[CallbackNode],
@@ -330,7 +374,16 @@ mod test {
             .add_build_step(Box::new(FailingStep))
             .build();
 
-        assert_matches!(result, Err(TaskGraphBuildError::BuildStepError(_)));
+        assert_matches!(result, Err(TaskGraphBuildError::BuildStepError { .. }));
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failing-step"),
+            "error should mention step name: {err}"
+        );
+        assert!(
+            err.contains("intentional failure"),
+            "error should mention underlying error: {err}"
+        );
     }
 
     #[test]
@@ -342,7 +395,12 @@ mod test {
             ))
             .build();
 
-        assert_matches!(result, Err(TaskGraphBuildError::CallbackBuildError(_)));
+        assert_matches!(result, Err(TaskGraphBuildError::CallbackBuildError { .. }));
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("BadDuration"),
+            "error should mention callback name: {err}"
+        );
     }
 
     #[test]
