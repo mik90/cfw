@@ -22,6 +22,8 @@ pub struct FizzBuzzTaskInfo {
 }
 
 impl FizzBuzzTaskInfo {
+    const INTEGER_CHANNEL: &'static str = "integer";
+    const FIZZ_BUZZ_STRING_CHANNEL: &'static str = "fizz_buzz_string";
     pub fn get_stored_strings(&self) -> Vec<String> {
         self.string_store.lock().unwrap().clone()
     }
@@ -71,10 +73,10 @@ impl IncrementingIntegerPublisher {
 
     pub fn build_connected_callback() -> callback::ConnectedCallback {
         CallbackBuilder::new(
-            "IncrementingIbtegerPublisher".into(),
+            "IncrementingIntegerPublisher".into(),
             Box::new(IncrementingIntegerPublisher { value: 0 }),
         )
-        .with_publisher_channels(&["integer"])
+        .with_publisher_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
         .with_next_execution_time_callback(|t| Some(t + std::time::Duration::from_millis(500)))
         .with_execution_duration_callback(|| std::time::Duration::from_millis(1))
         .build()
@@ -128,8 +130,8 @@ impl FizzBuzzCalculator {
     }
     pub fn build_connected_callback() -> callback::ConnectedCallback {
         CallbackBuilder::new("FizzBuzzCalculator".into(), Box::new(FizzBuzzCalculator {}))
-            .with_subscriber_channels(&["integer"])
-            .with_publisher_channels(&["fizz_buzz_string"])
+            .with_subscriber_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
+            .with_publisher_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
             .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
             .build()
             .unwrap()
@@ -195,7 +197,7 @@ impl StringCollector {
                 target_count,
             }),
         )
-        .with_subscriber_channels(&["fuzz_buzz_string"])
+        .with_subscriber_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
         .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
         .build()
         .unwrap()
