@@ -34,6 +34,12 @@ pub enum TaskBuildError {
     BuildStepError(BuildStepError),     // More generic error hit during build step
 }
 
+impl Default for TaskBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TaskBuilder {
     pub fn new() -> TaskBuilder {
         TaskBuilder {

@@ -65,7 +65,7 @@ impl IncrementingIntegerPublisher {
     }
 
     pub fn build_connected_callback() -> callback::ConnectedCallback {
-        let callback = CallbackBuilder::new(
+        CallbackBuilder::new(
             "IncrementingIbtegerPublisher".into(),
             Box::new(IncrementingIntegerPublisher { value: 0 }),
         )
@@ -73,9 +73,7 @@ impl IncrementingIntegerPublisher {
         .with_next_execution_time_callback(|t| Some(t + std::time::Duration::from_millis(500)))
         .with_execution_duration_callback(|| std::time::Duration::from_millis(1))
         .build()
-        .unwrap();
-
-        callback
+        .unwrap()
     }
 }
 
@@ -124,14 +122,12 @@ impl FizzBuzzCalculator {
         fizz_buzz_string.send();
     }
     pub fn build_connected_callback() -> callback::ConnectedCallback {
-        let callback =
-            CallbackBuilder::new("FizzBuzzCalculator".into(), Box::new(FizzBuzzCalculator {}))
-                .with_subscriber_channels(&["integer"])
-                .with_publisher_channels(&["fizz_buzz_string"])
-                .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
-                .build()
-                .unwrap();
-        callback
+        CallbackBuilder::new("FizzBuzzCalculator".into(), Box::new(FizzBuzzCalculator {}))
+            .with_subscriber_channels(&["integer"])
+            .with_publisher_channels(&["fizz_buzz_string"])
+            .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
+            .build()
+            .unwrap()
     }
 }
 
@@ -186,7 +182,7 @@ impl StringCollector {
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target_count: usize,
     ) -> callback::ConnectedCallback {
-        let callback = CallbackBuilder::new(
+        CallbackBuilder::new(
             "StringCollector".into(),
             Box::new(StringCollector {
                 string_store,
@@ -197,8 +193,7 @@ impl StringCollector {
         .with_subscriber_channels(&["fuzz_buzz_string"])
         .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
         .build()
-        .unwrap();
-        callback
+        .unwrap()
     }
 }
 
@@ -248,9 +243,8 @@ impl callback::GenericCallback for NoOpTask {
 /// Build a [`ConnectedCallback`] wrapping a [`NoOpTask`] that reschedules itself
 /// for the instant it finishes (period = 0), so it is always immediately re-ready.
 pub fn build_no_op_callback() -> ConnectedCallback {
-    let callback = CallbackBuilder::new("no-op".into(), Box::new(NoOpTask))
+    CallbackBuilder::new("no-op".into(), Box::new(NoOpTask))
         .with_execution_duration_callback(|| Duration::from_millis(1))
         .build()
-        .unwrap();
-    callback
+        .unwrap()
 }

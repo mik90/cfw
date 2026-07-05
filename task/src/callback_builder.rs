@@ -1,9 +1,7 @@
 use crate::callback::{ConnectedCallback, GenericCallback};
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
-use crate::pub_sub::{CallbackName, ChannelName};
-use crate::publisher::{Publisher, PublisherConfig};
-use crate::subscriber::{self, Subscriber, SubscriberConfig};
+use crate::pub_sub::CallbackName;
 use crate::time::FrameworkTime;
 use std::fmt;
 use std::time::Duration;
