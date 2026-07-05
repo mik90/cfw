@@ -78,6 +78,7 @@ In order of priority
 - [ ] more consistent handling of MaybeUninit in subscriber, maybe specialize on it in read buffer?
 - [ ] better stress testing for multi-threaded determinism in sim 
 - [ ] inputs should just store ref or optional ref of type instead of entire subscriber
+- [ ] readiness shouldn't be limited to 64 inputs, use an array or vec or something to contain many atomic bitsets
 
 ## Debugging tips
 
