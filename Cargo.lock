@@ -543,13 +543,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "task_builder"
-version = "0.1.0"
-dependencies = [
- "task",
-]
-
-[[package]]
 name = "task_macros"
 version = "0.1.0"
 dependencies = [
