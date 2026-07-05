@@ -93,8 +93,10 @@ pub trait GenericCallback {
         ctx: &crate::context::Context,
     ) -> Run;
 
+    /// Builds subscribers with some default configuration values that are appropriate for the type (e.g. RequiredInput).
     fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>>;
 
+    /// Builds publisher with some default configuration values that are appropriate for the type (e.g. OutputSpan).
     fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>>;
 
     fn able_to_run(&self, inputs: &[Box<dyn GenericSubscriber>]) -> bool {
