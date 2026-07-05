@@ -27,10 +27,12 @@ pub struct TaskBuilder {
     build_steps: Vec<Box<dyn BuildStep>>,
 }
 
+#[derive(Debug)]
 pub struct BuiltTasks {
     pub callbacks: Vec<ConnectedCallback>,
 }
 
+#[derive(Debug)]
 pub struct BuiltTasksWithDebugInfo {
     pub callbacks: Vec<ConnectedCallback>,
     pub dangling_subscribers: Vec<ChannelName>,
@@ -141,4 +143,214 @@ impl TaskBuilder {
 }
 
 #[cfg(test)]
-mod test {}
+mod test {
+    use std::assert_matches;
+
+    use super::*;
+    use crate::callback::{GenericCallback, Run};
+    use crate::callback_builder::CallbackBuilder;
+    use crate::context::Context;
+    use crate::generic_publisher::GenericPublisher;
+    use crate::generic_subscriber::GenericSubscriber;
+    use crate::publisher::{Publisher, PublisherConfig};
+    use crate::subscriber::{Subscriber, SubscriberConfig};
+    use std::time::Duration;
+
+    /// A generic callback with a configurable number of default subscribers/publishers.
+    struct DummyCallback {
+        num_subscribers: usize,
+        num_publishers: usize,
+    }
+
+    impl GenericCallback for DummyCallback {
+        fn run_generic(
+            &mut self,
+            _subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            (0..self.num_subscribers)
+                .map(|_| {
+                    Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                        is_optional: false,
+                        capacity: 1,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: String::new(),
+                    })) as Box<dyn GenericSubscriber>
+                })
+                .collect()
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            (0..self.num_publishers)
+                .map(|_| {
+                    Box::new(Publisher::<u64>::new(PublisherConfig {
+                        capacity: 1,
+                        channel_name: String::new(),
+                    })) as Box<dyn GenericPublisher>
+                })
+                .collect()
+        }
+    }
+
+    fn make_callback(num_subscribers: usize, num_publishers: usize) -> Box<dyn GenericCallback> {
+        Box::new(DummyCallback {
+            num_subscribers,
+            num_publishers,
+        })
+    }
+
+    /// A callback that has a single i32 subscriber and no publishers.
+    struct I32SubscriberCallback;
+
+    impl GenericCallback for I32SubscriberCallback {
+        fn run_generic(
+            &mut self,
+            _subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<i32>::new(SubscriberConfig {
+                is_optional: false,
+                capacity: 1,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: String::new(),
+            }))]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
+
+    fn make_connected_callback(
+        name: &str,
+        num_subscribers: usize,
+        subscriber_channels: &[&str],
+        num_publishers: usize,
+        publisher_channels: &[&str],
+    ) -> ConnectedCallback {
+        CallbackBuilder::new(name.into(), make_callback(num_subscribers, num_publishers))
+            .with_subscriber_channels(subscriber_channels)
+            .with_publisher_channels(publisher_channels)
+            .with_execution_duration_callback(|| Duration::from_millis(1))
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn empty_build_succeeds() {
+        let result = TaskBuilder::new().build();
+        assert!(result.is_ok());
+        assert!(result.unwrap().callbacks.is_empty());
+    }
+
+    #[test]
+    fn build_with_one_callback() {
+        let callback = make_connected_callback("single", 0, &[], 0, &[]);
+        let result = TaskBuilder::new().add_callback(callback).build();
+
+        assert!(result.is_ok());
+        let built = result.unwrap();
+        assert_eq!(built.callbacks.len(), 1);
+        assert_eq!(built.callbacks[0].get_name(), "single");
+    }
+
+    #[test]
+    fn build_step_can_add_callbacks() {
+        struct AddStep;
+        impl BuildStep for AddStep {
+            fn build_step(
+                &self,
+                callbacks: &[ConnectedCallback],
+            ) -> Result<Vec<ConnectedCallback>, BuildStepError> {
+                let name = format!("extra_{}", callbacks.len());
+                Ok(vec![make_connected_callback(&name, 0, &[], 0, &[])])
+            }
+        }
+
+        let result = TaskBuilder::new()
+            .add_callback(make_connected_callback("first", 0, &[], 0, &[]))
+            .add_build_step(Box::new(AddStep))
+            .build();
+
+        assert!(result.is_ok());
+        let built = result.unwrap();
+        assert_eq!(built.callbacks.len(), 2);
+        assert_eq!(built.callbacks[0].get_name(), "first");
+        assert_eq!(built.callbacks[1].get_name(), "extra_1");
+    }
+
+    #[test]
+    fn build_step_error_is_propagated() {
+        struct FailingStep;
+        impl BuildStep for FailingStep {
+            fn build_step(
+                &self,
+                _callbacks: &[ConnectedCallback],
+            ) -> Result<Vec<ConnectedCallback>, BuildStepError> {
+                Err("intentional failure".into())
+            }
+        }
+
+        let result = TaskBuilder::new()
+            .add_build_step(Box::new(FailingStep))
+            .build();
+
+        assert_matches!(result, Err(TaskBuildError::BuildStepError(_)));
+    }
+
+    #[test]
+    fn connected_callbacks_matching_types_connect() {
+        let producer = make_connected_callback("producer", 0, &[], 1, &["channel"]);
+        let consumer = make_connected_callback("consumer", 1, &["channel"], 0, &[]);
+
+        let result = TaskBuilder::new()
+            .add_callback(producer)
+            .add_callback(consumer)
+            .build();
+
+        assert!(result.is_ok(), "matching types should connect");
+    }
+
+    #[test]
+    fn mismatched_channel_types_fail_to_connect() {
+        // Producer publishes u64 on "channel", consumer subscribes i32 on "channel".
+        let producer = make_connected_callback("producer", 0, &[], 1, &["channel"]);
+        let consumer = CallbackBuilder::new("consumer".into(), Box::new(I32SubscriberCallback))
+            .with_subscriber_channels(&["channel"])
+            .with_execution_duration_callback(|| Duration::from_millis(1))
+            .build()
+            .unwrap();
+
+        let result = TaskBuilder::new()
+            .add_callback(producer)
+            .add_callback(consumer)
+            .build();
+
+        assert_matches!(result, Err(TaskBuildError::ConnectionError(_)));
+    }
+
+    #[test]
+    fn build_with_debug_info_returns_callbacks() {
+        let callback = make_connected_callback("debug", 0, &[], 0, &[]);
+        let result = TaskBuilder::new()
+            .add_callback(callback)
+            .build_with_debug_info();
+
+        assert!(result.is_ok());
+        let built = result.unwrap();
+        assert_eq!(built.callbacks.len(), 1);
+        assert_eq!(built.callbacks[0].get_name(), "debug");
+    }
+}

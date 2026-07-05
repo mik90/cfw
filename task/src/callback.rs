@@ -315,6 +315,14 @@ pub struct ConnectedCallback {
     logger: Option<Box<dyn ExecutionLogger>>,
 }
 
+impl std::fmt::Debug for ConnectedCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectedCallback")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
 /// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
 unsafe impl Sync for ConnectedCallback {}
 /// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
