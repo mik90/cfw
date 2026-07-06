@@ -1,3 +1,4 @@
+pub mod log_build_step;
 pub mod log_file;
 #[cfg(feature = "serde")]
 pub mod log_file_json;

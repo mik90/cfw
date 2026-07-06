@@ -297,8 +297,6 @@ fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> us
     bitmask
 }
 
-/// TODO: Maybe rename? The callback isn't necessarily connected at this point. It just has the pub/sub components.
-/// We could use strong types and 'cleanse' it as a connected callback
 pub struct CallbackNode {
     subscribers: Vec<Box<dyn GenericSubscriber>>,
     publishers: Vec<Box<dyn GenericPublisher>>,
