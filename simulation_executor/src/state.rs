@@ -137,7 +137,7 @@ impl SimulationState {
             if node
                 .lock()
                 .unwrap()
-                .get_next_requested_execution_time(self.time)
+                .next_requested_execution_time(self.time)
                 .is_some()
             {
                 self.periodic_nodes.push_back(TimeTriggeredNode {
@@ -251,7 +251,7 @@ impl SimulationState {
                 if let Some(next_time) = self.nodes[periodic.index]
                     .lock()
                     .unwrap()
-                    .get_next_requested_execution_time(no_longer_busy)
+                    .next_requested_execution_time(no_longer_busy)
                 {
                     periodic.requested_exec_time = next_time;
                 }
@@ -314,18 +314,18 @@ impl SimulationState {
         }
     }
 
-    pub fn get_step_count(&self) -> Saturating<usize> {
+    pub fn step_count(&self) -> Saturating<usize> {
         self.step_count
     }
 
-    pub fn get_simulation_time(&self) -> FrameworkTime {
+    pub fn simulation_time(&self) -> FrameworkTime {
         self.time
     }
 
     pub fn cleanup(&mut self) {
         // Clean up subscriber buffers so we can destroy publisher message storage
         for node in self.nodes.iter() {
-            for subscriber in node.lock().unwrap().get_subscribers().iter() {
+            for subscriber in node.lock().unwrap().subscribers().iter() {
                 subscriber.cleanup_buffers();
             }
         }
@@ -347,7 +347,7 @@ mod tests {
 
         let mut state = SimulationState::new(1, nodes);
         state.start();
-        let start_time = state.get_simulation_time();
+        let start_time = state.simulation_time();
 
         assert_eq!(state.nodes.len(), 3);
 
@@ -381,7 +381,7 @@ mod tests {
             "After the third step, the string store callback node should've run"
         );
 
-        assert_eq!(task_info.get_stored_strings(), vec!["FizzBuzz"]);
+        assert_eq!(task_info.stored_strings(), vec!["FizzBuzz"]);
     }
 }
 

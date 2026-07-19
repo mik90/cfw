@@ -133,7 +133,7 @@ fn find_forwarded_channel_usage(callbacks: &[CallbackNode]) -> HashMap<ChannelNa
     // Find all channels that are forwarded
     for callback in callbacks.iter() {
         for publisher in callback.publishers.iter() {
-            for forwarded_channel in publisher.get_forwarded_channels() {
+            for forwarded_channel in publisher.forwarded_channels() {
                 channel_to_usage.insert(forwarded_channel.clone(), 0);
             }
         }
@@ -145,9 +145,9 @@ fn find_forwarded_channel_usage(callbacks: &[CallbackNode]) -> HashMap<ChannelNa
     // for the underlying sizing rationale.
     for callback in callbacks.iter() {
         for subscriber in callback.subscribers.iter() {
-            let subscriber_channel_name = &subscriber.get_config().channel_name;
+            let subscriber_channel_name = &subscriber.config().channel_name;
             match channel_to_usage.get_mut(subscriber_channel_name) {
-                Some(usage) => *usage += subscriber.get_config().arena_footprint(),
+                Some(usage) => *usage += subscriber.config().arena_footprint(),
                 None => {
                     // Subscriber doesn't use this channel
                 }
@@ -165,31 +165,31 @@ pub fn connect_callback_nodes(callbacks: &mut [CallbackNode]) -> Result<(), Mism
     // Connect publishers to everyone who is subscribing to their output
     for callback_idx in 0..callbacks.len() {
         for other_callback_idx in 0..callbacks.len() {
-            let callback_name = callbacks[callback_idx].get_name().to_string();
-            let other_callback_name = callbacks[other_callback_idx].get_name().to_string();
+            let callback_name = callbacks[callback_idx].name().to_string();
+            let other_callback_name = callbacks[other_callback_idx].name().to_string();
 
             for publisher in callbacks[callback_idx].publishers.iter_mut() {
                 // Find subscribers to this publisher
                 for other_callback_subscriber in
                     callbacks[other_callback_idx].subscribers.iter_mut()
                 {
-                    if publisher.get_config().channel_name
-                        == other_callback_subscriber.get_config().channel_name
+                    if publisher.config().channel_name
+                        == other_callback_subscriber.config().channel_name
                     {
                         println!(
                             "Connecting callback node '{}' to callback node '{}' on channel '{}'",
                             callback_name,
                             other_callback_name,
-                            publisher.get_config().channel_name
+                            publisher.config().channel_name
                         );
                         if let Err(_e) =
                             publisher.connect_to_subscriber(other_callback_subscriber.as_mut())
                         {
                             return Err(MismatchTypeError {
-                                channel_name: publisher.get_config().channel_name.clone(),
-                                publisher_callback_node: callbacks[callback_idx].get_name().into(),
+                                channel_name: publisher.config().channel_name.clone(),
+                                publisher_callback_node: callbacks[callback_idx].name().into(),
                                 subscriber_callback_node: callbacks[other_callback_idx]
-                                    .get_name()
+                                    .name()
                                     .into(),
                             });
                         }
@@ -197,7 +197,7 @@ pub fn connect_callback_nodes(callbacks: &mut [CallbackNode]) -> Result<(), Mism
                 }
 
                 // This callback node has its channel forwarded to a bunch of subscriber slots, so we must bump its size accordingly
-                match forwarded_channel_to_usage.get(&publisher.get_config().channel_name) {
+                match forwarded_channel_to_usage.get(&publisher.config().channel_name) {
                     Some(usage) => {
                         publisher.increase_arena_size(*usage);
                     }
@@ -290,7 +290,7 @@ fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> us
 
     let mut bitmask = usize::MAX;
     for (index, subscriber) in subscribers.iter().enumerate() {
-        let config = subscriber.get_config();
+        let config = subscriber.config();
         if config.is_trigger && !config.is_optional {
             // Clear this bit — subscriber must receive data before triggering
             bitmask &= !(1usize << index);
@@ -358,7 +358,7 @@ impl CallbackNode {
         }
     }
 
-    pub fn get_name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
@@ -366,7 +366,7 @@ impl CallbackNode {
         self.execution_duration_callback = Some(callback);
     }
 
-    pub fn get_execution_duration(&self) -> Duration {
+    pub fn execution_duration(&self) -> Duration {
         (self
             .execution_duration_callback
             .as_ref()
@@ -382,7 +382,7 @@ impl CallbackNode {
 
     /// The next requested execution time relevant to a current execution time.
     /// 'Instant' is assumed to be provided via a monotonic clock as per rust docs.
-    pub fn get_next_requested_execution_time(&self, now: FrameworkTime) -> Option<FrameworkTime> {
+    pub fn next_requested_execution_time(&self, now: FrameworkTime) -> Option<FrameworkTime> {
         (self.next_execution_time_callback)(now)
     }
 
@@ -411,19 +411,19 @@ impl CallbackNode {
         self.callback.able_to_run(&self.subscribers)
     }
 
-    pub fn get_publishers(&self) -> &[Box<dyn GenericPublisher>] {
+    pub fn publishers(&self) -> &[Box<dyn GenericPublisher>] {
         &self.publishers
     }
 
-    pub fn get_publishers_mut(&mut self) -> &mut [Box<dyn GenericPublisher>] {
+    pub fn publishers_mut(&mut self) -> &mut [Box<dyn GenericPublisher>] {
         &mut self.publishers
     }
 
-    pub fn get_subscribers(&self) -> &[Box<dyn GenericSubscriber>] {
+    pub fn subscribers(&self) -> &[Box<dyn GenericSubscriber>] {
         &self.subscribers
     }
 
-    pub fn get_subscribers_mut(&mut self) -> &mut [Box<dyn GenericSubscriber>] {
+    pub fn subscribers_mut(&mut self) -> &mut [Box<dyn GenericSubscriber>] {
         &mut self.subscribers
     }
 
@@ -434,7 +434,7 @@ impl CallbackNode {
     ) -> Option<&mut Box<dyn GenericSubscriber>> {
         self.subscribers
             .iter_mut()
-            .find(|subscriber| subscriber.get_config().channel_name == channel_name)
+            .find(|subscriber| subscriber.config().channel_name == channel_name)
     }
 
     /// Finds the publisher connected to the given channel, by name.
@@ -444,7 +444,7 @@ impl CallbackNode {
     ) -> Option<&mut Box<dyn GenericPublisher>> {
         self.publishers
             .iter_mut()
-            .find(|publisher| publisher.get_config().channel_name == channel_name)
+            .find(|publisher| publisher.config().channel_name == channel_name)
     }
 
     /// Called by the executor after construction to wire up the enqueue mechanism.
@@ -628,7 +628,7 @@ mod test {
         nodes[0].flush_publishers(ctx.now);
 
         // After flush, the published message from run 2 is in the write buffer
-        let sub_info = nodes[0].get_subscribers()[0].get_queue_info();
+        let sub_info = nodes[0].subscribers()[0].queue_info();
         assert_eq!(
             sub_info.writer_size, 1,
             "loopback: published message should be in subscriber's write buffer"
@@ -636,7 +636,7 @@ mod test {
 
         nodes[0].drain_subscribers();
 
-        let sub_info = nodes[0].get_subscribers()[0].get_queue_info();
+        let sub_info = nodes[0].subscribers()[0].queue_info();
         assert_eq!(
             sub_info.reader_size, 1,
             "loopback: message should have drained to read buffer"

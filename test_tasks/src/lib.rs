@@ -23,7 +23,7 @@ pub struct FizzBuzzTaskInfo {
 impl FizzBuzzTaskInfo {
     const INTEGER_CHANNEL: &'static str = "integer";
     const FIZZ_BUZZ_STRING_CHANNEL: &'static str = "fizz_buzz_string";
-    pub fn get_stored_strings(&self) -> Vec<String> {
+    pub fn stored_strings(&self) -> Vec<String> {
         self.string_store.lock().unwrap().clone()
     }
 }

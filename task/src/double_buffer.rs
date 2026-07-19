@@ -110,13 +110,13 @@ impl<T> DoubleBuffer<T> {
         self.write_queue.dropped()
     }
 
-    pub fn get_write_buffer(&self) -> WriteBufferHandle<T> {
+    pub fn write_buffer(&self) -> WriteBufferHandle<T> {
         WriteBufferHandle {
             queue: self.write_queue.clone(),
         }
     }
 
-    pub fn get_read_buffer(&self) -> ReadBufferGuard<'_, T> {
+    pub fn read_buffer(&self) -> ReadBufferGuard<'_, T> {
         ReadBufferGuard {
             buffer: self.read_buffer.borrow_mut(),
         }

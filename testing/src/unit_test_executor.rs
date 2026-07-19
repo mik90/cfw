@@ -69,19 +69,19 @@ impl UnitTestExecutor {
 
     /// Runs simulation, returning time before/after
     pub fn try_step(&mut self) -> Result<StepResult, StepError> {
-        let before = self.simulation_state.get_simulation_time();
+        let before = self.simulation_state.simulation_time();
         self.simulation_state.step()?;
-        let after = self.simulation_state.get_simulation_time();
+        let after = self.simulation_state.simulation_time();
         self.time_source.set(after);
         Ok(StepResult { before, after })
     }
 
-    pub fn get_step_count(&self) -> Saturating<usize> {
-        self.simulation_state.get_step_count()
+    pub fn step_count(&self) -> Saturating<usize> {
+        self.simulation_state.step_count()
     }
 
-    pub fn get_current_time(&self) -> FrameworkTime {
-        self.simulation_state.get_simulation_time()
+    pub fn current_time(&self) -> FrameworkTime {
+        self.simulation_state.simulation_time()
     }
 }
 
@@ -120,12 +120,12 @@ impl UnitTestExecutorBuilder {
             .iter_mut()
             .flat_map(|node| {
                 // Get all publishers matching the requested channel and the name of the node they're on
-                let node_name = node.get_name().to_owned();
+                let node_name = node.name().to_owned();
 
-                node.get_publishers_mut()
+                node.publishers_mut()
                     .iter_mut()
                     // only take in publishers with the given channel name
-                    .filter(|publisher| publisher.get_config().channel_name == *channel_name)
+                    .filter(|publisher| publisher.config().channel_name == *channel_name)
                     // Deref the box so callers don't need to care about it
                     .map(move |p| (p.deref_mut(), node_name.clone()))
             })
@@ -141,12 +141,12 @@ impl UnitTestExecutorBuilder {
             .iter_mut()
             .flat_map(|node| {
                 // Get all subscribers matching the requested channel and the name of the node they're on
-                let node_name = node.get_name().to_owned();
+                let node_name = node.name().to_owned();
 
-                node.get_subscribers_mut()
+                node.subscribers_mut()
                     .iter_mut()
                     // only take in subscribers with the given channel name
-                    .filter(|subscriber| subscriber.get_config().channel_name == *channel_name)
+                    .filter(|subscriber| subscriber.config().channel_name == *channel_name)
                     // Deref the box so callers don't need to care about it
                     .map(move |p| (p.deref_mut(), node_name.clone()))
             })
@@ -169,7 +169,7 @@ impl UnitTestExecutorBuilder {
 
         let capacity_of_all_subscribers = subscribers
             .iter()
-            .map(|(subscriber, _)| subscriber.get_config().capacity)
+            .map(|(subscriber, _)| subscriber.config().capacity)
             .sum();
 
         let mut publisher = TestPublisher::<T>::new(
@@ -287,26 +287,26 @@ mod tests {
     fn step_time_before_after() {
         let (nodes_under_test, task_info) = build_fizz_buzz_callback_nodes();
         let publisher_runtime =
-            nodes_under_test[task_info.integer_publisher_index].get_execution_duration();
+            nodes_under_test[task_info.integer_publisher_index].execution_duration();
 
         let mut expected_time = FrameworkTime::from_nanoseconds(0);
 
         let mut executor = UnitTestExecutor::new(nodes_under_test);
 
         assert_eq!(
-            task_info.get_stored_strings(),
+            task_info.stored_strings(),
             Vec::<String>::new(),
             "Should be empty on start"
         );
 
-        assert_eq!(executor.get_current_time(), expected_time);
+        assert_eq!(executor.current_time(), expected_time);
         let step_result = executor.step();
         assert_eq!(step_result.before, expected_time);
 
         // We expect just the publisher to run
         expected_time += publisher_runtime;
         assert_eq!(
-            executor.get_current_time(),
+            executor.current_time(),
             expected_time,
             "We expect just the publisher to have run"
         );
@@ -317,11 +317,10 @@ mod tests {
     fn step_all_callbacks() {
         let (nodes_under_test, task_info) = build_fizz_buzz_callback_nodes();
         let publisher_runtime =
-            nodes_under_test[task_info.integer_publisher_index].get_execution_duration();
-        let fizz_buzz_runtime =
-            nodes_under_test[task_info.fizz_buzz_index].get_execution_duration();
+            nodes_under_test[task_info.integer_publisher_index].execution_duration();
+        let fizz_buzz_runtime = nodes_under_test[task_info.fizz_buzz_index].execution_duration();
         let string_store_runtime =
-            nodes_under_test[task_info.string_store_index].get_execution_duration();
+            nodes_under_test[task_info.string_store_index].execution_duration();
 
         let mut expected_time = FrameworkTime::from_nanoseconds(0);
 
@@ -344,7 +343,7 @@ mod tests {
         expected_time += string_store_runtime;
         assert_eq!(step_result.after, expected_time);
 
-        assert_eq!(task_info.get_stored_strings(), vec!["FizzBuzz"]);
+        assert_eq!(task_info.stored_strings(), vec!["FizzBuzz"]);
     }
 
     #[test]

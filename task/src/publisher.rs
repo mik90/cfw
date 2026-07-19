@@ -72,15 +72,15 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         self
     }
 
-    fn get_config(&self) -> &PublisherConfig {
+    fn config(&self) -> &PublisherConfig {
         &self.config
     }
 
-    fn get_config_mut(&mut self) -> &mut PublisherConfig {
+    fn config_mut(&mut self) -> &mut PublisherConfig {
         &mut self.config
     }
 
-    fn get_forwarded_channels(&self) -> &[ChannelName] {
+    fn forwarded_channels(&self) -> &[ChannelName] {
         self.forwarded_channels.as_slice()
     }
 
@@ -191,7 +191,7 @@ impl<T> Publisher<T> {
         }
     }
 
-    pub fn get_config(&self) -> &PublisherConfig {
+    pub fn config(&self) -> &PublisherConfig {
         &self.config
     }
 
@@ -250,13 +250,13 @@ impl<T> Publisher<T> {
 
 impl<T: 'static> Publisher<T> {
     pub fn add_typed_subscriber(&mut self, typed_subscriber: &mut Subscriber<T>) {
-        let buffer_guard = typed_subscriber.get_write_guard();
-        let config = typed_subscriber.get_config().clone();
+        let buffer_guard = typed_subscriber.write_guard();
+        let config = typed_subscriber.config().clone();
 
         // Only track readiness for trigger+non-optional subscribers — those are the
         // ones whose bits start at 0 in the bitmask and must be set before enqueueing.
         let readiness = if config.is_trigger && !config.is_optional {
-            typed_subscriber.get_readiness_state()
+            typed_subscriber.readiness_state()
         } else {
             None
         };
@@ -274,7 +274,7 @@ impl<T: 'static> Publisher<T> {
         // cleanup_buffers runs *after* thread joins, also surfaces as a
         // use-after-free under Miri when the panicked worker leaves ArenaPtrs
         // in the subscriber queue and the owning arena is dropped first.
-        self.increase_arena_size(typed_subscriber.get_config().arena_footprint());
+        self.increase_arena_size(typed_subscriber.config().arena_footprint());
     }
 
     pub fn add_typed_forwarded_subscriber(
@@ -330,7 +330,7 @@ impl<T: Default + 'static, F: 'static> ForwardingPublisher<T, F> {
         self.inner.allocate_arena();
     }
 
-    pub fn get_forwarded_channels(&self) -> &[ChannelName] {
+    pub fn forwarded_channels(&self) -> &[ChannelName] {
         self.inner.forwarded_channels.as_slice()
     }
 
@@ -351,16 +351,16 @@ impl<T: Default + 'static, F: 'static> GenericPublisher for ForwardingPublisher<
         self
     }
 
-    fn get_config(&self) -> &PublisherConfig {
-        self.inner.get_config()
+    fn config(&self) -> &PublisherConfig {
+        self.inner.config()
     }
 
-    fn get_config_mut(&mut self) -> &mut PublisherConfig {
-        self.inner.get_config_mut()
+    fn config_mut(&mut self) -> &mut PublisherConfig {
+        self.inner.config_mut()
     }
 
-    fn get_forwarded_channels(&self) -> &[ChannelName] {
-        GenericPublisher::get_forwarded_channels(&self.inner)
+    fn forwarded_channels(&self) -> &[ChannelName] {
+        GenericPublisher::forwarded_channels(&self.inner)
     }
 
     fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
@@ -462,8 +462,8 @@ mod tests {
 
         publisher.flush_loaned_values(time::FrameworkTime::from_nanoseconds(99));
 
-        assert!(subscriber.get_queue_info().writer_size == 1);
-        assert!(subscriber.get_queue_info().reader_size == 0);
+        assert!(subscriber.queue_info().writer_size == 1);
+        assert!(subscriber.queue_info().reader_size == 0);
 
         assert!(subscriber.requests_execution());
 
@@ -471,10 +471,10 @@ mod tests {
 
         assert!(subscriber.able_to_run());
 
-        assert!(subscriber.get_queue_info().writer_size == 0);
-        assert!(subscriber.get_queue_info().reader_size == 1);
+        assert!(subscriber.queue_info().writer_size == 0);
+        assert!(subscriber.queue_info().reader_size == 1);
 
-        let read_buffer = subscriber.get_read_buffer();
+        let read_buffer = subscriber.read_buffer();
         assert_eq!(read_buffer.len(), 1);
         let front = read_buffer.front();
         assert!(front.is_some());
@@ -566,10 +566,7 @@ mod tests {
         publisher.allocate_arena();
         // Corrected sizing: publisher's own loan capacity + 2 * subscriber
         // capacity (clone in write queue + clone in read buffer).
-        assert_eq!(
-            publisher.arena.capacity(),
-            PUB_CAPACITY + 2 * SUB_CAPACITY
-        );
+        assert_eq!(publisher.arena.capacity(), PUB_CAPACITY + 2 * SUB_CAPACITY);
 
         let t = time::FrameworkTime::from_nanoseconds(0);
 
@@ -581,7 +578,7 @@ mod tests {
         }
         publisher.flush_loaned_values(t);
         subscriber.drain_writer_to_reader();
-        assert_eq!(subscriber.get_queue_info().reader_size, 1);
+        assert_eq!(subscriber.queue_info().reader_size, 1);
 
         // Cycle 2: publish msg2 *without* draining. The subscriber still holds
         // msg1 in its read buffer, so msg2 must occupy a different arena slot.
@@ -591,8 +588,8 @@ mod tests {
             out.send();
         }
         publisher.flush_loaned_values(t);
-        assert_eq!(subscriber.get_queue_info().writer_size, 1);
-        assert_eq!(subscriber.get_queue_info().reader_size, 1);
+        assert_eq!(subscriber.queue_info().writer_size, 1);
+        assert_eq!(subscriber.queue_info().reader_size, 1);
 
         // Cycle 3: publish msg3 *without* draining since cycle 2. The
         // subscriber simultaneously holds msg1 (read buffer) and msg2 (write

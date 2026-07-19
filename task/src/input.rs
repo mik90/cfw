@@ -13,7 +13,7 @@ pub struct RequiredInput<'a, T> {
 
 impl<'a, T: 'static> RequiredInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> RequiredInput<'a, T> {
-        let guard = subscriber.get_read_buffer();
+        let guard = subscriber.read_buffer();
         if guard.front().is_none() {
             panic!("RequiredInput should only have been constructed on non-empty read-buffer");
         }
@@ -96,7 +96,7 @@ pub struct OptionalInput<'a, T> {
 
 impl<'a, T: 'static> OptionalInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> OptionalInput<'a, T> {
-        let guard = subscriber.get_read_buffer();
+        let guard = subscriber.read_buffer();
         OptionalInput {
             _subscriber: subscriber,
             guard,
@@ -159,7 +159,7 @@ pub struct InputSpan<'a, T> {
 
 impl<'a, T: 'static> InputSpan<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> InputSpan<'a, T> {
-        let guard = subscriber.get_read_buffer();
+        let guard = subscriber.read_buffer();
         InputSpan {
             _subscriber: subscriber,
             guard,

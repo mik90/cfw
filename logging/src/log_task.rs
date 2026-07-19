@@ -229,7 +229,7 @@ impl Callback for LogTask {
         if !self.error_buffer.is_empty()
             && let Some(diagnostics) = publishers
                 .iter_mut()
-                .find(|p| p.get_config().channel_name == LOG_TASK_DIAGNOSTICS_CHANNEL)
+                .find(|p| p.config().channel_name == LOG_TASK_DIAGNOSTICS_CHANNEL)
             && let Some(typed) = diagnostics.as_any().downcast_mut::<Publisher<LogError>>()
         {
             for err in self.error_buffer.drain() {

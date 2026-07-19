@@ -118,8 +118,8 @@ where
             forwarded_message_header: &'a MessageHeader,
         }
         let env = Envelope {
-            message: self.get_message(),
-            forwarded_message_header: &self.get_forwarded_message().header,
+            message: self.message(),
+            forwarded_message_header: &self.forwarded_message().header,
         };
         serde_json::to_writer(w, &env).map_err(SerializeError::SerdeJson)
     }
@@ -240,9 +240,9 @@ mod tests {
 
         let deserialized =
             ForwardedMessage::<bool, MyMessage>::deserialize_with_ctx(&buf, &log).unwrap();
-        assert_eq!(*deserialized.get_message(), false);
+        assert_eq!(*deserialized.message(), false);
 
-        let fwd = deserialized.get_forwarded_message();
+        let fwd = deserialized.forwarded_message();
         assert_eq!(fwd.message.my_string, "Hello");
         assert_eq!(fwd.message.my_bool, true);
         assert_eq!(fwd.header.published_at, FrameworkTime::from_nanoseconds(2));

@@ -75,7 +75,7 @@ impl LogFileReader for JsonLogFileReader {
         self.entries.len()
     }
 
-    fn get_entry(&self, index: usize) -> Option<LogEntry<'_>> {
+    fn entry(&self, index: usize) -> Option<LogEntry<'_>> {
         let e = self.entries.get(index)?;
         Some(LogEntry {
             header: e.header.clone(),

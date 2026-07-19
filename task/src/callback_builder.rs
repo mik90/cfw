@@ -95,7 +95,7 @@ impl CallbackBuilder {
         }
 
         for (channel, config) in subscriber_channels.iter().zip(self.subscribers.iter_mut()) {
-            config.get_config_mut().channel_name = channel.to_string();
+            config.config_mut().channel_name = channel.to_string();
         }
         self
     }
@@ -113,7 +113,7 @@ impl CallbackBuilder {
         }
 
         for (channel, config) in publisher_channels.iter().zip(self.publishers.iter_mut()) {
-            config.get_config_mut().channel_name = channel.to_string();
+            config.config_mut().channel_name = channel.to_string();
         }
         self
     }
@@ -233,18 +233,12 @@ mod test {
 
         assert!(callback.is_ok());
         let callback = callback.unwrap();
-        assert_eq!(callback.get_name(), "MyCallback");
+        assert_eq!(callback.name(), "MyCallback");
+        assert_eq!(callback.subscribers()[0].config().channel_name, "in");
+        assert_eq!(callback.publishers()[0].config().channel_name, "out");
+        assert_eq!(callback.execution_duration(), Duration::from_millis(1));
         assert_eq!(
-            callback.get_subscribers()[0].get_config().channel_name,
-            "in"
-        );
-        assert_eq!(
-            callback.get_publishers()[0].get_config().channel_name,
-            "out"
-        );
-        assert_eq!(callback.get_execution_duration(), Duration::from_millis(1));
-        assert_eq!(
-            callback.get_next_requested_execution_time(FrameworkTime::from_nanoseconds(0)),
+            callback.next_requested_execution_time(FrameworkTime::from_nanoseconds(0)),
             None
         );
     }
@@ -305,7 +299,7 @@ mod test {
 
         let now = FrameworkTime::from_nanoseconds(100);
         assert_eq!(
-            callback.get_next_requested_execution_time(now),
+            callback.next_requested_execution_time(now),
             Some(FrameworkTime::from_nanoseconds(110))
         );
     }

@@ -165,7 +165,7 @@ fn empty_registry_produces_no_log_task() {
         .expect("graph builds");
 
     assert_eq!(graph.nodes.len(), 1);
-    assert_eq!(graph.nodes[0].get_name(), "Counter");
+    assert_eq!(graph.nodes[0].name(), "Counter");
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn unregistered_type_silently_skipped() {
         1,
         "no LogTask should be added when nothing is registered"
     );
-    assert_eq!(graph.nodes[0].get_name(), "Counter");
+    assert_eq!(graph.nodes[0].name(), "Counter");
 }
 
 #[test]

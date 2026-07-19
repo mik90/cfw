@@ -98,8 +98,8 @@ fn find_dangling_subscribers(nodes: &[CallbackNode]) -> Vec<ChannelName> {
     let mut channel_to_subscriber_count = HashMap::<&str, usize>::new();
 
     for node in nodes {
-        for input in node.get_subscribers().iter() {
-            let channel = input.get_config().channel_name.as_str();
+        for input in node.subscribers().iter() {
+            let channel = input.config().channel_name.as_str();
             *channel_to_subscriber_count.entry(channel).or_default() += 1;
         }
     }
@@ -115,8 +115,8 @@ fn find_dangling_publishers(nodes: &[CallbackNode]) -> Vec<ChannelName> {
     let mut channel_to_publisher_count = HashMap::<&str, usize>::new();
 
     for node in nodes {
-        for input in node.get_publishers().iter() {
-            let channel = input.get_config().channel_name.as_str();
+        for input in node.publishers().iter() {
+            let channel = input.config().channel_name.as_str();
             *channel_to_publisher_count.entry(channel).or_default() += 1;
         }
     }
@@ -322,7 +322,7 @@ mod test {
         assert!(result.is_ok());
         let built = result.unwrap();
         assert_eq!(built.nodes.len(), 1);
-        assert_eq!(built.nodes[0].get_name(), "single");
+        assert_eq!(built.nodes[0].name(), "single");
     }
 
     #[test]
@@ -350,8 +350,8 @@ mod test {
         assert!(result.is_ok());
         let built = result.unwrap();
         assert_eq!(built.nodes.len(), 2);
-        assert_eq!(built.nodes[0].get_name(), "first");
-        assert_eq!(built.nodes[1].get_name(), "extra_1");
+        assert_eq!(built.nodes[0].name(), "first");
+        assert_eq!(built.nodes[1].name(), "extra_1");
     }
 
     #[test]
@@ -444,6 +444,6 @@ mod test {
         assert!(result.is_ok());
         let built = result.unwrap();
         assert_eq!(built.nodes.len(), 1);
-        assert_eq!(built.nodes[0].get_name(), "debug");
+        assert_eq!(built.nodes[0].name(), "debug");
     }
 }

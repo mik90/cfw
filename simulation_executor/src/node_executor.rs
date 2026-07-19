@@ -42,7 +42,7 @@ pub(crate) fn node_executor_thread(
 
         let response = NodeExecutionResponse {
             index: work_request.index,
-            execution_duration: node.get_execution_duration(),
+            execution_duration: node.execution_duration(),
         };
         // If the receiver is gone the step thread has exited; nothing left to do.
         if response_sender.send(response).is_err() {

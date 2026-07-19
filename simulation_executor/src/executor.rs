@@ -97,12 +97,12 @@ impl SimulationExecutor {
         self.state.lock().unwrap().step()
     }
 
-    pub fn get_step_count(&self) -> Saturating<usize> {
-        self.state.lock().unwrap().get_step_count()
+    pub fn step_count(&self) -> Saturating<usize> {
+        self.state.lock().unwrap().step_count()
     }
 
-    pub fn get_simulation_time(&self) -> FrameworkTime {
-        self.state.lock().unwrap().get_simulation_time()
+    pub fn simulation_time(&self) -> FrameworkTime {
+        self.state.lock().unwrap().simulation_time()
     }
 }
 
@@ -131,7 +131,7 @@ mod tests {
         assert!(stop_result.is_ok());
 
         assert!(!exec.is_running());
-        assert!(!task_info.get_stored_strings().is_empty());
+        assert!(!task_info.stored_strings().is_empty());
     }
 
     #[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -146,20 +146,18 @@ mod tests {
 
         let exec = SimulationExecutor::new(thread_count, nodes);
         let mut state = exec.state.lock().unwrap();
-        let start_time = state.get_simulation_time();
+        let start_time = state.simulation_time();
         state.start();
 
         let mut step_history = vec![];
         for _ in 0..step_count {
-            let maybe_offset = state
-                .get_simulation_time()
-                .checked_duration_since(start_time);
+            let maybe_offset = state.simulation_time().checked_duration_since(start_time);
             assert!(maybe_offset.is_some());
             let nodes_executed = state.step().unwrap();
             step_history.push(StepState {
                 nodes_executed,
                 offset_from_start: maybe_offset.unwrap(),
-                string_store: task_info.get_stored_strings(),
+                string_store: task_info.stored_strings(),
             });
         }
         step_history

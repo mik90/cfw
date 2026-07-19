@@ -24,7 +24,7 @@ fn bench_publish_to_receive(c: &mut Criterion) {
     });
 
     publisher.add_typed_subscriber(&mut subscriber);
-    publisher.increase_arena_size(subscriber.get_config().capacity);
+    publisher.increase_arena_size(subscriber.config().capacity);
     publisher.allocate_arena();
 
     let mut value: u64 = 0;
@@ -47,7 +47,7 @@ fn bench_publish_to_receive(c: &mut Criterion) {
                 let input = OptionalInput::new(&mut subscriber);
                 *input.value().expect("sent value should be readable")
             };
-            subscriber.get_read_buffer().pop_front();
+            subscriber.read_buffer().pop_front();
             black_box(received)
         });
     });
@@ -67,7 +67,7 @@ fn bench_publish_to_receive(c: &mut Criterion) {
                 let input = OptionalInput::new_downcasted(&mut subscriber);
                 *input.value().expect("sent value should be readable")
             };
-            subscriber.get_read_buffer().pop_front();
+            subscriber.read_buffer().pop_front();
             black_box(received)
         });
     });

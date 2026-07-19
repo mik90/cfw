@@ -81,9 +81,9 @@ impl<T: 'static + Clone> TestSubscriber<T> {
              — the subscriber fell behind the publisher; queue capacity ({}) was exceeded. Use \
              `with_capacity` to size it for what this test actually sends, or call \
              `try_messages` if drops are expected",
-            self.subscriber.get_config().channel_name,
+            self.subscriber.config().channel_name,
             dropped.writer,
-            self.subscriber.get_config().capacity,
+            self.subscriber.config().capacity,
         );
         assert!(
             dropped.reader == 0,
@@ -91,9 +91,9 @@ impl<T: 'static + Clone> TestSubscriber<T> {
              being read — the test fell behind the subscriber; queue capacity ({}) was \
              exceeded. Use `with_capacity` to size it for what this test actually sends, or \
              call `try_messages` if drops are expected",
-            self.subscriber.get_config().channel_name,
+            self.subscriber.config().channel_name,
             dropped.reader,
-            self.subscriber.get_config().capacity,
+            self.subscriber.config().capacity,
         );
         messages
     }
@@ -104,15 +104,15 @@ impl<T: 'static + Clone> TestSubscriber<T> {
     /// that want to assert on drop behavior directly.
     pub fn try_messages(&mut self) -> (Vec<Box<Message<T>>>, DroppedMessages) {
         self.subscriber.drain_writer_to_reader();
-        let mut guard = self.subscriber.get_read_buffer();
+        let mut guard = self.subscriber.read_buffer();
         let messages = guard
             .drain_contiguous()
             .map(|ptr| Box::new((*ptr).clone()))
             .collect();
         drop(guard);
         let dropped = DroppedMessages {
-            writer: self.subscriber.get_writer_queue_drops(),
-            reader: self.subscriber.get_reader_queue_drops(),
+            writer: self.subscriber.writer_queue_drops(),
+            reader: self.subscriber.reader_queue_drops(),
         };
         (messages, dropped)
     }
@@ -126,12 +126,12 @@ impl<T: 'static> GenericSubscriber for TestSubscriber<T> {
         &mut self.subscriber
     }
 
-    fn get_config(&self) -> &SubscriberConfig {
-        self.subscriber.get_config()
+    fn config(&self) -> &SubscriberConfig {
+        self.subscriber.config()
     }
 
-    fn get_config_mut(&mut self) -> &mut SubscriberConfig {
-        self.subscriber.get_config_mut()
+    fn config_mut(&mut self) -> &mut SubscriberConfig {
+        self.subscriber.config_mut()
     }
 
     fn able_to_run(&self) -> bool {
@@ -146,8 +146,8 @@ impl<T: 'static> GenericSubscriber for TestSubscriber<T> {
         self.subscriber.drain_writer_to_reader();
     }
 
-    fn get_queue_info(&self) -> QueueInfo {
-        self.subscriber.get_queue_info()
+    fn queue_info(&self) -> QueueInfo {
+        self.subscriber.queue_info()
     }
 
     fn cleanup_buffers(&self) {
@@ -158,8 +158,8 @@ impl<T: 'static> GenericSubscriber for TestSubscriber<T> {
         self.subscriber.set_readiness_state(state, bit_index)
     }
 
-    fn get_readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
-        self.subscriber.get_readiness_state()
+    fn readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
+        self.subscriber.readiness_state()
     }
 }
 
@@ -210,7 +210,7 @@ mod tests {
     fn default_capacity_matches_constant() {
         let subscriber = TestSubscriber::<i32>::new("channel".into());
         assert_eq!(
-            subscriber.get_config().capacity,
+            subscriber.config().capacity,
             DEFAULT_TEST_SUBSCRIBER_CAPACITY
         );
     }
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn with_capacity_overrides_default() {
         let subscriber = TestSubscriber::<i32>::with_capacity("channel".into(), 2);
-        assert_eq!(subscriber.get_config().capacity, 2);
+        assert_eq!(subscriber.config().capacity, 2);
     }
 
     #[test]

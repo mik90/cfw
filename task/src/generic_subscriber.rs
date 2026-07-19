@@ -12,9 +12,9 @@ pub struct QueueInfo {
 pub trait GenericSubscriber {
     fn as_any(&mut self) -> &mut dyn std::any::Any;
 
-    fn get_config(&self) -> &SubscriberConfig;
+    fn config(&self) -> &SubscriberConfig;
 
-    fn get_config_mut(&mut self) -> &mut SubscriberConfig;
+    fn config_mut(&mut self) -> &mut SubscriberConfig;
 
     fn able_to_run(&self) -> bool;
 
@@ -22,7 +22,7 @@ pub trait GenericSubscriber {
 
     fn drain_writer_to_reader(&self);
 
-    fn get_queue_info(&self) -> QueueInfo;
+    fn queue_info(&self) -> QueueInfo;
 
     /// Clear buffered values before the Arena is dropped.
     /// Prevents ArenaPtrs from outliving their Arena allocators.
@@ -39,7 +39,7 @@ pub trait GenericSubscriber {
     fn set_readiness_state(&mut self, _state: Arc<CallbackNodeReadiness>, _bit_index: usize) {}
 
     /// Return the readiness state so that a connecting publisher can store it.
-    fn get_readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
+    fn readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
         None
     }
 }

@@ -148,7 +148,7 @@ impl<'a, T> OutputSpan<'a, T> {
         publisher: &'a mut Publisher<T>,
         mut factory: impl FnMut(&mut MaybeUninit<T>),
     ) -> Self {
-        let count = publisher.get_config().capacity;
+        let count = publisher.config().capacity;
         let start = publisher.loaned_count();
         for _ in 0..count {
             publisher.loan_with(|slot| factory(slot)).unwrap();
@@ -163,12 +163,12 @@ impl<'a, T> OutputSpan<'a, T> {
 
 impl<'a, T: Default + 'static> OutputSpan<'a, T> {
     pub fn new(publisher: &'a mut Publisher<T>) -> Self {
-        for _ in 0..publisher.get_config().capacity {
+        for _ in 0..publisher.config().capacity {
             publisher.loan_default().unwrap();
         }
         OutputSpan {
             loaned_value_idx_start: 0,
-            loaned_value_idx_end: publisher.get_config().capacity - 1,
+            loaned_value_idx_end: publisher.config().capacity - 1,
             publisher,
         }
     }

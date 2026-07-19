@@ -54,24 +54,24 @@ impl<T> Subscriber<T> {
         }
     }
 
-    pub fn get_config(&self) -> &SubscriberConfig {
+    pub fn config(&self) -> &SubscriberConfig {
         &self.config
     }
 
     /// How many messages have been displaced from the write queue (due to overflow —
     /// the consumer didn't drain often enough to keep up) since creation.
-    pub fn get_writer_queue_drops(&self) -> usize {
+    pub fn writer_queue_drops(&self) -> usize {
         self.buffers.writer_drops()
     }
 
     /// How many messages have been displaced from the read buffer (due to overflow —
     /// more arrived than `capacity` allows before being drained) since creation.
-    pub fn get_reader_queue_drops(&self) -> usize {
-        self.buffers.get_read_buffer().drops()
+    pub fn reader_queue_drops(&self) -> usize {
+        self.buffers.read_buffer().drops()
     }
 
-    pub fn get_write_guard(&mut self) -> WriteBufferHandle<Message<T>> {
-        self.buffers.get_write_buffer()
+    pub fn write_guard(&mut self) -> WriteBufferHandle<Message<T>> {
+        self.buffers.write_buffer()
     }
 
     pub fn drain_writer_to_reader(&self) {
@@ -82,8 +82,8 @@ impl<T> Subscriber<T> {
         }
     }
 
-    pub fn get_read_buffer<'a>(&'a self) -> ReadBufferGuard<'a, Message<T>> {
-        self.buffers.get_read_buffer()
+    pub fn read_buffer<'a>(&'a self) -> ReadBufferGuard<'a, Message<T>> {
+        self.buffers.read_buffer()
     }
 
     /// Clear all buffered values. Should be called before the Arena is dropped
@@ -102,21 +102,21 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         if self.config.is_optional {
             true
         } else {
-            !self.buffers.get_read_buffer().is_empty()
+            !self.buffers.read_buffer().is_empty()
         }
     }
 
-    fn get_config(&self) -> &SubscriberConfig {
+    fn config(&self) -> &SubscriberConfig {
         &self.config
     }
 
-    fn get_config_mut(&mut self) -> &mut SubscriberConfig {
+    fn config_mut(&mut self) -> &mut SubscriberConfig {
         &mut self.config
     }
 
     fn requests_execution(&self) -> bool {
         if self.config.is_trigger {
-            !self.buffers.get_write_buffer().is_empty()
+            !self.buffers.write_buffer().is_empty()
         } else {
             false
         }
@@ -126,10 +126,10 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         Subscriber::drain_writer_to_reader(self);
     }
 
-    fn get_queue_info(&self) -> generic_subscriber::QueueInfo {
+    fn queue_info(&self) -> generic_subscriber::QueueInfo {
         generic_subscriber::QueueInfo {
-            reader_size: self.buffers.get_read_buffer().len(),
-            writer_size: self.buffers.get_write_buffer().len(),
+            reader_size: self.buffers.read_buffer().len(),
+            writer_size: self.buffers.write_buffer().len(),
         }
     }
 
@@ -141,12 +141,12 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         self.readiness_state = Some((state, bit_index));
     }
 
-    fn get_readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
+    fn readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
         self.readiness_state.clone()
     }
 
     fn for_each_queued_input(&self, f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any)) {
-        let mut guard = self.buffers.get_read_buffer();
+        let mut guard = self.buffers.read_buffer();
         for message_ptr in guard.as_slice() {
             f(
                 &message_ptr.header,
@@ -173,12 +173,12 @@ impl<T: 'static> GenericSubscriber for ForwardableSubscriber<T> {
         self
     }
 
-    fn get_config(&self) -> &SubscriberConfig {
-        self.subscriber.get_config()
+    fn config(&self) -> &SubscriberConfig {
+        self.subscriber.config()
     }
 
-    fn get_config_mut(&mut self) -> &mut SubscriberConfig {
-        self.subscriber.get_config_mut()
+    fn config_mut(&mut self) -> &mut SubscriberConfig {
+        self.subscriber.config_mut()
     }
 
     fn able_to_run(&self) -> bool {
@@ -193,8 +193,8 @@ impl<T: 'static> GenericSubscriber for ForwardableSubscriber<T> {
         self.subscriber.drain_writer_to_reader();
     }
 
-    fn get_queue_info(&self) -> generic_subscriber::QueueInfo {
-        GenericSubscriber::get_queue_info(&self.subscriber)
+    fn queue_info(&self) -> generic_subscriber::QueueInfo {
+        GenericSubscriber::queue_info(&self.subscriber)
     }
 
     fn cleanup_buffers(&self) {
@@ -205,7 +205,7 @@ impl<T: 'static> GenericSubscriber for ForwardableSubscriber<T> {
         self.subscriber.set_readiness_state(state, bit_index);
     }
 
-    fn get_readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
-        self.subscriber.get_readiness_state()
+    fn readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
+        self.subscriber.readiness_state()
     }
 }

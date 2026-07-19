@@ -93,7 +93,7 @@ impl fmt::Display for SharedThreadPoolState {
                 f,
                 "\t Index:{}, Name: {}, Pool: {}",
                 index,
-                node.get_name(),
+                node.name(),
                 self.enqueue_state.node_to_pool[index]
             )?;
             writeln!(f, "\t Able to run: {}", node.able_to_run())?;
@@ -103,9 +103,9 @@ impl fmt::Display for SharedThreadPoolState {
                 node.subscribers_request_execution()
             )?;
             writeln!(f, "\t Subscribers")?;
-            for s in node.get_subscribers().iter() {
-                writeln!(f, "\t\t Channel: {}", s.get_config().channel_name)?;
-                let queue_info = s.get_queue_info();
+            for s in node.subscribers().iter() {
+                writeln!(f, "\t\t Channel: {}", s.config().channel_name)?;
+                let queue_info = s.queue_info();
                 writeln!(
                     f,
                     "\t\t Reader queue size: {}, writer_queue size: {}",
@@ -173,7 +173,7 @@ fn periodic_trigger_thread(
             .unwrap();
 
         let next_exec_time = node_guard
-            .get_next_requested_execution_time(now)
+            .next_requested_execution_time(now)
             .unwrap_or(task::time::FrameworkTime::MAX);
 
         for node in exec_times.iter_mut() {
@@ -317,7 +317,7 @@ impl LiveExecutor {
             let now = task::time::FrameworkTime::from_wall_clock();
             let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
             for (index, node) in shared_state.nodes.iter().enumerate() {
-                if let Some(t) = node.lock().unwrap().get_next_requested_execution_time(now) {
+                if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
                     exec_times.push_back(TimeTriggeredNode {
                         index,
                         requested_exec_time: t,
@@ -381,7 +381,7 @@ impl LiveExecutor {
     fn cleanup_buffers(&mut self) {
         for arc_node in self.shared_state.nodes.iter() {
             let node = arc_node.lock().unwrap();
-            for subscriber in node.get_subscribers().iter() {
+            for subscriber in node.subscribers().iter() {
                 subscriber.cleanup_buffers();
             }
         }
@@ -579,8 +579,8 @@ mod tests {
             "Result was {}",
             connect_result.unwrap_err()
         );
-        assert!(nodes[0].get_publishers()[0].get_config().channel_name == "integer");
-        assert!(nodes[1].get_subscribers()[0].get_config().channel_name == "integer");
+        assert!(nodes[0].publishers()[0].config().channel_name == "integer");
+        assert!(nodes[1].subscribers()[0].config().channel_name == "integer");
 
         let mut exec = LiveExecutor::new(1, nodes);
 

@@ -25,7 +25,7 @@ mod tests {
         });
 
         publisher.add_typed_subscriber(&mut subscriber);
-        publisher.increase_arena_size(subscriber.get_config().capacity);
+        publisher.increase_arena_size(subscriber.config().capacity);
         publisher.allocate_arena();
 
         assert!(

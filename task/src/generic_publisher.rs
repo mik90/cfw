@@ -11,11 +11,11 @@ pub struct ConnectionTypeMismatch {}
 pub trait GenericPublisher {
     fn as_any(&mut self) -> &mut dyn Any;
 
-    fn get_config(&self) -> &PublisherConfig;
+    fn config(&self) -> &PublisherConfig;
 
-    fn get_config_mut(&mut self) -> &mut PublisherConfig;
+    fn config_mut(&mut self) -> &mut PublisherConfig;
 
-    fn get_forwarded_channels(&self) -> &[ChannelName];
+    fn forwarded_channels(&self) -> &[ChannelName];
 
     fn flush_loaned_values(&mut self, timestamp: FrameworkTime);
 

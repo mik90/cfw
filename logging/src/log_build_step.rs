@@ -52,15 +52,15 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         let forwarded_channels: HashSet<task::pub_sub::ChannelName> = nodes
             .iter()
             .flat_map(|n| {
-                n.get_publishers()
+                n.publishers()
                     .iter()
-                    .flat_map(|p| p.get_forwarded_channels().to_vec())
+                    .flat_map(|p| p.forwarded_channels().to_vec())
             })
             .collect();
 
         for node in nodes {
-            for publisher in node.get_publishers() {
-                let channel_name = publisher.get_config().channel_name.clone();
+            for publisher in node.publishers() {
+                let channel_name = publisher.config().channel_name.clone();
 
                 if forwarded_channels.contains(&channel_name) {
                     continue;

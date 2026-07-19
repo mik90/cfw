@@ -45,7 +45,7 @@ pub trait LogFileReader {
         self.len() == 0
     }
 
-    fn get_entry(&self, index: usize) -> Option<LogEntry<'_>>;
+    fn entry(&self, index: usize) -> Option<LogEntry<'_>>;
 
     fn iter(&self) -> LogEntryIter<'_>
     where
@@ -67,7 +67,7 @@ impl<'a> Iterator for LogEntryIter<'a> {
     type Item = LogEntry<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let entry = self.reader.get_entry(self.index)?;
+        let entry = self.reader.entry(self.index)?;
         self.index += 1;
         Some(entry)
     }

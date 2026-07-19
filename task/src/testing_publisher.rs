@@ -37,16 +37,16 @@ impl<T: 'static> GenericPublisher for TestPublisher<T> {
         self
     }
 
-    fn get_config(&self) -> &PublisherConfig {
-        self.publisher.get_config()
+    fn config(&self) -> &PublisherConfig {
+        self.publisher.config()
     }
 
-    fn get_config_mut(&mut self) -> &mut PublisherConfig {
-        self.publisher.get_config_mut()
+    fn config_mut(&mut self) -> &mut PublisherConfig {
+        self.publisher.config_mut()
     }
 
-    fn get_forwarded_channels(&self) -> &[ChannelName] {
-        self.publisher.get_forwarded_channels()
+    fn forwarded_channels(&self) -> &[ChannelName] {
+        self.publisher.forwarded_channels()
     }
 
     fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {

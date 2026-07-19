@@ -42,15 +42,15 @@ impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
 }
 
 impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
-    pub fn get_message(&self) -> &UserData {
+    pub fn message(&self) -> &UserData {
         &self.message
     }
 
-    pub fn get_message_mut(&mut self) -> &mut UserData {
+    pub fn message_mut(&mut self) -> &mut UserData {
         &mut self.message
     }
 
-    pub fn get_forwarded_message(&self) -> &Message<ForwardedData> {
+    pub fn forwarded_message(&self) -> &Message<ForwardedData> {
         &self.forwarded_message
     }
 }
@@ -121,7 +121,7 @@ mod tests {
         forwarding_publisher.add_typed_subscriber(&mut forwarded_subscriber);
         forwarding_publisher.allocate_arena();
         assert_eq!(
-            forwarding_publisher.get_forwarded_channels(),
+            forwarding_publisher.forwarded_channels(),
             vec![forwarded_channel]
         );
 
@@ -150,11 +150,11 @@ mod tests {
         {
             // Callback that reads the forwarded message
             forwarded_subscriber.drain_writer_to_reader();
-            let guard = forwarded_subscriber.get_read_buffer();
+            let guard = forwarded_subscriber.read_buffer();
             let msg = guard.front().unwrap();
             assert_eq!(msg.header.published_at, t_forwarding);
-            assert_eq!(*msg.message.get_message(), true);
-            let fwd = msg.message.get_forwarded_message();
+            assert_eq!(*msg.message.message(), true);
+            let fwd = msg.message.forwarded_message();
             assert_eq!(fwd.message, 42u32);
             assert_eq!(fwd.header.published_at, t_original);
         }
@@ -206,7 +206,7 @@ mod tests {
         forwarding_publisher.add_typed_subscriber(&mut forwarded_subscriber);
         forwarding_publisher.allocate_arena();
         assert_eq!(
-            forwarding_publisher.get_forwarded_channels(),
+            forwarding_publisher.forwarded_channels(),
             vec![forwarded_channel]
         );
 
@@ -234,10 +234,10 @@ mod tests {
         {
             // Callback that reads the forwarded message
             forwarded_subscriber.drain_writer_to_reader();
-            let guard = forwarded_subscriber.get_read_buffer();
+            let guard = forwarded_subscriber.read_buffer();
             let msg = guard.front().unwrap();
             assert_eq!(msg.header.published_at, t_forwarding);
-            let fwd = msg.message.get_forwarded_message();
+            let fwd = msg.message.forwarded_message();
             assert_eq!(fwd.message, 42u32);
             assert_eq!(fwd.header.published_at, t_original);
         }
