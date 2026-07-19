@@ -64,6 +64,92 @@ impl<UserData: Default, ForwardedData> ForwardedMessage<UserData, ForwardedData>
     }
 }
 
+/// WIP generic-ification for variadic ForwardedMessage tuples that i want to use as an example for DeclForwardedMessageTupleN
+pub struct ForwardedMessageTuple2<UserData, ForwardedData0, ForwardedData1> {
+    pub(crate) message: UserData,
+
+    /// Tuple of forwarded messages, in case user data comes with > 1 forwarded message
+    forwarded_message_tuple: (
+        ForwardedMessagePtr<Message<ForwardedData0>>,
+        ForwardedMessagePtr<Message<ForwardedData1>>,
+    ),
+}
+
+impl<UserData, ForwardedData0, ForwardedData1>
+    ForwardedMessageTuple2<UserData, ForwardedData0, ForwardedData1>
+{
+    // Mainly relevant for deserialization
+    pub(crate) fn new_boxed_forward(
+        message: UserData,
+        forwarded_message_tuple: (Box<Message<ForwardedData0>>, Box<Message<ForwardedData1>>),
+    ) -> Self {
+        ForwardedMessageTuple2 {
+            message,
+            forwarded_message_tuple: (
+                ForwardedMessagePtr::Owned(forwarded_message_tuple.0),
+                ForwardedMessagePtr::Owned(forwarded_message_tuple.1),
+            ),
+        }
+    }
+}
+
+impl<UserData, ForwardedData0, ForwardedData1>
+    ForwardedMessageTuple2<UserData, ForwardedData0, ForwardedData1>
+{
+    pub fn get_message(&self) -> &UserData {
+        &self.message
+    }
+
+    pub fn get_message_mut(&mut self) -> &mut UserData {
+        &mut self.message
+    }
+
+    pub fn get_forwarded_message_tuple(
+        &self,
+    ) -> (&Message<ForwardedData0>, &Message<ForwardedData1>) {
+        (
+            &self.forwarded_message_tuple.0,
+            &self.forwarded_message_tuple.1,
+        )
+    }
+}
+
+impl<UserData: Default, ForwardedData0, ForwardedData1>
+    ForwardedMessageTuple2<UserData, ForwardedData0, ForwardedData1>
+{
+    pub fn new_with_forward(
+        forwarded_message_tuple: (
+            ArenaReaderPtr<Message<ForwardedData0>>,
+            ArenaReaderPtr<Message<ForwardedData1>>,
+        ),
+    ) -> Self {
+        Self {
+            message: UserData::default(),
+            forwarded_message_tuple: (
+                ForwardedMessagePtr::Arena(forwarded_message_tuple.0),
+                ForwardedMessagePtr::Arena(forwarded_message_tuple.1),
+            ),
+        }
+    }
+}
+
+/*
+ * TODO: Should
+ *  - declare a ForwardedMessageTuple${N} type where N is the tuple arity
+ *  - impl get_message, get_message_mut, and get_forwarded_message_tuple
+ *  - impl a pub(crate) new_boxed_forward
+ *  - impl a pub new_with_forward
+ *
+#[macro_export]
+macro_rules! DeclForwardedMessageTupleN {
+    () => {
+
+    };
+}
+ */
+
+/// End tuple support
+
 #[cfg(test)]
 mod tests {
 
