@@ -8,7 +8,6 @@ pub mod forwarded_message;
 pub mod generic_publisher;
 pub mod generic_subscriber;
 pub mod input;
-pub mod log_types;
 pub mod loggable;
 pub mod message;
 mod mpsc_queue;

@@ -2,7 +2,7 @@ use crate::callback::CallbackNodeReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
-use crate::message::Message;
+use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
 use std::sync::Arc;
 
@@ -128,10 +128,13 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         self.readiness_state.clone()
     }
 
-    fn for_each_queued_input(&self, f: &mut dyn FnMut(&dyn std::any::Any)) {
+    fn for_each_queued_input(&self, f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any)) {
         let mut guard = self.buffers.get_read_buffer();
         for message_ptr in guard.as_slice() {
-            f(message_ptr as &dyn std::any::Any);
+            f(
+                &message_ptr.header,
+                &message_ptr.message as &dyn std::any::Any,
+            );
         }
     }
 }

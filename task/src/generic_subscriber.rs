@@ -1,5 +1,7 @@
 use crate::callback::CallbackNodeReadiness;
+use crate::message::MessageHeader;
 use crate::subscriber::SubscriberConfig;
+use std::any::Any;
 use std::sync::Arc;
 
 pub struct QueueInfo {
@@ -26,10 +28,11 @@ pub trait GenericSubscriber {
     /// Prevents ArenaPtrs from outliving their Arena allocators.
     fn cleanup_buffers(&self) {}
 
-    /// Iterate the read buffer (after `drain_writer_to_reader`) yielding each message's
-    /// header and value. The default no-op impl is used by subscribers that don't
+    /// Iterate the read buffer (after `drain_writer_to_reader`) yielding each
+    /// message's typed header and type-erased payload value (a `&T` upcast to
+    /// `&dyn Any`). The default no-op impl is used by subscribers that don't
     /// participate in logging.
-    fn for_each_queued_input(&self, _f: &mut dyn FnMut(&dyn std::any::Any)) {}
+    fn for_each_queued_input(&self, _f: &mut dyn FnMut(&MessageHeader, &dyn Any)) {}
 
     /// Inject the shared readiness bitmask and this subscriber's bit index.
     /// Called by CallbackNode::new_with after creating the bitmask Arc.

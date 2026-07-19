@@ -4,6 +4,7 @@ use crate::{
     output::Output,
     pub_sub::ChannelName,
     publisher::{GenericPublisher, Publisher, PublisherConfig},
+    subscriber::SubscriberConfig,
     testing_time::TimeSource,
     time::FrameworkTime,
 };
@@ -65,6 +66,13 @@ impl<T: 'static> GenericPublisher for TestPublisher<T> {
         subscriber: &mut dyn GenericSubscriber,
     ) -> Result<(), ConnectionTypeMismatch> {
         self.publisher.connect_to_subscriber(subscriber)
+    }
+
+    fn build_matching_subscriber(
+        &self,
+        config: SubscriberConfig,
+    ) -> Option<Box<dyn GenericSubscriber>> {
+        self.publisher.build_matching_subscriber(config)
     }
 }
 

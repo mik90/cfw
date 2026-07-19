@@ -1,7 +1,6 @@
 use crate::executor::CallbackNodeEnqueuer;
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
-use crate::log_types::ExecutionLogger;
 use crate::pub_sub::{CallbackNodeName, ChannelName};
 use crate::publisher::PublisherConfig;
 use crate::subscriber::SubscriberConfig;
@@ -309,8 +308,6 @@ pub struct CallbackNode {
     name: CallbackNodeName,
 
     readiness: Arc<CallbackNodeReadiness>,
-
-    logger: Option<Box<dyn ExecutionLogger>>,
 }
 
 impl std::fmt::Debug for CallbackNode {
@@ -355,7 +352,6 @@ impl CallbackNode {
             execution_duration_callback: None,
             name,
             readiness,
-            logger: None,
         }
     }
 
@@ -400,22 +396,8 @@ impl CallbackNode {
     }
 
     pub fn run(&mut self, ctx: &crate::context::Context) -> Run {
-        if let Some(mut logger) = self.logger.take() {
-            logger.log_before_run(ctx, &self.subscribers);
-            let result =
-                self.callback
-                    .run_generic(&mut self.subscribers, &mut self.publishers, ctx);
-            logger.log_after_run(ctx, &self.publishers);
-            self.logger = Some(logger);
-            result
-        } else {
-            self.callback
-                .run_generic(&mut self.subscribers, &mut self.publishers, ctx)
-        }
-    }
-
-    pub fn set_execution_logger(&mut self, logger: Box<dyn ExecutionLogger>) {
-        self.logger = Some(logger);
+        self.callback
+            .run_generic(&mut self.subscribers, &mut self.publishers, ctx)
     }
 
     pub fn subscribers_request_execution(&self) -> bool {

@@ -9,6 +9,7 @@ use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
 use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
 use crate::time::FrameworkTime;
+use std::any::Any;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 
@@ -111,11 +112,11 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         }
     }
 
-    fn for_each_pending_output(&self, f: &mut dyn FnMut(&dyn std::any::Any)) {
+    fn for_each_pending_output(&self, f: &mut dyn FnMut(&MessageHeader, &dyn Any)) {
         for loaned in self.loaned_values.iter().filter(|lv| lv.sent) {
             // SAFETY: Publisher guarantees the value has been initialized on loan.
             let value: &Message<T> = unsafe { (*loaned.ptr.payload.get()).assume_init_ref() };
-            f(value as &dyn std::any::Any);
+            f(&value.header, &value.message as &dyn Any);
         }
     }
 
@@ -148,6 +149,13 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
             return Ok(());
         }
         Err(ConnectionTypeMismatch {})
+    }
+
+    fn build_matching_subscriber(
+        &self,
+        config: SubscriberConfig,
+    ) -> Option<Box<dyn GenericSubscriber>> {
+        Some(Box::new(Subscriber::<T>::new(config)))
     }
 }
 
@@ -360,6 +368,13 @@ impl<T: Default + 'static, F: 'static> GenericPublisher for ForwardingPublisher<
         subscriber: &mut dyn GenericSubscriber,
     ) -> Result<(), ConnectionTypeMismatch> {
         self.inner.connect_to_subscriber(subscriber)
+    }
+
+    fn build_matching_subscriber(
+        &self,
+        config: SubscriberConfig,
+    ) -> Option<Box<dyn GenericSubscriber>> {
+        Some(Box::new(Subscriber::<ForwardedMessage<T, F>>::new(config)))
     }
 }
 
