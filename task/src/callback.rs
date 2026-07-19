@@ -139,15 +139,15 @@ fn find_forwarded_channel_usage(callbacks: &[CallbackNode]) -> HashMap<ChannelNa
         }
     }
 
-    // Find all subscribers of the forwarded channel set and bump the usage accordingly.
-    // Each subscriber needs `2 * capacity` slots: one set held in its write queue, the
-    // other held in its read buffer when the publisher publishes again before the next
-    // drain (see Publisher::add_typed_subscriber for the same sizing rationale).
+    // Find all subscribers of the forwarded channel set and bump the usage
+    // accordingly. Each subscriber contributes its `arena_footprint()`
+    // (write-queue + read-buffer slots) — see Publisher::add_typed_subscriber
+    // for the underlying sizing rationale.
     for callback in callbacks.iter() {
         for subscriber in callback.subscribers.iter() {
             let subscriber_channel_name = &subscriber.get_config().channel_name;
             match channel_to_usage.get_mut(subscriber_channel_name) {
-                Some(usage) => *usage += 2 * subscriber.get_config().capacity,
+                Some(usage) => *usage += subscriber.get_config().arena_footprint(),
                 None => {
                     // Subscriber doesn't use this channel
                 }

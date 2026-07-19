@@ -12,13 +12,28 @@ pub struct PublishError {}
 pub struct SubscriberConfig {
     pub is_optional: bool,
     // Capacity of the read buffer.
-    // Write buffer capacity is the same as this value, so the full capacity is 2 * capacity
+    // Write buffer capacity is the same as this value.
     pub capacity: usize,
     pub is_trigger: bool,
     /// Whether to keep elements across runs. Requires the user to explicitly consume data
     pub keep_across_runs: bool,
 
     pub channel_name: ChannelName,
+}
+
+impl SubscriberConfig {
+    /// Maximum number of arena slots a publisher must reserve for clones of a
+    /// single published message that may be alive simultaneously via this
+    /// subscriber: one set held in the write queue plus one set held in the
+    /// read buffer (the previous message can still be live when the publisher
+    /// publishes again before the next drain). `DoubleBuffer` keeps the two
+    /// queues independently sized at `capacity`, so the upper bound is
+    /// `2 * capacity`. Publishers grow their arena by this footprint per
+    /// connected subscriber — see `Publisher::add_typed_subscriber` and
+    /// `callback::find_forwarded_channel_usage`.
+    pub fn arena_footprint(&self) -> usize {
+        2 * self.capacity
+    }
 }
 
 #[allow(dead_code)]

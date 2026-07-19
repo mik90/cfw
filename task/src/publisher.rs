@@ -266,16 +266,15 @@ impl<T: 'static> Publisher<T> {
             subscriber_config: config,
             readiness,
         });
-        // Each subscriber keeps up to `capacity` clones in its write queue AND up to
-        // `capacity` clones in its read buffer simultaneously (the read buffer holds
-        // the previous message while the publisher publishes again before the next
-        // subscriber drain). The publisher itself needs one slot per concurrent
-        // loan (bounded by `config.capacity`). Without accounting for both queues,
-        // a back-to-back publisher run exhausts the arena slots and panics — which,
-        // because cleanup_buffers runs *after* thread joins, also surfaces as a
-        // use-after-free under Miri when the panicked worker leaves ArenaPtrs in
-        // the subscriber queue and the owning arena is dropped first.
-        self.increase_arena_size(2 * typed_subscriber.get_config().capacity);
+        // Grow the arena to cover clones this subscriber may hold simultaneously:
+        // up to `capacity` in its write queue plus up to `capacity` in its read
+        // buffer (the previous message can still be live when the publisher
+        // publishes again before the next drain). Without this, a back-to-back
+        // publisher run exhausts the arena slots and panics — which, because
+        // cleanup_buffers runs *after* thread joins, also surfaces as a
+        // use-after-free under Miri when the panicked worker leaves ArenaPtrs
+        // in the subscriber queue and the owning arena is dropped first.
+        self.increase_arena_size(typed_subscriber.get_config().arena_footprint());
     }
 
     pub fn add_typed_forwarded_subscriber(
@@ -548,14 +547,17 @@ mod tests {
 
     #[test]
     fn back_to_back_publish_does_not_exhaust_arena() {
+        const PUB_CAPACITY: usize = 1;
+        const SUB_CAPACITY: usize = 1;
+
         let mut publisher = Publisher::<u32>::new(PublisherConfig {
-            capacity: 1,
+            capacity: PUB_CAPACITY,
             channel_name: "ch".into(),
         });
 
         let mut subscriber = Subscriber::<u32>::new(SubscriberConfig {
             is_optional: false,
-            capacity: 1,
+            capacity: SUB_CAPACITY,
             is_trigger: true,
             keep_across_runs: true,
             channel_name: "ch".into(),
@@ -564,7 +566,10 @@ mod tests {
         publisher.allocate_arena();
         // Corrected sizing: publisher's own loan capacity + 2 * subscriber
         // capacity (clone in write queue + clone in read buffer).
-        assert_eq!(publisher.arena.capacity(), 1 + 2 * 1);
+        assert_eq!(
+            publisher.arena.capacity(),
+            PUB_CAPACITY + 2 * SUB_CAPACITY
+        );
 
         let t = time::FrameworkTime::from_nanoseconds(0);
 
