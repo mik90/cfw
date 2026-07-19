@@ -57,7 +57,6 @@ impl EnqueueState {
         {
             let pool = &self.pools[self.node_to_pool[index]];
             let _ = pool.work_tx.send(index);
-            println!("Triggering callback node index {}", index);
         }
     }
 }
@@ -138,8 +137,6 @@ fn periodic_trigger_thread(
     let time_triggered_node = match maybe_earliest {
         Some(t) => t,
         None => {
-            println!("No callback node had a periodic trigger");
-            // No timed nodes — wait until stopped
             let guard = shared_state.periodic_mutex.lock().unwrap();
             drop(shared_state.periodic_cond_var.wait(guard));
             return;
@@ -187,6 +184,18 @@ fn periodic_trigger_thread(
     }
 }
 
+pub(crate) fn process_work_item(index: usize, shared_state: &SharedThreadPoolState) {
+    // Clear the enqueued flag before running so any triggers that arrive during
+    // execution are captured, not dropped
+    shared_state.enqueue_state.node_enqueued[index].store(false, Ordering::Release);
+
+    let mut node_guard = shared_state.nodes[index].lock().unwrap();
+    let ctx = Context::new(task::time::FrameworkTime::from_wall_clock());
+    node_guard.drain_subscribers();
+    let _ = node_guard.run(&ctx);
+    node_guard.flush_publishers(ctx.now);
+}
+
 fn run_executor_thread(pool_state: &PoolState, shared_state: &SharedThreadPoolState) {
     loop {
         // Block waiting on work
@@ -201,17 +210,22 @@ fn run_executor_thread(pool_state: &PoolState, shared_state: &SharedThreadPoolSt
             break;
         }
 
-        // Clear the enqueued flag before running so any triggers that arrive during
-        // execution are captured, not dropped
-        shared_state.enqueue_state.node_enqueued[index].store(false, Ordering::Release);
+        process_work_item(index, shared_state);
+    }
+}
 
-        let mut node_guard = shared_state.nodes[index].lock().unwrap();
-        println!("Found runnable callback node {}", node_guard.get_name());
-        let ctx = Context::new(task::time::FrameworkTime::from_wall_clock());
-        node_guard.drain_subscribers();
-        let _ = node_guard.run(&ctx);
-        node_guard.flush_publishers(ctx.now);
-        println!("Finished running {}", node_guard.get_name());
+#[cfg(test)]
+fn no_alloc_worker_loop(pool: Arc<PoolState>, shared: Arc<SharedThreadPoolState>) {
+    loop {
+        let index = match pool.work_rx.recv() {
+            Ok(SHUTDOWN_SENTINEL) => break,
+            Ok(idx) => idx,
+            Err(_) => break,
+        };
+        if !shared.should_run.load(Ordering::Relaxed) {
+            break;
+        }
+        assert_no_alloc::assert_no_alloc(|| process_work_item(index, &shared));
     }
 }
 
@@ -278,8 +292,10 @@ impl LiveExecutor {
         }
     }
 
-    pub fn start_threads(&mut self) {
-        // Seed each pool's work queue for nodes that want to start immediately
+    fn start_threads_with(
+        &mut self,
+        spawn_worker: impl Fn(Arc<PoolState>, Arc<SharedThreadPoolState>) -> thread::JoinHandle<()>,
+    ) {
         for index in 0..self.shared_state.nodes.len() {
             let node = self.shared_state.nodes[index].lock().unwrap();
             if node.subscribers_request_execution() && node.able_to_run() {
@@ -288,21 +304,14 @@ impl LiveExecutor {
             }
         }
 
-        // Spawn worker threads for each pool
         for pool_arc in self.shared_state.enqueue_state.pools.iter() {
             for _ in 0..pool_arc.thread_count {
                 let pool = pool_arc.clone();
                 let shared = self.shared_state.clone();
-                let thread = thread::spawn(move || {
-                    println!("Starting thread");
-                    run_executor_thread(pool.as_ref(), shared.as_ref());
-                    println!("leaving exec cycle");
-                });
-                self.threads.push(thread);
+                self.threads.push(spawn_worker(pool, shared));
             }
         }
 
-        // Spawn the periodic trigger thread; it owns exec_times entirely so no mutex is needed
         let shared_state = self.shared_state.clone();
         let thread = thread::spawn(move || {
             let now = task::time::FrameworkTime::from_wall_clock();
@@ -320,6 +329,16 @@ impl LiveExecutor {
             }
         });
         self.threads.push(thread);
+    }
+
+    pub fn start_threads(&mut self) {
+        self.start_threads_with(|pool, shared| {
+            thread::spawn(move || {
+                println!("Starting thread");
+                run_executor_thread(pool.as_ref(), shared.as_ref());
+                println!("leaving exec cycle");
+            })
+        })
     }
 
     pub fn stop_threads(&mut self) -> Result<(), Vec<usize>> {
@@ -412,6 +431,19 @@ impl Executor for LiveExecutor {
 }
 
 #[cfg(test)]
+impl LiveExecutor {
+    fn start_threads_no_alloc(&mut self) {
+        self.start_threads_with(|pool, shared| {
+            thread::spawn(move || no_alloc_worker_loop(pool, shared))
+        })
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+#[cfg(test)]
 mod tests {
     use std::{
         sync::{
@@ -423,11 +455,16 @@ mod tests {
     };
 
     use task::{
-        callback::{Callback, CallbackNode, Run, connect_callback_nodes},
+        callback::{Callback, CallbackNode, InputKind, OutputKind, Run, connect_callback_nodes},
+        callback_builder::CallbackBuilder,
         context::Context,
         executor::{Executor, ExecutorStopSignal, ThreadPoolConfig},
         generic_publisher::GenericPublisher,
         generic_subscriber::GenericSubscriber,
+        input::RequiredInput,
+        output::Output,
+        publisher::Publisher,
+        subscriber::Subscriber,
     };
     use test_tasks::*;
 
@@ -460,6 +497,65 @@ mod tests {
 
         fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
             vec![]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
+
+    struct NoAllocPublisher {
+        value: u64,
+    }
+
+    impl Callback for NoAllocPublisher {
+        fn run_generic(
+            &mut self,
+            _subscribers: &mut [Box<dyn GenericSubscriber>],
+            publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let mut output = Output::<u64>::new_downcasted(&mut *publishers[0]);
+            *output = self.value;
+            self.value = self.value.wrapping_add(1);
+            output.send();
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![Box::new(Publisher::<u64>::new(OutputKind::Default.into()))]
+        }
+    }
+
+    struct NoAllocSubscriber {
+        messages_received: Arc<AtomicUsize>,
+        stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+        target_count: usize,
+    }
+
+    impl Callback for NoAllocSubscriber {
+        fn run_generic(
+            &mut self,
+            subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let _input = RequiredInput::<u64>::new_downcasted(&mut *subscribers[0]);
+            let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
+            if count >= self.target_count {
+                if let Some(signal) = self.stop_signal.get() {
+                    signal.request_stop();
+                }
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<u64>::new(InputKind::Required.into()))]
         }
 
         fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
@@ -597,5 +693,69 @@ mod tests {
         assert!(stop_result.is_ok());
 
         assert!(run_count.load(Ordering::SeqCst) >= TARGET_RUNS);
+    }
+
+    #[test]
+    // I think miri makes its own global allocator shim based on https://github.com/rust-lang/miri/issues/1207
+    // so we shouldn't conflict with it via the assert_no_alloc crate.
+    #[cfg_attr(miri, ignore)]
+    fn test_executor_worker_no_alloc() {
+        println!("warming stdio buffers");
+
+        const TARGET_COUNT: usize = 50;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let messages_received = Arc::new(AtomicUsize::new(0));
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let publisher_node = CallbackBuilder::new(
+            "NoAllocPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["no_alloc_integer"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(2)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "NoAllocSubscriber".into(),
+            Box::new(NoAllocSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET_COUNT,
+            }),
+        )
+        .with_subscriber_channels(&["no_alloc_integer"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect callback nodes");
+
+        let mut exec = LiveExecutor::new(1, nodes);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads_no_alloc();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not reach {TARGET_COUNT} messages within {DEADLINE_SECS} seconds (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
     }
 }

@@ -11,6 +11,7 @@ crossbeam = "0.8"
 
 [dev-dependencies]
 test_tasks = { path = "../test_tasks" }
+assert_no_alloc = { version = "1", default-features = false, features = ["warn_debug"] }
 
 [lints]
 workspace = true
