@@ -499,4 +499,105 @@ mod tests {
         let header = &value.value().header;
         assert_eq!(header.published_at, FrameworkTime::INVALID);
     }
+
+    /// Arena capacity must cover the publisher's own loans (`config.capacity`)
+    /// plus `2 * capacity` for each subscriber: one set held in the subscriber's
+    /// write queue and one held in its read buffer (the previous message can
+    /// still be live when the publisher publishes again before the next drain).
+    /// Otherwise a back-to-back publisher run exhausts the arena and panics.
+    #[test]
+    fn add_typed_subscriber_sizes_arena_for_write_and_read_buffers() {
+        let mut publisher = Publisher::<u32>::new(PublisherConfig {
+            capacity: 2,
+            channel_name: "ch".into(),
+        });
+        assert_eq!(
+            publisher.arena.capacity(),
+            2,
+            "arena starts sized for the publisher's own loan capacity"
+        );
+
+        let mut subscriber = Subscriber::<u32>::new(SubscriberConfig {
+            is_optional: false,
+            capacity: 4,
+            is_trigger: true,
+            keep_across_runs: true,
+            channel_name: "ch".into(),
+        });
+        publisher.add_typed_subscriber(&mut subscriber);
+        assert_eq!(
+            publisher.arena.capacity(),
+            2 + 2 * 4,
+            "subscriber must bump arena by 2 * capacity (write + read buffers)"
+        );
+
+        let mut second_subscriber = Subscriber::<u32>::new(SubscriberConfig {
+            is_optional: true,
+            capacity: 3,
+            is_trigger: true,
+            keep_across_runs: true,
+            channel_name: "ch".into(),
+        });
+        publisher.add_typed_subscriber(&mut second_subscriber);
+        assert_eq!(
+            publisher.arena.capacity(),
+            2 + 2 * 4 + 2 * 3,
+            "each additional subscriber adds another 2 * capacity"
+        );
+    }
+
+    #[test]
+    fn back_to_back_publish_does_not_exhaust_arena() {
+        let mut publisher = Publisher::<u32>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "ch".into(),
+        });
+
+        let mut subscriber = Subscriber::<u32>::new(SubscriberConfig {
+            is_optional: false,
+            capacity: 1,
+            is_trigger: true,
+            keep_across_runs: true,
+            channel_name: "ch".into(),
+        });
+        publisher.add_typed_subscriber(&mut subscriber);
+        publisher.allocate_arena();
+        // Corrected sizing: publisher's own loan capacity + 2 * subscriber
+        // capacity (clone in write queue + clone in read buffer).
+        assert_eq!(publisher.arena.capacity(), 1 + 2 * 1);
+
+        let t = time::FrameworkTime::from_nanoseconds(0);
+
+        // Cycle 1: publish msg1 and drain it into the subscriber's read buffer.
+        {
+            let mut out = Output::new_default(&mut publisher);
+            *out = 10;
+            out.send();
+        }
+        publisher.flush_loaned_values(t);
+        subscriber.drain_writer_to_reader();
+        assert_eq!(subscriber.get_queue_info().reader_size, 1);
+
+        // Cycle 2: publish msg2 *without* draining. The subscriber still holds
+        // msg1 in its read buffer, so msg2 must occupy a different arena slot.
+        {
+            let mut out = Output::new_default(&mut publisher);
+            *out = 20;
+            out.send();
+        }
+        publisher.flush_loaned_values(t);
+        assert_eq!(subscriber.get_queue_info().writer_size, 1);
+        assert_eq!(subscriber.get_queue_info().reader_size, 1);
+
+        // Cycle 3: publish msg3 *without* draining since cycle 2. The
+        // subscriber simultaneously holds msg1 (read buffer) and msg2 (write
+        // queue). With the old `1 * capacity` arena sizing (cap 2), this loan
+        // would have no free slot and `Arena::allocate_with` would panic.
+        {
+            let mut out = Output::new_default(&mut publisher);
+            *out = 30;
+            out.send();
+        }
+        publisher.flush_loaned_values(t);
+    }
 }

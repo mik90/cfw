@@ -663,4 +663,84 @@ mod test {
         // Non-trigger required subscriber → bit stays at 1 (doesn't gate triggering)
         compare_bitmask(vec![make_subscriber(false, false)], usize::MAX);
     }
+
+    /// `find_forwarded_channel_usage` drives how much the forwarding publisher's
+    /// arena is grown by `connect_callback_nodes`. It must account for clones
+    /// held simultaneously in each downstream subscriber's write queue *and*
+    /// its read buffer; otherwise a forwarder that re-publishes before drains
+    /// exhausts the arena and panics (and, via cleanup-ordering fallout, trips
+    /// a use-after-free under miri).
+    #[test]
+    fn test_forwarded_channel_usage_accounts_for_write_and_read_buffers() {
+        use crate::forwarded_message::ForwardedMessage;
+        use crate::publisher::{ForwardingPublisher, PublisherConfig};
+        use crate::subscriber::{Subscriber, SubscriberConfig};
+
+        const FORWARDED: &str = "forwarded";
+
+        struct Forwarder;
+        impl Callback for Forwarder {
+            fn run_generic(
+                &mut self,
+                _: &mut [Box<dyn GenericSubscriber>],
+                _: &mut [Box<dyn GenericPublisher>],
+                _: &crate::context::Context,
+            ) -> Run {
+                Run::new(0)
+            }
+            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+                vec![]
+            }
+            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+                vec![Box::new(ForwardingPublisher::<bool, u64>::new(
+                    PublisherConfig {
+                        capacity: 1,
+                        channel_name: FORWARDED.into(),
+                    },
+                    vec![FORWARDED.into()],
+                ))]
+            }
+        }
+
+        struct Receiver {
+            capacity: usize,
+        }
+        impl Callback for Receiver {
+            fn run_generic(
+                &mut self,
+                _: &mut [Box<dyn GenericSubscriber>],
+                _: &mut [Box<dyn GenericPublisher>],
+                _: &crate::context::Context,
+            ) -> Run {
+                Run::new(0)
+            }
+            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+                vec![Box::new(Subscriber::<ForwardedMessage<bool, u64>>::new(
+                    SubscriberConfig {
+                        is_optional: true,
+                        capacity: self.capacity,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: FORWARDED.into(),
+                    },
+                ))]
+            }
+            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+                vec![]
+            }
+        }
+
+        let nodes = vec![
+            CallbackNode::new_named(Box::new(Forwarder), "Forwarder".into()),
+            CallbackNode::new_named(Box::new(Receiver { capacity: 4 }), "Receiver4".into()),
+            CallbackNode::new_named(Box::new(Receiver { capacity: 3 }), "Receiver3".into()),
+        ];
+
+        let usage = super::find_forwarded_channel_usage(&nodes);
+        assert_eq!(
+            usage.get(&String::from(FORWARDED)).copied(),
+            Some(2 * 4 + 2 * 3),
+            "each subscriber contributes 2 * capacity (write + read buffers)"
+        );
+    }
 }
