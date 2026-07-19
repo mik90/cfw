@@ -758,4 +758,60 @@ mod tests {
 
         assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
     }
+
+    #[test]
+    fn test_arena_cleanup_many_messages() {
+        const TARGET_COUNT: usize = 40;
+
+        const DEADLINE_SECS: u64 = 120;
+
+        let messages_received = Arc::new(AtomicUsize::new(0));
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let publisher_node = CallbackBuilder::new(
+            "NoAllocPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["many_messages_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(2)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "NoAllocSubscriber".into(),
+            Box::new(NoAllocSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET_COUNT,
+            }),
+        )
+        .with_subscriber_channels(&["many_messages_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect callback nodes");
+
+        let mut exec = LiveExecutor::new(1, nodes);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not reach {TARGET_COUNT} messages within {DEADLINE_SECS} seconds (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
+    }
 }

@@ -11,6 +11,8 @@ pub struct PublishError {}
 #[derive(Clone)]
 pub struct SubscriberConfig {
     pub is_optional: bool,
+    // Capacity of the read buffer.
+    // Write buffer capacity is the same as this value, so the full capacity is 2 * capacity
     pub capacity: usize,
     pub is_trigger: bool,
     /// Whether to keep elements across runs. Requires the user to explicitly consume data

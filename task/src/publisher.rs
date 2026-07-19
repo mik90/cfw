@@ -266,7 +266,16 @@ impl<T: 'static> Publisher<T> {
             subscriber_config: config,
             readiness,
         });
-        self.increase_arena_size(typed_subscriber.get_config().capacity);
+        // Each subscriber keeps up to `capacity` clones in its write queue AND up to
+        // `capacity` clones in its read buffer simultaneously (the read buffer holds
+        // the previous message while the publisher publishes again before the next
+        // subscriber drain). The publisher itself needs one slot per concurrent
+        // loan (bounded by `config.capacity`). Without accounting for both queues,
+        // a back-to-back publisher run exhausts the arena slots and panics — which,
+        // because cleanup_buffers runs *after* thread joins, also surfaces as a
+        // use-after-free under Miri when the panicked worker leaves ArenaPtrs in
+        // the subscriber queue and the owning arena is dropped first.
+        self.increase_arena_size(2 * typed_subscriber.get_config().capacity);
     }
 
     pub fn add_typed_forwarded_subscriber(
