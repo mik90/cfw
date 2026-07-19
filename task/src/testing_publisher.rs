@@ -74,6 +74,10 @@ impl<T: 'static> GenericPublisher for TestPublisher<T> {
     ) -> Option<Box<dyn GenericSubscriber>> {
         self.publisher.build_matching_subscriber(config)
     }
+
+    fn value_type_id(&self) -> std::any::TypeId {
+        self.publisher.value_type_id()
+    }
 }
 
 impl<T: Default + 'static> TestPublisher<T> {

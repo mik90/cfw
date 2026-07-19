@@ -1,11 +1,7 @@
-use task::callback::{Callback, Run};
-use task::context::Context;
-use task::generic_publisher::GenericPublisher;
-use task::generic_subscriber::GenericSubscriber;
 use task::input::OptionalInput;
-use task::subscriber::SubscriberConfig;
+use task_macros::task_callback;
 
-use crate::log_task::{LOG_TASK_DIAGNOSTICS_CHANNEL, LogError};
+use crate::log_task::LogError;
 
 /// What the diagnostics task does when it observes a `LogError`.
 #[derive(Clone, Copy, Debug)]
@@ -41,59 +37,41 @@ impl LogDiagnosticsTask {
     }
 }
 
-impl Callback for LogDiagnosticsTask {
-    fn run_generic(
-        &mut self,
-        subscribers: &mut [Box<dyn GenericSubscriber>],
-        _publishers: &mut [Box<dyn GenericPublisher>],
-        ctx: &Context,
-    ) -> Run {
-        if let Some(sub) = subscribers.first_mut() {
-            let input: OptionalInput<'_, LogError> = OptionalInput::new_downcasted(sub.as_mut());
-            if let Some(err) = input.value() {
-                self.error_count += 1;
-                let err_clone = LogError {
-                    channel: err.channel.clone(),
-                    message: err.message.clone(),
-                    at: err.at,
-                };
-                drop(input);
-                match self.mode {
-                    DiagnosticsMode::Print => {
-                        eprintln!(
-                            "log_task_diagnostics @ {}: channel='{}' error='{}'",
-                            ctx.now, err_clone.channel, err_clone.message
-                        );
-                    }
-                    DiagnosticsMode::Panic => {
-                        panic!(
-                            "log_task_diagnostics @ {}: channel='{}' error='{}'",
-                            ctx.now, err_clone.channel, err_clone.message
-                        );
-                    }
-                    DiagnosticsMode::Silent => {}
+#[task_callback]
+impl LogDiagnosticsTask {
+    fn run(&mut self, mut input: OptionalInput<LogError>) {
+        // `OptionalInput::value()` returns a borrow tied to the input's
+        // lifetime, so we clone out the fields via `.map()` (which produces
+        // owned Strings and ends the borrow) before calling `input.clear()`.
+        let err_data = input
+            .value()
+            .map(|err| (err.channel.clone(), err.message.clone()));
+        if let Some((channel, message)) = err_data {
+            self.error_count += 1;
+            match self.mode {
+                DiagnosticsMode::Print => {
+                    eprintln!(
+                        "log_task_diagnostics: channel='{}' error='{}'",
+                        channel, message
+                    );
                 }
+                DiagnosticsMode::Panic => {
+                    panic!(
+                        "log_task_diagnostics: channel='{}' error='{}'",
+                        channel, message
+                    );
+                }
+                DiagnosticsMode::Silent => {}
             }
+            // Pop the consumed error so it isn't reprocessed on the next run
+            // (LogDiagnosticsTask's subscriber uses `keep_across_runs: true`,
+            // as the macro-generated `build_subscribers` defaults to).
+            input.clear();
         }
-        Run::new(1)
-    }
-
-    fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-        vec![Box::new(task::subscriber::Subscriber::<LogError>::new(
-            SubscriberConfig {
-                // Optional so the diagnostic task runs even with no errors;
-                // triggering once a new error arrives flushes it before the
-                // next keep_across_runs cycle.
-                is_optional: true,
-                capacity: 1,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: LOG_TASK_DIAGNOSTICS_CHANNEL.to_string(),
-            },
-        ))]
-    }
-
-    fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-        vec![]
     }
 }
+
+/// Public channel name constant for users wiring their own subscriber
+/// (the macro-generated `build_subscribers` produces a `Subscriber<LogError>`
+/// whose channel name is empty — set it via `CallbackBuilder::with_subscriber_channels`).
+pub use crate::log_task::LOG_TASK_DIAGNOSTICS_CHANNEL as DIAGNOSTICS_CHANNEL;

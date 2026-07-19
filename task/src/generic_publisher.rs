@@ -1,14 +1,15 @@
+use std::any::{Any, TypeId};
+
 use crate::message::MessageHeader;
 use crate::pub_sub::ChannelName;
 use crate::subscriber::SubscriberConfig;
 use crate::time::FrameworkTime;
 use crate::{generic_subscriber::GenericSubscriber, publisher::PublisherConfig};
-use std::any::Any;
 
 pub struct ConnectionTypeMismatch {}
 
 pub trait GenericPublisher {
-    fn as_any(&mut self) -> &mut dyn std::any::Any;
+    fn as_any(&mut self) -> &mut dyn Any;
 
     fn get_config(&self) -> &PublisherConfig;
 
@@ -40,5 +41,14 @@ pub trait GenericPublisher {
         _config: SubscriberConfig,
     ) -> Option<Box<dyn GenericSubscriber>> {
         None
+    }
+
+    /// The `TypeId` of the publisher's payload type `T` (or, for forwarding
+    /// publishers, `ForwardedMessage<T, F>`). Logging build steps look up
+    /// serializers in a `ChannelRegistry` by this id. The default returns
+    /// the `TypeId` of `()`, which no user type will match — safely opting
+    /// un-introspectable publishers out of logging.
+    fn value_type_id(&self) -> TypeId {
+        TypeId::of::<()>()
     }
 }

@@ -157,6 +157,10 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
     ) -> Option<Box<dyn GenericSubscriber>> {
         Some(Box::new(Subscriber::<T>::new(config)))
     }
+
+    fn value_type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<T>()
+    }
 }
 
 impl<T> Publisher<T> {
@@ -375,6 +379,10 @@ impl<T: Default + 'static, F: 'static> GenericPublisher for ForwardingPublisher<
         config: SubscriberConfig,
     ) -> Option<Box<dyn GenericSubscriber>> {
         Some(Box::new(Subscriber::<ForwardedMessage<T, F>>::new(config)))
+    }
+
+    fn value_type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<ForwardedMessage<T, F>>()
     }
 }
 

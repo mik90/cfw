@@ -21,25 +21,30 @@ impl<W: Write> JsonLogFileWriter<W> {
     }
 }
 
-impl<W: Write> LogFileWriter for JsonLogFileWriter<W> {
-    type Error = serde_json::Error;
-
+impl<W: Write + Send> LogFileWriter for JsonLogFileWriter<W> {
     fn store_message(
         &mut self,
         channel_name: &str,
         header: &MessageHeader,
         body: &[u8],
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), crate::log_file::BoxedLogError> {
         let entry = JsonLogEntry {
             header: header.clone(),
             channel_name: channel_name.to_owned(),
             body: body.to_vec(),
         };
-        serde_json::to_writer(&mut self.writer, &entry)?;
+        serde_json::to_writer(&mut self.writer, &entry)
+            .map_err(|e| -> crate::log_file::BoxedLogError { Box::new(e) })?;
         self.writer
             .write_all(b"\n")
-            .map_err(serde_json::Error::io)?;
+            .map_err(|e| -> crate::log_file::BoxedLogError { Box::new(e) })?;
         Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), crate::log_file::BoxedLogError> {
+        self.writer
+            .flush()
+            .map_err(|e| -> crate::log_file::BoxedLogError { Box::new(e) })
     }
 }
 

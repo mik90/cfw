@@ -1,61 +1,30 @@
 use std::collections::HashSet;
 
-use task::callback::CallbackNode;
+use task::callback::{Callback, CallbackNode};
+use task::channel_registry::ChannelRegistry;
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 
-use crate::log_task::{ChannelLogRequest, ChannelLogger, LogTask, LogTaskConfiguration};
+use crate::log_task::{ChannelLogger, LogTask, LogTaskConfiguration};
 
-/// Hard error returned when a `ChannelLogRequest` references a channel for
-/// which no publisher can supply a matching subscriber.
-#[derive(Debug)]
-struct NoMatchingSubscriber {
-    channel_name: String,
-}
+/// Default queue depth for log-task subscribers. Logging is meant to keep up
+/// with the publisher's steady rate; matches the existing
+/// `DEFAULT_TEST_SUBSCRIBER_CAPACITY` to avoid surprises during tests.
+const DEFAULT_LOG_QUEUE_CAPACITY: usize = 10;
 
-impl std::fmt::Display for NoMatchingSubscriber {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "channel '{}' has no publisher that supports logging \
-             (no `build_matching_subscriber` override returned Some)",
-            self.channel_name,
-        )
-    }
-}
-
-impl std::error::Error for NoMatchingSubscriber {}
-
-/// Hard error returned when no publisher exists on a requested channel.
-#[derive(Debug)]
-struct NoPublisherForChannel {
-    channel_name: String,
-}
-
-impl std::fmt::Display for NoPublisherForChannel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "channel '{}' was requested for logging but no callback publishes on it",
-            self.channel_name,
-        )
-    }
-}
-
-impl std::error::Error for NoPublisherForChannel {}
-
-/// Adds a `LogTask` to the task graph that subscribes to a user-specified set
-/// of channels and serializes their messages to disk. The build step runs
-/// once per task graph build; subscribers are created here via
-/// [`task::publisher::GenericPublisher::build_matching_subscriber`] and
-/// injected into the `LogTask` via `CallbackNode::new_with`.
+/// Adds a `LogTask` to the task graph. The build step walks every existing
+/// `CallbackNode`'s publishers, asks `registry` for a matching serializer by
+/// `GenericPublisher::value_type_id`, and — when one exists — builds a
+/// `ChannelLogger` + matching subscriber and injects them into the new
+/// `LogTask` `CallbackNode` via `CallbackNode::new_with`. Channels whose
+/// types aren't registered as loggable are silently skipped.
 pub struct LoggingBuildStep {
     config: LogTaskConfiguration,
-    requests: Vec<ChannelLogRequest>,
+    registry: ChannelRegistry,
 }
 
 impl LoggingBuildStep {
-    pub fn new(config: LogTaskConfiguration, requests: Vec<ChannelLogRequest>) -> Self {
-        LoggingBuildStep { config, requests }
+    pub fn new(config: LogTaskConfiguration, registry: ChannelRegistry) -> Self {
+        LoggingBuildStep { config, registry }
     }
 }
 
@@ -68,24 +37,19 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         &self,
         nodes: &[CallbackNode],
     ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
-        // No requests → no logging node to add.
-        if self.requests.is_empty() {
-            return Ok(vec![]);
-        }
+        // Build a `ChannelLogger` for each (publisher, matching-serializer)
+        // pair found across all existing callback nodes. Subscribers are
+        // collected in lockstep so the LogTask's subscriber slots line up
+        // 1:1 with its `channel_loggers`.
+        let mut channel_loggers: Vec<ChannelLogger> = Vec::new();
+        let mut subscribers = Vec::new();
 
-        let mut channel_loggers: Vec<ChannelLogger> = Vec::with_capacity(self.requests.len());
-        let mut subscribers = Vec::with_capacity(self.requests.len());
-
-        // Names of channels that some publisher declares it forwards *from*.
-        // We don't skip them silently — the user explicitly listed them, so
-        // honoring that would either double-log the source (redundant) or
-        // collide on connection (`connect_to_subscriber` would reject the
-        // mismatched `Subscriber<SourceT>` against a `ForwardingPublisher`).
-        // For now we don't have a robust way to distinguish forwarded-source
-        // conflicts, so we let `build_matching_subscriber` validate the
-        // remaining constraints below; the forwarded-channel awareness
-        // reserved for future event-logging work.
-        let _forwarded_channels: HashSet<task::pub_sub::ChannelName> = nodes
+        // Forwarded-source channels are covered by their `ForwardingPublisher`'s
+        // own `ForwardedMessage<T, F>` logger — which serializes only the
+        // forwarded message's header, avoiding double-logging. Skip them
+        // here so we don't subscribe to a channel whose subscriber type won't
+        // match a `ForwardingPublisher`'s expected `Subscriber<ForwardedMessage<T, F>>`.
+        let forwarded_channels: HashSet<task::pub_sub::ChannelName> = nodes
             .iter()
             .flat_map(|n| {
                 n.get_publishers()
@@ -94,49 +58,67 @@ impl TaskGraphBuildStep for LoggingBuildStep {
             })
             .collect();
 
-        for request in &self.requests {
-            let channel_name = request.channel_name.clone();
+        for node in nodes {
+            for publisher in node.get_publishers() {
+                let channel_name = publisher.get_config().channel_name.clone();
 
-            // Find the first publisher on this channel — used to construct a
-            // matching subscriber. All publishers on the same channel must
-            // share a type (enforced by `connect_callback_nodes`), so any
-            // will do.
-            let first_matching_publisher = nodes.iter().find_map(|node| {
-                node.get_publishers()
-                    .iter()
-                    .find(|p| p.get_config().channel_name == channel_name)
-            });
+                if forwarded_channels.contains(&channel_name) {
+                    continue;
+                }
 
-            let Some(publisher) = first_matching_publisher else {
-                return Err(Box::new(NoPublisherForChannel { channel_name })
-                    as Box<dyn std::error::Error + Send + Sync>);
-            };
+                let Some(serializer) = self.registry.serializer_for(publisher.value_type_id())
+                else {
+                    // No serializer registered for this type — silently skip.
+                    // The user either didn't register this type with the
+                    // `ChannelRegistry`, or the type isn't `Loggable`.
+                    continue;
+                };
 
-            let sub_config = request.make_subscriber_config();
-            let Some(subscriber) = publisher.build_matching_subscriber(sub_config) else {
-                return Err(Box::new(NoMatchingSubscriber { channel_name })
-                    as Box<dyn std::error::Error + Send + Sync>);
-            };
+                let sub_config = task::subscriber::SubscriberConfig {
+                    // Optional + trigger keeps LogTask's readiness bitmask
+                    // independent of any one channel — runs every cycle.
+                    is_optional: true,
+                    capacity: DEFAULT_LOG_QUEUE_CAPACITY,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: channel_name.clone(),
+                };
 
-            channel_loggers.push(ChannelLogger::new(
-                channel_name.clone(),
-                std::sync::Arc::clone(&request.serialize),
-            ));
-            subscribers.push(subscriber);
+                let Some(subscriber) = publisher.build_matching_subscriber(sub_config) else {
+                    // Publisher doesn't support introspection-based
+                    // subscription. Skip silently — this happens for
+                    // `TestPublisher` callers in tests that don't wire a
+                    // `build_matching_subscriber` override on their custom
+                    // publisher type.
+                    continue;
+                };
+
+                channel_loggers.push(ChannelLogger::new(channel_name, serializer));
+                subscribers.push(subscriber);
+            }
         }
 
-        // `CallbackNode::new_with` runs `starting_subscriber_bitmask` over the
-        // subscribers — that needs `CallbackNodeReadiness` Arc, which is
-        // created internally. We let the readiness mechanism decide when
-        // LogTask runs based on the `is_trigger`/`is_optional` config on
-        // each subscriber (we set both above).
+        // No loggable channels found → skip adding a LogTask node entirely.
+        if channel_loggers.is_empty() {
+            return Ok(vec![]);
+        }
+
         let log_task = LogTask::new(&self.config, channel_loggers);
+
+        // Per the build-step contract, we drive `build_subscribers()` and
+        // `build_publishers()` on the callback to get its initial set, then
+        // extend with the subscribers we created above. LogTask's
+        // `build_subscribers` returns `vec![]` (subscribers are entirely
+        // build-step-driven); `build_publishers` returns the
+        // `log_task_diagnostics` publisher.
+        let mut all_subscribers = log_task.build_subscribers();
+        all_subscribers.extend(subscribers);
+        let publishers = log_task.build_publishers();
+
         let mut log_node = CallbackNode::new_with(
             Box::new(log_task),
-            subscribers,
-            // build_publishers is called inside new_with, producing our
-            // `log_task_diagnostics` publisher.
-            vec![],
+            all_subscribers,
+            publishers,
             "LogTask".into(),
         );
         // The simulation executor queries every running node's duration — give

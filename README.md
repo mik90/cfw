@@ -79,6 +79,7 @@ In order of priority
 - [ ] better stress testing for multi-threaded determinism in sim 
 - [ ] inputs should just store ref or optional ref of type instead of entire subscriber
 - [ ] readiness shouldn't be limited to 64 inputs, use an array or vec or something to contain many atomic bitsets
+- [ ] log queue capacity shouldn't have a default value of 10, and we should have better configuration for per channel configuration
 
 ## Debugging tips
 

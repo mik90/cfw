@@ -113,6 +113,53 @@ impl MacroCallbackSignature {
             }
         }
     }
+
+    /// Emit `Probe::<T>::default().try_register(registry)` for every input/output
+    /// type in the callback signature. Relies on the inherent-vs-blanket-trait
+    /// resolution trick in `task::channel_registry` — `Probe::<T>`'s inherent
+    /// `try_register` is gated by `T: 'static + Loggable` and overrides the
+    /// no-op blanket impl; non-Loggable types silently skip registration.
+    fn register_loggables_impl(&self) -> syn::ImplItem {
+        let registrations: Vec<syn::Expr> = self
+            .arguments
+            .iter()
+            .filter_map(|arg| match arg {
+                ArgumentKind::Input((msg, _)) => Some(parse_quote!(
+                    task::channel_registry::Probe::<#msg>::new()
+                        .try_register(registry)
+                )),
+                ArgumentKind::ForwardableInput((msg, _)) => Some(parse_quote!(
+                    task::channel_registry::Probe::<#msg>::new()
+                        .try_register(registry)
+                )),
+                ArgumentKind::Output((msg, _)) => Some(parse_quote!(
+                    task::channel_registry::Probe::<#msg>::new()
+                        .try_register(registry)
+                )),
+                ArgumentKind::ForwardingOutput((user_data, forwarded)) => Some(parse_quote!(
+                    task::channel_registry::Probe::<
+                        task::forwarded_message::ForwardedMessage<#user_data, #forwarded>
+                    >::new().try_register(registry)
+                )),
+                ArgumentKind::Context => None,
+            })
+            .collect();
+
+        parse_quote! {
+            /// Register all message types this callback consumes or produces
+            /// with the `ChannelRegistry`. Types that don't implement `Loggable`
+            /// are silently skipped — see `task::channel_registry::Probe` for
+            /// the underlying inherent-vs-blanket-trait mechanism.
+            pub fn register_loggables(registry: &mut task::channel_registry::ChannelRegistry) {
+                // The `MaybeRegister` trait must be in scope at the call site
+                // for method resolution to find the blanket impl's no-op
+                // `try_register` default when the inherent impl's
+                // `T: 'static + Loggable` bound isn't satisfied.
+                use task::channel_registry::MaybeRegister as _;
+                #(#registrations;)*
+            }
+        }
+    }
 }
 
 fn extract_two_idents_from_path(
@@ -363,6 +410,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let build_subscribers_impl = sig.build_subscribers_impl();
     let build_publishers_impl = sig.build_publishers_impl();
+    let register_loggables_impl = sig.register_loggables_impl();
     let struct_name = &sig.callback_type;
 
     let quoted = quote! {
@@ -392,6 +440,17 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 #build_publishers_impl
             }
         };
+
+        // `register_loggables` is an inherent method on the struct itself —
+        // exposed publicly so users can opt a callback into logging by
+        // calling `MyCallback::register_loggables(&mut registry)` from their
+        // setup code. For callbacks whose types aren't `Loggable`, every
+        // `Probe::try_register` call is a no-op via the blanket trait default,
+        // so this method compiles for every `#[task_callback]`-decorated
+        // callback without imposing trait bounds on user types.
+        impl #struct_name {
+            #register_loggables_impl
+        }
     };
 
     TokenStream::from(quoted)

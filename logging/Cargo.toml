@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task" }
+task_macros = { path = "../task_macros" }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 

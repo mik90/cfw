@@ -319,6 +319,7 @@ dependencies = [
  "serde_json",
  "simulation_executor",
  "task",
+ "task_macros",
  "testing",
 ]
 

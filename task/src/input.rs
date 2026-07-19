@@ -108,11 +108,11 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
         OptionalInput::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
     }
 
-    pub fn value(&'a self) -> Option<&'a T> {
+    pub fn value(&self) -> Option<&T> {
         self.guard.front().map(|ptr| &ptr.message)
     }
 
-    pub fn clear(&'a mut self) {
+    pub fn clear(&mut self) {
         self.guard.pop_front();
     }
 }
@@ -143,11 +143,11 @@ impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
         Some(ForwardedOutput::new(output.publisher, ptr))
     }
 
-    pub fn value(&'a self) -> Option<&'a T> {
+    pub fn value(&self) -> Option<&T> {
         self.input.value()
     }
 
-    pub fn clear(&'a mut self) {
+    pub fn clear(&mut self) {
         self.input.clear();
     }
 }
@@ -173,6 +173,17 @@ impl<'a, T: 'static> InputSpan<'a, T> {
 
     pub fn inputs(&mut self) -> impl Iterator<Item = &Message<T>> {
         self.guard.as_slice()
+    }
+
+    /// Drains the read buffer, yielding `ArenaReaderPtr<Message<T>>` for each
+    /// queued message. `ArenaReaderPtr<T>` derefs to `T` transparently, so
+    /// callers can write `for msg in span.drain_inputs() { let msg: &Message<T> = &msg; ... }`
+    /// without dealing with the pointer type explicitly. Draining removes
+    /// messages from the queue so later runs see a fresh buffer — used by the
+    /// `LogTask`'s type-erased serializer closures, which need to consume
+    /// inputs each cycle.
+    pub fn drain_inputs(&mut self) -> impl Iterator<Item = ArenaReaderPtr<Message<T>>> {
+        self.guard.drain_contiguous()
     }
 }
 
