@@ -556,6 +556,11 @@ mod tests {
     fn test_sustained_periodic_trigger() {
         const TARGET_RUNS: usize = 50;
 
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
         let run_count = Arc::new(AtomicUsize::new(0));
         let stop_signal_cell = Arc::new(OnceLock::new());
 
@@ -578,13 +583,13 @@ mod tests {
         stop_signal_cell.set(exec.stop_signal()).ok();
         exec.start_threads();
 
-        let deadline = time::Instant::now() + time::Duration::from_secs(10);
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
         while exec.is_running() && time::Instant::now() < deadline {
             sleep(time::Duration::from_millis(10));
         }
         assert!(
             !exec.is_running(),
-            "Executor did not reach {TARGET_RUNS} periodic runs within 10 seconds (stuck at {})",
+            "Executor did not reach {TARGET_RUNS} periodic runs within {DEADLINE_SECS} seconds (stuck at {})",
             run_count.load(Ordering::SeqCst)
         );
 
