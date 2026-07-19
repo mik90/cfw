@@ -75,22 +75,20 @@ impl TaskGraphBuildStep for LoggingBuildStep {
                 };
 
                 let sub_config = task::subscriber::SubscriberConfig {
-                    // Optional + trigger keeps LogTask's readiness bitmask
-                    // independent of any one channel — runs every cycle.
+                    // Non-triggering optional span: the LogTask runs on its
+                    // periodic schedule and drains whatever has accumulated.
                     is_optional: true,
                     capacity: DEFAULT_LOG_QUEUE_CAPACITY,
-                    is_trigger: true,
+                    is_trigger: false,
                     keep_across_runs: true,
                     channel_name: channel_name.clone(),
                 };
 
                 let Some(subscriber) = publisher.build_matching_subscriber(sub_config) else {
-                    // Publisher doesn't support introspection-based
-                    // subscription. Skip silently — this happens for
-                    // `TestPublisher` callers in tests that don't wire a
-                    // `build_matching_subscriber` override on their custom
-                    // publisher type.
-                    continue;
+                    return Err(format!(
+                        "LoggingBuildStep: publisher for channel '{}' does not support build_matching_subscriber",
+                        channel_name
+                    ).into());
                 };
 
                 channel_loggers.push(ChannelLogger::new(channel_name, serializer));
@@ -125,6 +123,8 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         // LogTask a no-op so it doesn't panic. Logging should be invisible to
         // scheduling, so we occupy zero sim-time.
         log_node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
+        let period = self.config.period;
+        log_node.set_execution_time_callback(Box::new(move |now| Some(now + period)));
 
         Ok(vec![log_node])
     }

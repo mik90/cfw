@@ -112,6 +112,7 @@ fn writes_loggable_channel_to_jsonl() {
         .add_build_step(Box::new(LoggingBuildStep::new(
             LogTaskConfiguration {
                 output_path: out.clone(),
+                period: Duration::from_nanos(1),
             },
             registry,
         )))
@@ -156,6 +157,7 @@ fn empty_registry_produces_no_log_task() {
         .add_build_step(Box::new(LoggingBuildStep::new(
             LogTaskConfiguration {
                 output_path: temp_path("empty_registry"),
+                period: Duration::from_nanos(1),
             },
             ChannelRegistry::new(),
         )))
@@ -178,6 +180,7 @@ fn unregistered_type_silently_skipped() {
         .add_build_step(Box::new(LoggingBuildStep::new(
             LogTaskConfiguration {
                 output_path: temp_path("unregistered"),
+                period: Duration::from_nanos(1),
             },
             ChannelRegistry::new(), // empty by design
         )))
@@ -216,7 +219,10 @@ fn diagnostics_task_picks_up_logtask_errors() {
         .add_callback(producer)
         .add_callback(diag)
         .add_build_step(Box::new(LoggingBuildStep::new(
-            LogTaskConfiguration { output_path: out },
+            LogTaskConfiguration {
+                output_path: out,
+                period: Duration::from_nanos(1),
+            },
             registry,
         )))
         .build()

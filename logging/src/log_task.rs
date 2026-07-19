@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use task::callback::{Callback, Run};
 use task::context::Context;
@@ -123,11 +124,12 @@ impl ErrorBuffer {
     }
 }
 
-/// Where to write the log file. Currently a single path on disk; the writer
-/// lives for the duration of the `LogTask` and is flushed in `run_generic`
-/// and again on `Drop`.
+/// Where to write the log file and how often to run the logger.
+/// The writer lives for the duration of the `LogTask` and is flushed in
+/// `run_generic` and again on `Drop`.
 pub struct LogTaskConfiguration {
     pub output_path: PathBuf,
+    pub period: Duration,
 }
 
 pub struct LogTask {
