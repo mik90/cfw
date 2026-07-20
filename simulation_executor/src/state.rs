@@ -559,7 +559,7 @@ mod tests {
             }
         }
 
-        let mut make_periodic = |callback: Box<dyn Callback>, name: &str| {
+        let make_periodic = |callback: Box<dyn Callback>, name: &str| {
             let mut node = task::callback::CallbackNode::new_named(callback, name.into());
             node.set_execution_duration_callback(Box::new(|| Duration::ZERO));
             node.set_execution_time_callback(Box::new(|now| Some(now + Duration::from_nanos(1))));
@@ -585,14 +585,13 @@ mod tests {
 
         let runs = Arc::new(Mutex::new(Vec::new()));
         let violations = Arc::new(AtomicUsize::new(0));
-        let consumer = task::callback::CallbackNode::new_named(
+        let mut consumer = task::callback::CallbackNode::new_named(
             Box::new(GatedConsumer {
                 runs: runs.clone(),
                 violations: violations.clone(),
             }),
             "consumer".into(),
         );
-        let mut consumer = consumer;
         consumer.set_execution_duration_callback(Box::new(|| Duration::ZERO));
 
         let mut nodes = vec![trigger_node, gate_node, consumer];

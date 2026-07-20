@@ -2,6 +2,7 @@ use task::callback::{Callback, Run};
 use task::context::Context;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
+use task::input::OptionalInput;
 use task::pub_sub::ChannelName;
 use task::subscriber::{Subscriber, SubscriberConfig};
 
@@ -83,17 +84,13 @@ impl Callback for LogDiagnosticsTask {
         _ctx: &Context,
     ) -> Run {
         for subscriber in subscribers.iter_mut() {
-            let typed = subscriber
-                .as_any()
-                .downcast_mut::<Subscriber<LogError>>()
-                .expect("LogDiagnosticsTask subscribers are built as Subscriber<LogError>");
-            // Consume the front error (capacity is 1, so that's the whole
-            // queue) and pop it so it isn't reprocessed on the next run —
-            // the subscriber uses `keep_across_runs: true`.
-            let mut guard = typed.read_buffer();
-            if let Some(message) = guard.front() {
-                self.react(&message.message);
-                guard.pop_front();
+            let mut input = OptionalInput::<LogError>::new_downcasted(subscriber.as_mut());
+            if let Some(err) = input.value() {
+                self.react(err);
+                // Pop the consumed error so it isn't reprocessed on the next
+                // run (the subscriber uses `keep_across_runs: true`). Capacity
+                // is 1, so this was the whole queue.
+                input.clear();
             }
         }
         Run::new(1)
