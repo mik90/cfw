@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use task::message::MessageHeader;
 
@@ -25,6 +26,47 @@ pub trait LogFileWriter: Send {
     /// `JsonLogFileWriter<BufWriter<_>>` should override to flush.
     fn flush(&mut self) -> Result<(), BoxedLogError> {
         Ok(())
+    }
+}
+
+/// A `LogFileWriter` that shares one underlying writer (and therefore one log
+/// file) across multiple `LogTask`s running on different executor threads.
+/// The lock is taken per call, so each `store_message` writes a complete
+/// entry atomically with respect to the other tasks — entries from different
+/// tasks can interleave in the file but never tear. Message serialization
+/// happens in the caller's per-channel scratch buffer *before* the sink call,
+/// so only the actual write is serialized across tasks.
+#[derive(Clone)]
+pub struct SharedLogFileWriter {
+    inner: Arc<Mutex<Box<dyn LogFileWriter>>>,
+}
+
+impl SharedLogFileWriter {
+    pub fn new(writer: Box<dyn LogFileWriter>) -> Self {
+        SharedLogFileWriter {
+            inner: Arc::new(Mutex::new(writer)),
+        }
+    }
+}
+
+impl LogFileWriter for SharedLogFileWriter {
+    fn store_message(
+        &mut self,
+        channel_name: &str,
+        header: &MessageHeader,
+        body: &[u8],
+    ) -> Result<(), BoxedLogError> {
+        self.inner
+            .lock()
+            .expect("shared log writer lock poisoned")
+            .store_message(channel_name, header, body)
+    }
+
+    fn flush(&mut self) -> Result<(), BoxedLogError> {
+        self.inner
+            .lock()
+            .expect("shared log writer lock poisoned")
+            .flush()
     }
 }
 

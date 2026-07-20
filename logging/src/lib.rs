@@ -7,8 +7,10 @@ pub mod log_task;
 
 pub use log_build_step::LoggingBuildStep;
 pub use log_diagnostics_task::{DiagnosticsMode, LogDiagnosticsTask};
-pub use log_file::{BoxedLogError, LogEntry, LogEntryIter, LogFileReader, LogFileWriter};
-pub use log_task::{LOG_TASK_DIAGNOSTICS_CHANNEL, LogError, LogTaskConfiguration};
+pub use log_file::{
+    BoxedLogError, LogEntry, LogEntryIter, LogFileReader, LogFileWriter, SharedLogFileWriter,
+};
+pub use log_task::{LogError, LogTaskConfiguration, log_task_diagnostics_channel, log_task_name};
 // Re-export ChannelRegistry from `task` so users of the `logging` crate have
 // a single import surface for logging-relevant types.
 pub use task::channel_registry::ChannelRegistry;

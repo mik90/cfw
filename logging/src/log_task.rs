@@ -1,9 +1,11 @@
-// The log task subscribes to a set of channels (one subscriber slot per channel),
-// drains each subscriber via the matching `SerializerFn` from a
-// `ChannelRegistry`, and writes (header, body) pairs to a shared `LogFileWriter`.
-// IO/serialization errors are published on the `log_task_diagnostics` channel
-// as `LogError` messages — the executor remains unaware of the logger task;
-// downstream subscribers (e.g. a `LogDiagnosticsTask`) decide what to do.
+// Each log task subscribes to a subset of the loggable channels (one
+// subscriber slot per channel), drains each subscriber via the matching
+// `SerializerFn` from a `ChannelRegistry`, and writes (header, body) pairs to
+// a `LogFileWriter` shared with the other log tasks. IO/serialization errors
+// are published on the task's own diagnostics channel (see
+// `log_task_diagnostics_channel`) as `LogError` messages — the executor
+// remains unaware of the logger task; downstream subscribers (e.g. a
+// `LogDiagnosticsTask`) decide what to do.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -14,17 +16,29 @@ use task::context::Context;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
 use task::output::Output;
+use task::pub_sub::{CallbackNodeName, ChannelName};
 use task::publisher::{Publisher, PublisherConfig};
 use task::time::FrameworkTime;
 
 use crate::log_file::{BoxedLogError, LogFileWriter};
 
-/// Channel the `LogTask` publishes its diagnostics on.
-pub const LOG_TASK_DIAGNOSTICS_CHANNEL: &str = "log_task_diagnostics";
+/// Name of the `index`-th `LogTask` callback node. Also the base for its
+/// diagnostics channel name — see `log_task_diagnostics_channel`.
+pub fn log_task_name(index: usize) -> CallbackNodeName {
+    format!("LogTask[{index}]")
+}
 
-/// A single failure observed by the `LogTask` while serializing/writing a
-/// channel's message. Published on `LOG_TASK_DIAGNOSTICS_CHANNEL` so a
-/// downstream diagnostics task can react (panic, print, count, …).
+/// Channel the `index`-th `LogTask` publishes its diagnostics on. Named after
+/// the logger node so a `LogDiagnosticsTask` can subscribe to one channel per
+/// log task.
+pub fn log_task_diagnostics_channel(index: usize) -> ChannelName {
+    format!("{}_diagnostics", log_task_name(index))
+}
+
+/// A single failure observed by a `LogTask` while serializing/writing a
+/// channel's message. Published on the task's diagnostics channel (see
+/// `log_task_diagnostics_channel`) so a downstream diagnostics task can react
+/// (panic, print, count, …).
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LogError {
@@ -124,16 +138,22 @@ impl ErrorBuffer {
     }
 }
 
-/// Where to write the log file and how often to run the logger.
-/// The writer lives for the duration of the `LogTask` and is flushed in
-/// `run_generic` and again on `Drop`.
+/// Where to write the log file, how often to run the logger, and how many
+/// `LogTask` nodes to spread the loggable channels across. Each task runs as
+/// an independent callback node, so an executor thread pool with more than
+/// one thread logs channels in parallel. All tasks share a single log file
+/// via a `SharedLogFileWriter`.
 pub struct LogTaskConfiguration {
     pub output_path: PathBuf,
     pub period: Duration,
+    /// Desired number of `LogTask` nodes. Clamped to at least 1 and at most
+    /// the number of loggable channels.
+    pub num_tasks: usize,
 }
 
 pub struct LogTask {
     writer: Box<dyn LogFileWriter>,
+    diagnostics_channel: ChannelName,
     channel_loggers: Vec<ChannelLogger>,
     error_buffer: ErrorBuffer,
 }
@@ -141,19 +161,24 @@ pub struct LogTask {
 impl std::fmt::Debug for LogTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogTask")
+            .field("diagnostics_channel", &self.diagnostics_channel)
             .field("channel_loggers_count", &self.channel_loggers.len())
             .finish_non_exhaustive()
     }
 }
 
 impl LogTask {
-    /// Construct a `LogTask` writing to a fresh file at `output_path`.
-    /// Panic on failure to create/truncate the file — a logger that can't
-    /// open its destination has nothing useful to do at runtime.
-    pub(crate) fn new(config: &LogTaskConfiguration, channel_loggers: Vec<ChannelLogger>) -> Self {
-        let writer = open_writer(&config.output_path);
+    /// Construct a `LogTask` writing to `writer` and publishing diagnostics on
+    /// `diagnostics_channel`. The writer is typically a
+    /// `SharedLogFileWriter` clone shared with the other log tasks.
+    pub(crate) fn new(
+        writer: Box<dyn LogFileWriter>,
+        diagnostics_channel: ChannelName,
+        channel_loggers: Vec<ChannelLogger>,
+    ) -> Self {
         LogTask {
             writer,
+            diagnostics_channel,
             channel_loggers,
             error_buffer: ErrorBuffer::default(),
         }
@@ -176,8 +201,10 @@ impl LogTask {
 
 // Open a writer backed by `JsonLogFileWriter<BufWriter<File>>`. Feature-gated
 // on `serde` since `JsonLogFileWriter` is only built with that feature.
+// Panics on failure to create/truncate the file — a logger that can't open
+// its destination has nothing useful to do at runtime.
 #[cfg(feature = "serde")]
-fn open_writer(path: &Path) -> Box<dyn LogFileWriter> {
+pub(crate) fn open_writer(path: &Path) -> Box<dyn LogFileWriter> {
     use std::fs::File;
     use std::io::BufWriter;
 
@@ -194,7 +221,7 @@ fn open_writer(path: &Path) -> Box<dyn LogFileWriter> {
 }
 
 #[cfg(not(feature = "serde"))]
-fn open_writer(_path: &Path) -> Box<dyn LogFileWriter> {
+pub(crate) fn open_writer(_path: &Path) -> Box<dyn LogFileWriter> {
     panic!("LogTask::new requires the 'serde' feature for the default JSON writer");
 }
 
@@ -229,7 +256,7 @@ impl Callback for LogTask {
         if !self.error_buffer.is_empty()
             && let Some(diagnostics) = publishers
                 .iter_mut()
-                .find(|p| p.config().channel_name == LOG_TASK_DIAGNOSTICS_CHANNEL)
+                .find(|p| p.config().channel_name == self.diagnostics_channel)
             && let Some(typed) = diagnostics.as_any().downcast_mut::<Publisher<LogError>>()
         {
             for err in self.error_buffer.drain() {
@@ -251,7 +278,7 @@ impl Callback for LogTask {
     fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
         vec![Box::new(Publisher::<LogError>::new(PublisherConfig {
             capacity: 1,
-            channel_name: LOG_TASK_DIAGNOSTICS_CHANNEL.to_string(),
+            channel_name: self.diagnostics_channel.clone(),
         }))]
     }
 }

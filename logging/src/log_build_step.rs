@@ -2,21 +2,38 @@ use std::collections::HashSet;
 
 use task::callback::{Callback, CallbackNode};
 use task::channel_registry::ChannelRegistry;
+use task::generic_subscriber::GenericSubscriber;
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 
-use crate::log_task::{ChannelLogger, LogTask, LogTaskConfiguration};
+use crate::log_file::SharedLogFileWriter;
+use crate::log_task::{
+    ChannelLogger, LogTask, LogTaskConfiguration, log_task_diagnostics_channel, log_task_name,
+    open_writer,
+};
 
 /// Default queue depth for log-task subscribers. Logging is meant to keep up
 /// with the publisher's steady rate; matches the existing
 /// `DEFAULT_TEST_SUBSCRIBER_CAPACITY` to avoid surprises during tests.
 const DEFAULT_LOG_QUEUE_CAPACITY: usize = 10;
 
-/// Adds a `LogTask` to the task graph. The build step walks every existing
+/// One log task's share of the loggable channels: the `ChannelLogger`s and
+/// their matching subscribers, kept in lockstep (subscriber slot i drains
+/// channel logger i).
+#[derive(Default)]
+struct Shard(Vec<ChannelLogger>, Vec<Box<dyn GenericSubscriber>>);
+
+/// Adds `LogTask`s to the task graph. The build step walks every existing
 /// `CallbackNode`'s publishers, asks `registry` for a matching serializer by
 /// `GenericPublisher::value_type_id`, and — when one exists — builds a
-/// `ChannelLogger` + matching subscriber and injects them into the new
-/// `LogTask` `CallbackNode` via `CallbackNode::new_with`. Channels whose
+/// `ChannelLogger` + matching subscriber and injects them into one of the new
+/// `LogTask` `CallbackNode`s via `CallbackNode::new_with`. Channels whose
 /// types aren't registered as loggable are silently skipped.
+///
+/// The collected channels are spread round-robin across
+/// `LogTaskConfiguration::num_tasks` log tasks so an executor with a
+/// multi-threaded pool can drain them in parallel. All tasks write to the
+/// same log file through a `SharedLogFileWriter` and publish errors on their
+/// own diagnostics channel (`log_task_diagnostics_channel`).
 pub struct LoggingBuildStep {
     config: LogTaskConfiguration,
     registry: ChannelRegistry,
@@ -96,36 +113,65 @@ impl TaskGraphBuildStep for LoggingBuildStep {
             }
         }
 
-        // No loggable channels found → skip adding a LogTask node entirely.
+        // No loggable channels found → skip adding LogTask nodes entirely.
         if channel_loggers.is_empty() {
             return Ok(vec![]);
         }
 
-        let log_task = LogTask::new(&self.config, channel_loggers);
+        // Spread the channels round-robin across the requested number of log
+        // tasks (clamped so every task gets at least one channel).
+        // Round-robin rather than contiguous chunks so channels from the same
+        // publisher node — adjacent in the collection above — land on
+        // different log tasks.
+        let num_tasks = self.config.num_tasks.max(1).min(channel_loggers.len());
+        let mut shards: Vec<Shard> = (0..num_tasks).map(|_| Shard::default()).collect();
+        for (index, (logger, subscriber)) in
+            channel_loggers.into_iter().zip(subscribers).enumerate()
+        {
+            let shard = &mut shards[index % num_tasks];
+            shard.0.push(logger);
+            shard.1.push(subscriber);
+        }
 
-        // Per the build-step contract, we drive `build_subscribers()` and
-        // `build_publishers()` on the callback to get its initial set, then
-        // extend with the subscribers we created above. LogTask's
-        // `build_subscribers` returns `vec![]` (subscribers are entirely
-        // build-step-driven); `build_publishers` returns the
-        // `log_task_diagnostics` publisher.
-        let mut all_subscribers = log_task.build_subscribers();
-        all_subscribers.extend(subscribers);
-        let publishers = log_task.build_publishers();
+        // All log tasks share a single log file. The writer is created once
+        // here and cloned per task — `open_writer` panics if the file can't
+        // be created, so a bad path fails the build rather than the first run.
+        let shared_writer = SharedLogFileWriter::new(open_writer(&self.config.output_path));
 
-        let mut log_node = CallbackNode::new_with(
-            Box::new(log_task),
-            all_subscribers,
-            publishers,
-            "LogTask".into(),
-        );
-        // The simulation executor queries every running node's duration — give
-        // LogTask a no-op so it doesn't panic. Logging should be invisible to
-        // scheduling, so we occupy zero sim-time.
-        log_node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
-        let period = self.config.period;
-        log_node.set_execution_time_callback(Box::new(move |now| Some(now + period)));
+        let mut log_nodes = Vec::with_capacity(num_tasks);
+        for (index, Shard(shard_loggers, shard_subscribers)) in shards.into_iter().enumerate() {
+            let log_task = LogTask::new(
+                Box::new(shared_writer.clone()),
+                log_task_diagnostics_channel(index),
+                shard_loggers,
+            );
 
-        Ok(vec![log_node])
+            // Per the build-step contract, we drive `build_subscribers()` and
+            // `build_publishers()` on the callback to get its initial set, then
+            // extend with the subscribers we created above. LogTask's
+            // `build_subscribers` returns `vec![]` (subscribers are entirely
+            // build-step-driven); `build_publishers` returns the diagnostics
+            // publisher.
+            let mut all_subscribers = log_task.build_subscribers();
+            all_subscribers.extend(shard_subscribers);
+            let publishers = log_task.build_publishers();
+
+            let mut log_node = CallbackNode::new_with(
+                Box::new(log_task),
+                all_subscribers,
+                publishers,
+                log_task_name(index),
+            );
+            // The simulation executor queries every running node's duration — give
+            // LogTask a no-op so it doesn't panic. Logging should be invisible to
+            // scheduling, so we occupy zero sim-time.
+            log_node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
+            let period = self.config.period;
+            log_node.set_execution_time_callback(Box::new(move |now| Some(now + period)));
+
+            log_nodes.push(log_node);
+        }
+
+        Ok(log_nodes)
     }
 }

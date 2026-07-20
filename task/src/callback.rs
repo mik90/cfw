@@ -219,10 +219,11 @@ pub fn connect_callback_nodes(callbacks: &mut [CallbackNode]) -> Result<(), Mism
     Ok(())
 }
 
-/// Tracks readiness of all subscribers in a CallbackNode via an atomic bitmask.
-/// Each subscriber bit is 0 (not ready) or 1 (ready). Unused high bits are always 1.
-/// When the bitmask reaches usize::MAX, all trigger subscribers have data and the callback node
-/// can be enqueued.
+/// Tracks readiness of the gating (trigger + non-optional) subscribers in a
+/// CallbackNode via an atomic bitmask. Each gating subscriber's bit is 0 (not
+/// ready) or 1 (ready); non-gating subscribers and unused high bits are always 1.
+/// When the bitmask reaches usize::MAX, all gating subscribers have data and the
+/// callback node can be enqueued.
 pub struct CallbackNodeReadiness {
     bitmask: AtomicUsize,
     node_index: OnceLock<usize>,
@@ -273,28 +274,36 @@ impl CallbackNodeReadiness {
     }
 }
 
+/// Whether a subscriber gates its node's data-triggered execution: only
+/// trigger + non-optional subscribers must receive data before the node is
+/// enqueued. These are exactly the subscribers publishers track readiness
+/// for — see `Publisher::add_typed_subscriber`.
+fn is_gating(subscriber: &dyn GenericSubscriber) -> bool {
+    let config = subscriber.config();
+    config.is_trigger && !config.is_optional
+}
+
 /// Compute the initial bitmask for a set of subscribers.
-/// Bits for trigger + non-optional subscribers start at 0 (must receive data).
-/// All other subscriber bits and unused bits start at 1.
+/// Only gating (trigger + non-optional) subscribers consume bits, packed
+/// densely from bit 0; their bits start at 0 (must receive data). All other
+/// bits start at 1.
 fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> usize {
-    const MAX_SUBSCRIBER_COUNT: usize = std::mem::size_of::<usize>() * 8;
-    if subscribers.len() > MAX_SUBSCRIBER_COUNT {
+    const MAX_GATING_SUBSCRIBER_COUNT: usize = std::mem::size_of::<usize>() * 8;
+    let gating_count = subscribers.iter().filter(|s| is_gating(s.as_ref())).count();
+    if gating_count > MAX_GATING_SUBSCRIBER_COUNT {
         // 64 isn't much for most use-cases, but we may have some diagnostic or logging callbacks that want more.
         // We could either have some non-triggering subscribers (so, poll only) or have those callbacks decompose themselves into smaller
         // callbacks that publish intermediate results.
         panic!(
-            "We cannot support callbacks with more than {} subscribers, try splitting out your callback into multiple callbacks.",
-            MAX_SUBSCRIBER_COUNT
+            "We cannot support callbacks with more than {} gating (trigger + non-optional) subscribers, try splitting out your callback into multiple callbacks.",
+            MAX_GATING_SUBSCRIBER_COUNT
         )
     }
 
     let mut bitmask = usize::MAX;
-    for (index, subscriber) in subscribers.iter().enumerate() {
-        let config = subscriber.config();
-        if config.is_trigger && !config.is_optional {
-            // Clear this bit — subscriber must receive data before triggering
-            bitmask &= !(1usize << index);
-        }
+    for bit_index in 0..gating_count {
+        // Clear this bit — subscriber must receive data before triggering
+        bitmask &= !(1usize << bit_index);
     }
     bitmask
 }
@@ -342,9 +351,16 @@ impl CallbackNode {
         let initial_bitmask = starting_subscriber_bitmask(&subscribers);
         let readiness = CallbackNodeReadiness::new(initial_bitmask);
 
-        // Inject bitmask Arc and bit index into each subscriber
-        for (index, subscriber) in subscribers.iter_mut().enumerate() {
-            subscriber.set_readiness_state(readiness.clone(), index);
+        // Inject bitmask Arc and bit index into each gating subscriber.
+        // Non-gating (optional or non-trigger) subscribers get no readiness
+        // state: publishers never set their bits, so their drains must not
+        // clear bits either — and they don't count against the bit-width cap.
+        let mut bit_index = 0;
+        for subscriber in subscribers.iter_mut() {
+            if is_gating(subscriber.as_ref()) {
+                subscriber.set_readiness_state(readiness.clone(), bit_index);
+                bit_index += 1;
+            }
         }
 
         CallbackNode {
@@ -490,6 +506,25 @@ mod test {
     impl CallbackNodeEnqueuer for CountingEnqueuer {
         fn enqueue_node(&self, _node_index: usize) {
             self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// A callback that does nothing when run.
+    struct NoopCallback;
+    impl Callback for NoopCallback {
+        fn run_generic(
+            &mut self,
+            _: &mut [Box<dyn GenericSubscriber>],
+            _: &mut [Box<dyn GenericPublisher>],
+            _: &crate::context::Context,
+        ) -> Run {
+            Run::new(0)
+        }
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![]
+        }
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
         }
     }
 
@@ -662,6 +697,103 @@ mod test {
 
         // Non-trigger required subscriber → bit stays at 1 (doesn't gate triggering)
         compare_bitmask(vec![make_subscriber(false, false)], usize::MAX);
+    }
+
+    #[test]
+    fn test_gating_bits_pack_densely_past_optional_subscribers() {
+        // Optional subscribers interleaved with gating ones consume no bits:
+        // two gating subscribers → bits 0 and 1 cleared regardless of position.
+        compare_bitmask(
+            vec![
+                make_subscriber(true, true),  // optional trigger — no bit
+                make_subscriber(true, false), // gating → bit 0
+                make_subscriber(false, true), // optional non-trigger — no bit
+                make_subscriber(true, false), // gating → bit 1
+            ],
+            usize::MAX - 3,
+        );
+    }
+
+    #[test]
+    fn test_more_than_bitwidth_optional_subscribers_is_allowed() {
+        // Only gating subscribers count against the bit-width cap. A node made
+        // entirely of optional subscribers (e.g. a logging task draining many
+        // channels) is fine at any count.
+        let subscribers = (0..(std::mem::size_of::<usize>() * 8 + 1))
+            .map(|_| make_subscriber(false, true))
+            .collect::<Vec<_>>();
+        compare_bitmask(subscribers, usize::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "gating")]
+    fn test_more_than_bitwidth_gating_subscribers_panics() {
+        let subscribers = (0..(std::mem::size_of::<usize>() * 8 + 1))
+            .map(|_| make_subscriber(true, false))
+            .collect::<Vec<_>>();
+        starting_subscriber_bitmask(&subscribers);
+    }
+
+    /// Regression test: an optional subscriber's drain must not clear a
+    /// readiness bit (its bit is never set by publishers, so a cleared bit
+    /// would permanently keep the bitmask below usize::MAX and the node would
+    /// never be data-triggered again).
+    #[test]
+    fn test_optional_subscriber_drain_does_not_block_retriggering() {
+        let enqueue_count = Arc::new(AtomicUsize::new(0));
+        let enqueuer =
+            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+
+        let subscribers: Vec<Box<dyn GenericSubscriber>> = vec![
+            Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: false,
+                capacity: 1,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: "required".into(),
+            })),
+            Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 1,
+                is_trigger: false,
+                keep_across_runs: true,
+                channel_name: "optional".into(),
+            })),
+        ];
+
+        let mut node =
+            CallbackNode::new_with(Box::new(NoopCallback), subscribers, vec![], "mixed".into());
+        node.register_with_executor(0, enqueuer);
+
+        // Simulate a full cycle: publisher data sets the gating bit, the node
+        // is enqueued, then both subscribers drain (clearing their bits, if
+        // they have them).
+        let gating_readiness = node.subscribers()[0]
+            .readiness_state()
+            .expect("gating subscriber should have readiness state");
+        assert!(
+            node.subscribers()[1].readiness_state().is_none(),
+            "optional subscriber should have no readiness state"
+        );
+
+        gating_readiness.0.set_bit(gating_readiness.1);
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            1,
+            "first data arrival should enqueue the node"
+        );
+
+        node.drain_subscribers();
+
+        // Second data arrival: the node must be enqueued again. Before dense
+        // gating-only bit assignment, the optional subscriber's drain had
+        // cleared a bit nobody would re-set, blocking this.
+        gating_readiness.0.set_bit(gating_readiness.1);
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            2,
+            "node must re-trigger after optional subscriber drains"
+        );
     }
 
     /// `find_forwarded_channel_usage` drives how much the forwarding publisher's

@@ -51,6 +51,11 @@ pub struct SimulationState {
     /// Per-node sim-time when each node's last execution finishes. Initialized to start_time.
     node_busy_until: Vec<FrameworkTime>,
 
+    /// Whether each node currently holds a virtual thread from its pool. Set
+    /// when the node is allocated a thread, cleared once its busy period has
+    /// elapsed — a node can only be freed if it actually occupied a thread.
+    node_thread_occupied: Vec<bool>,
+
     /// Sim-time when each node first became ready but hadn't yet been allocated a thread.
     /// None if the node is not currently waiting. Used to prioritize longest-waiting nodes.
     node_ready_since: Vec<Option<FrameworkTime>>,
@@ -108,6 +113,7 @@ impl SimulationState {
             node_to_pool,
             periodic_nodes: VecDeque::new(),
             node_busy_until: vec![config.start_time; num_nodes],
+            node_thread_occupied: vec![false; num_nodes],
             node_ready_since: vec![None; num_nodes],
             time: config.start_time,
             step_count: Saturating(0),
@@ -191,6 +197,7 @@ impl SimulationState {
             let pool = &mut self.virtual_pools[pool_index];
             if pool.num_threads_occupied < pool.virtual_thread_count {
                 pool.num_threads_occupied += 1;
+                self.node_thread_occupied[index] = true;
                 self.node_ready_since[index] = None;
                 runnable.push(index);
             }
@@ -258,12 +265,14 @@ impl SimulationState {
             }
         }
 
-        let old_sim_time = self.time;
-
-        // Advance sim time to earliest next event
+        // Advance sim time to earliest next event. Times not strictly in the
+        // future are excluded: a zero-duration node's busy_until equals the
+        // current time (it's already free), so it must not win the min
+        // against the next periodic event and freeze the clock.
         let next_busy = runnable_nodes
             .iter()
             .map(|&i| self.node_busy_until[i])
+            .filter(|&t| t > self.time)
             .min();
         let next_periodic = self
             .periodic_nodes
@@ -277,11 +286,14 @@ impl SimulationState {
             self.time = t;
         }
 
-        // See if any nodes are no longer busy, and if they aren't, free up a thread from their pool
-        for (index, t) in self.node_busy_until.iter().enumerate() {
-            let busy_until_time = *t;
-            if busy_until_time > old_sim_time && busy_until_time <= self.time {
-                // node is no longer busy as of the new sim time, so we can free up a thread
+        // Free the virtual thread of any node whose busy period has elapsed.
+        // Zero-duration nodes finish the instant they start (busy_until <=
+        // current time), so they free their thread right away — comparing
+        // against the pre-advance time instead would never free them and
+        // would wedge their pool's thread permanently.
+        for index in 0..self.nodes.len() {
+            if self.node_thread_occupied[index] && self.node_busy_until[index] <= self.time {
+                self.node_thread_occupied[index] = false;
                 let pool_index = self.node_to_pool[index];
                 self.virtual_pools[pool_index].num_threads_occupied -= 1;
             }
@@ -382,6 +394,65 @@ mod tests {
         );
 
         assert_eq!(task_info.stored_strings(), vec!["FizzBuzz"]);
+    }
+
+    /// Regression test: a zero-duration node must free its pool's virtual
+    /// thread as soon as its step completes. Previously the thread-freeing
+    /// check required `busy_until > old_sim_time`, which a zero-duration run
+    /// never satisfies — the node's first execution wedged its pool thread
+    /// permanently and, with a single-threaded pool, froze the whole
+    /// simulation (this is the shape `LogTask` uses, so logging deadlocked
+    /// the executor after one drain).
+    #[test]
+    fn test_zero_duration_node_frees_pool_thread() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use task::callback::{Callback, Run};
+        use task::context::Context;
+        use task::generic_publisher::GenericPublisher;
+        use task::generic_subscriber::GenericSubscriber;
+
+        struct CountingCallback(Arc<AtomicUsize>);
+        impl Callback for CountingCallback {
+            fn run_generic(
+                &mut self,
+                _: &mut [Box<dyn GenericSubscriber>],
+                _: &mut [Box<dyn GenericPublisher>],
+                _: &Context,
+            ) -> Run {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Run::new(1)
+            }
+            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+                vec![]
+            }
+            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+                vec![]
+            }
+        }
+
+        let run_count = Arc::new(AtomicUsize::new(0));
+        let mut node = task::callback::CallbackNode::new_named(
+            Box::new(CountingCallback(run_count.clone())),
+            "zero_duration".into(),
+        );
+        node.set_execution_duration_callback(Box::new(|| Duration::ZERO));
+        node.set_execution_time_callback(Box::new(|now| Some(now + Duration::from_nanos(1))));
+
+        // Single-threaded pool: if the zero-duration node never frees its
+        // thread, it runs at most once.
+        let mut state = SimulationState::new(1, vec![node]);
+        state.start();
+
+        for _ in 0..5 {
+            let executed = state.step().unwrap();
+            assert_eq!(executed, vec![0], "node should run every step");
+        }
+        assert_eq!(
+            run_count.load(Ordering::Relaxed),
+            5,
+            "zero-duration node must run once per step, not wedge the pool"
+        );
     }
 }
 

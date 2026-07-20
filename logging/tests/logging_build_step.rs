@@ -5,8 +5,8 @@
 //!    → JSONL log file (round trip via `JsonLogFileReader`)
 //!  - build-step silently skips channels whose types aren't registered
 //!  - empty registry produces no LogTask node
-//!  - `#[task_callback]`-generated `LogDiagnosticsTask` subscribes to the
-//!    `log_task_diagnostics` channel
+//!  - `LogDiagnosticsTask` subscribes to one diagnostics channel per `LogTask`
+//!  - channels split across multiple `LogTask`s that share one log file
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,6 +25,7 @@ use logging::log_file::LogFileReader;
 use logging::log_file_json::JsonLogFileReader;
 use logging::{
     ChannelRegistry, DiagnosticsMode, LogDiagnosticsTask, LogTaskConfiguration, LoggingBuildStep,
+    log_task_diagnostics_channel, log_task_name,
 };
 
 // ───────────────────────────── Helpers ──────────────────────────────────
@@ -70,14 +71,18 @@ impl Callback for CounterProducer {
     }
 }
 
-fn build_producer(name: &str, max: u64) -> task::callback::CallbackNode {
+fn build_producer_on(name: &str, channel: &str, max: u64) -> task::callback::CallbackNode {
     CallbackBuilder::new(name.into(), Box::new(CounterProducer::new(max)))
-        .with_publisher_channels(&["values"])
+        .with_publisher_channels(&[channel])
         .with_execution_duration_callback(|| Duration::from_nanos(1))
         // Run every step — keeps the LogTask fed.
         .with_next_execution_time_callback(|t| Some(t + Duration::from_nanos(1)))
         .build()
         .expect("producer builds")
+}
+
+fn build_producer(name: &str, max: u64) -> task::callback::CallbackNode {
+    build_producer_on(name, "values", max)
 }
 
 fn temp_path(suffix: &str) -> PathBuf {
@@ -113,6 +118,7 @@ fn writes_loggable_channel_to_jsonl() {
             LogTaskConfiguration {
                 output_path: out.clone(),
                 period: Duration::from_nanos(1),
+                num_tasks: 1,
             },
             registry,
         )))
@@ -133,9 +139,10 @@ fn writes_loggable_channel_to_jsonl() {
             .unwrap();
     let entries: Vec<_> = reader.iter().collect();
 
-    assert!(
-        !entries.is_empty(),
-        "expected some log entries, got 0; file at {}",
+    assert_eq!(
+        entries.len(),
+        3,
+        "all 3 published messages should be logged; file at {}",
         out.display()
     );
     for entry in &entries {
@@ -158,6 +165,7 @@ fn empty_registry_produces_no_log_task() {
             LogTaskConfiguration {
                 output_path: temp_path("empty_registry"),
                 period: Duration::from_nanos(1),
+                num_tasks: 1,
             },
             ChannelRegistry::new(),
         )))
@@ -181,6 +189,7 @@ fn unregistered_type_silently_skipped() {
             LogTaskConfiguration {
                 output_path: temp_path("unregistered"),
                 period: Duration::from_nanos(1),
+                num_tasks: 1,
             },
             ChannelRegistry::new(), // empty by design
         )))
@@ -197,17 +206,18 @@ fn unregistered_type_silently_skipped() {
 
 #[test]
 fn diagnostics_task_picks_up_logtask_errors() {
-    // Smoke test for the wiring: a `LogDiagnosticsTask` subscribes to
-    // `log_task_diagnostics` (whose channel name is set via
-    // `with_subscriber_channels`); the build flow completes; no panic.
+    // Smoke test for the wiring: a `LogDiagnosticsTask` subscribes to the
+    // `LogTask[0]_diagnostics` channel; the build flow completes; no panic.
     let out = temp_path("diagnostics");
 
     let producer = build_producer("Counter", 1);
     let diag = CallbackBuilder::new(
         "Diagnostics".into(),
-        Box::new(LogDiagnosticsTask::new(DiagnosticsMode::Silent)),
+        Box::new(LogDiagnosticsTask::for_log_tasks(
+            DiagnosticsMode::Silent,
+            1,
+        )),
     )
-    .with_subscriber_channels(&["log_task_diagnostics"])
     .with_execution_duration_callback(|| Duration::from_nanos(1))
     .build()
     .expect("diagnostics builds");
@@ -222,14 +232,16 @@ fn diagnostics_task_picks_up_logtask_errors() {
             LogTaskConfiguration {
                 output_path: out,
                 period: Duration::from_nanos(1),
+                num_tasks: 1,
             },
             registry,
         )))
         .build()
         .expect("graph builds");
 
-    // Should have 3 nodes: producer, diagnostics, LogTask.
+    // Should have 3 nodes: producer, diagnostics, LogTask[0].
     assert_eq!(graph.nodes.len(), 3);
+    assert_eq!(graph.nodes[2].name(), log_task_name(0));
 
     let mut executor = UnitTestExecutor::new(graph.nodes);
     for _ in 0..6 {
@@ -237,4 +249,176 @@ fn diagnostics_task_picks_up_logtask_errors() {
     }
     // No panic = pass. No mechanism here to inject an IO error; this just
     // verifies the wiring is sound (no connection errors, no build errors).
+}
+
+#[test]
+fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
+    // Four channels on four producers, logged by two LogTasks. Both tasks
+    // write to the same file; every channel's messages must appear exactly
+    // once (no channel logged by two tasks, none dropped).
+    let out = temp_path("split_shared_file");
+
+    let channels = ["ch0", "ch1", "ch2", "ch3"];
+    const MESSAGES_PER_CHANNEL: u64 = 3;
+
+    let mut builder = TaskGraphBuilder::new();
+    for (i, channel) in channels.iter().enumerate() {
+        builder = builder.add_callback(build_producer_on(
+            &format!("Producer{i}"),
+            channel,
+            MESSAGES_PER_CHANNEL,
+        ));
+    }
+
+    let mut registry = ChannelRegistry::new();
+    registry.register_loggable::<u64>();
+
+    let graph = builder
+        .add_build_step(Box::new(LoggingBuildStep::new(
+            LogTaskConfiguration {
+                output_path: out.clone(),
+                period: Duration::from_nanos(1),
+                num_tasks: 2,
+            },
+            registry,
+        )))
+        .build()
+        .expect("graph builds");
+
+    // 4 producers + 2 log tasks.
+    assert_eq!(graph.nodes.len(), 6);
+    assert_eq!(graph.nodes[4].name(), log_task_name(0));
+    assert_eq!(graph.nodes[5].name(), log_task_name(1));
+
+    // Each log task exposes its own diagnostics channel.
+    assert_eq!(
+        graph.nodes[4].publishers()[0].config().channel_name,
+        log_task_diagnostics_channel(0)
+    );
+    assert_eq!(
+        graph.nodes[5].publishers()[0].config().channel_name,
+        log_task_diagnostics_channel(1)
+    );
+
+    let mut executor = UnitTestExecutor::new(graph.nodes);
+    for _ in 0..20 {
+        executor.step();
+    }
+    drop(executor);
+
+    let reader =
+        JsonLogFileReader::from_reader(std::io::BufReader::new(std::fs::File::open(&out).unwrap()))
+            .unwrap();
+
+    let mut per_channel_counts = std::collections::HashMap::new();
+    for entry in reader.iter() {
+        *per_channel_counts
+            .entry(entry.channel_name.to_owned())
+            .or_insert(0) += 1;
+        let v: u64 = serde_json::from_slice(entry.serialized_body).unwrap();
+        assert!(v < MESSAGES_PER_CHANNEL, "got unexpected value {v}");
+    }
+
+    assert_eq!(
+        per_channel_counts.len(),
+        channels.len(),
+        "expected entries from every channel, got {per_channel_counts:?}"
+    );
+    for channel in channels {
+        assert_eq!(
+            per_channel_counts.get(channel).copied().unwrap_or(0),
+            MESSAGES_PER_CHANNEL as usize,
+            "channel '{channel}' must be logged exactly once per message (no shard overlap)"
+        );
+    }
+}
+
+#[test]
+fn num_tasks_clamped_to_channel_count() {
+    // Requesting more log tasks than there are loggable channels must not
+    // produce empty LogTask nodes.
+    let producer = build_producer("Counter", 1);
+
+    let mut registry = ChannelRegistry::new();
+    registry.register_loggable::<u64>();
+
+    let graph = TaskGraphBuilder::new()
+        .add_callback(producer)
+        .add_build_step(Box::new(LoggingBuildStep::new(
+            LogTaskConfiguration {
+                output_path: temp_path("clamped"),
+                period: Duration::from_nanos(1),
+                num_tasks: 10,
+            },
+            registry,
+        )))
+        .build()
+        .expect("graph builds");
+
+    assert_eq!(
+        graph.nodes.len(),
+        2,
+        "only one loggable channel → exactly one LogTask node"
+    );
+    assert_eq!(graph.nodes[1].name(), log_task_name(0));
+}
+
+#[test]
+fn diagnostics_task_subscribes_to_every_log_task() {
+    // With two log tasks, the diagnostics task must build one subscriber per
+    // per-task diagnostics channel.
+    let out = temp_path("multi_diagnostics");
+
+    let mut registry = ChannelRegistry::new();
+    registry.register_loggable::<u64>();
+
+    let diag = CallbackBuilder::new(
+        "Diagnostics".into(),
+        Box::new(LogDiagnosticsTask::for_log_tasks(
+            DiagnosticsMode::Silent,
+            2,
+        )),
+    )
+    .with_execution_duration_callback(|| Duration::from_nanos(1))
+    .build()
+    .expect("diagnostics builds");
+
+    let graph = TaskGraphBuilder::new()
+        .add_callback(build_producer_on("ProducerA", "ch_a", 1))
+        .add_callback(build_producer_on("ProducerB", "ch_b", 1))
+        .add_callback(diag)
+        .add_build_step(Box::new(LoggingBuildStep::new(
+            LogTaskConfiguration {
+                output_path: out,
+                period: Duration::from_nanos(1),
+                num_tasks: 2,
+            },
+            registry,
+        )))
+        .build()
+        .expect("graph builds");
+
+    // 2 producers + diagnostics + 2 log tasks.
+    assert_eq!(graph.nodes.len(), 5);
+
+    let diag_node = &graph.nodes[2];
+    let subscribed_channels: Vec<&str> = diag_node
+        .subscribers()
+        .iter()
+        .map(|s| s.config().channel_name.as_str())
+        .collect();
+    assert_eq!(
+        subscribed_channels,
+        vec![
+            log_task_diagnostics_channel(0).as_str(),
+            log_task_diagnostics_channel(1).as_str()
+        ],
+        "diagnostics task must subscribe to both log tasks' diagnostics channels"
+    );
+
+    let mut executor = UnitTestExecutor::new(graph.nodes);
+    for _ in 0..6 {
+        executor.step();
+    }
+    // No panic = pass: both diagnostics channels connected to their publishers.
 }
