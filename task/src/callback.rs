@@ -844,12 +844,8 @@ mod test {
             })),
         ];
 
-        let mut node = CallbackNode::new_with(
-            Box::new(NoopCallback),
-            subscribers,
-            vec![],
-            "gated".into(),
-        );
+        let mut node =
+            CallbackNode::new_with(Box::new(NoopCallback), subscribers, vec![], "gated".into());
         node.register_with_executor(0, enqueuer);
 
         let mut trigger_pub = Publisher::<u64>::new(PublisherConfig {

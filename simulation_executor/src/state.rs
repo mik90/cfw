@@ -562,9 +562,7 @@ mod tests {
         let mut make_periodic = |callback: Box<dyn Callback>, name: &str| {
             let mut node = task::callback::CallbackNode::new_named(callback, name.into());
             node.set_execution_duration_callback(Box::new(|| Duration::ZERO));
-            node.set_execution_time_callback(Box::new(|now| {
-                Some(now + Duration::from_nanos(1))
-            }));
+            node.set_execution_time_callback(Box::new(|now| Some(now + Duration::from_nanos(1))));
             node
         };
 
@@ -575,9 +573,7 @@ mod tests {
             Box::new(CounterPublisher { next: 0, max: 100 }),
             "trigger_producer",
         );
-        trigger_node.publishers_mut()[0]
-            .config_mut()
-            .channel_name = "trigger".into();
+        trigger_node.publishers_mut()[0].config_mut().channel_name = "trigger".into();
         let mut gate_node = make_periodic(
             Box::new(CounterPublisher {
                 next: 100,
