@@ -201,6 +201,23 @@ impl StringCollector {
         .build()
         .unwrap()
     }
+
+    pub fn build_callback_node_lite() -> callback::CallbackNode {
+        let string_store = StringCollector::make_string_store();
+        let stop_signal = Arc::new(OnceLock::new());
+        CallbackBuilder::new(
+            "StringCollector".into(),
+            Box::new(StringCollector {
+                string_store,
+                stop_signal,
+                target_count: usize::MAX,
+            }),
+        )
+        .with_subscriber_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
+        .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
+        .build()
+        .unwrap()
+    }
 }
 
 impl callback::Callback for StringCollector {

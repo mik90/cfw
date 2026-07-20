@@ -1,24 +1,53 @@
-use std::time::Duration;
-
+use clap::Parser;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use live_executor::LiveExecutor;
+use live_executor;
+use logging::{self, ChannelRegistry};
+use std::path::PathBuf;
+use task::task_graph_builder;
 use test_tasks;
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct CliArgs {
+    /// File to log to including file extension.
+    #[arg(short, long)]
+    log_path: PathBuf,
+}
 
 fn main() {
     let term = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))
         .expect("Could not register signal hook");
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
+        .expect("Could not register signal hook");
 
-    let (nodes, _) = test_tasks::build_fizz_buzz_callback_nodes();
     let thread_count = 2;
     println!(
         "Building fizz buzz callback nodes with {} threads",
         thread_count
     );
-    // TODO run logging build step
-    let mut executor = LiveExecutor::new(thread_count, nodes);
+
+    let args = CliArgs::parse();
+    let config = logging::LogTaskConfiguration {
+        output_path: args.log_path,
+        period: std::time::Duration::from_millis(1000),
+        num_tasks: 1,
+    };
+    let registry = ChannelRegistry::new();
+    let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
+        config, registry,
+    ));
+    let graph = task_graph_builder::TaskGraphBuilder::new()
+        .add_callback(test_tasks::IncrementingIntegerPublisher::build_callback_node())
+        .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
+        .add_callback(test_tasks::StringCollector::build_callback_node_lite())
+        .add_build_step(logging_build_step)
+        .build()
+        .expect("Could not build task graph");
+    let mut executor = live_executor::LiveExecutor::new(thread_count, graph.nodes);
     executor.start_threads();
 
     while !term.load(Ordering::Relaxed) {
