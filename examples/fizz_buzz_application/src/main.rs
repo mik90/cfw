@@ -3,11 +3,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use live_executor;
 use logging::{self, ChannelRegistry};
 use std::path::PathBuf;
-use task::task_graph_builder;
-use test_tasks;
+use task::task_graph_builder::TaskGraphBuilder;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -40,7 +38,7 @@ fn main() {
     let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
         config, registry,
     ));
-    let graph = task_graph_builder::TaskGraphBuilder::new()
+    let graph = TaskGraphBuilder::new()
         .add_callback(test_tasks::IncrementingIntegerPublisher::build_callback_node())
         .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
         .add_callback(test_tasks::StringCollector::build_callback_node_lite())
