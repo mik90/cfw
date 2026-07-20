@@ -11,7 +11,6 @@ use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
 use crate::time::FrameworkTime;
 use std::any::Any;
 use std::mem::MaybeUninit;
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum LoanError {
