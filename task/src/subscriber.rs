@@ -76,9 +76,15 @@ impl<T> Subscriber<T> {
 
     pub fn drain_writer_to_reader(&self) {
         self.buffers.drain_writer_to_reader();
-        // Clear our bit — write buffer is now empty
         if let Some((readiness, index)) = &self.readiness_state {
-            readiness.clear_bit(*index);
+            // A trigger input's bit means "new event pending": the imminent
+            // run consumes it, so clear — re-firing requires new data.
+            // A non-trigger required input's bit means "has a value": keep it
+            // set while the read buffer retains one, so the node stays
+            // runnable whenever a trigger fires; clear only once empty.
+            if self.config.is_trigger || self.buffers.read_buffer().is_empty() {
+                readiness.clear_bit(*index);
+            }
         }
     }
 

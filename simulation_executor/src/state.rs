@@ -166,10 +166,13 @@ impl SimulationState {
         let mut candidates: Vec<CallbackNodeIndex> = vec![];
 
         for index in 0..self.nodes.len() {
-            if self.nodes[index]
-                .lock()
-                .unwrap()
-                .subscribers_request_execution()
+            let node = self.nodes[index].lock().unwrap();
+            // A trigger fired and every required input has a value — the node
+            // can actually run. Without the required-input check, a node with
+            // a required non-trigger input would run while that input is
+            // still empty.
+            if node.subscribers_request_execution()
+                && node.required_inputs_ready()
                 && self.time >= self.node_busy_until[index]
             {
                 candidates.push(index);
@@ -453,6 +456,176 @@ mod tests {
             5,
             "zero-duration node must run once per step, not wedge the pool"
         );
+    }
+
+    /// A node with a required trigger input and a required non-trigger input
+    /// must only run once BOTH have values — and must re-run on later trigger
+    /// data while the non-trigger input's value is retained.
+    #[test]
+    fn test_required_non_trigger_input_gates_execution() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use task::callback::{Callback, Run};
+        use task::context::Context;
+        use task::generic_publisher::GenericPublisher;
+        use task::generic_subscriber::GenericSubscriber;
+        use task::output::Output;
+        use task::publisher::{Publisher, PublisherConfig};
+        use task::subscriber::{Subscriber, SubscriberConfig};
+
+        /// Publishes an incrementing counter, starting at `start`, once per
+        /// run, up to `max` messages.
+        struct CounterPublisher {
+            next: u64,
+            max: u64,
+        }
+        impl Callback for CounterPublisher {
+            fn run_generic(
+                &mut self,
+                _: &mut [Box<dyn GenericSubscriber>],
+                publishers: &mut [Box<dyn GenericPublisher>],
+                _: &Context,
+            ) -> Run {
+                if self.next < self.max {
+                    let mut out = Output::<u64>::new_downcasted(publishers[0].as_mut());
+                    *out = self.next;
+                    out.send();
+                    self.next += 1;
+                }
+                Run::new(1)
+            }
+            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+                vec![]
+            }
+            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+                vec![Box::new(Publisher::<u64>::new(PublisherConfig {
+                    capacity: 1,
+                    channel_name: String::new(),
+                }))]
+            }
+        }
+
+        /// Required trigger on "trigger", required non-trigger on "gate".
+        /// Records every run's observed values; a run missing either value is
+        /// a gating violation.
+        struct GatedConsumer {
+            runs: Arc<Mutex<Vec<(u64, u64)>>>,
+            violations: Arc<AtomicUsize>,
+        }
+        impl Callback for GatedConsumer {
+            fn run_generic(
+                &mut self,
+                subscribers: &mut [Box<dyn GenericSubscriber>],
+                _: &mut [Box<dyn GenericPublisher>],
+                _: &Context,
+            ) -> Run {
+                let read_front = |sub: &mut Box<dyn GenericSubscriber>| -> Option<u64> {
+                    let typed = sub.as_any().downcast_mut::<Subscriber<u64>>()?;
+                    let guard = typed.read_buffer();
+                    guard.front().map(|msg| msg.message)
+                };
+                match (
+                    read_front(&mut subscribers[0]),
+                    read_front(&mut subscribers[1]),
+                ) {
+                    (Some(a), Some(b)) => self.runs.lock().unwrap().push((a, b)),
+                    _ => {
+                        self.violations.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Run::new(1)
+            }
+            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+                vec![
+                    Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                        is_optional: false,
+                        capacity: 1,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: "trigger".into(),
+                    })),
+                    Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                        is_optional: false,
+                        capacity: 1,
+                        is_trigger: false,
+                        keep_across_runs: true,
+                        channel_name: "gate".into(),
+                    })),
+                ]
+            }
+            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+                vec![]
+            }
+        }
+
+        let mut make_periodic = |callback: Box<dyn Callback>, name: &str| {
+            let mut node = task::callback::CallbackNode::new_named(callback, name.into());
+            node.set_execution_duration_callback(Box::new(|| Duration::ZERO));
+            node.set_execution_time_callback(Box::new(|now| {
+                Some(now + Duration::from_nanos(1))
+            }));
+            node
+        };
+
+        // The trigger producer publishes a steady stream; the gate producer
+        // publishes a single value (100) and then goes quiet — its value must
+        // be retained by the consumer's read buffer.
+        let mut trigger_node = make_periodic(
+            Box::new(CounterPublisher { next: 0, max: 100 }),
+            "trigger_producer",
+        );
+        trigger_node.publishers_mut()[0]
+            .config_mut()
+            .channel_name = "trigger".into();
+        let mut gate_node = make_periodic(
+            Box::new(CounterPublisher {
+                next: 100,
+                max: 101,
+            }),
+            "gate_producer",
+        );
+        gate_node.publishers_mut()[0].config_mut().channel_name = "gate".into();
+
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let violations = Arc::new(AtomicUsize::new(0));
+        let consumer = task::callback::CallbackNode::new_named(
+            Box::new(GatedConsumer {
+                runs: runs.clone(),
+                violations: violations.clone(),
+            }),
+            "consumer".into(),
+        );
+        let mut consumer = consumer;
+        consumer.set_execution_duration_callback(Box::new(|| Duration::ZERO));
+
+        let mut nodes = vec![trigger_node, gate_node, consumer];
+        task::callback::connect_callback_nodes(&mut nodes).expect("channels connect");
+
+        let mut state = SimulationState::new(1, nodes);
+        state.start();
+        for _ in 0..20 {
+            state.step().unwrap();
+        }
+
+        assert_eq!(
+            violations.load(Ordering::Relaxed),
+            0,
+            "consumer must never run while a required input has no value"
+        );
+        let observed = runs.lock().unwrap();
+        assert!(
+            observed.len() >= 2,
+            "consumer should re-run on new trigger data while the gate value is retained, got {observed:?}"
+        );
+        for &(_, gate_value) in observed.iter() {
+            assert_eq!(
+                gate_value, 100,
+                "gate value must be the retained single publish"
+            );
+        }
+        // Every run pairs the newest trigger value with the retained gate value.
+        assert!(observed.windows(2).all(|w| w[0].0 < w[1].0));
     }
 }
 

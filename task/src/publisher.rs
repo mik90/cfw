@@ -253,9 +253,11 @@ impl<T: 'static> Publisher<T> {
         let buffer_guard = typed_subscriber.write_guard();
         let config = typed_subscriber.config().clone();
 
-        // Only track readiness for trigger+non-optional subscribers — those are the
-        // ones whose bits start at 0 in the bitmask and must be set before enqueueing.
-        let readiness = if config.is_trigger && !config.is_optional {
+        // Track readiness for every required (non-optional) subscriber — all
+        // of their bits start at 0 in the bitmask and must be set before the
+        // node is enqueued. Optional subscribers never gate, so their data
+        // arrival touches no readiness state.
+        let readiness = if !config.is_optional {
             typed_subscriber.readiness_state()
         } else {
             None

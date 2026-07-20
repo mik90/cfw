@@ -219,11 +219,13 @@ pub fn connect_callback_nodes(callbacks: &mut [CallbackNode]) -> Result<(), Mism
     Ok(())
 }
 
-/// Tracks readiness of the gating (trigger + non-optional) subscribers in a
+/// Tracks readiness of the gating (required / non-optional) subscribers in a
 /// CallbackNode via an atomic bitmask. Each gating subscriber's bit is 0 (not
-/// ready) or 1 (ready); non-gating subscribers and unused high bits are always 1.
-/// When the bitmask reaches usize::MAX, all gating subscribers have data and the
-/// callback node can be enqueued.
+/// ready) or 1 (ready); optional subscribers and unused high bits are always 1.
+/// When the bitmask reaches usize::MAX, every required input has data and the
+/// callback node can be enqueued. A trigger input's bit means "new event
+/// pending" and is cleared when the node drains it; a non-trigger input's bit
+/// means "has a value" and stays set while its read buffer retains one.
 pub struct CallbackNodeReadiness {
     bitmask: AtomicUsize,
     node_index: OnceLock<usize>,
@@ -274,17 +276,19 @@ impl CallbackNodeReadiness {
     }
 }
 
-/// Whether a subscriber gates its node's data-triggered execution: only
-/// trigger + non-optional subscribers must receive data before the node is
-/// enqueued. These are exactly the subscribers publishers track readiness
-/// for — see `Publisher::add_typed_subscriber`.
+/// Whether a subscriber gates its node's data-triggered execution: every
+/// required (non-optional) input must have data before the node is enqueued.
+/// Trigger and non-trigger required inputs differ only in what their bit
+/// *means* — a trigger bit is an event consumed by the next run, a
+/// non-trigger bit is a retained "has a value" gate — see
+/// `Subscriber::drain_writer_to_reader`. These are exactly the subscribers
+/// publishers track readiness for — see `Publisher::add_typed_subscriber`.
 fn is_gating(subscriber: &dyn GenericSubscriber) -> bool {
-    let config = subscriber.config();
-    config.is_trigger && !config.is_optional
+    !subscriber.config().is_optional
 }
 
 /// Compute the initial bitmask for a set of subscribers.
-/// Only gating (trigger + non-optional) subscribers consume bits, packed
+/// Only gating (required / non-optional) subscribers consume bits, packed
 /// densely from bit 0; their bits start at 0 (must receive data). All other
 /// bits start at 1.
 fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> usize {
@@ -295,7 +299,7 @@ fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> us
         // We could either have some non-triggering subscribers (so, poll only) or have those callbacks decompose themselves into smaller
         // callbacks that publish intermediate results.
         panic!(
-            "We cannot support callbacks with more than {} gating (trigger + non-optional) subscribers, try splitting out your callback into multiple callbacks.",
+            "We cannot support callbacks with more than {} required (non-optional) subscribers, try splitting out your callback into multiple callbacks.",
             MAX_GATING_SUBSCRIBER_COUNT
         )
     }
@@ -351,10 +355,10 @@ impl CallbackNode {
         let initial_bitmask = starting_subscriber_bitmask(&subscribers);
         let readiness = CallbackNodeReadiness::new(initial_bitmask);
 
-        // Inject bitmask Arc and bit index into each gating subscriber.
-        // Non-gating (optional or non-trigger) subscribers get no readiness
-        // state: publishers never set their bits, so their drains must not
-        // clear bits either — and they don't count against the bit-width cap.
+        // Inject bitmask Arc and bit index into each gating (required)
+        // subscriber. Optional subscribers get no readiness state: publishers
+        // never set bits for them, their drains never clear bits, and they
+        // don't count against the bit-width cap.
         let mut bit_index = 0;
         for subscriber in subscribers.iter_mut() {
             if is_gating(subscriber.as_ref()) {
@@ -421,6 +425,17 @@ impl CallbackNode {
 
     pub fn subscribers_request_execution(&self) -> bool {
         self.callback.requests_execution(&self.subscribers)
+    }
+
+    /// Whether every required (non-optional) input will have data for the
+    /// callback once the next write→read drain completes: pending data in the
+    /// write queue, or a retained value in the read buffer. Polling executors
+    /// pair this with `subscribers_request_execution` so a node only runs
+    /// when a trigger fired *and* all required inputs have values.
+    pub fn required_inputs_ready(&self) -> bool {
+        self.subscribers
+            .iter()
+            .all(|s| s.config().is_optional || s.has_data_available())
     }
 
     pub fn able_to_run(&self) -> bool {
@@ -695,8 +710,9 @@ mod test {
         // Optional trigger subscriber → bit stays at 1 (doesn't block)
         compare_bitmask(vec![make_subscriber(true, true)], usize::MAX);
 
-        // Non-trigger required subscriber → bit stays at 1 (doesn't gate triggering)
-        compare_bitmask(vec![make_subscriber(false, false)], usize::MAX);
+        // Non-trigger required subscriber → bit 0 cleared (required inputs
+        // gate whether or not they trigger)
+        compare_bitmask(vec![make_subscriber(false, false)], usize::MAX - 1);
     }
 
     #[test]
@@ -726,7 +742,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "gating")]
+    #[should_panic(expected = "required (non-optional) subscribers")]
     fn test_more_than_bitwidth_gating_subscribers_panics() {
         let subscribers = (0..(std::mem::size_of::<usize>() * 8 + 1))
             .map(|_| make_subscriber(true, false))
@@ -793,6 +809,131 @@ mod test {
             enqueue_count.load(Ordering::Relaxed),
             2,
             "node must re-trigger after optional subscriber drains"
+        );
+    }
+
+    /// A required non-trigger input must gate the node: the callback runs
+    /// only once every required input has a value, and a trigger arrival
+    /// while the gate is empty must not run (or panic on) the node. Once the
+    /// gate has a value it is retained, so later trigger data re-runs the
+    /// node — while gate data alone never triggers.
+    #[test]
+    fn test_required_non_trigger_input_gates_until_it_has_a_value() {
+        use crate::output::Output;
+        use crate::publisher::{Publisher, PublisherConfig};
+        use crate::time::FrameworkTime;
+
+        let enqueue_count = Arc::new(AtomicUsize::new(0));
+        let enqueuer =
+            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+
+        let subscribers: Vec<Box<dyn GenericSubscriber>> = vec![
+            Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: false,
+                capacity: 1,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: "trigger".into(),
+            })),
+            Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: false,
+                capacity: 1,
+                is_trigger: false,
+                keep_across_runs: true,
+                channel_name: "gate".into(),
+            })),
+        ];
+
+        let mut node = CallbackNode::new_with(
+            Box::new(NoopCallback),
+            subscribers,
+            vec![],
+            "gated".into(),
+        );
+        node.register_with_executor(0, enqueuer);
+
+        let mut trigger_pub = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "trigger".into(),
+        });
+        let mut gate_pub = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "gate".into(),
+        });
+        assert!(
+            trigger_pub
+                .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
+                .is_ok(),
+            "trigger publisher connects"
+        );
+        assert!(
+            gate_pub
+                .connect_to_subscriber(node.subscribers_mut()[1].as_mut())
+                .is_ok(),
+            "gate publisher connects"
+        );
+        trigger_pub.allocate_arena();
+        gate_pub.allocate_arena();
+
+        let t = FrameworkTime::from_nanoseconds(1);
+
+        // Trigger fires while the gate has no value: no enqueue.
+        {
+            let mut out = Output::new_default(&mut trigger_pub);
+            *out = 1;
+            out.send();
+        }
+        trigger_pub.flush_loaned_values(t);
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            0,
+            "trigger alone must not run the node"
+        );
+
+        // The gate gets a value: everyone was ready and the callback was
+        // triggered → enqueue.
+        {
+            let mut out = Output::new_default(&mut gate_pub);
+            *out = 10;
+            out.send();
+        }
+        gate_pub.flush_loaned_values(t);
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            1,
+            "gate value arriving after the trigger must run the node"
+        );
+
+        // The node runs: draining clears the trigger bit (event consumed) but
+        // keeps the gate bit (its value is retained in the read buffer).
+        node.drain_subscribers();
+
+        // New trigger data while the gate value is retained: runs again.
+        {
+            let mut out = Output::new_default(&mut trigger_pub);
+            *out = 2;
+            out.send();
+        }
+        trigger_pub.flush_loaned_values(t);
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            2,
+            "new trigger data must re-run the node while the gate retains its value"
+        );
+
+        node.drain_subscribers();
+
+        // Gate data alone never re-triggers the node.
+        {
+            let mut out = Output::new_default(&mut gate_pub);
+            *out = 11;
+            out.send();
+        }
+        gate_pub.flush_loaned_values(t);
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            2,
+            "gate data alone must not trigger the node"
         );
     }
 

@@ -24,6 +24,14 @@ pub trait GenericSubscriber {
 
     fn queue_info(&self) -> QueueInfo;
 
+    /// Whether the callback will see data from this subscriber after the next
+    /// write→read drain: pending data in the write queue, or a retained value
+    /// in the read buffer. Used to gate nodes on their required inputs.
+    fn has_data_available(&self) -> bool {
+        let info = self.queue_info();
+        info.reader_size > 0 || info.writer_size > 0
+    }
+
     /// Clear buffered values before the Arena is dropped.
     /// Prevents ArenaPtrs from outliving their Arena allocators.
     fn cleanup_buffers(&self) {}
