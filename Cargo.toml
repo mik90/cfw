@@ -9,7 +9,7 @@ members = [
     "live_executor",
     "live_replay_executor",
     "testing",
-    "logging",
+    "logging", "examples/fizz_buzz_application",
 ]
 resolver = "3"
 
