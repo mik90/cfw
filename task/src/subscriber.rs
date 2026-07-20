@@ -1,10 +1,9 @@
-use crate::callback::CallbackNodeReadiness;
+use crate::callback::SubscriberReadiness;
 use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
 use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
-use std::sync::Arc;
 
 pub struct PublishError {}
 
@@ -41,7 +40,7 @@ pub struct Subscriber<T> {
     buffers: DoubleBuffer<Message<T>>,
     queue_has_new_data: bool,
     config: SubscriberConfig,
-    readiness_state: Option<(Arc<CallbackNodeReadiness>, usize)>,
+    readiness_state: Option<SubscriberReadiness>,
 }
 
 impl<T> Subscriber<T> {
@@ -76,15 +75,16 @@ impl<T> Subscriber<T> {
 
     pub fn drain_writer_to_reader(&self) {
         self.buffers.drain_writer_to_reader();
-        if let Some((readiness, index)) = &self.readiness_state {
-            // A trigger input's bit means "new event pending": the imminent
-            // run consumes it, so clear — re-firing requires new data.
-            // A non-trigger required input's bit means "has a value": keep it
-            // set while the read buffer retains one, so the node stays
-            // runnable whenever a trigger fires; clear only once empty.
-            if self.config.is_trigger || self.buffers.read_buffer().is_empty() {
-                readiness.clear_bit(*index);
-            }
+        // A trigger input's bit means "new event pending": the imminent
+        // run consumes it, so clear — re-firing requires new data.
+        // A non-trigger required input's bit means "has a value": keep it
+        // set while the read buffer retains one, so the node stays
+        // runnable whenever a trigger fires; clear only once empty.
+        // Optional-trigger subscribers own no bit — nothing to clear.
+        if let Some(SubscriberReadiness::Gating(readiness, index)) = &self.readiness_state
+            && (self.config.is_trigger || self.buffers.read_buffer().is_empty())
+        {
+            readiness.clear_bit(*index);
         }
     }
 
@@ -143,11 +143,11 @@ impl<T: 'static> GenericSubscriber for Subscriber<T> {
         self.buffers.clear();
     }
 
-    fn set_readiness_state(&mut self, state: Arc<CallbackNodeReadiness>, bit_index: usize) {
-        self.readiness_state = Some((state, bit_index));
+    fn set_readiness_state(&mut self, state: SubscriberReadiness) {
+        self.readiness_state = Some(state);
     }
 
-    fn readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
+    fn readiness_state(&self) -> Option<SubscriberReadiness> {
         self.readiness_state.clone()
     }
 
@@ -207,11 +207,11 @@ impl<T: 'static> GenericSubscriber for ForwardableSubscriber<T> {
         self.subscriber.cleanup_buffers();
     }
 
-    fn set_readiness_state(&mut self, state: Arc<CallbackNodeReadiness>, bit_index: usize) {
-        self.subscriber.set_readiness_state(state, bit_index);
+    fn set_readiness_state(&mut self, state: SubscriberReadiness) {
+        self.subscriber.set_readiness_state(state);
     }
 
-    fn readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
+    fn readiness_state(&self) -> Option<SubscriberReadiness> {
         self.subscriber.readiness_state()
     }
 }

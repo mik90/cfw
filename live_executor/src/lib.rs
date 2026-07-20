@@ -461,10 +461,10 @@ mod tests {
         executor::{Executor, ExecutorStopSignal, ThreadPoolConfig},
         generic_publisher::GenericPublisher,
         generic_subscriber::GenericSubscriber,
-        input::RequiredInput,
+        input::{OptionalInput, RequiredInput},
         output::Output,
         publisher::Publisher,
-        subscriber::Subscriber,
+        subscriber::{Subscriber, SubscriberConfig},
     };
     use test_tasks::*;
 
@@ -528,6 +528,50 @@ mod tests {
 
         fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
             vec![Box::new(Publisher::<u64>::new(OutputKind::Default.into()))]
+        }
+    }
+
+    /// A callback with a single optional+trigger input. It must be
+    /// data-triggered by arriving messages — before optional+trigger
+    /// subscribers got readiness state, such a node only ever ran at startup.
+    struct OptionalTriggerSubscriber {
+        messages_received: Arc<AtomicUsize>,
+        stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+        target_count: usize,
+    }
+
+    impl Callback for OptionalTriggerSubscriber {
+        fn run_generic(
+            &mut self,
+            subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let mut input = OptionalInput::<u64>::new_downcasted(&mut *subscribers[0]);
+            while input.value().is_some() {
+                let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
+                if count >= self.target_count {
+                    if let Some(signal) = self.stop_signal.get() {
+                        signal.request_stop();
+                    }
+                }
+                input.clear();
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 4,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: String::new(),
+            }))]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
         }
     }
 
@@ -742,6 +786,69 @@ mod tests {
 
         stop_signal_cell.set(exec.stop_signal()).ok();
         exec.start_threads_no_alloc();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not reach {TARGET_COUNT} messages within {DEADLINE_SECS} seconds (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
+    }
+
+    /// Regression test for the optional+trigger gap: a node whose only input
+    /// is optional+trigger used to run once at startup and never again on
+    /// data, since no readiness bit was ever set for it. It must now be
+    /// data-triggered by every arriving message (subject to queue capacity).
+    #[test]
+    fn test_optional_trigger_input_data_triggers_node() {
+        const TARGET_COUNT: usize = 20;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let messages_received = Arc::new(AtomicUsize::new(0));
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let publisher_node = CallbackBuilder::new(
+            "OptionalTriggerPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["optional_trigger_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "OptionalTriggerSubscriber".into(),
+            Box::new(OptionalTriggerSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET_COUNT,
+            }),
+        )
+        .with_subscriber_channels(&["optional_trigger_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect callback nodes");
+
+        let mut exec = LiveExecutor::new(1, nodes);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
 
         let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
         while exec.is_running() && time::Instant::now() < deadline {

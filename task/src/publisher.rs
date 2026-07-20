@@ -1,5 +1,5 @@
 use crate::arena::{Arena, ArenaPtr, ArenaReaderPtr};
-use crate::callback::CallbackNodeReadiness;
+use crate::callback::SubscriberReadiness;
 use crate::double_buffer::WriteBufferHandle;
 use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::ConnectionTypeMismatch;
@@ -51,9 +51,10 @@ impl<T> LoanedValue<T> {
 struct SubscriberBuffer<T> {
     buffer: WriteBufferHandle<Message<T>>,
     subscriber_config: SubscriberConfig,
-    /// Readiness bitmask and bit index for the target CallbackNode, if the
-    /// subscriber is a trigger+non-optional input (set during connection).
-    readiness: Option<(Arc<CallbackNodeReadiness>, usize)>,
+    /// Readiness role for the target CallbackNode: a gating bit to set for
+    /// required inputs, or a bit-less handle to nudge for optional+trigger
+    /// inputs (set during connection).
+    readiness: Option<SubscriberReadiness>,
 }
 
 pub struct Publisher<T> {
@@ -103,9 +104,18 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
                     // Copy the arena pointer to each subscriber buffer
                     subscriber_buffer.buffer.write(loaned_value.ptr.clone());
 
-                    // Notify the target CallbackNode's readiness bitmask
-                    if let Some((readiness, bit_index)) = &subscriber_buffer.readiness {
-                        readiness.set_bit(*bit_index);
+                    // Notify the target CallbackNode's readiness: set the
+                    // gating bit for required inputs, nudge the node for
+                    // optional+trigger inputs (it enqueues if the required
+                    // inputs are ready).
+                    match &subscriber_buffer.readiness {
+                        Some(SubscriberReadiness::Gating(readiness, bit_index)) => {
+                            readiness.set_bit(*bit_index);
+                        }
+                        Some(SubscriberReadiness::OptionalTrigger(readiness)) => {
+                            readiness.enqueue_if_ready();
+                        }
+                        None => {}
                     }
                 }
             }
@@ -253,15 +263,11 @@ impl<T: 'static> Publisher<T> {
         let buffer_guard = typed_subscriber.write_guard();
         let config = typed_subscriber.config().clone();
 
-        // Track readiness for every required (non-optional) subscriber — all
-        // of their bits start at 0 in the bitmask and must be set before the
-        // node is enqueued. Optional subscribers never gate, so their data
-        // arrival touches no readiness state.
-        let readiness = if !config.is_optional {
-            typed_subscriber.readiness_state()
-        } else {
-            None
-        };
+        // Take over whatever readiness role the subscriber's node injected:
+        // a gating bit for required inputs, a nudge handle for
+        // optional+trigger inputs, or nothing for optional non-trigger
+        // inputs (their data arrival never affects scheduling).
+        let readiness = typed_subscriber.readiness_state();
 
         self.subscriber_write_buffers.push(SubscriberBuffer {
             buffer: buffer_guard,

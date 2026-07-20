@@ -1,11 +1,10 @@
 use crate::{
-    callback::CallbackNodeReadiness,
+    callback::SubscriberReadiness,
     generic_subscriber::QueueInfo,
     message::Message,
     pub_sub::ChannelName,
     subscriber::{GenericSubscriber, Subscriber, SubscriberConfig},
 };
-use std::sync::Arc;
 
 /// Queue depth used when no explicit capacity is given — generous enough for typical
 /// single-step unit tests without forcing every test to think about sizing.
@@ -154,11 +153,11 @@ impl<T: 'static> GenericSubscriber for TestSubscriber<T> {
         self.subscriber.cleanup_buffers();
     }
 
-    fn set_readiness_state(&mut self, state: Arc<CallbackNodeReadiness>, bit_index: usize) {
-        self.subscriber.set_readiness_state(state, bit_index)
+    fn set_readiness_state(&mut self, state: SubscriberReadiness) {
+        self.subscriber.set_readiness_state(state)
     }
 
-    fn readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
+    fn readiness_state(&self) -> Option<SubscriberReadiness> {
         self.subscriber.readiness_state()
     }
 }

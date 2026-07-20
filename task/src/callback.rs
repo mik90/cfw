@@ -268,12 +268,32 @@ impl CallbackNodeReadiness {
         let _ = self.node_index.set(node_index);
         let _ = self.enqueuer.set(enqueuer);
         // Startup case: if already ready, enqueue now
+        self.enqueue_if_ready();
+    }
+
+    /// Enqueue the node if every required input currently has a value
+    /// (bitmask == usize::MAX). Called when an optional+trigger subscriber
+    /// receives data: the data is a trigger, but the node may only run once
+    /// its required inputs are ready. The executor dedups duplicate enqueues.
+    pub fn enqueue_if_ready(&self) {
         if self.bitmask.load(Ordering::Acquire) == usize::MAX
             && let (Some(enqueuer), Some(&idx)) = (self.enqueuer.get(), self.node_index.get())
         {
             enqueuer.enqueue_node(idx);
         }
     }
+}
+
+/// How a subscriber participates in its node's readiness tracking.
+#[derive(Clone)]
+pub enum SubscriberReadiness {
+    /// Gating (required / non-optional) input: owns the bit at the given
+    /// index. Data arrival sets the bit; the node enqueues when all gating
+    /// bits are set.
+    Gating(Arc<CallbackNodeReadiness>, usize),
+    /// Optional trigger input: owns no bit (it never gates). Data arrival
+    /// enqueues the node if all required inputs are ready.
+    OptionalTrigger(Arc<CallbackNodeReadiness>),
 }
 
 /// Whether a subscriber gates its node's data-triggered execution: every
@@ -355,15 +375,21 @@ impl CallbackNode {
         let initial_bitmask = starting_subscriber_bitmask(&subscribers);
         let readiness = CallbackNodeReadiness::new(initial_bitmask);
 
-        // Inject bitmask Arc and bit index into each gating (required)
-        // subscriber. Optional subscribers get no readiness state: publishers
-        // never set bits for them, their drains never clear bits, and they
-        // don't count against the bit-width cap.
+        // Inject readiness state into each subscriber that participates in
+        // data-triggered scheduling: gating (required) subscribers get a
+        // densely-packed bit; optional+trigger subscribers get a
+        // bit-less OptionalTrigger handle so their data arrival can enqueue
+        // the node whenever the required inputs are ready. Optional
+        // non-trigger subscribers get nothing — they never gate or trigger.
         let mut bit_index = 0;
         for subscriber in subscribers.iter_mut() {
             if is_gating(subscriber.as_ref()) {
-                subscriber.set_readiness_state(readiness.clone(), bit_index);
+                subscriber
+                    .set_readiness_state(SubscriberReadiness::Gating(readiness.clone(), bit_index));
                 bit_index += 1;
+            } else if subscriber.config().is_trigger {
+                subscriber
+                    .set_readiness_state(SubscriberReadiness::OptionalTrigger(readiness.clone()));
             }
         }
 
@@ -784,15 +810,17 @@ mod test {
         // Simulate a full cycle: publisher data sets the gating bit, the node
         // is enqueued, then both subscribers drain (clearing their bits, if
         // they have them).
-        let gating_readiness = node.subscribers()[0]
-            .readiness_state()
-            .expect("gating subscriber should have readiness state");
+        let Some(SubscriberReadiness::Gating(readiness, bit_index)) =
+            node.subscribers()[0].readiness_state()
+        else {
+            panic!("gating subscriber should have gating readiness state")
+        };
         assert!(
             node.subscribers()[1].readiness_state().is_none(),
-            "optional subscriber should have no readiness state"
+            "optional non-trigger subscriber should have no readiness state"
         );
 
-        gating_readiness.0.set_bit(gating_readiness.1);
+        readiness.set_bit(bit_index);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             1,
@@ -804,7 +832,7 @@ mod test {
         // Second data arrival: the node must be enqueued again. Before dense
         // gating-only bit assignment, the optional subscriber's drain had
         // cleared a bit nobody would re-set, blocking this.
-        gating_readiness.0.set_bit(gating_readiness.1);
+        readiness.set_bit(bit_index);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             2,
@@ -930,6 +958,169 @@ mod test {
             enqueue_count.load(Ordering::Relaxed),
             2,
             "gate data alone must not trigger the node"
+        );
+    }
+
+    /// An optional+trigger input must data-trigger its node even though it
+    /// owns no readiness bit: with no required inputs the bitmask is always
+    /// MAX, so every arrival nudges an enqueue.
+    #[test]
+    fn test_optional_trigger_input_fires_node() {
+        use crate::output::Output;
+        use crate::publisher::{Publisher, PublisherConfig};
+        use crate::time::FrameworkTime;
+
+        let enqueue_count = Arc::new(AtomicUsize::new(0));
+        let enqueuer =
+            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+
+        let subscribers: Vec<Box<dyn GenericSubscriber>> =
+            vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 2,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: "opt_trig".into(),
+            }))];
+
+        let mut node = CallbackNode::new_with(
+            Box::new(NoopCallback),
+            subscribers,
+            vec![],
+            "optional_triggered".into(),
+        );
+        node.register_with_executor(0, enqueuer);
+
+        // Registration itself enqueues once (bitmask starts at MAX) — the
+        // startup kick. Reset so the counts below reflect data arrivals.
+        enqueue_count.store(0, Ordering::Relaxed);
+
+        let mut publisher = Publisher::<u64>::new(PublisherConfig {
+            capacity: 2,
+            channel_name: "opt_trig".into(),
+        });
+        assert!(
+            publisher
+                .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
+                .is_ok(),
+            "publisher connects"
+        );
+        publisher.allocate_arena();
+
+        let t = FrameworkTime::from_nanoseconds(1);
+        for i in 0..3u64 {
+            {
+                let mut out = Output::new_default(&mut publisher);
+                *out = i;
+                out.send();
+            }
+            publisher.flush_loaned_values(t);
+            assert_eq!(
+                enqueue_count.load(Ordering::Relaxed) as u64,
+                i + 1,
+                "every optional-trigger arrival must enqueue the node"
+            );
+            node.drain_subscribers();
+        }
+    }
+
+    /// An optional+trigger input may only fire the node when its required
+    /// inputs have values — otherwise the run would hit an empty required
+    /// input. While the gate is empty the nudge is swallowed; once the gate
+    /// has a value (retained), optional-trigger data enqueues again.
+    #[test]
+    fn test_optional_trigger_respects_required_gate() {
+        use crate::output::Output;
+        use crate::publisher::{Publisher, PublisherConfig};
+        use crate::time::FrameworkTime;
+
+        let enqueue_count = Arc::new(AtomicUsize::new(0));
+        let enqueuer =
+            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+
+        let subscribers: Vec<Box<dyn GenericSubscriber>> = vec![
+            Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: false,
+                capacity: 1,
+                is_trigger: false,
+                keep_across_runs: true,
+                channel_name: "gate".into(),
+            })),
+            Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 1,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: "opt_trig".into(),
+            })),
+        ];
+
+        let mut node = CallbackNode::new_with(
+            Box::new(NoopCallback),
+            subscribers,
+            vec![],
+            "gated_optional_trigger".into(),
+        );
+        node.register_with_executor(0, enqueuer);
+
+        let mut gate_pub = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "gate".into(),
+        });
+        let mut opt_pub = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "opt_trig".into(),
+        });
+        assert!(
+            gate_pub
+                .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
+                .is_ok()
+        );
+        assert!(
+            opt_pub
+                .connect_to_subscriber(node.subscribers_mut()[1].as_mut())
+                .is_ok()
+        );
+        gate_pub.allocate_arena();
+        opt_pub.allocate_arena();
+
+        let t = FrameworkTime::from_nanoseconds(1);
+
+        // Optional-trigger data while the required gate is empty: no fire.
+        {
+            let mut out = Output::new_default(&mut opt_pub);
+            *out = 1;
+            out.send();
+        }
+        opt_pub.flush_loaned_values(t);
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            0,
+            "optional trigger must not fire while a required input is empty"
+        );
+
+        // Gate value arrives → enqueue (required-side MAX transition).
+        {
+            let mut out = Output::new_default(&mut gate_pub);
+            *out = 10;
+            out.send();
+        }
+        gate_pub.flush_loaned_values(t);
+        assert_eq!(enqueue_count.load(Ordering::Relaxed), 1);
+
+        node.drain_subscribers();
+
+        // Gate value is retained (non-trigger) → optional trigger fires again.
+        {
+            let mut out = Output::new_default(&mut opt_pub);
+            *out = 2;
+            out.send();
+        }
+        opt_pub.flush_loaned_values(t);
+        assert_eq!(
+            enqueue_count.load(Ordering::Relaxed),
+            2,
+            "optional trigger must fire once the gate retains a value"
         );
     }
 

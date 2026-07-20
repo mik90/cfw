@@ -1,8 +1,7 @@
-use crate::callback::CallbackNodeReadiness;
+use crate::callback::SubscriberReadiness;
 use crate::message::MessageHeader;
 use crate::subscriber::SubscriberConfig;
 use std::any::Any;
-use std::sync::Arc;
 
 pub struct QueueInfo {
     pub reader_size: usize,
@@ -42,12 +41,13 @@ pub trait GenericSubscriber {
     /// participate in logging.
     fn for_each_queued_input(&self, _f: &mut dyn FnMut(&MessageHeader, &dyn Any)) {}
 
-    /// Inject the shared readiness bitmask and this subscriber's bit index.
-    /// Called by CallbackNode::new_with after creating the bitmask Arc.
-    fn set_readiness_state(&mut self, _state: Arc<CallbackNodeReadiness>, _bit_index: usize) {}
+    /// Inject this subscriber's readiness role (gating bit, or bit-less
+    /// optional-trigger handle). Called by CallbackNode::new_with after
+    /// creating the shared readiness state.
+    fn set_readiness_state(&mut self, _state: SubscriberReadiness) {}
 
     /// Return the readiness state so that a connecting publisher can store it.
-    fn readiness_state(&self) -> Option<(Arc<CallbackNodeReadiness>, usize)> {
+    fn readiness_state(&self) -> Option<SubscriberReadiness> {
         None
     }
 }
