@@ -1,0 +1,15 @@
+[package]
+name = "fizz_buzz_application"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+task = { path = "../../task" }
+test_tasks = { path = "../../test_tasks" }
+task_macros = { path = "../../task_macros" }
+live_executor = { path = "../../live_executor" }
+logging = { path = "../../logging" }
+signal-hook = "0.3"
+
+[lints]
+workspace = true
