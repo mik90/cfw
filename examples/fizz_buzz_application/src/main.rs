@@ -34,7 +34,10 @@ fn main() {
         period: std::time::Duration::from_millis(1000),
         num_tasks: 1,
     };
-    let registry = ChannelRegistry::new();
+    let mut registry = ChannelRegistry::new();
+    // task_macros auto-registers types but the test tasks don't use it so we have to register them manually.
+    registry.register_loggable::<u64>();
+    registry.register_loggable::<String>();
     let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
         config, registry,
     ));
