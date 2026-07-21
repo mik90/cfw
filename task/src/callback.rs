@@ -514,6 +514,20 @@ impl CallbackNode {
     }
 }
 
+impl Drop for CallbackNode {
+    /// Empty subscriber queues before the node is destroyed. In standalone
+    /// tests where a publisher's arena outlives this node, leaving ArenaPtrs
+    /// in the subscriber buffers would be a use-after-free when the
+    /// subscriber's queue drop glue dereferences the stale arena slots.
+    /// Executors should still call cleanup on all nodes before tearing down
+    /// arenas, but this is a cheap safety net for simple cases.
+    fn drop(&mut self) {
+        for subscriber in self.subscribers.iter() {
+            subscriber.cleanup_buffers();
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
 
@@ -855,6 +869,18 @@ mod test {
         let enqueuer =
             Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
 
+        // Publishers are declared before the CallbackNode so the node drops
+        // first; CallbackNode::drop cleans subscriber queues before the
+        // publisher arenas are freed.
+        let mut trigger_pub = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "trigger".into(),
+        });
+        let mut gate_pub = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "gate".into(),
+        });
+
         let subscribers: Vec<Box<dyn GenericSubscriber>> = vec![
             Box::new(Subscriber::<u64>::new(SubscriberConfig {
                 is_optional: false,
@@ -876,14 +902,6 @@ mod test {
             CallbackNode::new_with(Box::new(NoopCallback), subscribers, vec![], "gated".into());
         node.register_with_executor(0, enqueuer);
 
-        let mut trigger_pub = Publisher::<u64>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "trigger".into(),
-        });
-        let mut gate_pub = Publisher::<u64>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "gate".into(),
-        });
         assert!(
             trigger_pub
                 .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
@@ -974,6 +992,13 @@ mod test {
         let enqueuer =
             Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
 
+        // Publisher declared before CallbackNode so the node drops first and
+        // CallbackNode::drop cleans subscriber queues before the arena is freed.
+        let mut publisher = Publisher::<u64>::new(PublisherConfig {
+            capacity: 2,
+            channel_name: "opt_trig".into(),
+        });
+
         let subscribers: Vec<Box<dyn GenericSubscriber>> =
             vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
                 is_optional: true,
@@ -994,11 +1019,6 @@ mod test {
         // Registration itself enqueues once (bitmask starts at MAX) — the
         // startup kick. Reset so the counts below reflect data arrivals.
         enqueue_count.store(0, Ordering::Relaxed);
-
-        let mut publisher = Publisher::<u64>::new(PublisherConfig {
-            capacity: 2,
-            channel_name: "opt_trig".into(),
-        });
         assert!(
             publisher
                 .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
@@ -1025,7 +1045,7 @@ mod test {
     }
 
     /// An optional+trigger input may only fire the node when its required
-    /// inputs have values — otherwise the run would hit an empty required
+    /// input has a value — otherwise the run would hit an empty required
     /// input. While the gate is empty the nudge is swallowed; once the gate
     /// has a value (retained), optional-trigger data enqueues again.
     #[test]
@@ -1037,6 +1057,17 @@ mod test {
         let enqueue_count = Arc::new(AtomicUsize::new(0));
         let enqueuer =
             Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+
+        // Publishers declared before CallbackNode so the node drops first and
+        // CallbackNode::drop cleans subscriber queues before the arenas are freed.
+        let mut gate_pub = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "gate".into(),
+        });
+        let mut opt_pub = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "opt_trig".into(),
+        });
 
         let subscribers: Vec<Box<dyn GenericSubscriber>> = vec![
             Box::new(Subscriber::<u64>::new(SubscriberConfig {
@@ -1063,14 +1094,6 @@ mod test {
         );
         node.register_with_executor(0, enqueuer);
 
-        let mut gate_pub = Publisher::<u64>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "gate".into(),
-        });
-        let mut opt_pub = Publisher::<u64>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "opt_trig".into(),
-        });
         assert!(
             gate_pub
                 .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
