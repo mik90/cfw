@@ -4,6 +4,7 @@ pub mod callback_builder;
 pub mod channel_registry;
 pub mod context;
 mod double_buffer;
+pub mod execution_log;
 pub mod executor;
 pub mod forwarded_message;
 pub mod generic_publisher;

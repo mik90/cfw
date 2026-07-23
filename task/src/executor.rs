@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::callback::CallbackNode;
+use crate::{callback::CallbackNode, publisher::GenericPublisher};
 
 pub struct ThreadPoolConfig {
     pub thread_count: usize,
@@ -43,4 +43,9 @@ pub trait Executor {
 
     /// Return whether the executor is still running.
     fn is_running(&self) -> bool;
+
+    /// Executors are able to have publishers, but not required by default.
+    fn publishers(&mut self) -> &[&dyn GenericPublisher] {
+        &[]
+    }
 }
