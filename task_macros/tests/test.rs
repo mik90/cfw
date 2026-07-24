@@ -188,7 +188,7 @@ mod tests {
         test_subscriber.drain_writer_to_reader();
         let guard = test_subscriber.read_buffer();
         let msg = guard.front().unwrap();
-        assert_eq!(*msg.message.message(), true);
+        assert!(*msg.message.message());
         assert_eq!(msg.message.forwarded_message().message, 42i32);
     }
 
@@ -200,7 +200,7 @@ mod tests {
         assert!(subscribers.len() == 1);
         let maybe_typed_subscriber = subscribers[0].as_any().downcast_ref::<Subscriber<i32>>();
         assert!(maybe_typed_subscriber.is_some());
-        assert!(maybe_typed_subscriber.unwrap().config().is_optional == false);
+        assert!(!maybe_typed_subscriber.unwrap().config().is_optional);
 
         let mut publishers = task.build_publishers();
         assert!(publishers.len() == 1);

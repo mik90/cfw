@@ -279,7 +279,7 @@ mod tests {
     fn test_arena_ptr() {
         let mut slot = ArenaSlot::<u32>::default();
 
-        let maybe_ptr = ArenaPtr::try_new(&mut slot);
+        let maybe_ptr = ArenaPtr::try_new(&slot);
         assert!(maybe_ptr.is_some());
 
         let ptr = maybe_ptr.unwrap();

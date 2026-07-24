@@ -347,6 +347,14 @@ impl SimulationState {
     }
 }
 
+impl Drop for SimulationState {
+    fn drop(&mut self) {
+        // Make sure node executor threads exit even if stop() was never called.
+        let _ = self.shutdown_node_executor_threads();
+        self.cleanup();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -621,13 +629,5 @@ mod tests {
         }
         // Every run pairs the newest trigger value with the retained gate value.
         assert!(observed.windows(2).all(|w| w[0].0 < w[1].0));
-    }
-}
-
-impl Drop for SimulationState {
-    fn drop(&mut self) {
-        // Make sure node executor threads exit even if stop() was never called.
-        let _ = self.shutdown_node_executor_threads();
-        self.cleanup();
     }
 }

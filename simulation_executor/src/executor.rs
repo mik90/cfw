@@ -106,6 +106,56 @@ impl SimulationExecutor {
     }
 }
 
+impl Executor for SimulationExecutor {
+    type Error = SimulationExecutorError;
+
+    /// Spawns a background thread that steps the simulation until something flips
+    /// the stop signal (e.g. a callback node calling [`ExecutorStopSignal::request_stop`]).
+    /// Returns immediately; call [`stop`] to join the thread.
+    fn start(&mut self) {
+        let should_run = self.should_run.clone();
+        let state = self.state.clone();
+        let step_error = self.step_error.clone();
+
+        should_run.store(true, Ordering::Release);
+        state.lock().unwrap().start();
+
+        self.step_thread = Some(thread::spawn(move || {
+            while should_run.load(Ordering::Acquire) {
+                if let Err(e) = state.lock().unwrap().step() {
+                    should_run.store(false, Ordering::Release);
+                    *step_error.lock().unwrap() = Some(e);
+                    break;
+                }
+            }
+            state.lock().unwrap().cleanup();
+        }));
+    }
+
+    fn stop(&mut self) -> Result<(), SimulationExecutorError> {
+        self.should_run.store(false, Ordering::Release);
+        // Join the step thread before shutting down node executor threads, so we don't
+        // pull the rug out from under an in-progress step.
+        if let Some(t) = self.step_thread.take()
+            && t.join().is_err()
+        {
+            return Err(SimulationExecutorError::StepThreadPanicked);
+        }
+        match self.state.lock().unwrap().shutdown_node_executor_threads() {
+            Ok(()) => Ok(()),
+            Err(idxs) => Err(SimulationExecutorError::NodeExecutorThreadsPanicked(idxs)),
+        }
+    }
+
+    fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
+        Arc::new(StopSignal(self.should_run.clone()))
+    }
+
+    fn is_running(&self) -> bool {
+        self.should_run.load(Ordering::Acquire)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -208,55 +258,5 @@ mod tests {
             max - min <= 1,
             "callback nodes ran unequally: {run_counts:?} — scheduling is unfair"
         );
-    }
-}
-
-impl Executor for SimulationExecutor {
-    type Error = SimulationExecutorError;
-
-    /// Spawns a background thread that steps the simulation until something flips
-    /// the stop signal (e.g. a callback node calling [`ExecutorStopSignal::request_stop`]).
-    /// Returns immediately; call [`stop`] to join the thread.
-    fn start(&mut self) {
-        let should_run = self.should_run.clone();
-        let state = self.state.clone();
-        let step_error = self.step_error.clone();
-
-        should_run.store(true, Ordering::Release);
-        state.lock().unwrap().start();
-
-        self.step_thread = Some(thread::spawn(move || {
-            while should_run.load(Ordering::Acquire) {
-                if let Err(e) = state.lock().unwrap().step() {
-                    should_run.store(false, Ordering::Release);
-                    *step_error.lock().unwrap() = Some(e);
-                    break;
-                }
-            }
-            state.lock().unwrap().cleanup();
-        }));
-    }
-
-    fn stop(&mut self) -> Result<(), SimulationExecutorError> {
-        self.should_run.store(false, Ordering::Release);
-        // Join the step thread before shutting down node executor threads, so we don't
-        // pull the rug out from under an in-progress step.
-        if let Some(t) = self.step_thread.take()
-            && t.join().is_err()
-        {
-            return Err(SimulationExecutorError::StepThreadPanicked);
-        }
-        match self.state.lock().unwrap().shutdown_node_executor_threads() {
-            Ok(()) => Ok(()),
-            Err(idxs) => Err(SimulationExecutorError::NodeExecutorThreadsPanicked(idxs)),
-        }
-    }
-
-    fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
-        Arc::new(StopSignal(self.should_run.clone()))
-    }
-
-    fn is_running(&self) -> bool {
-        self.should_run.load(Ordering::Acquire)
     }
 }

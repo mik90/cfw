@@ -538,10 +538,10 @@ mod tests {
         assert!(front.is_some());
         let front_message = front.unwrap();
         assert_eq!(
-            (*front_message).header.published_at,
+            front_message.header.published_at,
             time::FrameworkTime::from_nanoseconds(99)
         );
-        assert_eq!((*front_message).message, 42);
+        assert_eq!(front_message.message, 42);
     }
 
     #[test]

@@ -137,7 +137,7 @@ mod tests {
         {
             // Callback that forwards from its subscriber to publisher, adding a bool payload
             forwardable_subscriber.subscriber.drain_writer_to_reader();
-            let input = ForwardableOptionalInput::new(&mut forwardable_subscriber);
+            let input = ForwardableOptionalInput::new(&forwardable_subscriber);
             assert!(input.value().is_some());
             assert_eq!(*input.value().unwrap(), 42u32);
 
@@ -153,7 +153,7 @@ mod tests {
             let guard = forwarded_subscriber.read_buffer();
             let msg = guard.front().unwrap();
             assert_eq!(msg.header.published_at, t_forwarding);
-            assert_eq!(*msg.message.message(), true);
+            assert!(*msg.message.message());
             let fwd = msg.message.forwarded_message();
             assert_eq!(fwd.message, 42u32);
             assert_eq!(fwd.header.published_at, t_original);
@@ -222,7 +222,7 @@ mod tests {
         {
             // Callback that forwards from its subscriber to publisher, adding a bool payload
             forwardable_subscriber.subscriber.drain_writer_to_reader();
-            let input = ForwardableOptionalInput::new(&mut forwardable_subscriber);
+            let input = ForwardableOptionalInput::new(&forwardable_subscriber);
             assert!(input.value().is_some());
             assert_eq!(*input.value().unwrap(), 42u32);
 

@@ -240,11 +240,11 @@ mod tests {
 
         let deserialized =
             ForwardedMessage::<bool, MyMessage>::deserialize_with_ctx(&buf, &log).unwrap();
-        assert_eq!(*deserialized.message(), false);
+        assert!(!(*deserialized.message()));
 
         let fwd = deserialized.forwarded_message();
         assert_eq!(fwd.message.my_string, "Hello");
-        assert_eq!(fwd.message.my_bool, true);
+        assert!(fwd.message.my_bool);
         assert_eq!(fwd.header.published_at, FrameworkTime::from_nanoseconds(2));
     }
 
@@ -270,6 +270,6 @@ mod tests {
             FrameworkTime::from_nanoseconds(42)
         );
         assert_eq!(deserialized.message.my_string, "Hello",);
-        assert_eq!(deserialized.message.my_bool, true);
+        assert!(deserialized.message.my_bool);
     }
 }

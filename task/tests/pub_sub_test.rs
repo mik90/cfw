@@ -44,7 +44,7 @@ mod tests {
         subscriber.drain_writer_to_reader();
 
         {
-            let input = OptionalInput::new(&mut subscriber);
+            let input = OptionalInput::new(&subscriber);
             assert!(input.value().is_some());
             assert_eq!(*input.value().unwrap(), 42);
         }

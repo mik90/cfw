@@ -44,7 +44,7 @@ fn bench_publish_to_receive(c: &mut Criterion) {
             subscriber.drain_writer_to_reader();
 
             let received = {
-                let input = OptionalInput::new(&mut subscriber);
+                let input = OptionalInput::new(&subscriber);
                 *input.value().expect("sent value should be readable")
             };
             subscriber.read_buffer().pop_front();
