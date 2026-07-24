@@ -1,14 +1,24 @@
 use crossbeam::channel::{self, Receiver, Sender};
 use std::collections::VecDeque;
 use std::fmt;
+use std::num::Saturating;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
+use std::time::Duration;
+use task::execution_log::{
+    self, Direction, ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
+};
+use task::message::MessageHeader;
+use task::publisher::{GenericPublisher, Publisher};
 use task::time::FrameworkTime;
 
 use task::callback::CallbackNode;
 use task::context::Context;
 use task::executor::{CallbackNodeEnqueuer, Executor, ExecutorStopSignal, ThreadPoolConfig};
+
+/// Default period between execution-log message flushes when logging is enabled.
+const DEFAULT_LOG_FLUSH_PERIOD: Duration = Duration::from_millis(500);
 
 /// Sent into a pool's work channel to unblock workers on shutdown.
 const SHUTDOWN_SENTINEL: usize = usize::MAX;
@@ -121,6 +131,14 @@ impl fmt::Display for SharedThreadPoolState {
 pub struct LiveExecutor {
     threads: Vec<thread::JoinHandle<()>>,
     shared_state: Arc<SharedThreadPoolState>,
+    /// Per-worker execution-log publishers, consumed (moved into worker threads)
+    /// by `start_threads`. `None` when logging is off.
+    log_publishers: Option<Vec<Arc<Mutex<Publisher<ExecutionLogMessage>>>>>,
+    /// Per-pool scratch capacity for the worst-case received-headers count;
+    /// used to size each worker's reuse buffer at thread start.
+    per_pool_scratch_cap: Vec<usize>,
+    /// Execution-log flush period (default 500ms).
+    flush_period: Duration,
 }
 
 fn periodic_trigger_thread(
@@ -184,19 +202,283 @@ fn periodic_trigger_thread(
     }
 }
 
-pub(crate) fn process_work_item(index: usize, shared_state: &SharedThreadPoolState) {
+/// Per-worker execution-log writer. Owns one [`Publisher<ExecutionLogMessage>`]
+/// (the executor publishes one log message per thread on `execution_log`),
+/// plus a loaned "current" message filled across executions. All capture state
+/// is worker-local, so the hot path needs no mutual exclusion.
+struct WorkerLogger {
+    publisher: Arc<Mutex<Publisher<ExecutionLogMessage>>>,
+    flush_period: Duration,
+    last_flush: FrameworkTime,
+    /// Index into the publisher's `loaned_values` of the message being filled,
+    /// or `None` if no message is loaned (a flush failed to re-loan; record
+    /// drops until a loan succeeds).
+    current_loan: Option<usize>,
+    /// The current execution's metadata, written into each entry opened for it.
+    /// Cleared on flush so a stale execution can't bleed into an empty message.
+    cur_node: u32,
+    cur_time: FrameworkTime,
+    cur_duration: Duration,
+    /// First free entry slot in the current message.
+    next_entry: usize,
+    /// First free message slot in the current entry.
+    next_msg: usize,
+    /// Execution logs dropped (couldn't be recorded) while filling the current
+    /// message. Stamped into it on publish and reset, so drops carry across a
+    /// failed publish to the next successful one.
+    dropped: Saturating<usize>,
+    /// Reused, fixed-capacity buffer for received headers, sized so the capture
+    /// path (under `assert_no_alloc`) never reallocates.
+    recv_scratch: Vec<LoggedMessage>,
+    /// Scratch length valid for the in-progress append; recv headers are staged
+    /// here between snapshot and write so they can be written after `run()`
+    /// (once the execution duration is known).
+    recv_scratch_len: usize,
+}
+
+/// Data moved into a worker thread to construct a [`WorkerLogger`] at thread
+/// start (so the scratch `Vec` is allocated on the worker, not the caller).
+struct WorkerLoggerInit {
+    publisher: Arc<Mutex<Publisher<ExecutionLogMessage>>>,
+    flush_period: Duration,
+    scratch_capacity: usize,
+}
+
+impl WorkerLogger {
+    fn new(init: WorkerLoggerInit) -> Self {
+        let publisher = init.publisher.clone();
+        let current_loan = publisher.lock().unwrap().loan_default().ok();
+        WorkerLogger {
+            current_loan,
+            publisher,
+            flush_period: init.flush_period,
+            last_flush: FrameworkTime::from_wall_clock(),
+            cur_node: 0,
+            cur_time: FrameworkTime::INVALID,
+            cur_duration: Duration::ZERO,
+            next_entry: 0,
+            next_msg: 0,
+            dropped: Saturating(0),
+            recv_scratch: Vec::with_capacity(init.scratch_capacity),
+            recv_scratch_len: 0,
+        }
+    }
+
+    /// Whether this logger should record an execution of `node`: only when the
+    /// node opted in *and* it can hold a current loan. A failed re-loan (logger
+    /// subscriber too slow to release arena slots) drops the execution and
+    /// counts it for the next message.
+    fn captures_for(&mut self, node: &CallbackNode) -> bool {
+        if !node.log_executions() {
+            return false;
+        }
+        if self.current_loan.is_none() {
+            self.current_loan = self.publisher.lock().unwrap().loan_default().ok();
+        }
+        if self.current_loan.is_some() {
+            true
+        } else {
+            self.dropped += 1;
+            false
+        }
+    }
+
+    fn recv_scratch_clear(&mut self) {
+        self.recv_scratch_len = 0;
+    }
+
+    fn recv_push(&mut self, msg: LoggedMessage) {
+        if self.recv_scratch_len < self.recv_scratch.len() {
+            self.recv_scratch[self.recv_scratch_len] = msg;
+        } else {
+            self.recv_scratch.push(msg);
+        }
+        self.recv_scratch_len += 1;
+    }
+
+    fn begin_execution(&mut self, node_index: u32, time: FrameworkTime, duration: Duration) {
+        self.cur_node = node_index;
+        self.cur_time = time;
+        self.cur_duration = duration;
+    }
+
+    /// Append a logged message to the current entry, opening a fresh entry (or
+    /// flushing + re-loaning a fresh message) when the current one fills.
+    fn append(&mut self, msg: LoggedMessage) {
+        let Some(loan) = self.current_loan else {
+            // Mid-execution loan loss (shouldn't happen mid-append, but guard): drop tail.
+            self.dropped += 1;
+            return;
+        };
+
+        if self.next_msg == MESSAGES_PER_ENTRY {
+            // Current entry full → advance to next entry (flush if message full).
+            self.next_entry += 1;
+            self.next_msg = 0;
+            if self.next_entry == ENTRIES_PER_MESSAGE {
+                // Message full → publish and re-loan.
+                if !self.flush_current(self.cur_time) {
+                    // Couldn't re-loan: drop the rest of this execution.
+                    self.dropped += 1;
+                    self.next_entry = 0;
+                    self.next_msg = 0;
+                    return;
+                }
+                self.next_entry = 0;
+                self.next_msg = 0;
+            }
+        }
+
+        // Open the entry if still default, and write the message under one lock.
+        let mut pub_guard = self.publisher.lock().unwrap();
+        let cur = pub_guard.loaned_payload_mut(loan);
+        let entry = &mut cur.entries[self.next_entry];
+        if !entry.is_valid() {
+            entry.callback_node_index = self.cur_node;
+            entry.execution_time = self.cur_time;
+            entry.execution_duration_ns = self.cur_duration.as_nanos() as u64;
+        }
+        entry.messages[self.next_msg] = msg;
+        self.next_msg += 1;
+    }
+
+    /// Drain staged received headers into the current message via [`append`].
+    fn drain_recv_into_current(&mut self) {
+        let len = self.recv_scratch_len;
+        for i in 0..len {
+            // Borrow checker: copy out then append to avoid a double-borrow of self.
+            let msg = self.recv_scratch[i];
+            self.append(msg);
+        }
+        self.recv_scratch_len = 0;
+    }
+
+    /// If the flush period has elapsed and the current message has data,
+    /// publish it. Called after each captured execution.
+    fn maybe_flush_period(&mut self, now: FrameworkTime) {
+        let due = now
+            .checked_duration_since(self.last_flush)
+            .map(|d| d >= self.flush_period)
+            .unwrap_or(false);
+        if !due {
+            return;
+        }
+        if self.next_entry > 0 || self.next_msg > 0 {
+            self.flush_current(now);
+        }
+    }
+
+    /// Publish the current message (if it has data), stamping the drop count,
+    /// then re-loan a fresh one. Returns `true` if a new loan is active after.
+    fn flush_current(&mut self, at: FrameworkTime) -> bool {
+        let Some(loan) = self.current_loan else {
+            return false;
+        };
+        if self.next_entry == 0 && self.next_msg == 0 {
+            // Nothing to publish; keep the loan.
+            return true;
+        }
+
+        let mut pub_guard = self.publisher.lock().unwrap();
+        {
+            let cur = pub_guard.loaned_payload_mut(loan);
+            cur.number_of_dropped_entries = self.dropped;
+        }
+        self.dropped = Saturating(0);
+        self.last_flush = at;
+
+        pub_guard.mark_loan_sent(loan);
+        pub_guard.flush_loaned_values(at);
+
+        // Re-loan for the next message. Failure leaves us loan-less; the next
+        // execution's captures_for retry will re-loan or drop.
+        self.current_loan = pub_guard.loan_default().ok();
+        self.next_entry = 0;
+        self.next_msg = 0;
+        self.current_loan.is_some()
+    }
+
+    /// Publish any partially-filled message. Called on worker exit.
+    fn flush_remaining(&mut self, at: FrameworkTime) {
+        if self.next_entry > 0 || self.next_msg > 0 {
+            self.flush_current(at);
+        }
+    }
+}
+
+pub(crate) fn process_work_item(
+    index: usize,
+    shared_state: &SharedThreadPoolState,
+    logger: Option<&mut WorkerLogger>,
+) {
     // Clear the enqueued flag before running so any triggers that arrive during
     // execution are captured, not dropped
     shared_state.enqueue_state.node_enqueued[index].store(false, Ordering::Release);
 
     let mut node_guard = shared_state.nodes[index].lock().unwrap();
     let ctx = Context::new(task::time::FrameworkTime::from_wall_clock());
-    node_guard.drain_subscribers();
-    let _ = node_guard.run(&ctx);
-    node_guard.flush_publishers(ctx.now);
+
+    match logger {
+        Some(logger) => {
+            if !logger.captures_for(&node_guard) {
+                // Node not opted in, or no arena slot available right now.
+                // Run plainly. (A failed loan already bumped the drop counter.)
+                node_guard.drain_subscribers();
+                let _ = node_guard.run(&ctx);
+                node_guard.flush_publishers(ctx.now);
+                return;
+            }
+
+            // Drain write→read so for_each_queued_input sees what the callback
+            // will see, then snapshot received headers before run() consumes them.
+            node_guard.drain_subscribers();
+            logger.recv_scratch_clear();
+            for (ordinal, sub) in node_guard.subscribers().iter().enumerate() {
+                let ordinal = ordinal as u16;
+                sub.for_each_queued_input(&mut |header: &MessageHeader, _payload| {
+                    logger.recv_push(LoggedMessage {
+                        ordinal,
+                        direction: Direction::Received,
+                        header: *header,
+                    });
+                });
+            }
+
+            let start = task::time::FrameworkTime::from_wall_clock();
+            let _ = node_guard.run(&ctx);
+            let end = task::time::FrameworkTime::from_wall_clock();
+            let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
+
+            logger.begin_execution(index as u32, ctx.now, duration);
+
+            // Append the received headers captured above.
+            logger.drain_recv_into_current();
+
+            // Append published headers as flush stamps them (the node's own
+            // publishers are the only place headers become valid).
+            node_guard.flush_publishers_logged(ctx.now, &mut |ordinal, header| {
+                logger.append(LoggedMessage {
+                    ordinal: ordinal as u16,
+                    direction: Direction::Published,
+                    header: *header,
+                });
+            });
+
+            logger.maybe_flush_period(ctx.now);
+        }
+        None => {
+            node_guard.drain_subscribers();
+            let _ = node_guard.run(&ctx);
+            node_guard.flush_publishers(ctx.now);
+        }
+    }
 }
 
-fn run_executor_thread(pool_state: &PoolState, shared_state: &SharedThreadPoolState) {
+fn run_executor_thread(
+    pool_state: &PoolState,
+    shared_state: &SharedThreadPoolState,
+    mut logger: Option<WorkerLogger>,
+) {
     loop {
         // Block waiting on work
         let index = match pool_state.work_rx.recv() {
@@ -210,12 +492,22 @@ fn run_executor_thread(pool_state: &PoolState, shared_state: &SharedThreadPoolSt
             break;
         }
 
-        process_work_item(index, shared_state);
+        process_work_item(index, shared_state, logger.as_mut());
+    }
+
+    // Flush any partially-filled log message on graceful exit so trailing
+    // entries aren't lost.
+    if let Some(logger) = logger.as_mut() {
+        logger.flush_remaining(task::time::FrameworkTime::from_wall_clock());
     }
 }
 
 #[cfg(test)]
-fn no_alloc_worker_loop(pool: Arc<PoolState>, shared: Arc<SharedThreadPoolState>) {
+fn no_alloc_worker_loop(
+    pool: Arc<PoolState>,
+    shared: Arc<SharedThreadPoolState>,
+    mut logger: Option<WorkerLogger>,
+) {
     loop {
         let index = match pool.work_rx.recv() {
             Ok(SHUTDOWN_SENTINEL) => break,
@@ -225,7 +517,12 @@ fn no_alloc_worker_loop(pool: Arc<PoolState>, shared: Arc<SharedThreadPoolState>
         if !shared.should_run.load(Ordering::Relaxed) {
             break;
         }
-        assert_no_alloc::assert_no_alloc(|| process_work_item(index, &shared));
+        assert_no_alloc::assert_no_alloc(|| process_work_item(index, &shared, logger.as_mut()));
+    }
+
+    if let Some(logger) = logger.as_mut() {
+        // Flush-on-exit happens outside the no-alloc window (no constraint on it).
+        logger.flush_remaining(task::time::FrameworkTime::from_wall_clock());
     }
 }
 
@@ -289,12 +586,66 @@ impl LiveExecutor {
         LiveExecutor {
             threads: Vec::new(),
             shared_state,
+            log_publishers: None,
+            per_pool_scratch_cap: Vec::new(),
+            flush_period: DEFAULT_LOG_FLUSH_PERIOD,
         }
+    }
+
+    /// Create a multi-pool executor that records execution logs.
+    ///
+    /// `log_publishers` must contain exactly one [`Publisher<ExecutionLogMessage>`]
+    /// per worker thread (sum of `thread_count` across `pools`), created with
+    /// [`execution_log::log_publishers`] and wired into the graph with
+    /// [`execution_log::connect`] *before* this call. They are moved into the
+    /// worker threads 1:1 at [`start_threads`] (each publisher has a single
+    /// writer, so no synchronization is needed).
+    ///
+    /// `flush_period` is the wall-clock cadence at which a worker publishes a
+    /// partially-filled log message (in addition to publishing on fill and on
+    /// exit). Use [`DEFAULT_LOG_FLUSH_PERIOD`] for 500ms.
+    pub fn new_multi_pool_with_execution_log(
+        pools: Vec<ThreadPoolConfig>,
+        log_publishers: Vec<Publisher<ExecutionLogMessage>>,
+        flush_period: Duration,
+    ) -> Self {
+        let total_threads: usize = pools.iter().map(|p| p.thread_count).sum();
+        assert_eq!(
+            log_publishers.len(),
+            total_threads,
+            "execution-log publisher count must equal the total worker thread count"
+        );
+
+        let per_pool_scratch_cap: Vec<usize> = pools
+            .iter()
+            .map(|pool| {
+                pool.nodes
+                    .iter()
+                    .map(execution_log::worst_case_received_count)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        let mut exec = Self::new_multi_pool(pools);
+        exec.log_publishers = Some(
+            log_publishers
+                .into_iter()
+                .map(|p| Arc::new(Mutex::new(p)))
+                .collect(),
+        );
+        exec.per_pool_scratch_cap = per_pool_scratch_cap;
+        exec.flush_period = flush_period;
+        exec
     }
 
     fn start_threads_with(
         &mut self,
-        spawn_worker: impl Fn(Arc<PoolState>, Arc<SharedThreadPoolState>) -> thread::JoinHandle<()>,
+        spawn_worker: impl Fn(
+            Arc<PoolState>,
+            Arc<SharedThreadPoolState>,
+            Option<WorkerLoggerInit>,
+        ) -> thread::JoinHandle<()>,
     ) {
         for index in 0..self.shared_state.nodes.len() {
             let node = self.shared_state.nodes[index].lock().unwrap();
@@ -304,11 +655,29 @@ impl LiveExecutor {
             }
         }
 
-        for pool_arc in self.shared_state.enqueue_state.pools.iter() {
+        // Take the log publishers out of self so we can move each into a worker.
+        // They are assigned in pool order: pool p's workers get the publishers for
+        // the range [offset_p, offset_p + thread_count_p).
+        let log_publishers = self.log_publishers.as_ref();
+        let mut next_pub = 0usize;
+
+        for (pool_idx, pool_arc) in self.shared_state.enqueue_state.pools.iter().enumerate() {
             for _ in 0..pool_arc.thread_count {
                 let pool = pool_arc.clone();
                 let shared = self.shared_state.clone();
-                self.threads.push(spawn_worker(pool, shared));
+                let init = match log_publishers {
+                    Some(pubs) => {
+                        let publisher = pubs[next_pub].clone();
+                        next_pub += 1;
+                        Some(WorkerLoggerInit {
+                            publisher,
+                            flush_period: self.flush_period,
+                            scratch_capacity: self.per_pool_scratch_cap[pool_idx],
+                        })
+                    }
+                    None => None,
+                };
+                self.threads.push(spawn_worker(pool, shared, init));
             }
         }
 
@@ -332,10 +701,11 @@ impl LiveExecutor {
     }
 
     pub fn start_threads(&mut self) {
-        self.start_threads_with(|pool, shared| {
+        self.start_threads_with(|pool, shared, init| {
             thread::spawn(move || {
                 println!("Starting thread");
-                run_executor_thread(pool.as_ref(), shared.as_ref());
+                let logger = init.map(WorkerLogger::new);
+                run_executor_thread(pool.as_ref(), shared.as_ref(), logger);
                 println!("leaving exec cycle");
             })
         })
@@ -433,8 +803,11 @@ impl Executor for LiveExecutor {
 #[cfg(test)]
 impl LiveExecutor {
     fn start_threads_no_alloc(&mut self) {
-        self.start_threads_with(|pool, shared| {
-            thread::spawn(move || no_alloc_worker_loop(pool, shared))
+        self.start_threads_with(|pool, shared, init| {
+            thread::spawn(move || {
+                let logger = init.map(WorkerLogger::new);
+                no_alloc_worker_loop(pool, shared, logger)
+            })
         })
     }
 }
@@ -447,7 +820,7 @@ static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 mod tests {
     use std::{
         sync::{
-            Arc, OnceLock,
+            Arc, Mutex, OnceLock,
             atomic::{AtomicUsize, Ordering},
         },
         thread::sleep,
@@ -920,5 +1293,317 @@ mod tests {
         assert!(stop_result.is_ok());
 
         assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
+    }
+
+    /// A callback that drains `execution_log` messages into a shared vector, for
+    /// integration tests that inspect what the executor recorded.
+    struct ExecutionLogCollector {
+        collected: Arc<Mutex<Vec<task::execution_log::ExecutionLogMessage>>>,
+        stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+        target: usize,
+    }
+
+    impl Callback for ExecutionLogCollector {
+        fn run_generic(
+            &mut self,
+            subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let mut input =
+                OptionalInput::<task::execution_log::ExecutionLogMessage>::new_downcasted(
+                    &mut *subscribers[0],
+                );
+            while let Some(msg) = input.value().cloned() {
+                self.collected.lock().unwrap().push(msg);
+                input.clear();
+            }
+            let count = self.collected.lock().unwrap().len();
+            if count >= self.target {
+                if let Some(signal) = self.stop_signal.get() {
+                    signal.request_stop();
+                }
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<
+                task::execution_log::ExecutionLogMessage,
+            >::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 8,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+            }))]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
+
+    /// Builds the graph (publisher + subscriber on an integer channel + a
+    /// collector on the execution-log channel), opts the two data nodes into
+    /// execution logging, and wires the executor's log publishers. Returns the
+    /// executor and the shared collected-messages vector.
+    fn build_logging_executor(
+        target: usize,
+        stop_signal_cell: &Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+    ) -> (
+        LiveExecutor,
+        Arc<Mutex<Vec<task::execution_log::ExecutionLogMessage>>>,
+        Arc<AtomicUsize>,
+    ) {
+        let messages_received = Arc::new(AtomicUsize::new(0));
+
+        let publisher_node = CallbackBuilder::new(
+            "LoggingPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["exec_log_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .with_execution_logging(true)
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "LoggingSubscriber".into(),
+            Box::new(NoAllocSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: target,
+            }),
+        )
+        .with_subscriber_channels(&["exec_log_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .with_execution_logging(true)
+        .build()
+        .unwrap();
+
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let collector_node = CallbackBuilder::new(
+            "ExecutionLogCollector".into(),
+            Box::new(ExecutionLogCollector {
+                collected: collected.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target: 4,
+            }),
+        )
+        .with_subscriber_channels(&[task::execution_log::EXECUTION_LOG_CHANNEL])
+        .with_execution_duration_callback(|| time::Duration::ZERO)
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node, collector_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect data nodes");
+
+        let mut pools = vec![ThreadPoolConfig::new(1, nodes)];
+        let mut log_pubs = task::execution_log::log_publishers(&pools);
+        task::execution_log::connect(&mut pools, &mut log_pubs)
+            .expect("failed to connect execution-log publishers");
+
+        let exec = LiveExecutor::new_multi_pool_with_execution_log(
+            pools,
+            log_pubs,
+            time::Duration::from_millis(1),
+        );
+        (exec, collected, messages_received)
+    }
+
+    #[test]
+    fn test_execution_log_recording() {
+        const TARGET: usize = 20;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let stop_signal_cell = Arc::new(OnceLock::new());
+        let (mut exec, collected, _messages_received) =
+            build_logging_executor(TARGET, &stop_signal_cell);
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "executor did not self-stop within {DEADLINE_SECS}s"
+        );
+        exec.stop_threads().expect("stop failed");
+
+        let messages = collected.lock().unwrap();
+        assert!(
+            !messages.is_empty(),
+            "collector received no execution-log messages"
+        );
+
+        // Reassemble entries across messages, grouping by (node, execution_time).
+        // A node runs on one thread at a time, so (node, time) is unique per
+        // execution; split entries share it.
+        let mut any_published = false;
+        let mut any_received = false;
+        for msg in messages.iter() {
+            for entry in msg.entries.iter() {
+                if !entry.is_valid() {
+                    continue;
+                }
+                // Only our two opted-in nodes (indices 0 and 1) are logged.
+                assert!(entry.callback_node_index == 0 || entry.callback_node_index == 1);
+                for m in entry.messages.iter() {
+                    if !m.is_valid() {
+                        break;
+                    }
+                    assert!(m.header.published_at != task::time::FrameworkTime::INVALID);
+                    match m.direction {
+                        task::execution_log::Direction::Published => {
+                            // Publisher node's only publisher is ordinal 0.
+                            assert_eq!(m.ordinal, 0);
+                            any_published = true;
+                        }
+                        task::execution_log::Direction::Received => {
+                            // Subscriber node's only subscriber is ordinal 0.
+                            assert_eq!(m.ordinal, 0);
+                            any_received = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(any_published, "no published headers were recorded");
+        assert!(any_received, "no received headers were recorded");
+    }
+
+    /// A no-allocation execution-log consumer: counts via an atomic, drains the
+    /// read buffer without pushing into a `Vec` (which would allocate).
+    struct ExecutionLogCounter {
+        count: Arc<AtomicUsize>,
+    }
+
+    impl Callback for ExecutionLogCounter {
+        fn run_generic(
+            &mut self,
+            subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let mut input =
+                OptionalInput::<task::execution_log::ExecutionLogMessage>::new_downcasted(
+                    &mut *subscribers[0],
+                );
+            while input.value().is_some() {
+                self.count.fetch_add(1, Ordering::Relaxed);
+                input.clear();
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<
+                task::execution_log::ExecutionLogMessage,
+            >::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 4,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+            }))]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
+
+    /// A node that publishes on the execution-log channel must not be the
+    /// thing we count — the executor publishes those. The counter here just
+    /// drains; the publisher is the executor's internal log publisher. This
+    /// test runs the *capture* path (publisher + subscriber data nodes, both
+    /// opted in) plus the counter consumer under the process-wide
+    /// `assert_no_alloc` global allocator, driving the worker via
+    /// `start_threads_no_alloc`. The capture path must stay allocation-free.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_execution_log_no_alloc() {
+        const TARGET: usize = 30;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let stop_signal_cell = Arc::new(OnceLock::new());
+        let messages_received = Arc::new(AtomicUsize::new(0));
+
+        let publisher_node = CallbackBuilder::new(
+            "NoAllocLoggingPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["exec_log_no_alloc_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .with_execution_logging(true)
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "NoAllocLoggingSubscriber".into(),
+            Box::new(NoAllocSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET,
+            }),
+        )
+        .with_subscriber_channels(&["exec_log_no_alloc_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .with_execution_logging(true)
+        .build()
+        .unwrap();
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let collector_node = CallbackNode::new_named(
+            Box::new(ExecutionLogCounter {
+                count: counter.clone(),
+            }),
+            "ExecutionLogCounter".into(),
+        );
+
+        let mut nodes = vec![publisher_node, subscriber_node, collector_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect data nodes");
+
+        let mut pools = vec![ThreadPoolConfig::new(1, nodes)];
+        let mut log_pubs = task::execution_log::log_publishers(&pools);
+        task::execution_log::connect(&mut pools, &mut log_pubs)
+            .expect("failed to connect execution-log publishers");
+
+        let mut exec = LiveExecutor::new_multi_pool_with_execution_log(
+            pools,
+            log_pubs,
+            time::Duration::from_millis(1),
+        );
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads_no_alloc();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "executor did not self-stop within {DEADLINE_SECS}s (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+        exec.stop_threads().expect("stop failed");
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET);
+        assert!(
+            counter.load(Ordering::Relaxed) > 0,
+            "counter never drained a log message"
+        );
     }
 }

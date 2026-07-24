@@ -29,7 +29,7 @@ impl<W: Write + Send> LogFileWriter for JsonLogFileWriter<W> {
         body: &[u8],
     ) -> Result<(), crate::log_file::BoxedLogError> {
         let entry = JsonLogEntry {
-            header: header.clone(),
+            header: *header,
             channel_name: channel_name.to_owned(),
             body: body.to_vec(),
         };
@@ -78,7 +78,7 @@ impl LogFileReader for JsonLogFileReader {
     fn entry(&self, index: usize) -> Option<LogEntry<'_>> {
         let e = self.entries.get(index)?;
         Some(LogEntry {
-            header: e.header.clone(),
+            header: e.header,
             channel_name: &e.channel_name,
             serialized_body: &e.body,
         })

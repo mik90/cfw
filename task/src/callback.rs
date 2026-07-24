@@ -344,6 +344,11 @@ pub struct CallbackNode {
     name: CallbackNodeName,
 
     readiness: Arc<CallbackNodeReadiness>,
+
+    /// Whether an executor should record this node's executions in its
+    /// execution log. Default off; each executor decides whether it honors
+    /// this (and whether it was configured with execution logging at all).
+    log_executions: bool,
 }
 
 impl std::fmt::Debug for CallbackNode {
@@ -401,6 +406,7 @@ impl CallbackNode {
             execution_duration_callback: None,
             name,
             readiness,
+            log_executions: false,
         }
     }
 
@@ -442,6 +448,32 @@ impl CallbackNode {
         for publisher in self.publishers.iter_mut() {
             publisher.flush_loaned_values(timestamp);
         }
+    }
+
+    /// Flush publishers, invoking `hook` with each published message's header
+    /// (per publisher, in `publishers()` order). Used by executors that record
+    /// published headers in their execution log.
+    pub fn flush_publishers_logged(
+        &mut self,
+        timestamp: FrameworkTime,
+        hook: &mut dyn FnMut(usize, &crate::message::MessageHeader),
+    ) {
+        for (ordinal, publisher) in self.publishers.iter_mut().enumerate() {
+            publisher.flush_loaned_values_logged(timestamp, &mut |header| {
+                hook(ordinal, header);
+            });
+        }
+    }
+
+    /// Whether this node wants its executions recorded in an executor's
+    /// execution log. Executors decide whether they honor this.
+    pub fn log_executions(&self) -> bool {
+        self.log_executions
+    }
+
+    /// Toggle execution logging participation for this node. Default is off.
+    pub fn set_log_executions(&mut self, enabled: bool) {
+        self.log_executions = enabled;
     }
 
     pub fn run(&mut self, ctx: &crate::context::Context) -> Run {

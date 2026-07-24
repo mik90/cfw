@@ -34,7 +34,7 @@ pub struct Message<T> {
 impl<T: Clone> Clone for Message<T> {
     fn clone(&self) -> Self {
         Self {
-            header: self.header.clone(),
+            header: self.header,
             message: self.message.clone(),
         }
     }

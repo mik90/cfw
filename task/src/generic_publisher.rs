@@ -19,6 +19,21 @@ pub trait GenericPublisher {
 
     fn flush_loaned_values(&mut self, timestamp: FrameworkTime);
 
+    /// Flush sent loans, stamping each with `timestamp`, and invoke `hook` with
+    /// each published message's header as it is committed. Lets an executor
+    /// observe published headers (which are only valid once stamped here) for
+    /// execution logging. The default calls [`flush_loaned_values`] (no hook),
+    /// so publishers that don't participate in logging are unaffected.
+    ///
+    /// [`flush_loaned_values`]: GenericPublisher::flush_loaned_values
+    fn flush_loaned_values_logged(
+        &mut self,
+        timestamp: FrameworkTime,
+        _hook: &mut dyn FnMut(&MessageHeader),
+    ) {
+        self.flush_loaned_values(timestamp);
+    }
+
     fn allocate_arena(&mut self);
 
     fn increase_arena_size(&mut self, additional_capacity: usize);

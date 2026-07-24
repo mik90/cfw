@@ -44,6 +44,13 @@ impl<T> LoanedValue<T> {
         // SAFETY: For a loaned value to have been created, the message should have been initialized
         unsafe { (*self.ptr.payload.get()).assume_init_mut() }
     }
+
+    /// Borrow the payload (`Message<T>::message`) of this loan mutably.
+    pub(crate) fn payload_mut(&mut self) -> &mut T {
+        // SAFETY: initialized on loan.
+        let msg: &mut Message<T> = unsafe { (*self.ptr.payload.get()).assume_init_mut() };
+        &mut msg.message
+    }
 }
 
 #[allow(dead_code)]
@@ -85,40 +92,19 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
     }
 
     fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
-        for loaned_value in self.loaned_values.drain(..) {
-            if loaned_value.sent {
-                let header = MessageHeader {
-                    published_at: timestamp,
-                };
-                // SAFETY: The loaned value was initialized on loan and `loaned_value` is
-                // the only ArenaPtr to this slot at this point — clones haven't been
-                // handed to subscribers yet (that happens in the loop below). Using
-                // UnsafeCell::get() instead of DerefMut avoids creating an aliasing
-                // &mut ArenaSlot<T>, which would be UB once clones exist.
-                unsafe {
-                    (*loaned_value.ptr.payload.get()).assume_init_mut().header = header;
-                }
+        self.flush_loaned_values_with(timestamp, &mut |_header| {});
+    }
 
-                for subscriber_buffer in &mut self.subscriber_write_buffers {
-                    // Copy the arena pointer to each subscriber buffer
-                    subscriber_buffer.buffer.write(loaned_value.ptr.clone());
+    fn flush_loaned_values_logged(
+        &mut self,
+        timestamp: FrameworkTime,
+        hook: &mut dyn FnMut(&MessageHeader),
+    ) {
+        self.flush_loaned_values_with(timestamp, hook);
+    }
 
-                    // Notify the target CallbackNode's readiness: set the
-                    // gating bit for required inputs, nudge the node for
-                    // optional+trigger inputs (it enqueues if the required
-                    // inputs are ready).
-                    match &subscriber_buffer.readiness {
-                        Some(SubscriberReadiness::Gating(readiness, bit_index)) => {
-                            readiness.set_bit(*bit_index);
-                        }
-                        Some(SubscriberReadiness::OptionalTrigger(readiness)) => {
-                            readiness.enqueue_if_ready();
-                        }
-                        None => {}
-                    }
-                }
-            }
-        }
+    fn allocate_arena(&mut self) {
+        self.arena.allocate_slots();
     }
 
     fn for_each_pending_output(&self, f: &mut dyn FnMut(&MessageHeader, &dyn Any)) {
@@ -127,10 +113,6 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
             let value: &Message<T> = unsafe { (*loaned.ptr.payload.get()).assume_init_ref() };
             f(&value.header, &value.message as &dyn Any);
         }
-    }
-
-    fn allocate_arena(&mut self) {
-        self.arena.allocate_slots();
     }
 
     fn increase_arena_size(&mut self, additional_capacity: usize) {
@@ -173,6 +155,52 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
 }
 
 impl<T> Publisher<T> {
+    /// Shared flush implementation: stamp each sent loan with `timestamp`,
+    /// fan it out to subscriber write buffers, and invoke `hook` with each
+    /// published header. Used by both the plain and logged flush paths.
+    fn flush_loaned_values_with(
+        &mut self,
+        timestamp: FrameworkTime,
+        hook: &mut dyn FnMut(&MessageHeader),
+    ) {
+        for loaned_value in self.loaned_values.drain(..) {
+            if loaned_value.sent {
+                let header = MessageHeader {
+                    published_at: timestamp,
+                };
+                // SAFETY: The loaned value was initialized on loan and `loaned_value` is
+                // the only ArenaPtr to this slot at this point — clones haven't been
+                // handed to subscribers yet (that happens in the loop below). Using
+                // UnsafeCell::get() instead of DerefMut avoids creating an aliasing
+                // &mut ArenaSlot<T>, which would be UB once clones exist.
+                unsafe {
+                    (*loaned_value.ptr.payload.get()).assume_init_mut().header = header;
+                }
+
+                hook(&header);
+
+                for subscriber_buffer in &mut self.subscriber_write_buffers {
+                    // Copy the arena pointer to each subscriber buffer
+                    subscriber_buffer.buffer.write(loaned_value.ptr.clone());
+
+                    // Notify the target CallbackNode's readiness: set the
+                    // gating bit for required inputs, nudge the node for
+                    // optional+trigger inputs (it enqueues if the required
+                    // inputs are ready).
+                    match &subscriber_buffer.readiness {
+                        Some(SubscriberReadiness::Gating(readiness, bit_index)) => {
+                            readiness.set_bit(*bit_index);
+                        }
+                        Some(SubscriberReadiness::OptionalTrigger(readiness)) => {
+                            readiness.enqueue_if_ready();
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+
     pub fn new(config: PublisherConfig) -> Self {
         let capacity = config.capacity;
         Publisher {
@@ -214,6 +242,21 @@ impl<T> Publisher<T> {
 
     pub(crate) fn loaned_value_at_mut(&mut self, index: usize) -> &mut LoanedValue<T> {
         &mut self.loaned_values[index]
+    }
+
+    /// Mutably borrow the payload (`Message<T>::message`) of an outstanding
+    /// loan by index. Lets a long-lived loan be mutated in place across
+    /// several writes before being sent — used by executors that fill an
+    /// execution-log message over multiple executions before flushing it.
+    pub fn loaned_payload_mut(&mut self, index: usize) -> &mut T {
+        let msg: &mut Message<T> = self.loaned_value_at_mut(index).value_mut();
+        &mut msg.message
+    }
+
+    /// Mark an outstanding loan as sent so a subsequent `flush_loaned_values`
+    /// will publish it. Paired with [`loan_default`] / [`loaned_payload_mut`].
+    pub fn mark_loan_sent(&mut self, index: usize) {
+        self.loaned_value_at_mut(index).sent = true;
     }
 
     pub(crate) fn loaned_values_at(
@@ -372,6 +415,14 @@ impl<T: Default + 'static, F: 'static> GenericPublisher for ForwardingPublisher<
 
     fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
         GenericPublisher::flush_loaned_values(&mut self.inner, timestamp);
+    }
+
+    fn flush_loaned_values_logged(
+        &mut self,
+        timestamp: FrameworkTime,
+        hook: &mut dyn FnMut(&MessageHeader),
+    ) {
+        self.inner.flush_loaned_values_with(timestamp, hook);
     }
 
     fn allocate_arena(&mut self) {

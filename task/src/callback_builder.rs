@@ -15,6 +15,8 @@ pub struct CallbackBuilder {
     next_execution_time_callback: Option<Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>>,
     execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
 
+    log_executions: bool,
+
     name: CallbackNodeName,
 
     /// First error seen in build tree.
@@ -78,6 +80,7 @@ impl CallbackBuilder {
             generic_callback: callback,
             next_execution_time_callback: None,
             execution_duration_callback: None,
+            log_executions: false,
             first_error: None,
         }
     }
@@ -135,6 +138,13 @@ impl CallbackBuilder {
         self
     }
 
+    /// Toggle whether this callback's executions should be recorded in an
+    /// executor's execution log. Default is off.
+    pub fn with_execution_logging(mut self, enabled: bool) -> CallbackBuilder {
+        self.log_executions = enabled;
+        self
+    }
+
     pub fn build(self) -> Result<CallbackNode, CallbackBuildError> {
         if let Some(error) = self.first_error {
             return Err(error);
@@ -146,6 +156,10 @@ impl CallbackBuilder {
             self.publishers,
             self.name,
         );
+
+        if self.log_executions {
+            callback.set_log_executions(true);
+        }
 
         if let Some(execution_duration_callback) = self.execution_duration_callback {
             callback.set_execution_duration_callback(execution_duration_callback);
