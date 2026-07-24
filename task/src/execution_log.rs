@@ -228,8 +228,10 @@ mod tests {
 
     #[test]
     fn sentinel_occupancy_walks_messages_then_next_entry() {
-        let mut entry = ExecutionLogEntry::default();
-        entry.execution_time = FrameworkTime::from_nanoseconds(1);
+        let mut entry = ExecutionLogEntry {
+            execution_time: FrameworkTime::from_nanoseconds(1),
+            ..Default::default()
+        };
         // Fill 3 of 24 message slots with valid headers; rest stay INVALID.
         for i in 0..3 {
             entry.messages[i] = LoggedMessage {
@@ -252,14 +254,18 @@ mod tests {
         let t = FrameworkTime::from_nanoseconds(7);
         let dur = 1234u64;
 
-        let mut a = ExecutionLogEntry::default();
-        a.callback_node_index = node;
-        a.execution_time = t;
-        a.execution_duration_ns = dur;
-        let mut b = ExecutionLogEntry::default();
-        b.callback_node_index = node;
-        b.execution_time = t;
-        b.execution_duration_ns = dur;
+        let a = ExecutionLogEntry {
+            callback_node_index: node,
+            execution_time: t,
+            execution_duration_ns: dur,
+            ..Default::default()
+        };
+        let b = ExecutionLogEntry {
+            callback_node_index: node,
+            execution_time: t,
+            execution_duration_ns: dur,
+            ..Default::default()
+        };
 
         assert_eq!(a.callback_node_index, b.callback_node_index);
         assert_eq!(a.execution_time, b.execution_time);
