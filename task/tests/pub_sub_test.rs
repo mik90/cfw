@@ -1,5 +1,4 @@
 #[cfg(test)]
-
 mod tests {
     use task::generic_publisher::*;
     use task::generic_subscriber::*;

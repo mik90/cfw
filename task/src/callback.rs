@@ -564,7 +564,6 @@ impl Drop for CallbackNode {
 mod test {
 
     use std::sync::atomic::AtomicUsize;
-    use std::usize;
 
     use super::*;
     use crate::subscriber::{Subscriber, SubscriberConfig};

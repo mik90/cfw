@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_arena_ptr() {
-        let mut slot = ArenaSlot::<u32>::default();
+        let slot = ArenaSlot::<u32>::default();
 
         let maybe_ptr = ArenaPtr::try_new(&slot);
         assert!(maybe_ptr.is_some());
@@ -387,6 +387,7 @@ mod tests {
             drop(ptr1);
             assert_eq!(ptr1_clone.ref_count.load(atomic::Ordering::Relaxed), 1);
 
+            // SAFETY: This is a unit test, and we did init the payload before cloning
             unsafe {
                 assert_eq!((*ptr1_clone.payload.get()).assume_init_read(), 1);
                 assert_eq!((*ptr2.payload.get()).assume_init_read(), 2);

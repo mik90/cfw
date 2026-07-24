@@ -1,5 +1,4 @@
 #[cfg(test)]
-
 mod tests {
     use task::callback::Callback;
     use task::forwarded_message::ForwardedMessage;
