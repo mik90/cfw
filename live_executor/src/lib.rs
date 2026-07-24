@@ -861,9 +861,10 @@ mod tests {
         ) -> Run {
             let run_number = self.run_count.fetch_add(1, Ordering::SeqCst) + 1;
             if run_number >= self.target_runs
-                && let Some(signal) = self.stop_signal.get() {
-                    signal.request_stop();
-                }
+                && let Some(signal) = self.stop_signal.get()
+            {
+                signal.request_stop();
+            }
             Run::new(1)
         }
 
@@ -923,9 +924,10 @@ mod tests {
             while input.value().is_some() {
                 let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
                 if count >= self.target_count
-                    && let Some(signal) = self.stop_signal.get() {
-                        signal.request_stop();
-                    }
+                    && let Some(signal) = self.stop_signal.get()
+                {
+                    signal.request_stop();
+                }
                 input.clear();
             }
             Run::new(1)
@@ -962,9 +964,10 @@ mod tests {
             let _input = RequiredInput::<u64>::new_downcasted(&mut *subscribers[0]);
             let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
             if count >= self.target_count
-                && let Some(signal) = self.stop_signal.get() {
-                    signal.request_stop();
-                }
+                && let Some(signal) = self.stop_signal.get()
+            {
+                signal.request_stop();
+            }
             Run::new(1)
         }
 
@@ -1317,9 +1320,10 @@ mod tests {
             }
             let count = self.collected.lock().unwrap().len();
             if count >= self.target
-                && let Some(signal) = self.stop_signal.get() {
-                    signal.request_stop();
-                }
+                && let Some(signal) = self.stop_signal.get()
+            {
+                signal.request_stop();
+            }
             Run::new(1)
         }
 
