@@ -52,7 +52,10 @@ In order of priority
   - [x] create workflow to log data
   - [ ] add code to parse logged data and replay specific executions
   - [ ] configuration to log only execution duration (so, execution log enum for options)
-- [ ] provide a stop message that the executor can subscribe to
+- [ ] live replay executor
+  - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
+  - useful for development of viz tools
+- [ ] add log replay task to simulation executor to run over logged data
 - [ ] allow for foreign subscribers/publishers such as iceoryx2
   - we should be able to swap out foreign/native impls per task at build/configuration time
   - arena configuration may be different per backing pub/sub system
@@ -69,9 +72,7 @@ In order of priority
 - [x] unit test executor (in `testing`)
   - allows for testing whole tasks in unit test, based on sim executor
 - [ ] dump connections in graphviz or some other diagram tool
-- [ ] live replay executor
-  - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
-  - useful for development of viz tools
+- [ ] provide a stop message that the executor can subscribe to
 - [ ] flesh out callback construction and how we want to handle configuration
 - [ ] do some better testing to ensure that users can't hold onto reference of messages in the pub/sub system
 - [ ] see if I should use pins in the arenas to avoid moving MaybeUninit, the current setup may suffice
