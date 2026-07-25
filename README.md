@@ -81,6 +81,12 @@ In order of priority
 - [ ] inputs should just store ref or optional ref of type instead of entire subscriber
 - [ ] readiness shouldn't be limited to 64 inputs, use an array or vec or something to contain many atomic bitsets
 - [ ] log queue capacity shouldn't have a default value of 10, and we should have better configuration for per channel configuration
+- [ ] register loggable types even without macro usage (how??)
+- [ ] impl mpsc queue https://blog.bearcats.nl/simple-message-queue/ (modified rigtorp?) to replace cross-beam channel usage which is MPMC
+- [ ] interned channel names and callback names to avoid allocations
+    - use arena type, maybe leak at startup?
+    - we could write mapping of intern ID to values to disk at build time
+    - mainly relevant for publishing channel names at runtime
 
 ## Debugging tips
 
