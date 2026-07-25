@@ -45,11 +45,17 @@ impl<T> LoanedValue<T> {
         unsafe { (*self.ptr.payload.get()).assume_init_mut() }
     }
 
+    pub(crate) fn payload(&self) -> &T {
+        &self.value().message
+    }
+
     /// Borrow the payload (`Message<T>::message`) of this loan mutably.
     pub(crate) fn payload_mut(&mut self) -> &mut T {
-        // SAFETY: initialized on loan.
-        let msg: &mut Message<T> = unsafe { (*self.ptr.payload.get()).assume_init_mut() };
-        &mut msg.message
+        &mut self.value_mut().message
+    }
+
+    pub(crate) fn header(&self) -> &MessageHeader {
+        &self.value().header
     }
 }
 
