@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::callback::CallbackNode;
 
+#[derive(Debug)]
 pub struct ThreadPoolConfig {
     pub thread_count: usize,
     pub nodes: Vec<CallbackNode>,

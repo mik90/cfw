@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use logging::{self, ChannelRegistry};
-use task::execution_log;
 use task::task_graph_builder::TaskGraphBuilder;
 
 #[derive(Parser, Debug)]
@@ -39,40 +38,29 @@ fn main() {
     // task_macros auto-registers types but the test tasks don't use it so we have to register them manually.
     registry.register_loggable::<u64>();
     registry.register_loggable::<String>();
+    registry.register_loggable::<task::execution_log::ExecutionLogMessage>();
     let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
         config, registry,
     ));
-    let mut graph = TaskGraphBuilder::new()
-        .add_callback(test_tasks::IncrementingIntegerPublisher::build_callback_node())
-        .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
-        .add_callback(test_tasks::StringCollector::build_callback_node_lite())
+    let graph = TaskGraphBuilder::new()
+        .add_pool(thread_count, |p| {
+            p.add_callback(test_tasks::IncrementingIntegerPublisher::build_callback_node())
+                .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
+                .add_callback(test_tasks::StringCollector::build_callback_node_lite())
+        })
         .add_build_step(logging_build_step)
+        .with_log_executions(true)
         .build()
         .expect("Could not build task graph");
 
-    // Opt every callback node into execution logging. Each executor that's
-    // configured with execution-log publishers will then record its runs.
-    for node in graph.nodes.iter_mut() {
-        node.set_log_executions(true);
-    }
-
-    // Package the nodes into a single pool, then create one execution-log
-    // publisher per worker thread and wire it into the graph. No node here
-    // subscribes to the execution-log channel, so the publishers have no
-    // subscriber — they loan log messages and harmlessly discard them on
-    // flush. Subscribe a node to `execution_log` (see `execution_log::connect`)
-    // to actually drain them.
-    let mut pools = vec![task::executor::ThreadPoolConfig::new(
-        thread_count,
-        graph.nodes,
-    )];
-    let mut log_pubs = execution_log::log_publishers(&pools);
-    execution_log::connect(&mut pools, &mut log_pubs)
-        .expect("failed to connect execution-log publishers");
-
+    // No node here subscribes to the execution-log channel, so the
+    // publishers have no subscriber — they loan log messages and
+    // harmlessly discard them on flush. Subscribe a node to `execution_log`
+    // (by registering `ExecutionLogMessage` in the `ChannelRegistry`) to
+    // actually drain them.
     let mut executor = live_executor::LiveExecutor::new_multi_pool_with_execution_log(
-        pools,
-        log_pubs,
+        graph.pools,
+        graph.execution_log_publishers,
         Duration::from_millis(500),
     );
     executor.start_threads();

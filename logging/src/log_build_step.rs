@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use task::callback::{Callback, CallbackNode};
 use task::channel_registry::ChannelRegistry;
+use task::execution_log::{ExecutionLogMessage, EXECUTION_LOG_CHANNEL};
 use task::generic_subscriber::GenericSubscriber;
+use task::subscriber::{Subscriber, SubscriberConfig};
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 
 use crate::log_file::SharedLogFileWriter;
@@ -111,6 +113,27 @@ impl TaskGraphBuildStep for LoggingBuildStep {
                 channel_loggers.push(ChannelLogger::new(channel_name, serializer));
                 subscribers.push(subscriber);
             }
+        }
+
+        // Execution-log channel is published on by per-thread publishers in
+        // the executor, not by any callback node. Create a subscriber here
+        // unconditionally so the LogTask can drain and log execution metadata.
+        // Silently skipped if ExecutionLogMessage wasn't registered in the
+        // ChannelRegistry (same behavior as regular publisher introspection).
+        if let Some(serializer) = self
+            .registry
+            .serializer_for(std::any::TypeId::of::<ExecutionLogMessage>())
+        {
+            let sub_config = SubscriberConfig {
+                is_optional: true,
+                capacity: DEFAULT_LOG_QUEUE_CAPACITY,
+                is_trigger: false,
+                keep_across_runs: true,
+                channel_name: EXECUTION_LOG_CHANNEL.into(),
+            };
+            let subscriber = Box::new(Subscriber::<ExecutionLogMessage>::new(sub_config));
+            channel_loggers.push(ChannelLogger::new(EXECUTION_LOG_CHANNEL.into(), serializer));
+            subscribers.push(subscriber);
         }
 
         // No loggable channels found → skip adding LogTask nodes entirely.

@@ -594,12 +594,10 @@ impl LiveExecutor {
 
     /// Create a multi-pool executor that records execution logs.
     ///
-    /// `log_publishers` must contain exactly one [`Publisher<ExecutionLogMessage>`]
-    /// per worker thread (sum of `thread_count` across `pools`), created with
-    /// [`execution_log::log_publishers`] and wired into the graph with
-    /// [`execution_log::connect`] *before* this call. They are moved into the
-    /// worker threads 1:1 at [`start_threads`] (each publisher has a single
-    /// writer, so no synchronization is needed).
+    /// Publishers are typically created by [`task_graph_builder::TaskGraphBuilder::build`]
+    /// via [`execution_log::create_and_wire_log_publishers`]. They are moved
+    /// into the worker threads 1:1 at [`start_threads`] (each publisher has a
+    /// single writer, so no synchronization is needed).
     ///
     /// `flush_period` is the wall-clock cadence at which a worker publishes a
     /// partially-filled log message (in addition to publishing on fill and on
@@ -609,10 +607,9 @@ impl LiveExecutor {
         log_publishers: Vec<Publisher<ExecutionLogMessage>>,
         flush_period: Duration,
     ) -> Self {
-        let total_threads: usize = pools.iter().map(|p| p.thread_count).sum();
-        assert_eq!(
+        debug_assert_eq!(
             log_publishers.len(),
-            total_threads,
+            pools.iter().map(|p| p.thread_count).sum::<usize>(),
             "execution-log publisher count must equal the total worker thread count"
         );
 

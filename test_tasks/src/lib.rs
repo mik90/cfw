@@ -33,17 +33,19 @@ pub fn build_fizz_buzz_callback_nodes() -> (Vec<CallbackNode>, FizzBuzzTaskInfo)
     let stop_signal = Arc::new(OnceLock::new());
 
     let build_result = TaskGraphBuilder::new()
-        .add_callback(IncrementingIntegerPublisher::build_callback_node())
-        .add_callback(FizzBuzzCalculator::build_callback_node())
-        .add_callback(StringCollector::build_callback_node(
-            string_store.clone(),
-            stop_signal.clone(),
-            1,
-        ))
+        .add_pool(1, |p| {
+            p.add_callback(IncrementingIntegerPublisher::build_callback_node())
+                .add_callback(FizzBuzzCalculator::build_callback_node())
+                .add_callback(StringCollector::build_callback_node(
+                    string_store.clone(),
+                    stop_signal.clone(),
+                    1,
+                ))
+        })
         .build();
 
     let nodes = match build_result {
-        Ok(result) => result.nodes,
+        Ok(mut result) => result.pools.remove(0).nodes,
         Err(err) => panic!("Build result was {}", err),
     };
 

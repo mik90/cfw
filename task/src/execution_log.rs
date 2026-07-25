@@ -7,6 +7,10 @@ use crate::publisher::{GenericPublisher, Publisher, PublisherConfig};
 use crate::time::FrameworkTime;
 
 use crate::generic_publisher::ConnectionTypeMismatch;
+#[cfg(feature = "serde")]
+use crate::loggable::{DeserializeError, Loggable, SerializeError};
+#[cfg(feature = "serde")]
+use std::io::Write;
 
 /// Channel every execution-log publisher publishes on.
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
@@ -111,6 +115,41 @@ impl ExecutionLogMessage {
     /// First invalid (unused) entry slot in this message, or `None` if full.
     pub fn next_free_entry(&self) -> Option<usize> {
         self.entries.iter().position(|e| !e.is_valid())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Loggable for ExecutionLogMessage {
+    type Context<'a> = ();
+
+    fn serialize(&self, w: &mut dyn Write) -> Result<(), SerializeError> {
+        #[derive(serde::Serialize)]
+        struct Helper<'a> {
+            number_of_dropped_entries: usize,
+            entries: &'a [ExecutionLogEntry],
+        }
+        let helper = Helper {
+            number_of_dropped_entries: self.number_of_dropped_entries.0,
+            entries: &self.entries,
+        };
+        serde_json::to_writer(w, &helper).map_err(SerializeError::SerdeJson)
+    }
+
+    fn deserialize_with_ctx(bytes: &[u8], _ctx: ()) -> Result<Self, DeserializeError> {
+        #[derive(serde::Deserialize)]
+        struct Helper {
+            number_of_dropped_entries: usize,
+            entries: Vec<ExecutionLogEntry>,
+        }
+        let helper: Helper =
+            serde_json::from_slice(bytes).map_err(DeserializeError::SerdeJson)?;
+        let mut entries = [ExecutionLogEntry::default(); ENTRIES_PER_MESSAGE];
+        let len = helper.entries.len().min(ENTRIES_PER_MESSAGE);
+        entries[..len].copy_from_slice(&helper.entries[..len]);
+        Ok(ExecutionLogMessage {
+            number_of_dropped_entries: Saturating(helper.number_of_dropped_entries),
+            entries,
+        })
     }
 }
 
