@@ -47,10 +47,11 @@ In order of priority
   - I'll need to consider logging executions and message queues for this
   - Should allow for reproduction of a given message
   - populate all intermediate non-logged messages
-  - [ ] optionally log executions via publisher in other (threadpool / sim executor)
-  - [ ] see if we can avoid more allocations with Vecs in logging
-  - [ ] create workflow to log data
+  - [x] optionally log executions via publisher in other (threadpool / sim executor)
+  - [x] see if we can avoid more allocations with Vecs in logging
+  - [x] create workflow to log data
   - [ ] add code to parse logged data and replay specific executions
+  - [ ] configuration to log only execution duration (so, execution log enum for options)
 - [ ] provide a stop message that the executor can subscribe to
 - [ ] allow for foreign subscribers/publishers such as iceoryx2
   - we should be able to swap out foreign/native impls per task at build/configuration time
