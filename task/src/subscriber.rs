@@ -1,9 +1,9 @@
 use crate::callback::SubscriberReadiness;
-use base::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
 use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
+use base::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 
 pub struct PublishError {}
 

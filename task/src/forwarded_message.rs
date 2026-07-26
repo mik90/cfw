@@ -1,5 +1,5 @@
-use base::arena::ArenaReaderPtr;
 use crate::message::Message;
+use base::arena::ArenaReaderPtr;
 use std::ops::Deref;
 
 enum ForwardedMessagePtr<T> {
