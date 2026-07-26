@@ -54,18 +54,20 @@ impl<T> MpscQueue<T> {
     }
 }
 
+///  https://blog.bearcats.nl/simple-message-queue/ (modified rigtorp?) to replace cross-beam channel usage which is MPMC
 pub struct MpscQueue2<T> {
     /// Cumulative count of elements displaced by `push` due to overflow.
     dropped: AtomicUsize,
     marker: std::marker::PhantomData<T>,
+    /// TODO Align by cache width similar to cache_padded.rs in crossbeam
+    write_ticket: AtomicUsize,
+    read_ticket: usize,
+    capacity: usize,
 }
 
 impl<T> MpscQueue2<T> {
     pub fn new(_capacity: usize) -> Self {
-        Self {
-            marker: std::marker::PhantomData,
-            dropped: AtomicUsize::new(0),
-        }
+        todo!()
     }
 
     pub fn push(&self, _value: T) -> bool {
