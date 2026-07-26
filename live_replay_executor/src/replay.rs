@@ -111,17 +111,8 @@ impl TaskGraphBuildStep for ReplayBuildStep {
 
     fn build_step(
         &self,
-        nodes: &[CallbackNode],
+        _nodes: &[CallbackNode],
     ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
-        let existing_channels: HashSet<ChannelName> = nodes
-            .iter()
-            .flat_map(|n| {
-                n.publishers()
-                    .iter()
-                    .map(|p| p.config().channel_name.clone())
-            })
-            .collect();
-
         let mut replay_channels: Vec<(ChannelName, std::any::TypeId)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for entry in &self.entries {
@@ -146,17 +137,6 @@ impl TaskGraphBuildStep for ReplayBuildStep {
 
         if replay_channels.is_empty() {
             return Ok(vec![]);
-        }
-
-        for (channel, _) in &replay_channels {
-            if existing_channels.contains(channel.as_str()) {
-                return Err(format!(
-                    "ReplayBuildStep: channel '{}' already has a publisher in the graph \
-                     — remove the original publisher or add '{}' to the denylist",
-                    channel, channel
-                )
-                .into());
-            }
         }
 
         let mut publishers: Vec<Box<dyn GenericPublisher>> = Vec::new();
@@ -265,7 +245,7 @@ mod tests {
     use task::context::Context;
     use task::executor::ExecutorStopSignal;
     use task::input::OptionalInput;
-    use task::publisher::{Publisher, PublisherConfig};
+    use task::publisher::Publisher;
     use task::subscriber::{Subscriber, SubscriberConfig};
     use task::time::FrameworkTime;
 
@@ -445,64 +425,5 @@ mod tests {
 
         let nodes = build_step.build_step(&[]).unwrap();
         assert!(nodes.is_empty());
-    }
-
-    #[test]
-    fn test_existing_publisher_is_rejected() {
-        use task::callback::{Callback, CallbackNode, Run};
-        use task::context::Context;
-        use task::generic_publisher::GenericPublisher;
-        use task::generic_subscriber::GenericSubscriber;
-
-        struct PublisherOnInteger;
-        impl Callback for PublisherOnInteger {
-            fn run_generic(
-                &mut self,
-                _subscribers: &mut [Box<dyn GenericSubscriber>],
-                _publishers: &mut [Box<dyn GenericPublisher>],
-                _ctx: &Context,
-            ) -> Run {
-                Run::new(0)
-            }
-            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-                vec![]
-            }
-            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-                vec![Box::new(Publisher::<u64>::new(PublisherConfig {
-                    capacity: 1,
-                    channel_name: "integer".into(),
-                }))]
-            }
-        }
-
-        let mut registry = ChannelRegistry::new();
-        registry.register_channel::<u64>("integer".into());
-        let registry = Arc::new(registry);
-
-        let entries = vec![OwnedLogEntry {
-            header: task::message::MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
-            channel_name: "integer".into(),
-            serialized_body: vec![],
-        }];
-
-        let stop_signal_cell = Arc::new(OnceLock::new());
-        let build_step = ReplayBuildStep {
-            entries,
-            registry,
-            denylist: HashSet::new(),
-            stop_signal_cell,
-        };
-
-        let existing = CallbackNode::new_with(
-            Box::new(PublisherOnInteger),
-            vec![],
-            PublisherOnInteger.build_publishers(),
-            "IntegerPublisher".into(),
-        );
-        let result = build_step.build_step(&[existing]);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("integer"));
-        assert!(err.contains("already has a publisher"));
     }
 }
