@@ -1,5 +1,8 @@
 use crossbeam_queue::ArrayQueue;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    marker::PhantomData,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 /// A bounded, lock-free MPSC queue backed by `crossbeam_queue::ArrayQueue`.
 /// When the queue is full, `push` displaces the oldest element (front) to make room.
@@ -51,5 +54,44 @@ impl<T> MpscQueue<T> {
 
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+}
+
+pub(crate) struct MpscQueue2<T> {
+    /// Cumulative count of elements displaced by `push` due to overflow.
+    dropped: AtomicUsize,
+    marker: std::marker::PhantomData<T>,
+}
+
+impl<T> MpscQueue2<T> {
+    pub fn new(_capacity: usize) -> Self {
+        Self {
+            marker: std::marker::PhantomData,
+            dropped: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn push(&self, _value: T) -> bool {
+        todo!()
+    }
+
+    pub fn dropped(&self) -> usize {
+        todo!()
+    }
+
+    pub fn pop(&self) -> Option<T> {
+        todo!()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        todo!()
+    }
+
+    pub fn clear(&self) {
+        todo!()
+    }
+
+    pub fn len(&self) -> usize {
+        todo!()
     }
 }
