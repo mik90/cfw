@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use task::callback::{Callback, CallbackNode};
 use task::channel_registry::ChannelRegistry;
-use task::execution_log::{ExecutionLogMessage, EXECUTION_LOG_CHANNEL};
+use task::execution_log::{EXECUTION_LOG_CHANNEL, ExecutionLogMessage};
 use task::generic_subscriber::GenericSubscriber;
 use task::subscriber::{Subscriber, SubscriberConfig};
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};

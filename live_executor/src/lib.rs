@@ -9,6 +9,7 @@ use std::time::Duration;
 use task::execution_log::{
     self, Direction, ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
 };
+use task::executor::{TimeSource, WallClock};
 use task::message::MessageHeader;
 use task::publisher::{GenericPublisher, Publisher};
 use task::time::FrameworkTime;
@@ -128,9 +129,10 @@ impl fmt::Display for SharedThreadPoolState {
     }
 }
 
-pub struct LiveExecutor {
+pub struct LiveExecutor<T: TimeSource = WallClock> {
     threads: Vec<thread::JoinHandle<()>>,
     shared_state: Arc<SharedThreadPoolState>,
+    time_source: Arc<T>,
     /// Per-worker execution-log publishers, consumed (moved into worker threads)
     /// by `start_threads`. `None` when logging is off.
     log_publishers: Option<Vec<Arc<Mutex<Publisher<ExecutionLogMessage>>>>>,
@@ -141,11 +143,12 @@ pub struct LiveExecutor {
     flush_period: Duration,
 }
 
-fn periodic_trigger_thread(
+fn periodic_trigger_thread<T: TimeSource>(
     shared_state: &SharedThreadPoolState,
     exec_times: &mut VecDeque<TimeTriggeredNode>,
+    time_source: &T,
 ) {
-    let now = task::time::FrameworkTime::from_wall_clock();
+    let now = time_source.now();
 
     let maybe_earliest = exec_times
         .iter()
@@ -179,7 +182,7 @@ fn periodic_trigger_thread(
     // rescheduling — against a fresh timestamp is essential: comparing against the
     // stale `now` can make the node look "not due yet" forever once it actually
     // becomes overdue, permanently livelocking its periodic trigger.
-    let now = task::time::FrameworkTime::from_wall_clock();
+    let now = time_source.now();
 
     if now >= time_triggered_node.requested_exec_time {
         shared_state
@@ -245,14 +248,14 @@ struct WorkerLoggerInit {
 }
 
 impl WorkerLogger {
-    fn new(init: WorkerLoggerInit) -> Self {
+    fn new(init: WorkerLoggerInit, now: FrameworkTime) -> Self {
         let publisher = init.publisher.clone();
         let current_loan = publisher.lock().unwrap().loan_default().ok();
         WorkerLogger {
             current_loan,
             publisher,
             flush_period: init.flush_period,
-            last_flush: FrameworkTime::from_wall_clock(),
+            last_flush: now,
             cur_node: 0,
             cur_time: FrameworkTime::INVALID,
             cur_duration: Duration::ZERO,
@@ -410,13 +413,14 @@ pub(crate) fn process_work_item(
     index: usize,
     shared_state: &SharedThreadPoolState,
     logger: Option<&mut WorkerLogger>,
+    now: FrameworkTime,
 ) {
     // Clear the enqueued flag before running so any triggers that arrive during
     // execution are captured, not dropped
     shared_state.enqueue_state.node_enqueued[index].store(false, Ordering::Release);
 
     let mut node_guard = shared_state.nodes[index].lock().unwrap();
-    let ctx = Context::new(task::time::FrameworkTime::from_wall_clock());
+    let ctx = Context::new(now);
 
     match logger {
         Some(logger) => {
@@ -474,10 +478,11 @@ pub(crate) fn process_work_item(
     }
 }
 
-fn run_executor_thread(
+fn run_executor_thread<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
     mut logger: Option<WorkerLogger>,
+    time_source: &T,
 ) {
     loop {
         // Block waiting on work
@@ -492,13 +497,13 @@ fn run_executor_thread(
             break;
         }
 
-        process_work_item(index, shared_state, logger.as_mut());
+        process_work_item(index, shared_state, logger.as_mut(), time_source.now());
     }
 
     // Flush any partially-filled log message on graceful exit so trailing
     // entries aren't lost.
     if let Some(logger) = logger.as_mut() {
-        logger.flush_remaining(task::time::FrameworkTime::from_wall_clock());
+        logger.flush_remaining(time_source.now());
     }
 }
 
@@ -507,6 +512,7 @@ fn no_alloc_worker_loop(
     pool: Arc<PoolState>,
     shared: Arc<SharedThreadPoolState>,
     mut logger: Option<WorkerLogger>,
+    time_source: Arc<WallClock>,
 ) {
     loop {
         let index = match pool.work_rx.recv() {
@@ -517,28 +523,19 @@ fn no_alloc_worker_loop(
         if !shared.should_run.load(Ordering::Relaxed) {
             break;
         }
-        assert_no_alloc::assert_no_alloc(|| process_work_item(index, &shared, logger.as_mut()));
+        assert_no_alloc::assert_no_alloc(|| {
+            process_work_item(index, &shared, logger.as_mut(), time_source.now())
+        });
     }
 
     if let Some(logger) = logger.as_mut() {
         // Flush-on-exit happens outside the no-alloc window (no constraint on it).
-        logger.flush_remaining(task::time::FrameworkTime::from_wall_clock());
+        logger.flush_remaining(time_source.now());
     }
 }
 
-impl LiveExecutor {
-    /// Create a single shared thread pool with `num_threads` workers for all callback nodes.
-    pub fn new(num_threads: usize, nodes: Vec<CallbackNode>) -> Self {
-        Self::new_multi_pool(vec![ThreadPoolConfig::new(num_threads, nodes)])
-    }
-
-    /// Create multiple independent thread pools in one executor.
-    ///
-    /// Callback nodes in different pools execute on separate worker threads, enabling
-    /// priority separation: put latency-sensitive nodes in a pool with dedicated
-    /// threads and background nodes in another. The periodic trigger thread and
-    /// node storage are shared across all pools to minimise overhead.
-    pub fn new_multi_pool(pools: Vec<ThreadPoolConfig>) -> Self {
+impl<T: TimeSource + 'static> LiveExecutor<T> {
+    fn new_multi_pool_core(pools: Vec<ThreadPoolConfig>, time_source: T) -> Self {
         let mut all_arc_nodes: Vec<Arc<Mutex<CallbackNode>>> = Vec::new();
         let mut node_to_pool: Vec<usize> = Vec::new();
         let mut pool_states: Vec<Arc<PoolState>> = Vec::new();
@@ -586,26 +583,24 @@ impl LiveExecutor {
         LiveExecutor {
             threads: Vec::new(),
             shared_state,
+            time_source: Arc::new(time_source),
             log_publishers: None,
             per_pool_scratch_cap: Vec::new(),
             flush_period: DEFAULT_LOG_FLUSH_PERIOD,
         }
     }
 
-    /// Create a multi-pool executor that records execution logs.
-    ///
-    /// Publishers are typically created by [`task_graph_builder::TaskGraphBuilder::build`]
-    /// via [`execution_log::create_and_wire_log_publishers`]. They are moved
-    /// into the worker threads 1:1 at [`start_threads`] (each publisher has a
-    /// single writer, so no synchronization is needed).
-    ///
-    /// `flush_period` is the wall-clock cadence at which a worker publishes a
-    /// partially-filled log message (in addition to publishing on fill and on
-    /// exit). Use [`DEFAULT_LOG_FLUSH_PERIOD`] for 500ms.
-    pub fn new_multi_pool_with_execution_log(
+    /// Create a multi-pool executor with a custom time source.
+    pub fn new_multi_pool_with_time(pools: Vec<ThreadPoolConfig>, time_source: T) -> Self {
+        Self::new_multi_pool_core(pools, time_source)
+    }
+
+    /// Create a multi-pool executor with execution logging and a custom time source.
+    pub fn new_multi_pool_with_execution_log_and_time(
         pools: Vec<ThreadPoolConfig>,
         log_publishers: Vec<Publisher<ExecutionLogMessage>>,
         flush_period: Duration,
+        time_source: T,
     ) -> Self {
         debug_assert_eq!(
             log_publishers.len(),
@@ -624,7 +619,7 @@ impl LiveExecutor {
             })
             .collect();
 
-        let mut exec = Self::new_multi_pool(pools);
+        let mut exec = Self::new_multi_pool_core(pools, time_source);
         exec.log_publishers = Some(
             log_publishers
                 .into_iter()
@@ -635,13 +630,46 @@ impl LiveExecutor {
         exec.flush_period = flush_period;
         exec
     }
+}
 
+impl LiveExecutor<WallClock> {
+    /// Create a single shared thread pool with `num_threads` workers for all callback nodes.
+    pub fn new(num_threads: usize, nodes: Vec<CallbackNode>) -> Self {
+        Self::new_multi_pool(vec![ThreadPoolConfig::new(num_threads, nodes)])
+    }
+
+    /// Create multiple independent thread pools in one executor.
+    ///
+    /// Callback nodes in different pools execute on separate worker threads, enabling
+    /// priority separation: put latency-sensitive nodes in a pool with dedicated
+    /// threads and background nodes in another. The periodic trigger thread and
+    /// node storage are shared across all pools to minimise overhead.
+    pub fn new_multi_pool(pools: Vec<ThreadPoolConfig>) -> Self {
+        Self::new_multi_pool_core(pools, WallClock)
+    }
+
+    pub fn new_multi_pool_with_execution_log(
+        pools: Vec<ThreadPoolConfig>,
+        log_publishers: Vec<Publisher<ExecutionLogMessage>>,
+        flush_period: Duration,
+    ) -> Self {
+        Self::new_multi_pool_with_execution_log_and_time(
+            pools,
+            log_publishers,
+            flush_period,
+            WallClock,
+        )
+    }
+}
+
+impl<T: TimeSource + 'static> LiveExecutor<T> {
     fn start_threads_with(
         &mut self,
         spawn_worker: impl Fn(
             Arc<PoolState>,
             Arc<SharedThreadPoolState>,
             Option<WorkerLoggerInit>,
+            Arc<T>,
         ) -> thread::JoinHandle<()>,
     ) {
         for index in 0..self.shared_state.nodes.len() {
@@ -662,6 +690,7 @@ impl LiveExecutor {
             for _ in 0..pool_arc.thread_count {
                 let pool = pool_arc.clone();
                 let shared = self.shared_state.clone();
+                let ts = self.time_source.clone();
                 let init = match log_publishers {
                     Some(pubs) => {
                         let publisher = pubs[next_pub].clone();
@@ -674,13 +703,14 @@ impl LiveExecutor {
                     }
                     None => None,
                 };
-                self.threads.push(spawn_worker(pool, shared, init));
+                self.threads.push(spawn_worker(pool, shared, init, ts));
             }
         }
 
         let shared_state = self.shared_state.clone();
+        let time_source = self.time_source.clone();
         let thread = thread::spawn(move || {
-            let now = task::time::FrameworkTime::from_wall_clock();
+            let now = time_source.now();
             let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
             for (index, node) in shared_state.nodes.iter().enumerate() {
                 if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
@@ -691,18 +721,24 @@ impl LiveExecutor {
                 }
             }
             while shared_state.should_run.load(Ordering::Relaxed) {
-                periodic_trigger_thread(shared_state.as_ref(), &mut exec_times);
+                periodic_trigger_thread(
+                    shared_state.as_ref(),
+                    &mut exec_times,
+                    time_source.as_ref(),
+                );
             }
         });
         self.threads.push(thread);
     }
 
     pub fn start_threads(&mut self) {
-        self.start_threads_with(|pool, shared, init| {
+        let time_source = self.time_source.clone();
+        self.start_threads_with(move |pool, shared, init, _ts| {
+            let ts = time_source.clone();
             thread::spawn(move || {
                 println!("Starting thread");
-                let logger = init.map(WorkerLogger::new);
-                run_executor_thread(pool.as_ref(), shared.as_ref(), logger);
+                let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
+                run_executor_thread(pool.as_ref(), shared.as_ref(), logger, ts.as_ref());
                 println!("leaving exec cycle");
             })
         })
@@ -774,7 +810,7 @@ impl ExecutorStopSignal for StopSignal {
     }
 }
 
-impl Executor for LiveExecutor {
+impl<T: TimeSource + 'static> Executor for LiveExecutor<T> {
     type Error = LiveExecutorError;
 
     fn start(&mut self) {
@@ -798,12 +834,16 @@ impl Executor for LiveExecutor {
 }
 
 #[cfg(test)]
-impl LiveExecutor {
+impl LiveExecutor<WallClock> {
     fn start_threads_no_alloc(&mut self) {
-        self.start_threads_with(|pool, shared, init| {
+        let time_source = self.time_source.clone();
+        self.start_threads_with(move |pool, shared, init, _ts| {
+            let pool = pool.clone();
+            let shared = shared.clone();
+            let ts = time_source.clone();
             thread::spawn(move || {
-                let logger = init.map(WorkerLogger::new);
-                no_alloc_worker_loop(pool, shared, logger)
+                let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
+                no_alloc_worker_loop(pool, shared, logger, ts)
             })
         })
     }

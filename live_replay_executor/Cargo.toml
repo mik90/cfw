@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task" }
+logging = { path = "../logging" }
+live_executor = { path = "../live_executor" }
 
 [lints]
 workspace = true

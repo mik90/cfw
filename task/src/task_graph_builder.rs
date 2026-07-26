@@ -224,8 +224,7 @@ impl TaskGraphBuilder {
     /// Builds any queued [`CallbackBuilder`]s, runs build steps in the order they were added,
     /// and then connects all callback nodes.
     pub fn build(mut self) -> Result<BuiltTaskGraph, TaskGraphBuildError> {
-        let pool_thread_counts: Vec<usize> =
-            self.pools.iter().map(|p| p.thread_count).collect();
+        let pool_thread_counts: Vec<usize> = self.pools.iter().map(|p| p.thread_count).collect();
         let mut all_nodes: Vec<CallbackNode> = Vec::new();
         let mut pool_node_counts: Vec<usize> = Vec::with_capacity(self.pools.len());
 
@@ -234,12 +233,13 @@ impl TaskGraphBuilder {
             let start = all_nodes.len();
             for builder in pool.pending_builders.drain(..) {
                 let callback_name = builder.name().to_owned();
-                let node = builder.build().map_err(|error| {
-                    TaskGraphBuildError::CallbackBuildError {
-                        callback_name,
-                        error,
-                    }
-                })?;
+                let node =
+                    builder
+                        .build()
+                        .map_err(|error| TaskGraphBuildError::CallbackBuildError {
+                            callback_name,
+                            error,
+                        })?;
                 all_nodes.push(node);
             }
             all_nodes.append(&mut pool.callbacks);
@@ -275,8 +275,7 @@ impl TaskGraphBuilder {
                     node.set_log_executions(true);
                 }
             }
-            connect_callback_nodes(&mut all_nodes)
-                .map_err(TaskGraphBuildError::ConnectionError)?;
+            connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
             return Ok(BuiltTaskGraph {
                 pools: vec![ThreadPoolConfig::new(1, all_nodes)],
                 execution_log_publishers: vec![],
@@ -290,8 +289,7 @@ impl TaskGraphBuilder {
             }
         }
 
-        connect_callback_nodes(&mut all_nodes)
-            .map_err(TaskGraphBuildError::ConnectionError)?;
+        connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
 
         // Split into per-pool ThreadPoolConfigs.
         let mut pools = Vec::with_capacity(pool_node_counts.len());
@@ -480,7 +478,9 @@ mod test {
         }
 
         let result = TaskGraphBuilder::new()
-            .add_pool(1, |p| p.add_callback(make_callback_node("first", 0, &[], 0, &[])))
+            .add_pool(1, |p| {
+                p.add_callback(make_callback_node("first", 0, &[], 0, &[]))
+            })
             .add_build_step(Box::new(AddStep))
             .build();
 

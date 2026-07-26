@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::input::InputSpan;
-use crate::loggable::{Loggable, SerializeError};
+use crate::loggable::{DeserializeError, Loggable, SerializeError};
 use crate::message::MessageHeader;
+use crate::pub_sub::ChannelName;
 
 /// Per-message sink error — either the value failed to serialize, or the
 /// writer rejected the bytes. Both surface uniformly inside the serializer
@@ -67,17 +69,44 @@ pub type SerializerFn = Arc<
         + Sync,
 >;
 
-/// Type-keyed registry of serializers. Build steps query this by `TypeId`
-/// (obtained from `GenericPublisher::value_type_id`) to find a matching
-/// `SerializerFn` for a publisher's value type.
+/// Type-erased deserializer closure: takes raw bytes and returns a
+/// heap-allocated, type-erased value. Used by replay executors to reconstruct
+/// typed messages from a log file before publishing them.
+pub type DeserializerFn = Arc<
+    dyn Fn(&[u8]) -> Result<Box<dyn std::any::Any + Send + Sync>, DeserializeError> + Send + Sync,
+>;
+
+/// Per-channel factory closure stored alongside a deserializer. Given a
+/// channel name, creates a typed `Publisher<T>` (wrapped as
+/// `GenericPublisher`) and a writer closure that accepts an `Any` value,
+/// downcasts it to `T`, and publishes through `Output<'_, T>`.
+pub type ChannelPublisherFactory =
+    Arc<dyn Fn(ChannelName) -> (Box<dyn GenericPublisher>, ChannelPublisherWriter) + Send + Sync>;
+
+/// Type-erased writer that publishes a heap-allocated value through a
+/// `GenericPublisher`. Monomorphized per `T` at registration time so the
+/// hot path avoids a runtime type check inside the loop.
+pub type ChannelPublisherWriter =
+    Arc<dyn Fn(&mut dyn GenericPublisher, Box<dyn std::any::Any + Send + Sync>) + Send + Sync>;
+
+/// Type-keyed registry of serializers and deserializers.
+/// Build steps query this by `TypeId` (obtained from `GenericPublisher::value_type_id`)
+/// to find a matching `SerializerFn` for a publisher's value type, or a
+/// `DeserializerFn` for replaying logged messages.
 pub struct ChannelRegistry {
     serializers: HashMap<TypeId, SerializerFn>,
+    deserializers: HashMap<TypeId, DeserializerFn>,
+    publisher_factories: HashMap<TypeId, ChannelPublisherFactory>,
+    channels: HashMap<ChannelName, TypeId>,
 }
 
 impl ChannelRegistry {
     pub fn new() -> Self {
         ChannelRegistry {
             serializers: HashMap::new(),
+            deserializers: HashMap::new(),
+            publisher_factories: HashMap::new(),
+            channels: HashMap::new(),
         }
     }
 
@@ -106,8 +135,97 @@ impl ChannelRegistry {
         self
     }
 
+    /// Register a channel's value type: stores a serializer, a deserializer,
+    /// and a `channel_name → TypeId` mapping so replay executors can discover
+    /// what type a given channel carries and how to deserialize its logged
+    /// messages.
+    ///
+    /// Requires `T: Loggable<Context<'static> = ()>` — types with a
+    /// non-trivial deserialization context (e.g. `ForwardedMessage`) must be
+    /// denylisted during replay and are not supported here.
+    pub fn register_channel<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
+        &mut self,
+        channel: ChannelName,
+    ) -> &mut Self {
+        let tid = TypeId::of::<T>();
+
+        // Serializer (same as register_loggable)
+        let serializer: SerializerFn = Arc::new(
+            |sub: &mut dyn GenericSubscriber, scratch: &mut Vec<u8>, sink: MessageSink<'_>| {
+                let mut span = InputSpan::<T>::new_downcasted(sub);
+                for msg in span.drain_inputs() {
+                    let msg = &*msg;
+                    scratch.clear();
+                    msg.message
+                        .serialize(scratch)
+                        .map_err(MessageSinkError::Serialize)?;
+                    sink(&msg.header, scratch).map_err(MessageSinkError::Sink)?;
+                }
+                Ok(())
+            },
+        );
+        self.serializers.insert(tid, serializer);
+
+        // Deserializer — uses the blanket serde (Context<'static> = ()) path
+        let deserializer: DeserializerFn = Arc::new(|bytes: &[u8]| {
+            let value = T::deserialize(bytes)?;
+            Ok(Box::new(value) as Box<dyn std::any::Any + Send + Sync>)
+        });
+        self.deserializers.insert(tid, deserializer);
+
+        // Publisher factory: creates a Publisher<T> + writer for replay.
+        let factory: ChannelPublisherFactory = Arc::new(move |channel_name: ChannelName| {
+            use crate::output::Output;
+            use crate::publisher::{Publisher, PublisherConfig};
+
+            let publisher: Box<dyn GenericPublisher> =
+                Box::new(Publisher::<T>::new(PublisherConfig {
+                    capacity: 1,
+                    channel_name,
+                }));
+            let writer: ChannelPublisherWriter = Arc::new(
+                |pub_ref: &mut dyn GenericPublisher, val: Box<dyn std::any::Any + Send + Sync>| {
+                    let typed = pub_ref
+                        .as_any()
+                        .downcast_mut::<Publisher<T>>()
+                        .expect("ReplayTask: publisher type mismatch");
+                    let val = val
+                        .downcast::<T>()
+                        .expect("ReplayTask: value type mismatch");
+                    let output = Output::new_with_factory(typed, |slot| {
+                        slot.write(*val);
+                    });
+                    output.send();
+                },
+            );
+            (publisher, writer)
+        });
+        self.publisher_factories.insert(tid, factory);
+
+        self.channels.insert(channel, tid);
+        self
+    }
+
     pub fn serializer_for(&self, type_id: TypeId) -> Option<SerializerFn> {
         self.serializers.get(&type_id).cloned()
+    }
+
+    /// Look up the `TypeId` registered for the given channel name.
+    /// Returns `None` if the channel was never registered.
+    pub fn channel_type(&self, channel: &str) -> Option<TypeId> {
+        self.channels.get(channel).copied()
+    }
+
+    /// Look up the deserializer registered for the given type.
+    /// Returns `None` if the type was never registered.
+    pub fn deserializer_for(&self, type_id: TypeId) -> Option<DeserializerFn> {
+        self.deserializers.get(&type_id).cloned()
+    }
+
+    /// Look up the publisher factory registered for the given type.
+    /// Returns `None` if the type was never registered.
+    pub fn channel_publisher_factory(&self, type_id: TypeId) -> Option<ChannelPublisherFactory> {
+        self.publisher_factories.get(&type_id).cloned()
     }
 
     /// Absorb another registry's entries into this one. Used by `TaskGraphBuilder`
@@ -115,6 +233,9 @@ impl ChannelRegistry {
     /// for build-step consumption.
     pub fn merge(&mut self, other: ChannelRegistry) {
         self.serializers.extend(other.serializers);
+        self.deserializers.extend(other.deserializers);
+        self.publisher_factories.extend(other.publisher_factories);
+        self.channels.extend(other.channels);
     }
 }
 

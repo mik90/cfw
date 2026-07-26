@@ -141,8 +141,7 @@ impl Loggable for ExecutionLogMessage {
             number_of_dropped_entries: usize,
             entries: Vec<ExecutionLogEntry>,
         }
-        let helper: Helper =
-            serde_json::from_slice(bytes).map_err(DeserializeError::SerdeJson)?;
+        let helper: Helper = serde_json::from_slice(bytes).map_err(DeserializeError::SerdeJson)?;
         let mut entries = [ExecutionLogEntry::default(); ENTRIES_PER_MESSAGE];
         let len = helper.entries.len().min(ENTRIES_PER_MESSAGE);
         entries[..len].copy_from_slice(&helper.entries[..len]);

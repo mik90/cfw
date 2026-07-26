@@ -8,9 +8,18 @@ task = { path = "../../task" }
 test_tasks = { path = "../../test_tasks" }
 task_macros = { path = "../../task_macros" }
 live_executor = { path = "../../live_executor" }
+live_replay_executor = { path = "../../live_replay_executor" }
 logging = { path = "../../logging" }
 signal-hook = "0.3"
 clap = { version = "4.6.3", features = ["derive"] }
+
+[[bin]]
+name = "live"
+path = "src/bin/live.rs"
+
+[[bin]]
+name = "live-replay"
+path = "src/bin/live_replay.rs"
 
 [lints]
 workspace = true

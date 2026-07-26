@@ -297,11 +297,15 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
 
     // Each log task exposes its own diagnostics channel.
     assert_eq!(
-        graph.pools[0].nodes[4].publishers()[0].config().channel_name,
+        graph.pools[0].nodes[4].publishers()[0]
+            .config()
+            .channel_name,
         log_task_diagnostics_channel(0)
     );
     assert_eq!(
-        graph.pools[0].nodes[5].publishers()[0].config().channel_name,
+        graph.pools[0].nodes[5].publishers()[0]
+            .config()
+            .channel_name,
         log_task_diagnostics_channel(1)
     );
 
@@ -425,8 +429,7 @@ fn diagnostics_task_subscribes_to_every_log_task() {
         "diagnostics task must subscribe to both log tasks' diagnostics channels"
     );
 
-    let mut executor = UnitTestExecutor::new(graph.pools.remove(0).nodes);
-    for _ in 0..6 {
-    }
+    let _executor = UnitTestExecutor::new(graph.pools.remove(0).nodes);
+    for _ in 0..6 {}
     // No panic = pass: both diagnostics channels connected to their publishers.
 }

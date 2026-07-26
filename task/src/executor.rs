@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::callback::CallbackNode;
+use crate::time::FrameworkTime;
 
 #[derive(Debug)]
 pub struct ThreadPoolConfig {
@@ -28,6 +29,32 @@ pub trait CallbackNodeEnqueuer: Send + Sync {
 /// without requiring a mutable lock on the executor itself.
 pub trait ExecutorStopSignal: Send + Sync {
     fn request_stop(&self);
+}
+
+/// Source of monotonic time for an executor.
+/// The default `WallClock` implementation uses `CLOCK_MONOTONIC`.
+/// Replay executors substitute a log-driven time source that advances
+/// at a configured multiplier over wall time so all callbacks see the
+/// same replayed time stamp.
+pub trait TimeSource: Send + Sync {
+    fn now(&self) -> FrameworkTime;
+}
+
+/// Default wall-clock monotonic time source.
+#[derive(Debug)]
+pub struct WallClock;
+
+impl TimeSource for WallClock {
+    fn now(&self) -> FrameworkTime {
+        FrameworkTime::from_wall_clock()
+    }
+}
+
+/// Non-blocking handle for pausing and resuming an executor.
+pub trait PauseSignal: Send + Sync {
+    fn pause(&self);
+    fn resume(&self);
+    fn is_paused(&self) -> bool;
 }
 
 pub trait Executor {
