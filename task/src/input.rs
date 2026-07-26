@@ -1,9 +1,9 @@
-use crate::arena::ArenaReaderPtr;
-use crate::double_buffer::ReadBufferGuard;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::message::Message;
 use crate::output::{ForwardedOutput, ForwardedOutputSpan, ForwardingOutput};
 use crate::subscriber::{ForwardableSubscriber, Subscriber};
+use base::arena::ArenaReaderPtr;
+use base::double_buffer::ReadBufferGuard;
 use std::ops::Deref;
 
 pub struct RequiredInput<'a, T> {

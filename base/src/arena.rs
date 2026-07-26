@@ -137,6 +137,8 @@ pub struct ArenaSlot<T> {
 }
 
 impl<T> ArenaSlot<T> {
+    /// # Safety
+    ///
     /// Caller should ensure that this slot has already been initialized
     pub unsafe fn assume_init_ref(&self) -> &T {
         debug_assert!(self.ref_count.load(atomic::Ordering::Acquire) > 0);

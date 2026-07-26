@@ -1,6 +1,4 @@
-use crate::arena::{Arena, ArenaPtr, ArenaReaderPtr};
 use crate::callback::SubscriberReadiness;
-use crate::double_buffer::WriteBufferHandle;
 use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::ConnectionTypeMismatch;
 pub use crate::generic_publisher::GenericPublisher;
@@ -9,6 +7,8 @@ use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
 use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
 use crate::time::FrameworkTime;
+use base::arena::{Arena, ArenaPtr, ArenaReaderPtr};
+use base::double_buffer::WriteBufferHandle;
 use std::any::Any;
 use std::mem::MaybeUninit;
 

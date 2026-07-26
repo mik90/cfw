@@ -1,0 +1,10 @@
+[package]
+name = "base"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossbeam-queue = "0.3" # Used for thread-safe pub/sub queues
+
+[lints]
+workspace = true

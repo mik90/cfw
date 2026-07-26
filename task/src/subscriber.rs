@@ -1,5 +1,5 @@
 use crate::callback::SubscriberReadiness;
-use crate::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
+use base::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 use crate::generic_subscriber;
 pub use crate::generic_subscriber::GenericSubscriber;
 use crate::message::{Message, MessageHeader};

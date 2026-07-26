@@ -86,7 +86,7 @@ impl<'a, T> ReadBufferGuard<'a, T> {
     }
 }
 
-pub(crate) struct DoubleBuffer<T> {
+pub struct DoubleBuffer<T> {
     write_queue: Arc<MpscQueue<ArenaPtr<T>>>,
     // No lock needed: read_buffer is only accessed during drain (before task runs)
     // or by the task itself — never concurrently.

@@ -10,7 +10,7 @@ testing = []
 serde = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
-crossbeam-queue = "0.3"                            # Used for thread-safe pub/sub queues
+base = { path = "../base" }
 libc = "0.2.186"                                   # Used for retreiving time from the system
 serde = { workspace = true, optional = true }      # Allows serde loggability for task types
 serde_json = { workspace = true, optional = true } # Default backend for loggability

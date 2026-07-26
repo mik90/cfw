@@ -1,8 +1,8 @@
-use crate::arena::ArenaReaderPtr;
 use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::GenericPublisher;
 use crate::message::Message;
 use crate::publisher::{ForwardingPublisher, Publisher, SendError};
+use base::arena::ArenaReaderPtr;
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};

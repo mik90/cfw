@@ -1,4 +1,4 @@
-use crate::arena::ArenaReaderPtr;
+use base::arena::ArenaReaderPtr;
 use crate::message::Message;
 use std::ops::Deref;
 
