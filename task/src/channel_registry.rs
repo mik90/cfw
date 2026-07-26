@@ -114,7 +114,10 @@ impl ChannelRegistry {
     /// same `T` overwrites the first, but since the closure is monomorphized
     /// identically there's no observable difference.
     pub fn register_loggable<T: 'static + Loggable>(&mut self) -> &mut Self {
-        let tid = TypeId::of::<T>();
+        self.register_serializer::<T>()
+    }
+
+    fn register_serializer<T: 'static + Loggable>(&mut self) -> &mut Self {
         let serializer: SerializerFn = Arc::new(
             |sub: &mut dyn GenericSubscriber, scratch: &mut Vec<u8>, sink: MessageSink<'_>| {
                 let mut span = InputSpan::<T>::new_downcasted(sub);
@@ -131,48 +134,27 @@ impl ChannelRegistry {
                 Ok(())
             },
         );
-        self.serializers.insert(tid, serializer);
+        self.serializers.insert(TypeId::of::<T>(), serializer);
         self
     }
 
-    /// Register a channel's value type: stores a serializer, a deserializer,
-    /// and a `channel_name → TypeId` mapping so replay executors can discover
-    /// what type a given channel carries and how to deserialize its logged
-    /// messages.
-    ///
-    /// Requires `T: Loggable<Context<'static> = ()>` — types with a
-    /// non-trivial deserialization context (e.g. `ForwardedMessage`) must be
-    /// denylisted during replay and are not supported here.
-    pub fn register_channel<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
+    fn register_deserializer<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
         &mut self,
-        channel: ChannelName,
     ) -> &mut Self {
-        let tid = TypeId::of::<T>();
-
-        // Serializer (same as register_loggable)
-        let serializer: SerializerFn = Arc::new(
-            |sub: &mut dyn GenericSubscriber, scratch: &mut Vec<u8>, sink: MessageSink<'_>| {
-                let mut span = InputSpan::<T>::new_downcasted(sub);
-                for msg in span.drain_inputs() {
-                    let msg = &*msg;
-                    scratch.clear();
-                    msg.message
-                        .serialize(scratch)
-                        .map_err(MessageSinkError::Serialize)?;
-                    sink(&msg.header, scratch).map_err(MessageSinkError::Sink)?;
-                }
-                Ok(())
-            },
-        );
-        self.serializers.insert(tid, serializer);
-
         // Deserializer — uses the blanket serde (Context<'static> = ()) path
         let deserializer: DeserializerFn = Arc::new(|bytes: &[u8]| {
             let value = T::deserialize(bytes)?;
             Ok(Box::new(value) as Box<dyn std::any::Any + Send + Sync>)
         });
-        self.deserializers.insert(tid, deserializer);
+        self.deserializers.insert(TypeId::of::<T>(), deserializer);
+        self
+    }
 
+    pub fn register_publisher_factory<
+        T: 'static + Loggable<Context<'static> = ()> + Send + Sync,
+    >(
+        &mut self,
+    ) -> &mut Self {
         // Publisher factory: creates a Publisher<T> + writer for replay.
         let factory: ChannelPublisherFactory = Arc::new(move |channel_name: ChannelName| {
             use crate::output::Output;
@@ -200,9 +182,29 @@ impl ChannelRegistry {
             );
             (publisher, writer)
         });
-        self.publisher_factories.insert(tid, factory);
+        self.publisher_factories.insert(TypeId::of::<T>(), factory);
+        self
+    }
 
-        self.channels.insert(channel, tid);
+    /// Register a channel's value type: stores a serializer, a deserializer,
+    /// and a `channel_name → TypeId` mapping so replay executors can discover
+    /// what type a given channel carries and how to deserialize its logged
+    /// messages.
+    ///
+    /// Requires `T: Loggable<Context<'static> = ()>` — types with a
+    /// non-trivial deserialization context (e.g. `ForwardedMessage`) must be
+    /// denylisted during replay and are not supported here.
+    pub fn register_channel<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
+        &mut self,
+        channel: ChannelName,
+    ) -> &mut Self {
+        self.register_serializer::<T>();
+
+        self.register_deserializer::<T>();
+
+        self.register_publisher_factory::<T>();
+
+        self.channels.insert(channel, TypeId::of::<T>());
         self
     }
 
