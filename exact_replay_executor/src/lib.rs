@@ -29,9 +29,18 @@ pub struct ExactReplayExecutor {
 
     // Other threads may swap this on/off to stop
     should_run: Arc<AtomicBool>,
-    //
-    // TODO some way to request replay of a given execution timestamp, or a given message timestamp
-    //
+    /*
+       TODO
+       - Iterate through execution logs in time order.
+       - For each execution in the log, iterate though subscribers and hydrate inputs
+       from the log.
+       - Run callback.
+       - Once code is done executing, iterate through publishers and check that the published messages
+         from the log are the same as the published messages from the callback.
+       - If the values are the same, continue onto next one
+       - If the values are different, the next execution may diverge behaviorally.
+         We can just communicate that and leave it as best-effort.
+    */
 }
 
 impl ExecutorStopSignal for StopSignal {
