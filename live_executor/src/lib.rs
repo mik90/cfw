@@ -130,12 +130,12 @@ impl fmt::Display for SharedThreadPoolState {
 }
 
 pub struct LiveExecutor<T: TimeSource = WallClock> {
-    threads: Vec<thread::JoinHandle<()>>,
+    threads: Vec<thread::JoinHandle<Option<WorkerLoggerState>>>,
     shared_state: Arc<SharedThreadPoolState>,
     time_source: Arc<T>,
     /// Per-worker execution-log publishers, consumed (moved into worker threads)
     /// by `start_threads`. `None` when logging is off.
-    log_publishers: Option<Vec<Arc<Mutex<Publisher<ExecutionLogMessage>>>>>,
+    log_publishers: Vec<Publisher<ExecutionLogMessage>>,
     /// Per-pool scratch capacity for the worst-case received-headers count;
     /// used to size each worker's reuse buffer at thread start.
     per_pool_scratch_cap: Vec<usize>,
@@ -210,7 +210,7 @@ fn periodic_trigger_thread<T: TimeSource>(
 /// plus a loaned "current" message filled across executions. All capture state
 /// is worker-local, so the hot path needs no mutual exclusion.
 struct WorkerLogger {
-    publisher: Arc<Mutex<Publisher<ExecutionLogMessage>>>,
+    publisher: Publisher<ExecutionLogMessage>,
     flush_period: Duration,
     last_flush: FrameworkTime,
     /// Index into the publisher's `loaned_values` of the message being filled,
@@ -242,15 +242,15 @@ struct WorkerLogger {
 /// Data moved into a worker thread to construct a [`WorkerLogger`] at thread
 /// start (so the scratch `Vec` is allocated on the worker, not the caller).
 struct WorkerLoggerInit {
-    publisher: Arc<Mutex<Publisher<ExecutionLogMessage>>>,
+    publisher: Publisher<ExecutionLogMessage>,
     flush_period: Duration,
     scratch_capacity: usize,
 }
 
 impl WorkerLogger {
     fn new(init: WorkerLoggerInit, now: FrameworkTime) -> Self {
-        let publisher = init.publisher.clone();
-        let current_loan = publisher.lock().unwrap().loan_default().ok();
+        let mut publisher = init.publisher;
+        let current_loan = publisher.loan_default().ok();
         WorkerLogger {
             current_loan,
             publisher,
@@ -276,7 +276,7 @@ impl WorkerLogger {
             return false;
         }
         if self.current_loan.is_none() {
-            self.current_loan = self.publisher.lock().unwrap().loan_default().ok();
+            self.current_loan = self.publisher.loan_default().ok();
         }
         if self.current_loan.is_some() {
             true
@@ -333,8 +333,7 @@ impl WorkerLogger {
         }
 
         // Open the entry if still default, and write the message under one lock.
-        let mut pub_guard = self.publisher.lock().unwrap();
-        let cur = pub_guard.loaned_payload_mut(loan);
+        let cur = self.publisher.loaned_payload_mut(loan);
         let entry = &mut cur.entries[self.next_entry];
         if !entry.is_valid() {
             entry.callback_node_index = self.cur_node;
@@ -382,20 +381,17 @@ impl WorkerLogger {
             return true;
         }
 
-        let mut pub_guard = self.publisher.lock().unwrap();
-        {
-            let cur = pub_guard.loaned_payload_mut(loan);
-            cur.number_of_dropped_entries = self.dropped;
-        }
+        let cur = self.publisher.loaned_payload_mut(loan);
+        cur.number_of_dropped_entries = self.dropped;
         self.dropped = Saturating(0);
         self.last_flush = at;
 
-        pub_guard.mark_loan_sent(loan);
-        pub_guard.flush_loaned_values(at);
+        self.publisher.mark_loan_sent(loan);
+        self.publisher.flush_loaned_values(at);
 
         // Re-loan for the next message. Failure leaves us loan-less; the next
         // execution's captures_for retry will re-loan or drop.
-        self.current_loan = pub_guard.loan_default().ok();
+        self.current_loan = self.publisher.loan_default().ok();
         self.next_entry = 0;
         self.next_msg = 0;
         self.current_loan.is_some()
@@ -407,6 +403,11 @@ impl WorkerLogger {
             self.flush_current(at);
         }
     }
+}
+
+/// Objects that cannot be destroyed within the thread and must be destroyed afterwards.
+struct WorkerLoggerState {
+    publisher: Option<Publisher<ExecutionLogMessage>>,
 }
 
 pub(crate) fn process_work_item(
@@ -483,7 +484,7 @@ fn run_executor_thread<T: TimeSource>(
     shared_state: &SharedThreadPoolState,
     mut logger: Option<WorkerLogger>,
     time_source: &T,
-) {
+) -> Option<WorkerLoggerState> {
     loop {
         // Block waiting on work
         let index = match pool_state.work_rx.recv() {
@@ -505,6 +506,13 @@ fn run_executor_thread<T: TimeSource>(
     if let Some(logger) = logger.as_mut() {
         logger.flush_remaining(time_source.now());
     }
+
+    match logger {
+        Some(l) => Some(WorkerLoggerState {
+            publisher: Some(l.publisher),
+        }),
+        None => None,
+    }
 }
 
 #[cfg(test)]
@@ -513,7 +521,7 @@ fn no_alloc_worker_loop(
     shared: Arc<SharedThreadPoolState>,
     mut logger: Option<WorkerLogger>,
     time_source: Arc<WallClock>,
-) {
+) -> Option<WorkerLoggerState> {
     loop {
         let index = match pool.work_rx.recv() {
             Ok(SHUTDOWN_SENTINEL) => break,
@@ -531,6 +539,13 @@ fn no_alloc_worker_loop(
     if let Some(logger) = logger.as_mut() {
         // Flush-on-exit happens outside the no-alloc window (no constraint on it).
         logger.flush_remaining(time_source.now());
+    }
+
+    match logger {
+        Some(l) => Some(WorkerLoggerState {
+            publisher: Some(l.publisher),
+        }),
+        None => None,
     }
 }
 
@@ -584,7 +599,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             threads: Vec::new(),
             shared_state,
             time_source: Arc::new(time_source),
-            log_publishers: None,
+            log_publishers: vec![],
             per_pool_scratch_cap: Vec::new(),
             flush_period: DEFAULT_LOG_FLUSH_PERIOD,
         }
@@ -620,12 +635,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             .collect();
 
         let mut exec = Self::new_multi_pool_core(pools, time_source);
-        exec.log_publishers = Some(
-            log_publishers
-                .into_iter()
-                .map(|p| Arc::new(Mutex::new(p)))
-                .collect(),
-        );
+        exec.log_publishers = log_publishers;
         exec.per_pool_scratch_cap = per_pool_scratch_cap;
         exec.flush_period = flush_period;
         exec
@@ -670,7 +680,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             Arc<SharedThreadPoolState>,
             Option<WorkerLoggerInit>,
             Arc<T>,
-        ) -> thread::JoinHandle<()>,
+        ) -> thread::JoinHandle<Option<WorkerLoggerState>>,
     ) {
         for index in 0..self.shared_state.nodes.len() {
             let node = self.shared_state.nodes[index].lock().unwrap();
@@ -680,28 +690,27 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             }
         }
 
-        // Take the log publishers out of self so we can move each into a worker.
-        // They are assigned in pool order: pool p's workers get the publishers for
-        // the range [offset_p, offset_p + thread_count_p).
-        let log_publishers = self.log_publishers.as_ref();
-        let mut next_pub = 0usize;
+        let has_log_publishers = !self.log_publishers.is_empty();
+        let mut log_publisher_drainer = self.log_publishers.drain(..);
 
         for (pool_idx, pool_arc) in self.shared_state.enqueue_state.pools.iter().enumerate() {
             for _ in 0..pool_arc.thread_count {
                 let pool = pool_arc.clone();
                 let shared = self.shared_state.clone();
                 let ts = self.time_source.clone();
-                let init = match log_publishers {
-                    Some(pubs) => {
-                        let publisher = pubs[next_pub].clone();
-                        next_pub += 1;
+                let init = match has_log_publishers {
+                    true => {
+                        // TODO return error?
+                        let publisher = log_publisher_drainer
+                            .next()
+                            .expect("Expected one publisher per thread");
                         Some(WorkerLoggerInit {
                             publisher,
                             flush_period: self.flush_period,
                             scratch_capacity: self.per_pool_scratch_cap[pool_idx],
                         })
                     }
-                    None => None,
+                    false => None,
                 };
                 self.threads.push(spawn_worker(pool, shared, init, ts));
             }
@@ -727,6 +736,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                     time_source.as_ref(),
                 );
             }
+            None
         });
         self.threads.push(thread);
     }
@@ -738,8 +748,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             thread::spawn(move || {
                 println!("Starting thread");
                 let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
-                run_executor_thread(pool.as_ref(), shared.as_ref(), logger, ts.as_ref());
-                println!("leaving exec cycle");
+                run_executor_thread(pool.as_ref(), shared.as_ref(), logger, ts.as_ref())
             })
         })
     }
@@ -762,9 +771,12 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
 
         println!("Joining threads...");
         let mut thread_join_result = vec![];
+        let mut maybe_logger_states = Vec::with_capacity(self.threads.len());
         for (thread_idx, t) in self.threads.drain(..).enumerate() {
             match t.join() {
-                Ok(()) => {}
+                Ok(maybe_logger_state) => {
+                    maybe_logger_states.push(maybe_logger_state);
+                }
                 Err(_) => {
                     thread_join_result.push(thread_idx);
                 }
@@ -774,6 +786,8 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         println!("all threads joined");
 
         self.cleanup_buffers();
+
+        maybe_logger_states.clear();
 
         if thread_join_result.is_empty() {
             return Ok(());
