@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::num::Saturating;
 
+use crate::callback::CallbackNode;
 use crate::executor::ThreadPoolConfig;
 use crate::message::MessageHeader;
 use crate::pub_sub::ChannelName;
@@ -14,6 +16,8 @@ use std::io::Write;
 
 /// Channel every execution-log publisher publishes on.
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
+/// Descriptor that describes the index->channel mapping
+pub const EXECUTION_LOG_DESCRIPTOR_CHANNEL: &str = "execution_log_descriptor";
 
 /// Number of logged messages packed into a single [`ExecutionLogEntry`].
 /// A single callback execution that produces/receives more than this many
@@ -167,6 +171,53 @@ impl std::fmt::Display for ExecutionLogConnectError {
             "Subscriber on channel '{}' (node '{}') is not a Subscriber<ExecutionLogMessage>",
             self.channel_name, self.subscriber_node,
         )
+    }
+}
+
+/// Descriptor of per-callback indices to channel names.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CallbackDescriptor {
+    pub subscriber_index_to_channel_name: HashMap<usize, ChannelName>,
+    pub publisher_index_to_channel_name: HashMap<usize, ChannelName>,
+}
+
+/// Descriptor of names to indices
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ExecutionLogDescriptor {
+    pub index_to_callbacks: HashMap<usize, CallbackDescriptor>,
+}
+
+impl ExecutionLogDescriptor {
+    /// Creates a descriptor from a slice of callback nodes.
+    /// This should be called after all node have been added.
+    pub fn new(nodes: &[CallbackNode]) -> ExecutionLogDescriptor {
+        let mut index_to_callbacks = HashMap::new();
+        for (callback_node_index, node) in nodes.iter().enumerate() {
+            let mut subscriber_index_to_channel_name = HashMap::new();
+
+            for (subscriber_index, subscriber) in node.subscribers().iter().enumerate() {
+                subscriber_index_to_channel_name
+                    .insert(subscriber_index, subscriber.config().channel_name.clone());
+            }
+
+            let mut publisher_index_to_channel_name = HashMap::new();
+            for (publisher_index, publisher) in node.publishers().iter().enumerate() {
+                publisher_index_to_channel_name
+                    .insert(publisher_index, publisher.config().channel_name.clone());
+            }
+
+            index_to_callbacks.insert(
+                callback_node_index,
+                CallbackDescriptor {
+                    subscriber_index_to_channel_name,
+                    publisher_index_to_channel_name,
+                },
+            );
+        }
+
+        ExecutionLogDescriptor { index_to_callbacks }
     }
 }
 

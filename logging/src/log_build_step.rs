@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use task::callback::{Callback, CallbackNode};
 use task::channel_registry::ChannelRegistry;
-use task::execution_log::{EXECUTION_LOG_CHANNEL, ExecutionLogMessage};
+use task::execution_log::{self, EXECUTION_LOG_CHANNEL, ExecutionLogMessage};
 use task::generic_subscriber::GenericSubscriber;
 use task::subscriber::{Subscriber, SubscriberConfig};
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
@@ -52,6 +52,7 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         "LoggingBuildStep"
     }
 
+    // TODO clean up, this function is huge.
     fn build_step(
         &self,
         nodes: &[CallbackNode],
@@ -162,11 +163,15 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         let shared_writer = SharedLogFileWriter::new(open_writer(&self.config.output_path));
 
         let mut log_nodes = Vec::with_capacity(num_tasks);
+
+        let execution_log_descriptor = execution_log::ExecutionLogDescriptor::new(nodes);
+
         for (index, Shard(shard_loggers, shard_subscribers)) in shards.into_iter().enumerate() {
             let log_task = LogTask::new(
                 Box::new(shared_writer.clone()),
                 log_task_diagnostics_channel(index),
                 shard_loggers,
+                Some(execution_log_descriptor.clone()),
             );
 
             // Per the build-step contract, we drive `build_subscribers()` and

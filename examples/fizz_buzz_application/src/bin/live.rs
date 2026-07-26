@@ -12,7 +12,7 @@ use task::executor::Executor;
 #[command(version, about, long_about = None)]
 struct CliArgs {
     /// File to log to including file extension.
-    #[arg(short, long)]
+    #[arg(short, long, default_value = "./tmp/log.json")]
     log_path: PathBuf,
 }
 

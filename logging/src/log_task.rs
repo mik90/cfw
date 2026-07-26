@@ -13,8 +13,11 @@ use std::time::Duration;
 
 use task::callback::{Callback, Run};
 use task::context::Context;
+use task::execution_log::{self, EXECUTION_LOG_DESCRIPTOR_CHANNEL};
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
+use task::loggable::Loggable;
+use task::message::MessageHeader;
 use task::output::Output;
 use task::pub_sub::{CallbackNodeName, ChannelName};
 use task::publisher::{Publisher, PublisherConfig};
@@ -156,6 +159,7 @@ pub struct LogTask {
     diagnostics_channel: ChannelName,
     channel_loggers: Vec<ChannelLogger>,
     error_buffer: ErrorBuffer,
+    execution_log_descriptor: Option<execution_log::ExecutionLogDescriptor>,
 }
 
 impl std::fmt::Debug for LogTask {
@@ -175,12 +179,14 @@ impl LogTask {
         writer: Box<dyn LogFileWriter>,
         diagnostics_channel: ChannelName,
         channel_loggers: Vec<ChannelLogger>,
+        execution_log_descriptor: Option<execution_log::ExecutionLogDescriptor>,
     ) -> Self {
         LogTask {
             writer,
             diagnostics_channel,
             channel_loggers,
             error_buffer: ErrorBuffer::default(),
+            execution_log_descriptor,
         }
     }
 
@@ -232,10 +238,31 @@ impl Callback for LogTask {
         publishers: &mut [Box<dyn GenericPublisher>],
         ctx: &Context,
     ) -> Run {
+        // TODO clean this up. We should be logging the descriptor to disk on startup
+        if let Some(descriptor) = self.execution_log_descriptor.take() {
+            let mut scratch = Vec::new();
+            if let Err(e) = Loggable::serialize(&descriptor, &mut scratch) {
+                self.record_error(
+                    EXECUTION_LOG_DESCRIPTOR_CHANNEL.to_owned(),
+                    e.into(),
+                    ctx.now,
+                );
+            } else {
+                if let Err(e) = self.writer.as_mut().store_message(
+                    EXECUTION_LOG_DESCRIPTOR_CHANNEL,
+                    &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
+                    &scratch,
+                ) {
+                    self.record_error(EXECUTION_LOG_DESCRIPTOR_CHANNEL.to_owned(), e, ctx.now);
+                }
+            }
+        }
+
         // For each subscriber-slot / channel-logger pair: drain the subscriber,
         // serialize each message's value, write (header, body) to the shared
         // writer. Move `channel_loggers` out of `self` to avoid a
         // simultaneous borrow of `self.channel_loggers` and `self.writer`.
+        // TODO clean this up
         let mut channel_loggers = std::mem::take(&mut self.channel_loggers);
         for (sub, logger) in subscribers.iter_mut().zip(channel_loggers.iter_mut()) {
             if let Err(e) = logger.drain_and_log(sub.as_mut(), self.writer.as_mut()) {
