@@ -209,24 +209,28 @@ impl ChannelRegistry {
     }
 
     pub fn serializer_for(&self, type_id: TypeId) -> Option<SerializerFn> {
+        // TODO: expose reference to function instead of copied Arc
         self.serializers.get(&type_id).cloned()
     }
 
     /// Look up the `TypeId` registered for the given channel name.
     /// Returns `None` if the channel was never registered.
     pub fn channel_type(&self, channel: &str) -> Option<TypeId> {
+        // TODO: expose reference to function instead of copied Arc
         self.channels.get(channel).copied()
     }
 
     /// Look up the deserializer registered for the given type.
     /// Returns `None` if the type was never registered.
     pub fn deserializer_for(&self, type_id: TypeId) -> Option<DeserializerFn> {
+        // TODO: expose reference to function instead of copied Arc
         self.deserializers.get(&type_id).cloned()
     }
 
     /// Look up the publisher factory registered for the given type.
     /// Returns `None` if the type was never registered.
     pub fn channel_publisher_factory(&self, type_id: TypeId) -> Option<ChannelPublisherFactory> {
+        // TODO: expose reference to function instead of copied Arc
         self.publisher_factories.get(&type_id).cloned()
     }
 
