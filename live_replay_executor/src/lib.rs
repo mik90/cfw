@@ -8,7 +8,7 @@ use std::time::Duration;
 use live_executor::LiveExecutor;
 use task::execution_log::ExecutionLogMessage;
 use task::executor::ThreadPoolConfig;
-use task::executor::{Executor, ExecutorStopSignal, PauseSignal, TimeSource};
+use task::executor::{Executor, ExecutorStopSignal, TimeSource};
 use task::publisher::Publisher;
 use task::time::FrameworkTime;
 
@@ -61,26 +61,6 @@ impl TimeSource for ReplayTimeSource {
     }
 }
 
-/// Concrete implementation of [`PauseSignal`] using an atomic flag shared
-/// with [`ReplayTimeSource`].
-pub struct ConcretePauseFlag {
-    paused: Arc<AtomicBool>,
-}
-
-impl PauseSignal for ConcretePauseFlag {
-    fn pause(&self) {
-        self.paused.store(true, Ordering::Release);
-    }
-
-    fn resume(&self) {
-        self.paused.store(false, Ordering::Release);
-    }
-
-    fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::Acquire)
-    }
-}
-
 #[derive(Debug)]
 pub struct LiveReplayExecutorError {
     pub panicked_thread_indices: Vec<usize>,
@@ -102,7 +82,7 @@ pub struct LiveReplayConfig {
 
 pub struct LiveReplayExecutor {
     inner: LiveExecutor<ReplayTimeSource>,
-    pause_flag: Arc<ConcretePauseFlag>,
+    paused: Arc<AtomicBool>,
 }
 
 impl LiveReplayExecutor {
@@ -113,10 +93,10 @@ impl LiveReplayExecutor {
             config.paused.clone(),
         );
         let inner = LiveExecutor::new_multi_pool_with_time(pools, time_source);
-        let pause_flag = Arc::new(ConcretePauseFlag {
-            paused: config.paused,
-        });
-        LiveReplayExecutor { inner, pause_flag }
+        LiveReplayExecutor {
+            inner,
+            paused: config.paused.clone(),
+        }
     }
 
     pub fn new_with_execution_log(
@@ -136,14 +116,22 @@ impl LiveReplayExecutor {
             flush_period,
             time_source,
         );
-        let pause_flag = Arc::new(ConcretePauseFlag {
-            paused: config.paused,
-        });
-        LiveReplayExecutor { inner, pause_flag }
+        LiveReplayExecutor {
+            inner,
+            paused: config.paused.clone(),
+        }
     }
 
-    pub fn pause_signal(&self) -> Arc<dyn PauseSignal> {
-        self.pause_flag.clone()
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Release);
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Release);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
     }
 }
 
@@ -173,7 +161,7 @@ impl Executor for LiveReplayExecutor {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    use task::executor::{PauseSignal, TimeSource};
+    use task::executor::TimeSource;
 
     use super::*;
 
@@ -193,20 +181,6 @@ mod tests {
         // With speed 1.0, the diff in log time should be roughly the diff in wall time
         let diff = t2.to_nanoseconds() - t1.to_nanoseconds();
         assert!(diff >= 0);
-    }
-
-    #[test]
-    fn test_pause_flag() {
-        let paused = Arc::new(AtomicBool::new(false));
-        let flag = ConcretePauseFlag {
-            paused: paused.clone(),
-        };
-
-        assert!(!flag.is_paused());
-        flag.pause();
-        assert!(flag.is_paused());
-        flag.resume();
-        assert!(!flag.is_paused());
     }
 
     #[test]

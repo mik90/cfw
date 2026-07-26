@@ -50,13 +50,6 @@ impl TimeSource for WallClock {
     }
 }
 
-/// Non-blocking handle for pausing and resuming an executor.
-pub trait PauseSignal: Send + Sync {
-    fn pause(&self);
-    fn resume(&self);
-    fn is_paused(&self) -> bool;
-}
-
 pub trait Executor {
     type Error: std::error::Error;
 
