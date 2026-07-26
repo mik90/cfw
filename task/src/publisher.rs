@@ -632,7 +632,7 @@ mod tests {
         // capacity (clone in write queue + clone in read buffer).
         assert_eq!(publisher.arena.capacity(), PUB_CAPACITY + 2 * SUB_CAPACITY);
 
-        let t = time::FrameworkTime::from_nanoseconds(0);
+        let time = time::FrameworkTime::from_nanoseconds(0);
 
         // Cycle 1: publish msg1 and drain it into the subscriber's read buffer.
         {
@@ -640,7 +640,7 @@ mod tests {
             *out = 10;
             out.send();
         }
-        publisher.flush_loaned_values(t);
+        publisher.flush_loaned_values(time);
         subscriber.drain_writer_to_reader();
         assert_eq!(subscriber.queue_info().reader_size, 1);
 
@@ -651,7 +651,7 @@ mod tests {
             *out = 20;
             out.send();
         }
-        publisher.flush_loaned_values(t);
+        publisher.flush_loaned_values(time);
         assert_eq!(subscriber.queue_info().writer_size, 1);
         assert_eq!(subscriber.queue_info().reader_size, 1);
 
@@ -664,6 +664,6 @@ mod tests {
             *out = 30;
             out.send();
         }
-        publisher.flush_loaned_values(t);
+        publisher.flush_loaned_values(time);
     }
 }

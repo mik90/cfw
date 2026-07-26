@@ -948,7 +948,7 @@ mod test {
         trigger_pub.allocate_arena();
         gate_pub.allocate_arena();
 
-        let t = FrameworkTime::from_nanoseconds(1);
+        let time = FrameworkTime::from_nanoseconds(1);
 
         // Trigger fires while the gate has no value: no enqueue.
         {
@@ -956,7 +956,7 @@ mod test {
             *out = 1;
             out.send();
         }
-        trigger_pub.flush_loaned_values(t);
+        trigger_pub.flush_loaned_values(time);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             0,
@@ -970,7 +970,7 @@ mod test {
             *out = 10;
             out.send();
         }
-        gate_pub.flush_loaned_values(t);
+        gate_pub.flush_loaned_values(time);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             1,
@@ -987,7 +987,7 @@ mod test {
             *out = 2;
             out.send();
         }
-        trigger_pub.flush_loaned_values(t);
+        trigger_pub.flush_loaned_values(time);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             2,
@@ -1002,7 +1002,7 @@ mod test {
             *out = 11;
             out.send();
         }
-        gate_pub.flush_loaned_values(t);
+        gate_pub.flush_loaned_values(time);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             2,
@@ -1058,14 +1058,14 @@ mod test {
         );
         publisher.allocate_arena();
 
-        let t = FrameworkTime::from_nanoseconds(1);
+        let time = FrameworkTime::from_nanoseconds(1);
         for i in 0..3u64 {
             {
                 let mut out = Output::new_default(&mut publisher);
                 *out = i;
                 out.send();
             }
-            publisher.flush_loaned_values(t);
+            publisher.flush_loaned_values(time);
             assert_eq!(
                 enqueue_count.load(Ordering::Relaxed) as u64,
                 i + 1,
@@ -1138,7 +1138,7 @@ mod test {
         gate_pub.allocate_arena();
         opt_pub.allocate_arena();
 
-        let t = FrameworkTime::from_nanoseconds(1);
+        let time = FrameworkTime::from_nanoseconds(1);
 
         // Optional-trigger data while the required gate is empty: no fire.
         {
@@ -1146,7 +1146,7 @@ mod test {
             *out = 1;
             out.send();
         }
-        opt_pub.flush_loaned_values(t);
+        opt_pub.flush_loaned_values(time);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             0,
@@ -1159,7 +1159,7 @@ mod test {
             *out = 10;
             out.send();
         }
-        gate_pub.flush_loaned_values(t);
+        gate_pub.flush_loaned_values(time);
         assert_eq!(enqueue_count.load(Ordering::Relaxed), 1);
 
         node.drain_subscribers();
@@ -1170,7 +1170,7 @@ mod test {
             *out = 2;
             out.send();
         }
-        opt_pub.flush_loaned_values(t);
+        opt_pub.flush_loaned_values(time);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             2,

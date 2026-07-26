@@ -54,10 +54,10 @@ impl TimeSource for ReplayTimeSource {
         let elapsed_ns = wall.to_nanoseconds().saturating_sub(start.to_nanoseconds());
         let scaled_ns = (elapsed_ns as f64 * self.speed as f64) as i64;
         let scaled = Duration::from_nanos(scaled_ns.max(0) as u64);
-        let t = self.first_log_time + scaled;
+        let scaled_first_log_time = self.first_log_time + scaled;
 
-        *self.frozen_at.lock().unwrap() = Some(t);
-        t
+        *self.frozen_at.lock().unwrap() = Some(scaled_first_log_time);
+        scaled_first_log_time
     }
 }
 

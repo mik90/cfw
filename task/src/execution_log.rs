@@ -289,18 +289,18 @@ mod tests {
         // Here we just assert the round-trip: two entries written for the same
         // execution carry identical grouping fields.
         let node = 5u32;
-        let t = FrameworkTime::from_nanoseconds(7);
+        let time = FrameworkTime::from_nanoseconds(7);
         let dur = 1234u64;
 
         let a = ExecutionLogEntry {
             callback_node_index: node,
-            execution_time: t,
+            execution_time: time,
             execution_duration_ns: dur,
             ..Default::default()
         };
         let b = ExecutionLogEntry {
             callback_node_index: node,
-            execution_time: t,
+            execution_time: time,
             execution_duration_ns: dur,
             ..Default::default()
         };
