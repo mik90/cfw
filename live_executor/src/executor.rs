@@ -265,6 +265,8 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         {
             use std::sync::atomic::Ordering as O;
             let guard = self.shared_state.shutdown_mutex.lock().unwrap();
+            // drop: discard the MutexGuard from wait_while immediately, releasing
+            // shutdown_mutex. _ = ... would trigger let_underscore_lock.
             drop(self.shared_state.shutdown_cv.wait_while(guard, |_| {
                 let at_barrier = self.shared_state.barrier_count.load(O::Acquire);
                 let finished = self
@@ -423,6 +425,8 @@ fn run_executor_thread<T: TimeSource>(
     }
 
     let guard = shared_state.shutdown_mutex.lock().unwrap();
+    // drop: discard the MutexGuard from wait_while immediately, releasing
+    // shutdown_mutex. _ = ... would trigger let_underscore_lock.
     drop(shared_state.shutdown_cv.wait_while(guard, |_| {
         !shared_state.cleanup_done.load(Ordering::Acquire)
     }));
@@ -463,10 +467,13 @@ fn no_alloc_worker_loop(
     }
 
     let guard = shared.shutdown_mutex.lock().unwrap();
-    shared_state
-        .shutdown_cv
-        .wait_while(guard, |_| !shared_state.cleanup_done.load(Ordering::Acquire))
-        .ok()
+    // drop: discard the MutexGuard from wait_while immediately, releasing
+    // shutdown_mutex. _ = ... would trigger let_underscore_lock.
+    drop(
+        shared
+            .shutdown_cv
+            .wait_while(guard, |_| !shared.cleanup_done.load(Ordering::Acquire)),
+    );
 }
 
 impl<T: TimeSource + 'static> Executor for LiveExecutor<T> {
