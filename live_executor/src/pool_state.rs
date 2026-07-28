@@ -1,6 +1,6 @@
 use crossbeam::channel::{Receiver, Sender};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use task::callback::CallbackNode;
 use task::executor::CallbackNodeEnqueuer;
@@ -48,6 +48,12 @@ pub(crate) struct SharedThreadPoolState {
     pub(crate) periodic_cond_var: Condvar,
     pub(crate) nodes: Vec<Arc<Mutex<CallbackNode>>>,
     pub(crate) should_run: AtomicBool,
+    pub(crate) worker_count: usize,
+    pub(crate) worker_liveness: Vec<Mutex<()>>,
+    pub(crate) barrier_count: AtomicUsize,
+    pub(crate) cleanup_done: AtomicBool,
+    pub(crate) shutdown_mutex: Mutex<()>,
+    pub(crate) shutdown_cv: Condvar,
 }
 
 impl fmt::Display for SharedThreadPoolState {

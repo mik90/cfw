@@ -1,5 +1,5 @@
-use std::sync::atomic::Ordering;
 use std::sync::Weak;
+use std::sync::atomic::Ordering;
 use task::executor::ExecutorStopSignal;
 
 use crate::pool_state::SharedThreadPoolState;

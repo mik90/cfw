@@ -63,8 +63,8 @@ pub(crate) fn periodic_trigger_thread<T: TimeSource>(
 mod tests {
     use std::{
         sync::{
-            atomic::{AtomicUsize, Ordering},
             Arc, OnceLock,
+            atomic::{AtomicUsize, Ordering},
         },
         thread::sleep,
         time,

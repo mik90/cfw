@@ -1,13 +1,15 @@
 use std::num::Saturating;
 use std::time::Duration;
 use task::callback::CallbackNode;
-use task::execution_log::{ExecutionLogMessage, LoggedMessage, ENTRIES_PER_MESSAGE, MESSAGES_PER_ENTRY};
+use task::execution_log::{
+    ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
+};
 use task::generic_publisher::GenericPublisher;
 use task::publisher::Publisher;
 use task::time::FrameworkTime;
 
 pub(crate) struct WorkerLogger {
-    pub(crate) publisher: Publisher<ExecutionLogMessage>,
+    publisher: Publisher<ExecutionLogMessage>,
     flush_period: Duration,
     last_flush: FrameworkTime,
     current_loan: Option<usize>,
@@ -25,10 +27,6 @@ pub(crate) struct WorkerLoggerInit {
     pub(crate) publisher: Publisher<ExecutionLogMessage>,
     pub(crate) flush_period: Duration,
     pub(crate) scratch_capacity: usize,
-}
-
-pub(crate) struct WorkerLoggerState {
-    pub(crate) publisher: Option<Publisher<ExecutionLogMessage>>,
 }
 
 impl WorkerLogger {
