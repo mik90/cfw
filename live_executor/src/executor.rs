@@ -1,0 +1,1129 @@
+use crossbeam::channel;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::Duration;
+use task::callback::CallbackNode;
+use task::context::Context;
+use task::execution_log::{self, ExecutionLogMessage};
+use task::executor::{
+    CallbackNodeEnqueuer, Executor, ExecutorStopSignal, ThreadPoolConfig, TimeSource, WallClock,
+};
+use task::publisher::Publisher;
+use task::time::FrameworkTime;
+
+use crate::error::LiveExecutorError;
+use crate::periodic::periodic_trigger_thread;
+use crate::pool_state::{EnqueueState, PoolState, SharedThreadPoolState, TimeTriggeredNode};
+use crate::stop_signal::StopSignal;
+use crate::worker_logger::{WorkerLogger, WorkerLoggerInit, WorkerLoggerState};
+
+const DEFAULT_LOG_FLUSH_PERIOD: Duration = Duration::from_millis(500);
+const SHUTDOWN_SENTINEL: usize = usize::MAX;
+
+pub struct LiveExecutor<T: TimeSource = WallClock> {
+    threads: Vec<thread::JoinHandle<Option<WorkerLoggerState>>>,
+    shared_state: Arc<SharedThreadPoolState>,
+    time_source: Arc<T>,
+    log_publishers: Vec<Publisher<ExecutionLogMessage>>,
+    per_pool_scratch_cap: Vec<usize>,
+    flush_period: Duration,
+}
+
+impl<T: TimeSource + 'static> LiveExecutor<T> {
+    fn new_multi_pool_core(pools: Vec<ThreadPoolConfig>, time_source: T) -> Self {
+        let mut all_arc_nodes: Vec<Arc<Mutex<CallbackNode>>> = Vec::new();
+        let mut node_to_pool: Vec<usize> = Vec::new();
+        let mut pool_states: Vec<Arc<PoolState>> = Vec::new();
+
+        for (pool_idx, pool) in pools.into_iter().enumerate() {
+            let capacity = pool.nodes.len() + pool.thread_count;
+            let (work_tx, work_rx) = channel::bounded(capacity.max(1));
+
+            pool_states.push(Arc::new(PoolState {
+                thread_count: pool.thread_count,
+                work_tx,
+                work_rx,
+            }));
+
+            for node in pool.nodes {
+                node_to_pool.push(pool_idx);
+                all_arc_nodes.push(Arc::new(Mutex::new(node)));
+            }
+        }
+
+        let num_nodes = all_arc_nodes.len();
+        let enqueue_state = Arc::new(EnqueueState {
+            pools: pool_states,
+            node_to_pool,
+            node_enqueued: (0..num_nodes).map(|_| AtomicBool::new(false)).collect(),
+        });
+        let shared_state = Arc::new(SharedThreadPoolState {
+            enqueue_state: enqueue_state.clone(),
+            periodic_mutex: Mutex::new(()),
+            periodic_cond_var: Condvar::new(),
+            nodes: all_arc_nodes,
+            should_run: true.into(),
+        });
+
+        let enqueuer = enqueue_state as Arc<dyn CallbackNodeEnqueuer>;
+        for (index, arc_node) in shared_state.nodes.iter().enumerate() {
+            arc_node
+                .lock()
+                .unwrap()
+                .register_with_executor(index, enqueuer.clone());
+        }
+
+        LiveExecutor {
+            threads: Vec::new(),
+            shared_state,
+            time_source: Arc::new(time_source),
+            log_publishers: vec![],
+            per_pool_scratch_cap: Vec::new(),
+            flush_period: DEFAULT_LOG_FLUSH_PERIOD,
+        }
+    }
+
+    pub fn new_multi_pool_with_time(
+        pools: Vec<ThreadPoolConfig>,
+        time_source: T,
+    ) -> Self {
+        Self::new_multi_pool_core(pools, time_source)
+    }
+
+    pub fn new_multi_pool_with_execution_log_and_time(
+        pools: Vec<ThreadPoolConfig>,
+        log_publishers: Vec<Publisher<ExecutionLogMessage>>,
+        flush_period: Duration,
+        time_source: T,
+    ) -> Self {
+        debug_assert_eq!(
+            log_publishers.len(),
+            pools.iter().map(|p| p.thread_count).sum::<usize>(),
+            "execution-log publisher count must equal the total worker thread count"
+        );
+
+        let per_pool_scratch_cap: Vec<usize> = pools
+            .iter()
+            .map(|pool| {
+                pool.nodes
+                    .iter()
+                    .map(execution_log::worst_case_received_count)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        let mut exec = Self::new_multi_pool_core(pools, time_source);
+        exec.log_publishers = log_publishers;
+        exec.per_pool_scratch_cap = per_pool_scratch_cap;
+        exec.flush_period = flush_period;
+        exec
+    }
+}
+
+impl LiveExecutor<WallClock> {
+    pub fn new(num_threads: usize, nodes: Vec<CallbackNode>) -> Self {
+        Self::new_multi_pool(vec![ThreadPoolConfig::new(num_threads, nodes)])
+    }
+
+    pub fn new_multi_pool(pools: Vec<ThreadPoolConfig>) -> Self {
+        Self::new_multi_pool_core(pools, WallClock)
+    }
+
+    pub fn new_multi_pool_with_execution_log(
+        pools: Vec<ThreadPoolConfig>,
+        log_publishers: Vec<Publisher<ExecutionLogMessage>>,
+        flush_period: Duration,
+    ) -> Self {
+        Self::new_multi_pool_with_execution_log_and_time(
+            pools,
+            log_publishers,
+            flush_period,
+            WallClock,
+        )
+    }
+}
+
+impl<T: TimeSource + 'static> LiveExecutor<T> {
+    fn start_threads_with(
+        &mut self,
+        spawn_worker: impl Fn(
+            Arc<PoolState>,
+            Arc<SharedThreadPoolState>,
+            Option<WorkerLoggerInit>,
+            Arc<T>,
+        ) -> thread::JoinHandle<Option<WorkerLoggerState>>,
+    ) {
+        for index in 0..self.shared_state.nodes.len() {
+            let node = self.shared_state.nodes[index].lock().unwrap();
+            if node.subscribers_request_execution() && node.able_to_run() {
+                drop(node);
+                self.shared_state.enqueue_state.trigger_node(index);
+            }
+        }
+
+        let has_log_publishers = !self.log_publishers.is_empty();
+        let mut log_publisher_drainer = self.log_publishers.drain(..);
+
+        for (pool_idx, pool_arc) in self.shared_state.enqueue_state.pools.iter().enumerate() {
+            for _ in 0..pool_arc.thread_count {
+                let pool = pool_arc.clone();
+                let shared = self.shared_state.clone();
+                let ts = self.time_source.clone();
+                let init = match has_log_publishers {
+                    true => {
+                        let publisher = log_publisher_drainer
+                            .next()
+                            .expect("Expected one publisher per thread");
+                        Some(WorkerLoggerInit {
+                            publisher,
+                            flush_period: self.flush_period,
+                            scratch_capacity: self.per_pool_scratch_cap[pool_idx],
+                        })
+                    }
+                    false => None,
+                };
+                self.threads.push(spawn_worker(pool, shared, init, ts));
+            }
+        }
+
+        let shared_state = self.shared_state.clone();
+        let time_source = self.time_source.clone();
+        let thread = thread::spawn(move || {
+            let now = time_source.now();
+            let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
+            for (index, node) in shared_state.nodes.iter().enumerate() {
+                if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
+                    exec_times.push_back(TimeTriggeredNode {
+                        index,
+                        requested_exec_time: t,
+                    });
+                }
+            }
+            while shared_state.should_run.load(Ordering::Relaxed) {
+                periodic_trigger_thread(
+                    shared_state.as_ref(),
+                    &mut exec_times,
+                    time_source.as_ref(),
+                );
+            }
+            None
+        });
+        self.threads.push(thread);
+    }
+
+    pub fn start_threads(&mut self) {
+        let time_source = self.time_source.clone();
+        self.start_threads_with(move |pool, shared, init, _ts| {
+            let ts = time_source.clone();
+            thread::spawn(move || {
+                println!("Starting thread");
+                let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
+                run_executor_thread(pool.as_ref(), shared.as_ref(), logger, ts.as_ref())
+            })
+        })
+    }
+
+    pub fn stop_threads(&mut self) -> Result<(), Vec<usize>> {
+        self.shared_state.should_run.store(false, Ordering::Relaxed);
+
+        for pool in self.shared_state.enqueue_state.pools.iter() {
+            for _ in 0..pool.thread_count {
+                let _ = pool.work_tx.try_send(SHUTDOWN_SENTINEL);
+            }
+        }
+
+        self.shared_state.periodic_cond_var.notify_all();
+
+        println!("Joining threads...");
+        let mut thread_join_result = vec![];
+        let mut maybe_logger_states = Vec::with_capacity(self.threads.len());
+        for (thread_idx, t) in self.threads.drain(..).enumerate() {
+            match t.join() {
+                Ok(maybe_logger_state) => {
+                    maybe_logger_states.push(maybe_logger_state);
+                }
+                Err(_) => {
+                    thread_join_result.push(thread_idx);
+                }
+            }
+            println!("joined thread");
+        }
+        println!("all threads joined");
+
+        self.cleanup_buffers();
+
+        maybe_logger_states.clear();
+
+        if thread_join_result.is_empty() {
+            return Ok(());
+        }
+        Err(thread_join_result)
+    }
+
+    fn cleanup_buffers(&mut self) {
+        for arc_node in self.shared_state.nodes.iter() {
+            let node = arc_node.lock().unwrap();
+            for subscriber in node.subscribers().iter() {
+                subscriber.cleanup_buffers();
+            }
+        }
+    }
+}
+
+fn process_work_item(
+    index: usize,
+    shared_state: &SharedThreadPoolState,
+    logger: Option<&mut WorkerLogger>,
+    now: FrameworkTime,
+) {
+    shared_state
+        .enqueue_state
+        .node_enqueued[index]
+        .store(false, Ordering::Release);
+
+    let mut node_guard = shared_state.nodes[index].lock().unwrap();
+    let ctx = Context::new(now);
+
+    match logger {
+        Some(logger) => {
+            if !logger.captures_for(&node_guard) {
+                node_guard.drain_subscribers();
+                let _ = node_guard.run(&ctx);
+                node_guard.flush_publishers(ctx.now);
+                return;
+            }
+
+            node_guard.drain_subscribers();
+            logger.recv_scratch_clear();
+            for (ordinal, sub) in node_guard.subscribers().iter().enumerate() {
+                let ordinal = ordinal as u16;
+                sub.for_each_queued_input(&mut |header, _payload| {
+                    logger.recv_push(task::execution_log::LoggedMessage {
+                        ordinal,
+                        direction: task::execution_log::Direction::Received,
+                        header: *header,
+                    });
+                });
+            }
+
+            let start = task::time::FrameworkTime::from_wall_clock();
+            let _ = node_guard.run(&ctx);
+            let end = task::time::FrameworkTime::from_wall_clock();
+            let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
+
+            logger.begin_execution(index as u32, ctx.now, duration);
+
+            logger.drain_recv_into_current();
+
+            node_guard.flush_publishers_logged(ctx.now, &mut |ordinal, header| {
+                logger.append(task::execution_log::LoggedMessage {
+                    ordinal: ordinal as u16,
+                    direction: task::execution_log::Direction::Published,
+                    header: *header,
+                });
+            });
+
+            logger.maybe_flush_period(ctx.now);
+        }
+        None => {
+            node_guard.drain_subscribers();
+            let _ = node_guard.run(&ctx);
+            node_guard.flush_publishers(ctx.now);
+        }
+    }
+}
+
+fn run_executor_thread<T: TimeSource>(
+    pool_state: &PoolState,
+    shared_state: &SharedThreadPoolState,
+    mut logger: Option<WorkerLogger>,
+    time_source: &T,
+) -> Option<WorkerLoggerState> {
+    loop {
+        let index = match pool_state.work_rx.recv() {
+            Ok(SHUTDOWN_SENTINEL) => break,
+            Ok(idx) => idx,
+            Err(_) => break,
+        };
+
+        if !shared_state.should_run.load(Ordering::Relaxed) {
+            break;
+        }
+
+        process_work_item(index, shared_state, logger.as_mut(), time_source.now());
+    }
+
+    if let Some(logger) = logger.as_mut() {
+        logger.flush_remaining(time_source.now());
+    }
+
+    match logger {
+        Some(l) => Some(WorkerLoggerState {
+            publisher: Some(l.publisher),
+        }),
+        None => None,
+    }
+}
+
+#[cfg(test)]
+fn no_alloc_worker_loop(
+    pool: Arc<PoolState>,
+    shared: Arc<SharedThreadPoolState>,
+    mut logger: Option<WorkerLogger>,
+    time_source: Arc<WallClock>,
+) -> Option<WorkerLoggerState> {
+    loop {
+        let index = match pool.work_rx.recv() {
+            Ok(SHUTDOWN_SENTINEL) => break,
+            Ok(idx) => idx,
+            Err(_) => break,
+        };
+        if !shared.should_run.load(Ordering::Relaxed) {
+            break;
+        }
+        assert_no_alloc::assert_no_alloc(|| {
+            process_work_item(index, &shared, logger.as_mut(), time_source.now())
+        });
+    }
+
+    if let Some(logger) = logger.as_mut() {
+        logger.flush_remaining(time_source.now());
+    }
+
+    match logger {
+        Some(l) => Some(WorkerLoggerState {
+            publisher: Some(l.publisher),
+        }),
+        None => None,
+    }
+}
+
+impl<T: TimeSource + 'static> Executor for LiveExecutor<T> {
+    type Error = LiveExecutorError;
+
+    fn start(&mut self) {
+        self.start_threads();
+    }
+
+    fn stop(&mut self) -> Result<(), LiveExecutorError> {
+        self.stop_threads()
+            .map_err(|panicked_thread_indices| LiveExecutorError {
+                panicked_thread_indices,
+            })
+    }
+
+    fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
+        Arc::new(StopSignal(Arc::downgrade(&self.shared_state)))
+    }
+
+    fn is_running(&self) -> bool {
+        self.shared_state.should_run.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+impl LiveExecutor<WallClock> {
+    fn start_threads_no_alloc(&mut self) {
+        let time_source = self.time_source.clone();
+        self.start_threads_with(move |pool, shared, init, _ts| {
+            let pool = pool.clone();
+            let shared = shared.clone();
+            let ts = time_source.clone();
+            thread::spawn(move || {
+                let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
+                no_alloc_worker_loop(pool, shared, logger, ts)
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex, OnceLock,
+        },
+        thread::sleep,
+        time,
+    };
+
+    use task::{
+        callback::{
+            connect_callback_nodes, Callback, CallbackNode, InputKind, OutputKind, Run,
+        },
+        callback_builder::CallbackBuilder,
+        context::Context,
+        executor::{Executor, ExecutorStopSignal, ThreadPoolConfig},
+        generic_publisher::GenericPublisher,
+        generic_subscriber::GenericSubscriber,
+        input::{OptionalInput, RequiredInput},
+        output::Output,
+        publisher::Publisher,
+        subscriber::{Subscriber, SubscriberConfig},
+    };
+    use test_tasks::*;
+
+    use super::LiveExecutor;
+
+    struct NoAllocPublisher {
+        value: u64,
+    }
+
+    impl Callback for NoAllocPublisher {
+        fn run_generic(
+            &mut self,
+            _subscribers: &mut [Box<dyn GenericSubscriber>],
+            publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let mut output = Output::<u64>::new_downcasted(&mut *publishers[0]);
+            *output = self.value;
+            self.value = self.value.wrapping_add(1);
+            output.send();
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![Box::new(Publisher::<u64>::new(OutputKind::Default.into()))]
+        }
+    }
+
+    struct OptionalTriggerSubscriber {
+        messages_received: Arc<AtomicUsize>,
+        stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+        target_count: usize,
+    }
+
+    impl Callback for OptionalTriggerSubscriber {
+        fn run_generic(
+            &mut self,
+            subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let mut input = OptionalInput::<u64>::new_downcasted(&mut *subscribers[0]);
+            while input.value().is_some() {
+                let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
+                if count >= self.target_count
+                    && let Some(signal) = self.stop_signal.get()
+                {
+                    signal.request_stop();
+                }
+                input.clear();
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 4,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: String::new(),
+            }))]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
+
+    struct NoAllocSubscriber {
+        messages_received: Arc<AtomicUsize>,
+        stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+        target_count: usize,
+    }
+
+    impl Callback for NoAllocSubscriber {
+        fn run_generic(
+            &mut self,
+            subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let _input = RequiredInput::<u64>::new_downcasted(&mut *subscribers[0]);
+            let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
+            if count >= self.target_count
+                && let Some(signal) = self.stop_signal.get()
+            {
+                signal.request_stop();
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<u64>::new(InputKind::Required.into()))]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
+
+    fn build_logging_executor(
+        target: usize,
+        stop_signal_cell: &Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+    ) -> (
+        LiveExecutor,
+        Arc<Mutex<Vec<task::execution_log::ExecutionLogMessage>>>,
+        Arc<AtomicUsize>,
+    ) {
+        let messages_received = Arc::new(AtomicUsize::new(0));
+
+        let publisher_node = CallbackBuilder::new(
+            "LoggingPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["exec_log_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .with_execution_logging(true)
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "LoggingSubscriber".into(),
+            Box::new(NoAllocSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: target,
+            }),
+        )
+        .with_subscriber_channels(&["exec_log_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .with_execution_logging(true)
+        .build()
+        .unwrap();
+
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let collector_node = CallbackBuilder::new(
+            "ExecutionLogCollector".into(),
+            Box::new(ExecutionLogCollector {
+                collected: collected.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target: 4,
+            }),
+        )
+        .with_subscriber_channels(&[task::execution_log::EXECUTION_LOG_CHANNEL])
+        .with_execution_duration_callback(|| time::Duration::ZERO)
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node, collector_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect data nodes");
+
+        let mut pools = vec![ThreadPoolConfig::new(1, nodes)];
+        let mut log_pubs = task::execution_log::log_publishers(&pools);
+        task::execution_log::connect(&mut pools, &mut log_pubs)
+            .expect("failed to connect execution-log publishers");
+
+        let exec = LiveExecutor::new_multi_pool_with_execution_log(
+            pools,
+            log_pubs,
+            time::Duration::from_millis(1),
+        );
+        (exec, collected, messages_received)
+    }
+
+    #[test]
+    fn test_thread_pool_exec() {
+        let string_store = StringCollector::make_string_store();
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let mut nodes = vec![
+            IncrementingIntegerPublisher::build_callback_node(),
+            FizzBuzzCalculator::build_callback_node(),
+            StringCollector::build_callback_node(
+                string_store.clone(),
+                stop_signal_cell.clone(),
+                1,
+            ),
+        ];
+        let connect_result = connect_callback_nodes(&mut nodes);
+        assert!(
+            connect_result.is_ok(),
+            "Result was {}",
+            connect_result.unwrap_err()
+        );
+        assert!(nodes[0].publishers()[0].config().channel_name == "integer");
+        assert!(nodes[1].subscribers()[0].config().channel_name == "integer");
+
+        let mut exec = LiveExecutor::new(1, nodes);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(10);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not stop itself within 10 seconds"
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(!string_store.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_multi_pool_exec() {
+        let string_store = StringCollector::make_string_store();
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let mut all_nodes = vec![
+            IncrementingIntegerPublisher::build_callback_node(),
+            FizzBuzzCalculator::build_callback_node(),
+            StringCollector::build_callback_node(
+                string_store.clone(),
+                stop_signal_cell.clone(),
+                1,
+            ),
+        ];
+        let connect_result = connect_callback_nodes(&mut all_nodes);
+        assert!(
+            connect_result.is_ok(),
+            "Result was {}",
+            connect_result.unwrap_err()
+        );
+
+        let pool1 = vec![all_nodes.remove(0)];
+        let pool2 = all_nodes;
+
+        let mut exec = LiveExecutor::new_multi_pool(vec![
+            ThreadPoolConfig::new(1, pool1),
+            ThreadPoolConfig::new(1, pool2),
+        ]);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(10);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Multi-pool executor did not stop itself within 10 seconds"
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(!string_store.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_executor_worker_no_alloc() {
+        println!("warming stdio buffers");
+
+        const TARGET_COUNT: usize = 50;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let messages_received = Arc::new(AtomicUsize::new(0));
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let publisher_node = CallbackBuilder::new(
+            "NoAllocPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["no_alloc_integer"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(2)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "NoAllocSubscriber".into(),
+            Box::new(NoAllocSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET_COUNT,
+            }),
+        )
+        .with_subscriber_channels(&["no_alloc_integer"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect callback nodes");
+
+        let mut exec = LiveExecutor::new(1, nodes);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads_no_alloc();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not reach {TARGET_COUNT} messages within {DEADLINE_SECS} seconds (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
+    }
+
+    #[test]
+    fn test_optional_trigger_input_data_triggers_node() {
+        const TARGET_COUNT: usize = 20;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let messages_received = Arc::new(AtomicUsize::new(0));
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let publisher_node = CallbackBuilder::new(
+            "OptionalTriggerPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["optional_trigger_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "OptionalTriggerSubscriber".into(),
+            Box::new(OptionalTriggerSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET_COUNT,
+            }),
+        )
+        .with_subscriber_channels(&["optional_trigger_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect callback nodes");
+
+        let mut exec = LiveExecutor::new(1, nodes);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not reach {TARGET_COUNT} messages within {DEADLINE_SECS} seconds (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
+    }
+
+    #[test]
+    fn test_arena_cleanup_many_messages() {
+        const TARGET_COUNT: usize = 40;
+
+        const DEADLINE_SECS: u64 = 120;
+
+        let messages_received = Arc::new(AtomicUsize::new(0));
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let publisher_node = CallbackBuilder::new(
+            "NoAllocPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["many_messages_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(2)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "NoAllocSubscriber".into(),
+            Box::new(NoAllocSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET_COUNT,
+            }),
+        )
+        .with_subscriber_channels(&["many_messages_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect callback nodes");
+
+        let mut exec = LiveExecutor::new(1, nodes);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not reach {TARGET_COUNT} messages within {DEADLINE_SECS} seconds (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
+    }
+
+    struct ExecutionLogCollector {
+        collected: Arc<Mutex<Vec<task::execution_log::ExecutionLogMessage>>>,
+        stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+        target: usize,
+    }
+
+    impl Callback for ExecutionLogCollector {
+        fn run_generic(
+            &mut self,
+            subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let mut input =
+                OptionalInput::<task::execution_log::ExecutionLogMessage>::new_downcasted(
+                    &mut *subscribers[0],
+                );
+            while let Some(msg) = input.value().cloned() {
+                self.collected.lock().unwrap().push(msg);
+                input.clear();
+            }
+            let count = self.collected.lock().unwrap().len();
+            if count >= self.target
+                && let Some(signal) = self.stop_signal.get()
+            {
+                signal.request_stop();
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<
+                task::execution_log::ExecutionLogMessage,
+            >::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 8,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+            }))]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn test_execution_log_recording() {
+        const TARGET: usize = 20;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let stop_signal_cell = Arc::new(OnceLock::new());
+        let (mut exec, collected, _messages_received) =
+            build_logging_executor(TARGET, &stop_signal_cell);
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "executor did not self-stop within {DEADLINE_SECS}s"
+        );
+        exec.stop_threads().expect("stop failed");
+
+        let messages = collected.lock().unwrap();
+        assert!(
+            !messages.is_empty(),
+            "collector received no execution-log messages"
+        );
+
+        let mut any_published = false;
+        let mut any_received = false;
+        for msg in messages.iter() {
+            for entry in msg.entries.iter() {
+                if !entry.is_valid() {
+                    continue;
+                }
+                assert!(entry.callback_node_index == 0 || entry.callback_node_index == 1);
+                for m in entry.messages.iter() {
+                    if !m.is_valid() {
+                        break;
+                    }
+                    assert!(m.header.published_at != task::time::FrameworkTime::INVALID);
+                    match m.direction {
+                        task::execution_log::Direction::Published => {
+                            assert_eq!(m.ordinal, 0);
+                            any_published = true;
+                        }
+                        task::execution_log::Direction::Received => {
+                            assert_eq!(m.ordinal, 0);
+                            any_received = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(any_published, "no published headers were recorded");
+        assert!(any_received, "no received headers were recorded");
+    }
+
+    struct ExecutionLogCounter {
+        count: Arc<AtomicUsize>,
+    }
+
+    impl Callback for ExecutionLogCounter {
+        fn run_generic(
+            &mut self,
+            subscribers: &mut [Box<dyn GenericSubscriber>],
+            _publishers: &mut [Box<dyn GenericPublisher>],
+            _ctx: &Context,
+        ) -> Run {
+            let mut input =
+                OptionalInput::<task::execution_log::ExecutionLogMessage>::new_downcasted(
+                    &mut *subscribers[0],
+                );
+            while input.value().is_some() {
+                self.count.fetch_add(1, Ordering::Relaxed);
+                input.clear();
+            }
+            Run::new(1)
+        }
+
+        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
+            vec![Box::new(Subscriber::<
+                task::execution_log::ExecutionLogMessage,
+            >::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 4,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+            }))]
+        }
+
+        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
+            vec![]
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_execution_log_no_alloc() {
+        const TARGET: usize = 30;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let stop_signal_cell = Arc::new(OnceLock::new());
+        let messages_received = Arc::new(AtomicUsize::new(0));
+
+        let publisher_node = CallbackBuilder::new(
+            "NoAllocLoggingPublisher".into(),
+            Box::new(NoAllocPublisher { value: 0 }),
+        )
+        .with_publisher_channels(&["exec_log_no_alloc_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .with_execution_logging(true)
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "NoAllocLoggingSubscriber".into(),
+            Box::new(NoAllocSubscriber {
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET,
+            }),
+        )
+        .with_subscriber_channels(&["exec_log_no_alloc_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .with_execution_logging(true)
+        .build()
+        .unwrap();
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let collector_node = CallbackNode::new_named(
+            Box::new(ExecutionLogCounter {
+                count: counter.clone(),
+            }),
+            "ExecutionLogCounter".into(),
+        );
+
+        let mut nodes = vec![publisher_node, subscriber_node, collector_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect data nodes");
+
+        let mut pools = vec![ThreadPoolConfig::new(1, nodes)];
+        let mut log_pubs = task::execution_log::log_publishers(&pools);
+        task::execution_log::connect(&mut pools, &mut log_pubs)
+            .expect("failed to connect execution-log publishers");
+
+        let mut exec = LiveExecutor::new_multi_pool_with_execution_log(
+            pools,
+            log_pubs,
+            time::Duration::from_millis(1),
+        );
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads_no_alloc();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "executor did not self-stop within {DEADLINE_SECS}s (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+        exec.stop_threads().expect("stop failed");
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET);
+        assert!(
+            counter.load(Ordering::Relaxed) > 0,
+            "counter never drained a log message"
+        );
+    }
+}
