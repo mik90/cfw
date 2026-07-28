@@ -155,7 +155,7 @@ fn writes_loggable_channel_to_jsonl() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files)]
+#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn empty_registry_produces_no_log_task() {
     // With no types registered, the build step finds nothing to log and
     // doesn't add a LogTask node at all. Confirm it doesn't panic and the
@@ -180,7 +180,7 @@ fn empty_registry_produces_no_log_task() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files)]
+#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn unregistered_type_silently_skipped() {
     // Build with a producer on "values" of type u64 but DON'T register u64
     // with the registry — build should succeed with no LogTask node added
@@ -209,7 +209,7 @@ fn unregistered_type_silently_skipped() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files)]
+#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn diagnostics_task_picks_up_logtask_errors() {
     // Smoke test for the wiring: a `LogDiagnosticsTask` subscribes to the
     // `LogTask[0]_diagnostics` channel; the build flow completes; no panic.
@@ -345,7 +345,7 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files)]
+#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn num_tasks_clamped_to_channel_count() {
     // Requesting more log tasks than there are loggable channels must not
     // produce empty LogTask nodes.
@@ -376,7 +376,7 @@ fn num_tasks_clamped_to_channel_count() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files)]
+#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn diagnostics_task_subscribes_to_every_log_task() {
     // With two log tasks, the diagnostics task must build one subscriber per
     // per-task diagnostics channel.
@@ -428,7 +428,7 @@ fn diagnostics_task_subscribes_to_every_log_task() {
             log_task_diagnostics_channel(0).as_str(),
             log_task_diagnostics_channel(1).as_str()
         ],
-        "diagnostics task must subscribe to both log tasks' diagnostics channels"
+        "diagnostics task must subscribe to both log tasks diagnostic's channels"
     );
 
     let _executor = UnitTestExecutor::new(graph.pools.remove(0).nodes);
