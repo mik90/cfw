@@ -338,11 +338,13 @@ impl SimulationState {
     }
 
     pub fn cleanup(&mut self) {
-        // Clean up subscriber buffers so we can destroy publisher message storage
         for node in self.nodes.iter() {
-            for subscriber in node.lock().unwrap().subscribers().iter() {
-                subscriber.cleanup_buffers();
-            }
+            node.lock()
+                .unwrap()
+                .callback()
+                .for_each_subscriber(&mut |s| {
+                    s.cleanup_buffers();
+                });
         }
     }
 }
@@ -418,28 +420,30 @@ mod tests {
     fn test_zero_duration_node_frees_pool_thread() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use task::callback::{Callback, Run};
+        use task::callback::{Callback, PortMut, Run};
         use task::context::Context;
         use task::generic_publisher::GenericPublisher;
         use task::generic_subscriber::GenericSubscriber;
 
         struct CountingCallback(Arc<AtomicUsize>);
         impl Callback for CountingCallback {
-            fn run_generic(
-                &mut self,
-                _: &mut [Box<dyn GenericSubscriber>],
-                _: &mut [Box<dyn GenericPublisher>],
-                _: &Context,
-            ) -> Run {
+            fn run(&mut self, _ctx: &Context) -> Run {
                 self.0.fetch_add(1, Ordering::Relaxed);
                 Run::new(1)
             }
-            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-                vec![]
+            fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+            fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+            fn for_each_subscriber_mut<'a>(
+                &'a mut self,
+                _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+            ) {
             }
-            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-                vec![]
+            fn for_each_publisher_mut<'a>(
+                &'a mut self,
+                _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+            ) {
             }
+            fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
         }
 
         let run_count = Arc::new(AtomicUsize::new(0));
@@ -474,7 +478,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use task::callback::{Callback, Run};
+        use task::callback::{Callback, PortMut, Run};
         use task::context::Context;
         use task::generic_publisher::GenericPublisher;
         use task::generic_subscriber::GenericSubscriber;
@@ -485,32 +489,37 @@ mod tests {
         /// Publishes an incrementing counter, starting at `start`, once per
         /// run, up to `max` messages.
         struct CounterPublisher {
+            publisher: Publisher<u64>,
             next: u64,
             max: u64,
         }
         impl Callback for CounterPublisher {
-            fn run_generic(
-                &mut self,
-                _: &mut [Box<dyn GenericSubscriber>],
-                publishers: &mut [Box<dyn GenericPublisher>],
-                _: &Context,
-            ) -> Run {
+            fn run(&mut self, _ctx: &Context) -> Run {
                 if self.next < self.max {
-                    let mut out = Output::<u64>::new_downcasted(publishers[0].as_mut());
+                    let mut out = Output::<u64>::new_default(&mut self.publisher);
                     *out = self.next;
                     out.send();
                     self.next += 1;
                 }
                 Run::new(1)
             }
-            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-                vec![]
+            fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+            fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+                f(&self.publisher);
             }
-            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-                vec![Box::new(Publisher::<u64>::new(PublisherConfig {
-                    capacity: 1,
-                    channel_name: String::new(),
-                }))]
+            fn for_each_subscriber_mut<'a>(
+                &'a mut self,
+                _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+            ) {
+            }
+            fn for_each_publisher_mut<'a>(
+                &'a mut self,
+                f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+            ) {
+                f(&mut self.publisher);
+            }
+            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+                f(PortMut::Publisher(&mut self.publisher));
             }
         }
 
@@ -518,25 +527,18 @@ mod tests {
         /// Records every run's observed values; a run missing either value is
         /// a gating violation.
         struct GatedConsumer {
+            trigger: Subscriber<u64>,
+            gate: Subscriber<u64>,
             runs: Arc<Mutex<Vec<(u64, u64)>>>,
             violations: Arc<AtomicUsize>,
         }
         impl Callback for GatedConsumer {
-            fn run_generic(
-                &mut self,
-                subscribers: &mut [Box<dyn GenericSubscriber>],
-                _: &mut [Box<dyn GenericPublisher>],
-                _: &Context,
-            ) -> Run {
-                let read_front = |sub: &mut Box<dyn GenericSubscriber>| -> Option<u64> {
-                    let typed = sub.as_any().downcast_mut::<Subscriber<u64>>()?;
-                    let guard = typed.read_buffer();
+            fn run(&mut self, _ctx: &Context) -> Run {
+                let read_front = |sub: &mut Subscriber<u64>| -> Option<u64> {
+                    let guard = sub.read_buffer();
                     guard.front().map(|msg| msg.message)
                 };
-                match (
-                    read_front(&mut subscribers[0]),
-                    read_front(&mut subscribers[1]),
-                ) {
+                match (read_front(&mut self.trigger), read_front(&mut self.gate)) {
                     (Some(a), Some(b)) => self.runs.lock().unwrap().push((a, b)),
                     _ => {
                         self.violations.fetch_add(1, Ordering::Relaxed);
@@ -544,26 +546,26 @@ mod tests {
                 }
                 Run::new(1)
             }
-            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-                vec![
-                    Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                        is_optional: false,
-                        capacity: 1,
-                        is_trigger: true,
-                        keep_across_runs: true,
-                        channel_name: "trigger".into(),
-                    })),
-                    Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                        is_optional: false,
-                        capacity: 1,
-                        is_trigger: false,
-                        keep_across_runs: true,
-                        channel_name: "gate".into(),
-                    })),
-                ]
+            fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+                f(&self.trigger);
+                f(&self.gate);
             }
-            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-                vec![]
+            fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+            fn for_each_subscriber_mut<'a>(
+                &'a mut self,
+                f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+            ) {
+                f(&mut self.trigger);
+                f(&mut self.gate);
+            }
+            fn for_each_publisher_mut<'a>(
+                &'a mut self,
+                _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+            ) {
+            }
+            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+                f(PortMut::Subscriber(&mut self.trigger));
+                f(PortMut::Subscriber(&mut self.gate));
             }
         }
 
@@ -577,24 +579,47 @@ mod tests {
         // The trigger producer publishes a steady stream; the gate producer
         // publishes a single value (100) and then goes quiet — its value must
         // be retained by the consumer's read buffer.
-        let mut trigger_node = make_periodic(
-            Box::new(CounterPublisher { next: 0, max: 100 }),
+        let trigger_node = make_periodic(
+            Box::new(CounterPublisher {
+                publisher: Publisher::<u64>::new(PublisherConfig {
+                    capacity: 1,
+                    channel_name: "trigger".into(),
+                }),
+                next: 0,
+                max: 100,
+            }),
             "trigger_producer",
         );
-        trigger_node.publishers_mut()[0].config_mut().channel_name = "trigger".into();
-        let mut gate_node = make_periodic(
+        let gate_node = make_periodic(
             Box::new(CounterPublisher {
+                publisher: Publisher::<u64>::new(PublisherConfig {
+                    capacity: 1,
+                    channel_name: "gate".into(),
+                }),
                 next: 100,
                 max: 101,
             }),
             "gate_producer",
         );
-        gate_node.publishers_mut()[0].config_mut().channel_name = "gate".into();
 
         let runs = Arc::new(Mutex::new(Vec::new()));
         let violations = Arc::new(AtomicUsize::new(0));
         let mut consumer = task::callback::CallbackNode::new_named(
             Box::new(GatedConsumer {
+                trigger: Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: "trigger".into(),
+                }),
+                gate: Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: false,
+                    keep_across_runs: true,
+                    channel_name: "gate".into(),
+                }),
                 runs: runs.clone(),
                 violations: violations.clone(),
             }),

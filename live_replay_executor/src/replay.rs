@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use logging::log_file::LogFileReader;
 use logging::log_file_json::JsonLogFileReader;
-use task::callback::{Callback, CallbackNode, Run};
+use task::callback::{Callback, CallbackNode, PortMut, Run};
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::execution_log::EXECUTION_LOG_CHANNEL;
@@ -30,6 +30,7 @@ pub struct ReplayTask {
     registry: Arc<ChannelRegistry>,
     channel_to_slot: HashMap<ChannelName, usize>,
     writers: Vec<task::channel_registry::ChannelPublisherWriter>,
+    publishers: Vec<Box<dyn GenericPublisher>>,
     cursor: usize,
     stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
 }
@@ -41,12 +42,7 @@ impl ReplayTask {
 }
 
 impl Callback for ReplayTask {
-    fn run_generic(
-        &mut self,
-        _subscribers: &mut [Box<dyn GenericSubscriber>],
-        publishers: &mut [Box<dyn GenericPublisher>],
-        ctx: &Context,
-    ) -> Run {
+    fn run(&mut self, ctx: &Context) -> Run {
         let len = self.entries.len();
         while self.cursor < len {
             let entry = &self.entries[self.cursor];
@@ -70,7 +66,7 @@ impl Callback for ReplayTask {
             };
 
             if let Ok(value) = deserializer(&entry.serialized_body) {
-                (self.writers[slot])(&mut *publishers[slot], value);
+                (self.writers[slot])(&mut *self.publishers[slot], value);
             }
 
             self.cursor += 1;
@@ -88,12 +84,26 @@ impl Callback for ReplayTask {
         }
     }
 
-    fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-        vec![]
+    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+        for p in &self.publishers {
+            f(p.as_ref());
+        }
     }
-
-    fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-        vec![]
+    fn for_each_subscriber_mut<'a>(
+        &'a mut self,
+        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+    ) {
+    }
+    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
+        for p in self.publishers.iter_mut() {
+            f(p.as_mut());
+        }
+    }
+    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+        for p in self.publishers.iter_mut() {
+            f(PortMut::Publisher(p.as_mut()));
+        }
     }
 }
 
@@ -169,16 +179,12 @@ impl TaskGraphBuildStep for ReplayBuildStep {
             registry: self.registry.clone(),
             channel_to_slot,
             writers,
+            publishers,
             cursor: 0,
             stop_signal: self.stop_signal_cell.clone(),
         };
 
-        let mut node = CallbackNode::new_with(
-            Box::new(replay_task),
-            vec![],
-            publishers,
-            "ReplayTask".into(),
-        );
+        let mut node = CallbackNode::new_named(Box::new(replay_task), "ReplayTask".into());
         node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
         node.set_execution_time_callback(Box::new(move |_now| Some(first_entry_time)));
 
@@ -241,7 +247,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, OnceLock};
 
-    use task::channel_registry::ChannelRegistry;
+    use task::callback::CallbackViews;
+    use task::channel_registry::ChannelRegistry; // used in test
     use task::context::Context;
     use task::executor::ExecutorStopSignal;
     use task::input::OptionalInput;
@@ -308,7 +315,8 @@ mod tests {
             channel_name: "integer".into(),
         });
         {
-            let pub_ref: &mut Publisher<u64> = node.publishers_mut()[0]
+            let mut pubs = node.callback_mut().collect_publishers_mut();
+            let pub_ref: &mut Publisher<u64> = pubs[0]
                 .as_any()
                 .downcast_mut::<Publisher<u64>>()
                 .expect("publisher should be u64");
@@ -396,8 +404,13 @@ mod tests {
 
         let nodes = build_step.build_step(&[]).unwrap();
         assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].publishers().len(), 1);
-        assert_eq!(nodes[0].publishers()[0].config().channel_name, "integer");
+        assert_eq!(nodes[0].callback().collect_publishers().len(), 1);
+        assert_eq!(
+            nodes[0].callback().collect_publishers()[0]
+                .config()
+                .channel_name,
+            "integer"
+        );
     }
 
     #[test]

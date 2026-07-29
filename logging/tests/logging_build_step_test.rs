@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use task::callback::{Callback, Run};
+use task::callback::{Callback, CallbackViews, PortMut, Run};
 use task::callback_builder::CallbackBuilder;
 use task::context::Context;
 use task::generic_publisher::GenericPublisher;
@@ -33,25 +33,28 @@ use logging::{
 /// A minimal producer that publishes `n` counter values on the `values` channel
 /// across successive runs, one per run.
 struct CounterProducer {
+    publisher: Publisher<u64>,
     counter: u64,
     max: u64,
 }
 
 impl CounterProducer {
     fn new(max: u64) -> Self {
-        CounterProducer { counter: 0, max }
+        CounterProducer {
+            publisher: Publisher::<u64>::new(PublisherConfig {
+                capacity: 1,
+                channel_name: String::new(),
+            }),
+            counter: 0,
+            max,
+        }
     }
 }
 
 impl Callback for CounterProducer {
-    fn run_generic(
-        &mut self,
-        _subscribers: &mut [Box<dyn GenericSubscriber>],
-        publishers: &mut [Box<dyn GenericPublisher>],
-        _ctx: &Context,
-    ) -> Run {
+    fn run(&mut self, _ctx: &Context) -> Run {
         if self.counter < self.max {
-            let mut out: Output<'_, u64> = Output::new_downcasted(publishers[0].as_mut());
+            let mut out = Output::<u64>::new_default(&mut self.publisher);
             *out = self.counter;
             out.send();
             self.counter += 1;
@@ -59,15 +62,20 @@ impl Callback for CounterProducer {
         Run::new(1)
     }
 
-    fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-        vec![]
+    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+        f(&self.publisher);
     }
-
-    fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-        vec![Box::new(Publisher::<u64>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "values".into(),
-        }))]
+    fn for_each_subscriber_mut<'a>(
+        &'a mut self,
+        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+    ) {
+    }
+    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
+        f(&mut self.publisher);
+    }
+    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+        f(PortMut::Publisher(&mut self.publisher));
     }
 }
 
@@ -299,13 +307,13 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
 
     // Each log task exposes its own diagnostics channel.
     assert_eq!(
-        graph.pools[0].nodes[4].publishers()[0]
+        graph.pools[0].nodes[4].callback().collect_publishers()[0]
             .config()
             .channel_name,
         log_task_diagnostics_channel(0)
     );
     assert_eq!(
-        graph.pools[0].nodes[5].publishers()[0]
+        graph.pools[0].nodes[5].callback().collect_publishers()[0]
             .config()
             .channel_name,
         log_task_diagnostics_channel(1)
@@ -418,7 +426,8 @@ fn diagnostics_task_subscribes_to_every_log_task() {
 
     let diag_node = &graph.pools[0].nodes[2];
     let subscribed_channels: Vec<&str> = diag_node
-        .subscribers()
+        .callback()
+        .collect_subscribers()
         .iter()
         .map(|s| s.config().channel_name.as_str())
         .collect();

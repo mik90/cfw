@@ -99,6 +99,7 @@ impl fmt::Debug for BuiltTaskGraphWithDebugInfo {
 }
 
 #[derive(Debug)]
+/// Error hit during callback node connection.
 pub enum TaskGraphBuildError {
     /// Error hit during callback node connection.
     ConnectionError(MismatchTypeError),
@@ -152,10 +153,10 @@ fn find_dangling_subscribers(nodes: &[&CallbackNode]) -> Vec<ChannelName> {
     let mut channel_to_subscriber_count = HashMap::<&str, usize>::new();
 
     for node in nodes {
-        for input in node.subscribers().iter() {
-            let channel = input.config().channel_name.as_str();
+        node.callback().for_each_subscriber(&mut |s| {
+            let channel = s.config().channel_name.as_str();
             *channel_to_subscriber_count.entry(channel).or_default() += 1;
-        }
+        });
     }
 
     channel_to_subscriber_count
@@ -169,10 +170,10 @@ fn find_dangling_publishers(nodes: &[&CallbackNode]) -> Vec<ChannelName> {
     let mut channel_to_publisher_count = HashMap::<&str, usize>::new();
 
     for node in nodes {
-        for input in node.publishers().iter() {
-            let channel = input.config().channel_name.as_str();
+        node.callback().for_each_publisher(&mut |p| {
+            let channel = p.config().channel_name.as_str();
             *channel_to_publisher_count.entry(channel).or_default() += 1;
-        }
+        });
     }
 
     channel_to_publisher_count
@@ -221,14 +222,11 @@ impl TaskGraphBuilder {
         self
     }
 
-    /// Builds any queued [`CallbackBuilder`]s, runs build steps in the order they were added,
-    /// and then connects all callback nodes.
     pub fn build(mut self) -> Result<BuiltTaskGraph, TaskGraphBuildError> {
         let pool_thread_counts: Vec<usize> = self.pools.iter().map(|p| p.thread_count).collect();
         let mut all_nodes: Vec<CallbackNode> = Vec::new();
         let mut pool_node_counts: Vec<usize> = Vec::with_capacity(self.pools.len());
 
-        // Build each pool's pending CallbackBuilders and collect its pre-built nodes.
         for mut pool in self.pools {
             let start = all_nodes.len();
             for builder in pool.pending_builders.drain(..) {
@@ -246,7 +244,6 @@ impl TaskGraphBuilder {
             pool_node_counts.push(all_nodes.len() - start);
         }
 
-        // Run all build steps over the flat node list.
         for step in self.build_steps.drain(..) {
             let step_name = step.name();
             let mut additional_nodes = step.build_step(&all_nodes).map_err(|error| {
@@ -258,7 +255,6 @@ impl TaskGraphBuilder {
             all_nodes.append(&mut additional_nodes);
         }
 
-        // No nodes to connect or install into pools.
         if all_nodes.is_empty() {
             return Ok(BuiltTaskGraph {
                 pools: vec![],
@@ -266,7 +262,6 @@ impl TaskGraphBuilder {
             });
         }
 
-        // Build-step-created nodes go to the first pool (auto-create if none exists).
         let total_original: usize = pool_node_counts.iter().sum();
         let extra = all_nodes.len() - total_original;
         if pool_node_counts.is_empty() {
@@ -291,7 +286,6 @@ impl TaskGraphBuilder {
 
         connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
 
-        // Split into per-pool ThreadPoolConfigs.
         let mut pools = Vec::with_capacity(pool_node_counts.len());
         for (i, &count) in pool_node_counts.iter().enumerate() {
             let nodes: Vec<CallbackNode> = all_nodes.drain(..count).collect();
@@ -337,7 +331,7 @@ mod test {
     use std::assert_matches;
 
     use super::*;
-    use crate::callback::{Callback, Run};
+    use crate::callback::{Callback, PortMut, Run};
     use crate::callback_builder::CallbackBuilder;
     use crate::context::Context;
     use crate::generic_publisher::GenericPublisher;
@@ -346,24 +340,55 @@ mod test {
     use crate::subscriber::{Subscriber, SubscriberConfig};
     use std::time::Duration;
 
-    /// A callback with a configurable number of default subscribers/publishers.
     struct DummyCallback {
-        num_subscribers: usize,
-        num_publishers: usize,
+        subs: Vec<Box<dyn GenericSubscriber>>,
+        pubs: Vec<Box<dyn GenericPublisher>>,
     }
 
     impl Callback for DummyCallback {
-        fn run_generic(
-            &mut self,
-            _subscribers: &mut [Box<dyn GenericSubscriber>],
-            _publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> Run {
+        fn run(&mut self, _ctx: &Context) -> Run {
             Run::new(1)
         }
 
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            (0..self.num_subscribers)
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            for s in &self.subs {
+                f(s.as_ref());
+            }
+        }
+        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+            for p in &self.pubs {
+                f(p.as_ref());
+            }
+        }
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            for s in self.subs.iter_mut() {
+                f(s.as_mut());
+            }
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+            for p in self.pubs.iter_mut() {
+                f(p.as_mut());
+            }
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            for s in self.subs.iter_mut() {
+                f(PortMut::Subscriber(s.as_mut()));
+            }
+            for p in self.pubs.iter_mut() {
+                f(PortMut::Publisher(p.as_mut()));
+            }
+        }
+    }
+
+    fn make_callback(num_subscribers: usize, num_publishers: usize) -> Box<dyn Callback> {
+        Box::new(DummyCallback {
+            subs: (0..num_subscribers)
                 .map(|_| {
                     Box::new(Subscriber::<u64>::new(SubscriberConfig {
                         is_optional: false,
@@ -373,53 +398,43 @@ mod test {
                         channel_name: String::new(),
                     })) as Box<dyn GenericSubscriber>
                 })
-                .collect()
-        }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            (0..self.num_publishers)
+                .collect(),
+            pubs: (0..num_publishers)
                 .map(|_| {
                     Box::new(Publisher::<u64>::new(PublisherConfig {
                         capacity: 1,
                         channel_name: String::new(),
                     })) as Box<dyn GenericPublisher>
                 })
-                .collect()
-        }
-    }
-
-    fn make_callback(num_subscribers: usize, num_publishers: usize) -> Box<dyn Callback> {
-        Box::new(DummyCallback {
-            num_subscribers,
-            num_publishers,
+                .collect(),
         })
     }
 
-    /// A callback that has a single i32 subscriber and no publishers.
-    struct I32SubscriberCallback;
+    struct I32SubscriberCallback {
+        subscriber: Subscriber<i32>,
+    }
 
     impl Callback for I32SubscriberCallback {
-        fn run_generic(
-            &mut self,
-            _subscribers: &mut [Box<dyn GenericSubscriber>],
-            _publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> Run {
+        fn run(&mut self, _ctx: &Context) -> Run {
             Run::new(1)
         }
-
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            vec![Box::new(Subscriber::<i32>::new(SubscriberConfig {
-                is_optional: false,
-                capacity: 1,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: String::new(),
-            }))]
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            f(&self.subscriber);
         }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            vec![]
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            f(&mut self.subscriber);
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            f(PortMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -557,13 +572,23 @@ mod test {
 
     #[test]
     fn mismatched_channel_types_fail_to_connect() {
-        // Producer publishes u64 on "channel", consumer subscribes i32 on "channel".
         let producer = make_callback_node("producer", 0, &[], 1, &["channel"]);
-        let consumer = CallbackBuilder::new("consumer".into(), Box::new(I32SubscriberCallback))
-            .with_subscriber_channels(&["channel"])
-            .with_execution_duration_callback(|| Duration::from_millis(1))
-            .build()
-            .unwrap();
+        let consumer = CallbackBuilder::new(
+            "consumer".into(),
+            Box::new(I32SubscriberCallback {
+                subscriber: Subscriber::<i32>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: String::new(),
+                }),
+            }),
+        )
+        .with_subscriber_channels(&["channel"])
+        .with_execution_duration_callback(|| Duration::from_millis(1))
+        .build()
+        .unwrap();
 
         let result = TaskGraphBuilder::new()
             .add_pool(1, |p| p.add_callback(producer).add_callback(consumer))

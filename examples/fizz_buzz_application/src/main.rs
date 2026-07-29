@@ -35,18 +35,20 @@ fn main() {
         num_tasks: 1,
     };
     let mut registry = ChannelRegistry::new();
-    // task_macros auto-registers types but the test tasks don't use it so we have to register them manually.
-    registry.register_loggable::<u64>();
-    registry.register_loggable::<String>();
     registry.register_loggable::<task::execution_log::ExecutionLogMessage>();
     let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
         config, registry,
     ));
+    let mut node_registry = task::channel_registry::ChannelRegistry::new();
     let graph = TaskGraphBuilder::new()
         .add_pool(thread_count, |p| {
-            p.add_callback(test_tasks::IncrementingIntegerPublisher::build_callback_node())
-                .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
-                .add_callback(test_tasks::StringCollector::build_callback_node_lite())
+            p.add_callback(
+                test_tasks::IncrementingIntegerPublisher::build_callback_node(&mut node_registry),
+            )
+            .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node(
+                &mut node_registry,
+            ))
+            .add_callback(test_tasks::StringCollector::build_callback_node_lite())
         })
         .add_build_step(logging_build_step)
         .with_log_executions(true)

@@ -77,15 +77,15 @@ impl fmt::Display for SharedThreadPoolState {
                 node.subscribers_request_execution()
             )?;
             writeln!(f, "\t Subscribers")?;
-            for s in node.subscribers().iter() {
-                writeln!(f, "\t\t Channel: {}", s.config().channel_name)?;
+            node.callback().for_each_subscriber(&mut |s| {
+                let _ = writeln!(f, "\t\t Channel: {}", s.config().channel_name);
                 let queue_info = s.queue_info();
-                writeln!(
+                let _ = writeln!(
                     f,
                     "\t\t Reader queue size: {}, writer_queue size: {}",
                     queue_info.reader_size, queue_info.writer_size
-                )?;
-            }
+                );
+            });
         }
         writeln!(f, "\t ----------------------------------")?;
         Ok(())

@@ -1,16 +1,16 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use task::callback;
-use task::callback::CallbackNode;
+use task::callback::{Callback, CallbackNode, PortMut, Run};
 use task::callback_builder::CallbackBuilder;
+use task::channel_registry::ChannelRegistry;
+use task::context::Context;
 use task::executor::ExecutorStopSignal;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
-use task::input;
-use task::output;
-use task::publisher;
-use task::subscriber;
+use task::input::RequiredInput;
+use task::output::Output;
 use task::task_graph_builder::TaskGraphBuilder;
+use task_macros::task_callback;
 
 pub struct FizzBuzzTaskInfo {
     string_store: Arc<Mutex<Vec<String>>>,
@@ -32,15 +32,20 @@ pub fn build_fizz_buzz_callback_nodes() -> (Vec<CallbackNode>, FizzBuzzTaskInfo)
     let string_store = StringCollector::make_string_store();
     let stop_signal = Arc::new(OnceLock::new());
 
+    let mut registry = ChannelRegistry::new();
+
     let build_result = TaskGraphBuilder::new()
         .add_pool(1, |p| {
-            p.add_callback(IncrementingIntegerPublisher::build_callback_node())
-                .add_callback(FizzBuzzCalculator::build_callback_node())
-                .add_callback(StringCollector::build_callback_node(
-                    string_store.clone(),
-                    stop_signal.clone(),
-                    1,
-                ))
+            p.add_callback(IncrementingIntegerPublisher::build_callback_node(
+                &mut registry,
+            ))
+            .add_callback(FizzBuzzCalculator::build_callback_node(&mut registry))
+            .add_callback(StringCollector::build_callback_node(
+                string_store.clone(),
+                stop_signal.clone(),
+                1,
+                &mut registry,
+            ))
         })
         .build();
 
@@ -64,18 +69,20 @@ pub fn build_fizz_buzz_callback_nodes() -> (Vec<CallbackNode>, FizzBuzzTaskInfo)
 pub struct IncrementingIntegerPublisher {
     value: u64,
 }
+#[task_callback]
 impl IncrementingIntegerPublisher {
-    pub fn run(&mut self, mut output: output::Output<u64>) {
+    fn run(&mut self, mut output: Output<u64>) {
         println!("IncrementingIntegerPublisher run");
         *output = self.value;
         self.value += 1;
         output.send();
     }
-
-    pub fn build_callback_node() -> callback::CallbackNode {
+}
+impl IncrementingIntegerPublisher {
+    pub fn build_callback_node(registry: &mut ChannelRegistry) -> CallbackNode {
         CallbackBuilder::new(
             "IncrementingIntegerPublisher".into(),
-            Box::new(IncrementingIntegerPublisher { value: 0 }),
+            Box::new(IncrementingIntegerPublisher { value: 0 }.build(registry)),
         )
         .with_publisher_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
         .with_next_execution_time_callback(|t| Some(t + std::time::Duration::from_millis(500)))
@@ -85,34 +92,10 @@ impl IncrementingIntegerPublisher {
     }
 }
 
-impl callback::Callback for IncrementingIntegerPublisher {
-    fn run_generic(
-        &mut self,
-        _subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
-        publishers: &mut [Box<dyn task::publisher::GenericPublisher>],
-        _ctx: &task::context::Context,
-    ) -> task::callback::Run {
-        self.run(output::Output::<u64>::new_downcasted(&mut *publishers[0]));
-        task::callback::Run::new(1)
-    }
-
-    fn build_subscribers(&self) -> Vec<Box<dyn task::subscriber::GenericSubscriber>> {
-        vec![]
-    }
-    fn build_publishers(&self) -> Vec<Box<dyn publisher::GenericPublisher>> {
-        vec![Box::new(publisher::Publisher::<u64>::new(
-            callback::OutputKind::Default.into(),
-        ))]
-    }
-}
-
 pub struct FizzBuzzCalculator {}
+#[task_callback]
 impl FizzBuzzCalculator {
-    pub fn run(
-        &mut self,
-        integer: input::RequiredInput<u64>,
-        mut fizz_buzz_string: output::Output<String>,
-    ) {
+    fn run(&mut self, integer: RequiredInput<u64>, mut fizz_buzz_string: Output<String>) {
         println!("FizzBuzzCalculator run");
         let is_fizz = (*integer).is_multiple_of(3);
         let is_buzz = (*integer).is_multiple_of(5);
@@ -129,48 +112,29 @@ impl FizzBuzzCalculator {
         }
         fizz_buzz_string.send();
     }
-    pub fn build_callback_node() -> callback::CallbackNode {
-        CallbackBuilder::new("FizzBuzzCalculator".into(), Box::new(FizzBuzzCalculator {}))
-            .with_subscriber_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
-            .with_publisher_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
-            .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
-            .build()
-            .unwrap()
+}
+impl FizzBuzzCalculator {
+    pub fn build_callback_node(registry: &mut ChannelRegistry) -> CallbackNode {
+        CallbackBuilder::new(
+            "FizzBuzzCalculator".into(),
+            Box::new(FizzBuzzCalculator {}.build(registry)),
+        )
+        .with_subscriber_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
+        .with_publisher_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
+        .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
+        .build()
+        .unwrap()
     }
 }
 
-impl callback::Callback for FizzBuzzCalculator {
-    fn run_generic(
-        &mut self,
-        subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
-        publishers: &mut [Box<dyn task::publisher::GenericPublisher>],
-        _ctx: &task::context::Context,
-    ) -> task::callback::Run {
-        self.run(
-            input::RequiredInput::<u64>::new_downcasted(&mut *subscribers[0]),
-            output::Output::<String>::new_downcasted(&mut *publishers[0]),
-        );
-        task::callback::Run::new(1)
-    }
-
-    fn build_subscribers(&self) -> Vec<Box<dyn task::subscriber::GenericSubscriber>> {
-        vec![Box::new(subscriber::Subscriber::<u64>::new(
-            callback::InputKind::Required.into(),
-        ))]
-    }
-    fn build_publishers(&self) -> Vec<Box<dyn publisher::GenericPublisher>> {
-        vec![Box::new(publisher::Publisher::<String>::new(
-            callback::OutputKind::Default.into(),
-        ))]
-    }
-}
 pub struct StringCollector {
     string_store: Arc<Mutex<Vec<String>>>,
     stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
     target_count: usize,
 }
+#[task_callback]
 impl StringCollector {
-    pub fn run(&self, string: input::RequiredInput<String>) {
+    fn run(&self, string: RequiredInput<String>) {
         println!("StringCollector run");
         let mut store = self.string_store.lock().unwrap();
         store.push(string.clone());
@@ -180,7 +144,8 @@ impl StringCollector {
             signal.request_stop();
         }
     }
-
+}
+impl StringCollector {
     pub fn make_string_store() -> Arc<Mutex<Vec<String>>> {
         Arc::new(Mutex::new(vec![]))
     }
@@ -189,14 +154,18 @@ impl StringCollector {
         string_store: Arc<Mutex<Vec<String>>>,
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target_count: usize,
-    ) -> callback::CallbackNode {
+        registry: &mut ChannelRegistry,
+    ) -> CallbackNode {
         CallbackBuilder::new(
             "StringCollector".into(),
-            Box::new(StringCollector {
-                string_store,
-                stop_signal,
-                target_count,
-            }),
+            Box::new(
+                StringCollector {
+                    string_store,
+                    stop_signal,
+                    target_count,
+                }
+                .build(registry),
+            ),
         )
         .with_subscriber_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
         .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
@@ -204,16 +173,19 @@ impl StringCollector {
         .unwrap()
     }
 
-    pub fn build_callback_node_lite() -> callback::CallbackNode {
+    pub fn build_callback_node_lite() -> CallbackNode {
         let string_store = StringCollector::make_string_store();
         let stop_signal = Arc::new(OnceLock::new());
         CallbackBuilder::new(
             "StringCollector".into(),
-            Box::new(StringCollector {
-                string_store,
-                stop_signal,
-                target_count: usize::MAX,
-            }),
+            Box::new(
+                StringCollector {
+                    string_store,
+                    stop_signal,
+                    target_count: usize::MAX,
+                }
+                .build(&mut ChannelRegistry::new()),
+            ),
         )
         .with_subscriber_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
         .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
@@ -222,55 +194,27 @@ impl StringCollector {
     }
 }
 
-impl callback::Callback for StringCollector {
-    fn run_generic(
-        &mut self,
-        subscribers: &mut [Box<dyn task::subscriber::GenericSubscriber>],
-        _publishers: &mut [Box<dyn task::publisher::GenericPublisher>],
-        _ctx: &task::context::Context,
-    ) -> task::callback::Run {
-        self.run(input::RequiredInput::<String>::new_downcasted(
-            &mut *subscribers[0],
-        ));
-        task::callback::Run::new(1)
-    }
-
-    fn build_subscribers(&self) -> Vec<Box<dyn task::subscriber::GenericSubscriber>> {
-        vec![Box::new(subscriber::Subscriber::<String>::new(
-            callback::InputKind::Required.into(),
-        ))]
-    }
-    fn build_publishers(&self) -> Vec<Box<dyn publisher::GenericPublisher>> {
-        vec![]
-    }
-}
-
-/// A minimal no-op callback with no subscribers or publishers.
 pub struct NoOpCallback;
 
-impl callback::Callback for NoOpCallback {
-    fn run_generic(
-        &mut self,
-        _subscribers: &mut [Box<dyn GenericSubscriber>],
-        _publishers: &mut [Box<dyn GenericPublisher>],
-        _ctx: &task::context::Context,
-    ) -> callback::Run {
-        callback::Run::new(1)
+impl Callback for NoOpCallback {
+    fn run(&mut self, _ctx: &Context) -> Run {
+        Run::new(1)
     }
-    fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-        vec![]
+    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+    fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+    fn for_each_subscriber_mut<'a>(
+        &'a mut self,
+        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+    ) {
     }
-    fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-        vec![]
-    }
+    fn for_each_publisher_mut<'a>(&'a mut self, _f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {}
+    fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
 }
 
-/// Build a [`CallbackNode`] wrapping a [`NoOpCallback`] that reschedules itself
-/// for the instant it finishes (period = 0), so it is always immediately re-ready.
 pub fn build_no_op_callback_node() -> CallbackNode {
     CallbackBuilder::new("no-op".into(), Box::new(NoOpCallback))
         .with_execution_duration_callback(|| Duration::from_millis(1))
-        .with_next_execution_time_callback(Some) // forward the time we're given to execute immediately
+        .with_next_execution_time_callback(Some)
         .build()
         .unwrap()
 }

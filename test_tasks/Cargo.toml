@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 task = { path = "../task" }
+task_macros = { path = "../task_macros" }
 
 [lints]
 workspace = true

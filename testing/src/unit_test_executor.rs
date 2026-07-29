@@ -1,12 +1,11 @@
 use std::error::Error;
 use std::fmt;
 use std::num::Saturating;
-use std::ops::DerefMut;
 use std::sync::Arc;
 
 use simulation_executor::SimulationConfig;
 use simulation_executor::state::{SimulationState, StepError};
-use task::callback::{CallbackNode, connect_callback_nodes};
+use task::callback::{CallbackNode, CallbackViews, connect_callback_nodes};
 use task::executor::ThreadPoolConfig;
 use task::generic_publisher::GenericPublisher;
 use task::pub_sub::CallbackNodeName;
@@ -115,19 +114,19 @@ impl UnitTestExecutorBuilder {
     fn find_publishers_mut(
         &mut self,
         channel_name: &str,
-    ) -> Vec<(&mut (dyn GenericPublisher + 'static), CallbackNodeName)> {
+    ) -> Vec<(&mut dyn GenericPublisher, CallbackNodeName)> {
         self.nodes
             .iter_mut()
             .flat_map(|node| {
                 // Get all publishers matching the requested channel and the name of the node they're on
                 let node_name = node.name().to_owned();
 
-                node.publishers_mut()
-                    .iter_mut()
+                node.callback_mut()
+                    .collect_publishers_mut()
+                    .into_iter()
                     // only take in publishers with the given channel name
                     .filter(|publisher| publisher.config().channel_name == *channel_name)
-                    // Deref the box so callers don't need to care about it
-                    .map(move |p| (p.deref_mut(), node_name.clone()))
+                    .map(move |p| (p, node_name.clone()))
             })
             .collect()
     }
@@ -136,19 +135,19 @@ impl UnitTestExecutorBuilder {
     fn find_subscribers_mut(
         &mut self,
         channel_name: &str,
-    ) -> Vec<(&mut (dyn GenericSubscriber + 'static), CallbackNodeName)> {
+    ) -> Vec<(&mut dyn GenericSubscriber, CallbackNodeName)> {
         self.nodes
             .iter_mut()
             .flat_map(|node| {
                 // Get all subscribers matching the requested channel and the name of the node they're on
                 let node_name = node.name().to_owned();
 
-                node.subscribers_mut()
-                    .iter_mut()
+                node.callback_mut()
+                    .collect_subscribers_mut()
+                    .into_iter()
                     // only take in subscribers with the given channel name
                     .filter(|subscriber| subscriber.config().channel_name == *channel_name)
-                    // Deref the box so callers don't need to care about it
-                    .map(move |p| (p.deref_mut(), node_name.clone()))
+                    .map(move |p| (p, node_name.clone()))
             })
             .collect()
     }
@@ -350,7 +349,9 @@ mod tests {
     fn test_individual_callback() {
         // test single callback node using test_publisher and test_subscriber
 
-        let calculator = FizzBuzzCalculator::build_callback_node();
+        let calculator = FizzBuzzCalculator::build_callback_node(
+            &mut task::channel_registry::ChannelRegistry::new(),
+        );
 
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
         let mut integer_publisher = builder.add_test_publisher::<u64>("integer");
@@ -370,7 +371,9 @@ mod tests {
         expected = "Type mismatch connecting TestPublisher to channel 'integer' on callback node 'FizzBuzzCalculator'"
     )]
     fn test_publisher_type_mismatch_fails() {
-        let calculator = FizzBuzzCalculator::build_callback_node();
+        let calculator = FizzBuzzCalculator::build_callback_node(
+            &mut task::channel_registry::ChannelRegistry::new(),
+        );
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
 
         // Should panic since integer doesn't take a string
@@ -382,7 +385,9 @@ mod tests {
         expected = "Type mismatch connecting TestSubscriber to channel 'fizz_buzz_string' on callback node 'FizzBuzzCalculator'"
     )]
     fn test_susbcriber_type_mismatch_fails() {
-        let calculator = FizzBuzzCalculator::build_callback_node();
+        let calculator = FizzBuzzCalculator::build_callback_node(
+            &mut task::channel_registry::ChannelRegistry::new(),
+        );
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
 
         // Should panic since integer doesn't take a string

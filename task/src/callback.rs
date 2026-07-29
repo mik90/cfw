@@ -1,6 +1,7 @@
 use crate::executor::CallbackNodeEnqueuer;
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
+use crate::message::MessageHeader;
 use crate::pub_sub::{CallbackNodeName, ChannelName};
 use crate::publisher::PublisherConfig;
 use crate::subscriber::SubscriberConfig;
@@ -38,7 +39,8 @@ impl From<InputKind> for SubscriberConfig {
             },
             InputKind::Span => SubscriberConfig {
                 is_optional: true,
-                capacity: 4, // TODO dont default this
+                // TODO, dont default this
+                capacity: 4,
                 is_trigger: true,
                 keep_across_runs: true,
                 // TODO, dont default this
@@ -63,11 +65,6 @@ impl From<OutputKind> for PublisherConfig {
     }
 }
 
-pub struct CallbackSignature {
-    pub inputs: Vec<InputKind>,
-    pub outputs: Vec<OutputKind>,
-}
-
 #[derive(Debug)]
 pub struct Run {
     pub num_iterations: usize,
@@ -79,33 +76,109 @@ impl Run {
     }
 }
 
+// ── PortMut ──
+
+/// One mutable port visit — lets callers collect *both* subscriber and
+/// publisher mut-views from a single `&mut self` borrow.
+pub enum PortMut<'a> {
+    Subscriber(&'a mut dyn GenericSubscriber),
+    Publisher(&'a mut dyn GenericPublisher),
+}
+
+// ── New Callback trait ──
+
 pub trait Callback {
-    // Generic interface for calling the callback. Used by the framework to trigger things
-    // Can provide information about inputs/outputs per index
-    // - what inputs request execution
-    // - input queue capacity
-    // returns number of times the callback node was run
-    fn run_generic(
-        &mut self,
-        subscribers: &mut [Box<dyn GenericSubscriber>],
-        publishers: &mut [Box<dyn GenericPublisher>],
-        ctx: &crate::context::Context,
-    ) -> Run;
+    fn run(&mut self, ctx: &crate::context::Context) -> Run;
 
-    /// Builds subscribers with some default configuration values that are appropriate for the type (e.g. RequiredInput).
-    fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>>;
+    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber));
+    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher));
+    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber));
+    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher));
+    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>));
 
-    /// Builds publisher with some default configuration values that are appropriate for the type (e.g. OutputSpan).
-    fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>>;
-
-    fn able_to_run(&self, inputs: &[Box<dyn GenericSubscriber>]) -> bool {
-        inputs.iter().all(|input| input.able_to_run())
+    fn drain_subscribers(&self) {
+        self.for_each_subscriber(&mut |s| s.drain_writer_to_reader());
     }
 
-    fn requests_execution(&self, inputs: &[Box<dyn GenericSubscriber>]) -> bool {
-        inputs.iter().any(|input| input.requests_execution())
+    fn flush_publishers(&mut self, timestamp: FrameworkTime) {
+        self.for_each_publisher_mut(&mut |p| p.flush_loaned_values(timestamp));
+    }
+
+    fn flush_publishers_logged(
+        &mut self,
+        timestamp: FrameworkTime,
+        hook: &mut dyn FnMut(usize, &MessageHeader),
+    ) {
+        let mut ordinal = 0;
+        self.for_each_publisher_mut(&mut |p| {
+            p.flush_loaned_values_logged(timestamp, &mut |h| hook(ordinal, h));
+            ordinal += 1;
+        });
+    }
+
+    fn subscribers_request_execution(&self) -> bool {
+        let mut any = false;
+        self.for_each_subscriber(&mut |s| any |= s.requests_execution());
+        any
+    }
+
+    fn able_to_run(&self) -> bool {
+        let mut all = true;
+        self.for_each_subscriber(&mut |s| all &= s.able_to_run());
+        all
+    }
+
+    fn required_inputs_ready(&self) -> bool {
+        let mut ready = true;
+        self.for_each_subscriber(&mut |s| {
+            ready &= s.config().is_optional || s.has_data_available();
+        });
+        ready
     }
 }
+
+// ── CallbackViews extension (setup-time Vec helpers) ──
+
+pub trait CallbackViews: Callback {
+    fn collect_subscribers(&self) -> Vec<&dyn GenericSubscriber> {
+        let mut v = Vec::new();
+        self.for_each_subscriber(&mut |s| v.push(s));
+        v
+    }
+    fn collect_publishers(&self) -> Vec<&dyn GenericPublisher> {
+        let mut v = Vec::new();
+        self.for_each_publisher(&mut |s| v.push(s));
+        v
+    }
+    fn collect_subscribers_mut(&mut self) -> Vec<&mut dyn GenericSubscriber> {
+        let mut v = Vec::new();
+        self.for_each_subscriber_mut(&mut |s| v.push(s));
+        v
+    }
+    fn collect_publishers_mut(&mut self) -> Vec<&mut dyn GenericPublisher> {
+        let mut v = Vec::new();
+        self.for_each_publisher_mut(&mut |s| v.push(s));
+        v
+    }
+    fn collect_ports_mut(
+        &mut self,
+    ) -> (
+        Vec<&mut dyn GenericSubscriber>,
+        Vec<&mut dyn GenericPublisher>,
+    ) {
+        let mut subs = Vec::new();
+        let mut pubs = Vec::new();
+        self.for_each_port_mut(&mut |port| match port {
+            PortMut::Subscriber(s) => subs.push(s),
+            PortMut::Publisher(p) => pubs.push(p),
+        });
+        (subs, pubs)
+    }
+}
+
+impl<T: Callback + ?Sized> CallbackViews for T {}
+
+// ── MismatchTypeError ──
 
 #[derive(Debug)]
 pub struct MismatchTypeError {
@@ -126,98 +199,85 @@ impl std::fmt::Display for MismatchTypeError {
 
 impl std::error::Error for MismatchTypeError {}
 
+// ── Forwarded channel usage ──
+
 /// Returns a mapping of the forwarded channel to the depth of subscriber queues listening to it
 fn find_forwarded_channel_usage(callbacks: &[CallbackNode]) -> HashMap<ChannelName, usize> {
-    let mut channel_to_usage = HashMap::<ChannelName, usize>::new();
+    let mut usage = HashMap::<ChannelName, usize>::new();
 
-    // Find all channels that are forwarded
-    for callback in callbacks.iter() {
-        for publisher in callback.publishers.iter() {
-            for forwarded_channel in publisher.forwarded_channels() {
-                channel_to_usage.insert(forwarded_channel.clone(), 0);
+    for node in callbacks {
+        node.callback().for_each_publisher(&mut |p| {
+            for fc in p.forwarded_channels() {
+                usage.entry(fc.clone()).or_insert(0);
             }
-        }
+        });
     }
 
-    // Find all subscribers of the forwarded channel set and bump the usage
-    // accordingly. Each subscriber contributes its `arena_footprint()`
-    // (write-queue + read-buffer slots) — see Publisher::add_typed_subscriber
-    // for the underlying sizing rationale.
-    for callback in callbacks.iter() {
-        for subscriber in callback.subscribers.iter() {
-            let subscriber_channel_name = &subscriber.config().channel_name;
-            match channel_to_usage.get_mut(subscriber_channel_name) {
-                Some(usage) => *usage += subscriber.config().arena_footprint(),
-                None => {
-                    // Subscriber doesn't use this channel
-                }
-            };
-        }
+    for node in callbacks {
+        node.callback().for_each_subscriber(&mut |s| {
+            let ch = &s.config().channel_name;
+            if let Some(u) = usage.get_mut(ch) {
+                *u += s.config().arena_footprint();
+            }
+        });
     }
 
-    channel_to_usage
+    usage
 }
+
+// ── connect_callback_nodes ──
 
 /// Connects publishers to subscribers and sizes arenas accordingly
 pub fn connect_callback_nodes(callbacks: &mut [CallbackNode]) -> Result<(), MismatchTypeError> {
-    let forwarded_channel_to_usage = find_forwarded_channel_usage(callbacks);
+    let n = callbacks.len();
+    let names: Vec<String> = callbacks.iter().map(|n| n.name().to_string()).collect();
+    let forwarded_usage = find_forwarded_channel_usage(callbacks);
 
-    // Connect publishers to everyone who is subscribing to their output
-    for callback_idx in 0..callbacks.len() {
-        for other_callback_idx in 0..callbacks.len() {
-            let callback_name = callbacks[callback_idx].name().to_string();
-            let other_callback_name = callbacks[other_callback_idx].name().to_string();
+    let mut all_subs: Vec<Vec<&mut dyn GenericSubscriber>> = Vec::with_capacity(n);
+    let mut all_pubs: Vec<Vec<&mut dyn GenericPublisher>> = Vec::with_capacity(n);
+    for node in callbacks.iter_mut() {
+        let (subs, pubs) = node.callback_mut().collect_ports_mut();
+        all_subs.push(subs);
+        all_pubs.push(pubs);
+    }
 
-            for publisher in callbacks[callback_idx].publishers.iter_mut() {
-                // Find subscribers to this publisher
-                for other_callback_subscriber in
-                    callbacks[other_callback_idx].subscribers.iter_mut()
-                {
-                    if publisher.config().channel_name
-                        == other_callback_subscriber.config().channel_name
-                    {
+    for i in 0..n {
+        for j in 0..n {
+            for publisher in all_pubs[i].iter_mut() {
+                for subscriber in all_subs[j].iter_mut() {
+                    if publisher.config().channel_name == subscriber.config().channel_name {
                         println!(
                             "Connecting callback node '{}' to callback node '{}' on channel '{}'",
-                            callback_name,
-                            other_callback_name,
+                            names[i],
+                            names[j],
                             publisher.config().channel_name
                         );
-                        if let Err(_e) =
-                            publisher.connect_to_subscriber(other_callback_subscriber.as_mut())
-                        {
+                        if publisher.connect_to_subscriber(&mut **subscriber).is_err() {
                             return Err(MismatchTypeError {
                                 channel_name: publisher.config().channel_name.clone(),
-                                publisher_callback_node: callbacks[callback_idx].name().into(),
-                                subscriber_callback_node: callbacks[other_callback_idx]
-                                    .name()
-                                    .into(),
+                                publisher_callback_node: names[i].clone(),
+                                subscriber_callback_node: names[j].clone(),
                             });
                         }
                     }
                 }
-
-                // This callback node has its channel forwarded to a bunch of subscriber slots, so we must bump its size accordingly
-                match forwarded_channel_to_usage.get(&publisher.config().channel_name) {
-                    Some(usage) => {
-                        publisher.increase_arena_size(*usage);
-                    }
-                    None => {
-                        // Channel not forwaded anywhere
-                    }
+                if let Some(usage) = forwarded_usage.get(&publisher.config().channel_name) {
+                    publisher.increase_arena_size(*usage);
                 }
             }
         }
     }
 
-    // Allocate all arenas for all publishers
-    for callback in callbacks.iter_mut() {
-        for publisher in callback.publishers.iter_mut() {
+    for pubs in all_pubs.iter_mut() {
+        for publisher in pubs.iter_mut() {
             publisher.allocate_arena();
         }
     }
 
     Ok(())
 }
+
+// ── Readiness (unchanged) ──
 
 /// Tracks readiness of the gating (required / non-optional) subscribers in a
 /// CallbackNode via an atomic bitmask. Each gating subscriber's bit is 0 (not
@@ -246,7 +306,6 @@ impl CallbackNodeReadiness {
     pub fn set_bit(&self, index: usize) {
         let bit = 1usize << index;
         let prev = self.bitmask.fetch_or(bit, Ordering::AcqRel);
-        // Only enqueue on the transition: previous was not MAX but now is
         if prev != usize::MAX
             && prev | bit == usize::MAX
             && let (Some(enqueuer), Some(&node_index)) =
@@ -267,7 +326,6 @@ impl CallbackNodeReadiness {
     pub fn register(&self, node_index: usize, enqueuer: Arc<dyn CallbackNodeEnqueuer>) {
         let _ = self.node_index.set(node_index);
         let _ = self.enqueuer.set(enqueuer);
-        // Startup case: if already ready, enqueue now
         self.enqueue_if_ready();
     }
 
@@ -311,43 +369,29 @@ fn is_gating(subscriber: &dyn GenericSubscriber) -> bool {
 /// Only gating (required / non-optional) subscribers consume bits, packed
 /// densely from bit 0; their bits start at 0 (must receive data). All other
 /// bits start at 1.
-fn starting_subscriber_bitmask(subscribers: &[Box<dyn GenericSubscriber>]) -> usize {
+fn compute_bitmask(gating_count: usize) -> usize {
     const MAX_GATING_SUBSCRIBER_COUNT: usize = std::mem::size_of::<usize>() * 8;
-    let gating_count = subscribers.iter().filter(|s| is_gating(s.as_ref())).count();
     if gating_count > MAX_GATING_SUBSCRIBER_COUNT {
-        // 64 isn't much for most use-cases, but we may have some diagnostic or logging callbacks that want more.
-        // We could either have some non-triggering subscribers (so, poll only) or have those callbacks decompose themselves into smaller
-        // callbacks that publish intermediate results.
         panic!(
             "We cannot support callbacks with more than {} required (non-optional) subscribers, try splitting out your callback into multiple callbacks.",
             MAX_GATING_SUBSCRIBER_COUNT
         )
     }
-
     let mut bitmask = usize::MAX;
     for bit_index in 0..gating_count {
-        // Clear this bit — subscriber must receive data before triggering
         bitmask &= !(1usize << bit_index);
     }
     bitmask
 }
 
-pub struct CallbackNode {
-    subscribers: Vec<Box<dyn GenericSubscriber>>,
-    publishers: Vec<Box<dyn GenericPublisher>>,
-    callback: Box<dyn Callback>,
+// ── CallbackNode ──
 
-    // Ideally this would be apart of Callback, but I dont have a good way to store it
+pub struct CallbackNode {
+    callback: Box<dyn Callback>,
     next_execution_time_callback: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>,
     execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
-
     name: CallbackNodeName,
-
     readiness: Arc<CallbackNodeReadiness>,
-
-    /// Whether an executor should record this node's executions in its
-    /// execution log. Default off; each executor decides whether it honors
-    /// this (and whether it was configured with execution logging at all).
     log_executions: bool,
 }
 
@@ -366,56 +410,52 @@ unsafe impl Send for CallbackNode {}
 
 impl CallbackNode {
     pub fn new_named(callback: Box<dyn Callback>, name: CallbackNodeName) -> Self {
-        let subscribers = callback.build_subscribers();
-        let publishers = callback.build_publishers();
-        CallbackNode::new_with(callback, subscribers, publishers, name)
-    }
-
-    pub fn new_with(
-        callback: Box<dyn Callback>,
-        mut subscribers: Vec<Box<dyn GenericSubscriber>>,
-        publishers: Vec<Box<dyn GenericPublisher>>,
-        name: CallbackNodeName,
-    ) -> Self {
-        let initial_bitmask = starting_subscriber_bitmask(&subscribers);
-        let readiness = CallbackNodeReadiness::new(initial_bitmask);
-
-        // Inject readiness state into each subscriber that participates in
-        // data-triggered scheduling: gating (required) subscribers get a
-        // densely-packed bit; optional+trigger subscribers get a
-        // bit-less OptionalTrigger handle so their data arrival can enqueue
-        // the node whenever the required inputs are ready. Optional
-        // non-trigger subscribers get nothing — they never gate or trigger.
-        let mut bit_index = 0;
-        for subscriber in subscribers.iter_mut() {
-            if is_gating(subscriber.as_ref()) {
-                subscriber
-                    .set_readiness_state(SubscriberReadiness::Gating(readiness.clone(), bit_index));
-                bit_index += 1;
-            } else if subscriber.config().is_trigger {
-                subscriber
-                    .set_readiness_state(SubscriberReadiness::OptionalTrigger(readiness.clone()));
+        let mut gating_count: usize = 0;
+        callback.for_each_subscriber(&mut |s| {
+            if is_gating(s) {
+                gating_count += 1;
             }
-        }
+        });
+        let readiness = CallbackNodeReadiness::new(compute_bitmask(gating_count));
 
-        CallbackNode {
-            subscribers,
-            publishers,
+        let mut node = CallbackNode {
             callback,
             next_execution_time_callback: Box::new(|_| None),
             execution_duration_callback: None,
             name,
             readiness,
             log_executions: false,
-        }
+        };
+
+        let mut bit_index = 0;
+        node.callback.for_each_subscriber_mut(&mut |s| {
+            if is_gating(s) {
+                s.set_readiness_state(SubscriberReadiness::Gating(
+                    node.readiness.clone(),
+                    bit_index,
+                ));
+                bit_index += 1;
+            } else if s.config().is_trigger {
+                s.set_readiness_state(SubscriberReadiness::OptionalTrigger(node.readiness.clone()));
+            }
+        });
+
+        node
+    }
+
+    pub fn callback(&self) -> &dyn Callback {
+        &*self.callback
+    }
+    pub fn callback_mut(&mut self) -> &mut dyn Callback {
+        &mut *self.callback
     }
 
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub fn set_execution_duration_callback(&mut self, callback: Box<dyn Fn() -> Duration>) {
-        self.execution_duration_callback = Some(callback);
+    pub fn set_execution_duration_callback(&mut self, cb: Box<dyn Fn() -> Duration>) {
+        self.execution_duration_callback = Some(cb);
     }
 
     pub fn execution_duration(&self) -> Duration {
@@ -427,9 +467,9 @@ impl CallbackNode {
 
     pub fn set_execution_time_callback(
         &mut self,
-        callback: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>,
+        cb: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>,
     ) {
-        self.next_execution_time_callback = callback;
+        self.next_execution_time_callback = cb;
     }
 
     /// The next requested execution time relevant to a current execution time.
@@ -439,104 +479,40 @@ impl CallbackNode {
     }
 
     pub fn drain_subscribers(&mut self) {
-        for subscriber in self.subscribers.iter_mut() {
-            subscriber.drain_writer_to_reader();
-        }
+        self.callback.drain_subscribers();
+    }
+    pub fn flush_publishers(&mut self, ts: FrameworkTime) {
+        self.callback.flush_publishers(ts);
     }
 
-    pub fn flush_publishers(&mut self, timestamp: FrameworkTime) {
-        for publisher in self.publishers.iter_mut() {
-            publisher.flush_loaned_values(timestamp);
-        }
-    }
-
-    /// Flush publishers, invoking `hook` with each published message's header
-    /// (per publisher, in `publishers()` order). Used by executors that record
-    /// published headers in their execution log.
     pub fn flush_publishers_logged(
         &mut self,
-        timestamp: FrameworkTime,
-        hook: &mut dyn FnMut(usize, &crate::message::MessageHeader),
+        ts: FrameworkTime,
+        hook: &mut dyn FnMut(usize, &MessageHeader),
     ) {
-        for (ordinal, publisher) in self.publishers.iter_mut().enumerate() {
-            publisher.flush_loaned_values_logged(timestamp, &mut |header| {
-                hook(ordinal, header);
-            });
-        }
+        self.callback.flush_publishers_logged(ts, hook);
     }
 
-    /// Whether this node wants its executions recorded in an executor's
-    /// execution log. Executors decide whether they honor this.
     pub fn log_executions(&self) -> bool {
         self.log_executions
     }
-
-    /// Toggle execution logging participation for this node. Default is off.
     pub fn set_log_executions(&mut self, enabled: bool) {
         self.log_executions = enabled;
     }
 
     pub fn run(&mut self, ctx: &crate::context::Context) -> Run {
-        self.callback
-            .run_generic(&mut self.subscribers, &mut self.publishers, ctx)
+        self.callback.run(ctx)
     }
-
     pub fn subscribers_request_execution(&self) -> bool {
-        self.callback.requests_execution(&self.subscribers)
+        self.callback.subscribers_request_execution()
     }
-
-    /// Whether every required (non-optional) input will have data for the
-    /// callback once the next write→read drain completes: pending data in the
-    /// write queue, or a retained value in the read buffer. Polling executors
-    /// pair this with `subscribers_request_execution` so a node only runs
-    /// when a trigger fired *and* all required inputs have values.
     pub fn required_inputs_ready(&self) -> bool {
-        self.subscribers
-            .iter()
-            .all(|s| s.config().is_optional || s.has_data_available())
+        self.callback.required_inputs_ready()
     }
-
     pub fn able_to_run(&self) -> bool {
-        self.callback.able_to_run(&self.subscribers)
+        self.callback.able_to_run()
     }
 
-    pub fn publishers(&self) -> &[Box<dyn GenericPublisher>] {
-        &self.publishers
-    }
-
-    pub fn publishers_mut(&mut self) -> &mut [Box<dyn GenericPublisher>] {
-        &mut self.publishers
-    }
-
-    pub fn subscribers(&self) -> &[Box<dyn GenericSubscriber>] {
-        &self.subscribers
-    }
-
-    pub fn subscribers_mut(&mut self) -> &mut [Box<dyn GenericSubscriber>] {
-        &mut self.subscribers
-    }
-
-    /// Finds the subscriber connected to the given channel, by name.
-    pub fn find_subscriber_mut(
-        &mut self,
-        channel_name: &str,
-    ) -> Option<&mut Box<dyn GenericSubscriber>> {
-        self.subscribers
-            .iter_mut()
-            .find(|subscriber| subscriber.config().channel_name == channel_name)
-    }
-
-    /// Finds the publisher connected to the given channel, by name.
-    pub fn find_publisher_mut(
-        &mut self,
-        channel_name: &str,
-    ) -> Option<&mut Box<dyn GenericPublisher>> {
-        self.publishers
-            .iter_mut()
-            .find(|publisher| publisher.config().channel_name == channel_name)
-    }
-
-    /// Called by the executor after construction to wire up the enqueue mechanism.
     pub fn register_with_executor(
         &self,
         node_index: usize,
@@ -554,19 +530,17 @@ impl Drop for CallbackNode {
     /// Executors should still call cleanup on all nodes before tearing down
     /// arenas, but this is a cheap safety net for simple cases.
     fn drop(&mut self) {
-        for subscriber in self.subscribers.iter() {
-            subscriber.cleanup_buffers();
-        }
+        self.callback
+            .for_each_subscriber(&mut |s| s.cleanup_buffers());
     }
 }
 
 #[cfg(test)]
 mod test {
-
-    use std::sync::atomic::AtomicUsize;
-
     use super::*;
-    use crate::subscriber::{Subscriber, SubscriberConfig};
+    use crate::callback::PortMut;
+    use crate::subscriber::Subscriber;
+    use std::sync::atomic::AtomicUsize;
 
     fn make_subscriber(is_trigger: bool, is_optional: bool) -> Box<dyn GenericSubscriber> {
         Box::new(Subscriber::<u64>::new(SubscriberConfig {
@@ -578,16 +552,71 @@ mod test {
         }))
     }
 
-    fn compare_bitmask(subscribers: Vec<Box<dyn GenericSubscriber>>, expected: usize) {
-        let actual = starting_subscriber_bitmask(&subscribers);
-        assert_eq!(
-            actual, expected,
-            "Actual:{:064b} vs Expected:{:064b}",
-            actual, expected
-        );
+    struct VecPorts {
+        subs: Vec<Box<dyn GenericSubscriber>>,
+        pubs: Vec<Box<dyn GenericPublisher>>,
     }
 
-    /// A CallbackNodeEnqueuer that counts how many times it has been called.
+    impl Callback for VecPorts {
+        fn run(&mut self, _ctx: &crate::context::Context) -> Run {
+            Run::new(0)
+        }
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            for s in &self.subs {
+                f(s.as_ref());
+            }
+        }
+        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+            for p in &self.pubs {
+                f(p.as_ref());
+            }
+        }
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            for s in self.subs.iter_mut() {
+                f(s.as_mut());
+            }
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+            for p in self.pubs.iter_mut() {
+                f(p.as_mut());
+            }
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(crate::callback::PortMut<'a>)) {
+            for s in self.subs.iter_mut() {
+                f(crate::callback::PortMut::Subscriber(s.as_mut()));
+            }
+            for p in self.pubs.iter_mut() {
+                f(crate::callback::PortMut::Publisher(p.as_mut()));
+            }
+        }
+    }
+
+    struct NoopCallback;
+    impl Callback for NoopCallback {
+        fn run(&mut self, _ctx: &crate::context::Context) -> Run {
+            Run::new(0)
+        }
+        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+    }
+
     struct CountingEnqueuer(Arc<AtomicUsize>);
     impl CallbackNodeEnqueuer for CountingEnqueuer {
         fn enqueue_node(&self, _node_index: usize) {
@@ -595,71 +624,27 @@ mod test {
         }
     }
 
-    /// A callback that does nothing when run.
-    struct NoopCallback;
-    impl Callback for NoopCallback {
-        fn run_generic(
-            &mut self,
-            _: &mut [Box<dyn GenericSubscriber>],
-            _: &mut [Box<dyn GenericPublisher>],
-            _: &crate::context::Context,
-        ) -> Run {
-            Run::new(0)
-        }
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            vec![]
-        }
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            vec![]
-        }
-    }
-
     #[test]
     fn test_two_trigger_subscribers_both_must_be_set() {
-        // Build a CallbackNodeReadiness for two required-trigger subscribers.
-        // Bits 0 and 1 start at 0; all other bits are 1. The enqueuer should
-        // only fire once BOTH bits are set (i.e., bitmask == usize::MAX).
-
         let enqueue_count = Arc::new(AtomicUsize::new(0));
         let enqueuer =
             Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
-
-        let initial = starting_subscriber_bitmask(&[
-            Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: false,
-                capacity: 1,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: "a".into(),
-            })),
-            Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: false,
-                capacity: 1,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: "b".into(),
-            })),
-        ]);
+        let initial = compute_bitmask(2);
         let readiness = CallbackNodeReadiness::new(initial);
         readiness.register(0, enqueuer);
 
-        // Only subscriber 0 is ready — should NOT enqueue yet
         readiness.set_bit(0);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             0,
             "should not enqueue after only one subscriber is ready"
         );
-
-        // Now subscriber 1 is also ready — bitmask becomes MAX, should enqueue
         readiness.set_bit(1);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             1,
             "should enqueue once both subscribers are ready"
         );
-
-        // Setting an already-set bit again should not double-enqueue
         readiness.set_bit(0);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
@@ -677,51 +662,59 @@ mod test {
         use crate::time::FrameworkTime;
 
         struct LoopbackCallback {
+            subscriber: Subscriber<u64>,
+            publisher: Publisher<u64>,
             value_to_publish: u64,
             received: Vec<u64>,
         }
-
         impl Callback for LoopbackCallback {
-            fn run_generic(
-                &mut self,
-                subscribers: &mut [Box<dyn GenericSubscriber>],
-                publishers: &mut [Box<dyn GenericPublisher>],
-                _ctx: &Context,
-            ) -> Run {
-                // Read any looped-back messages
-                let input = OptionalInput::<u64>::new_downcasted(&mut *subscribers[0]);
+            fn run(&mut self, _ctx: &Context) -> Run {
+                let input = OptionalInput::<u64>::new_downcasted(&mut self.subscriber);
                 if let Some(msg) = input.value() {
                     self.received.push(*msg);
                 }
-
-                // Publish a new value
-                let mut output = Output::<u64>::new_downcasted(&mut *publishers[0]);
+                let mut output = Output::<u64>::new_downcasted(&mut self.publisher);
                 *output = self.value_to_publish;
                 output.send();
                 self.value_to_publish += 1;
-
                 Run::new(1)
             }
-
-            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-                vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                    is_optional: true,
-                    capacity: 1,
-                    is_trigger: false,
-                    keep_across_runs: true,
-                    channel_name: "loopback".into(),
-                }))]
+            fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+                f(&self.subscriber);
             }
-
-            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-                vec![Box::new(Publisher::<u64>::new(PublisherConfig {
-                    capacity: 1,
-                    channel_name: "loopback".into(),
-                }))]
+            fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+                f(&self.publisher);
+            }
+            fn for_each_subscriber_mut<'a>(
+                &'a mut self,
+                f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+            ) {
+                f(&mut self.subscriber);
+            }
+            fn for_each_publisher_mut<'a>(
+                &'a mut self,
+                f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+            ) {
+                f(&mut self.publisher);
+            }
+            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+                f(PortMut::Subscriber(&mut self.subscriber));
+                f(PortMut::Publisher(&mut self.publisher));
             }
         }
 
         let callback = LoopbackCallback {
+            subscriber: Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 1,
+                is_trigger: false,
+                keep_across_runs: true,
+                channel_name: "loopback".into(),
+            }),
+            publisher: Publisher::<u64>::new(PublisherConfig {
+                capacity: 1,
+                channel_name: "loopback".into(),
+            }),
             value_to_publish: 10,
             received: vec![],
         };
@@ -730,140 +723,82 @@ mod test {
             Box::new(callback),
             "LoopbackCallback".into(),
         )];
-
         connect_callback_nodes(&mut nodes).expect("loopback connection should succeed");
 
         let ctx = Context {
             now: FrameworkTime::from_nanoseconds(1),
         };
-
-        // Run 1: publishes 10, no loopback data yet (first run)
         nodes[0].run(&ctx);
         nodes[0].flush_publishers(ctx.now);
-
-        // The published message should be in the subscriber's write buffer now
         nodes[0].drain_subscribers();
 
-        // Run 2: should receive 10 from the loopback, publishes 11
         nodes[0].run(&ctx);
         nodes[0].flush_publishers(ctx.now);
 
-        // After flush, the published message from run 2 is in the write buffer
-        let sub_info = nodes[0].subscribers()[0].queue_info();
+        let collected = nodes[0].callback().collect_subscribers();
         assert_eq!(
-            sub_info.writer_size, 1,
+            collected[0].queue_info().writer_size,
+            1,
             "loopback: published message should be in subscriber's write buffer"
         );
-
         nodes[0].drain_subscribers();
-
-        let sub_info = nodes[0].subscribers()[0].queue_info();
+        let collected = nodes[0].callback().collect_subscribers();
         assert_eq!(
-            sub_info.reader_size, 1,
+            collected[0].queue_info().reader_size,
+            1,
             "loopback: message should have drained to read buffer"
         );
     }
 
     #[test]
     fn test_subscriber_bitmask() {
-        // No subscribers → all bits 1 (nothing blocks us)
-        compare_bitmask(vec![], usize::MAX);
-
-        // One required trigger subscriber → bit 0 cleared
-        compare_bitmask(vec![make_subscriber(true, false)], usize::MAX - 1);
-
-        // Two required trigger subscribers → bits 0 and 1 cleared
-        compare_bitmask(
-            vec![make_subscriber(true, false), make_subscriber(true, false)],
-            usize::MAX - 3,
-        );
-
-        // Optional trigger subscriber → bit stays at 1 (doesn't block)
-        compare_bitmask(vec![make_subscriber(true, true)], usize::MAX);
-
-        // Non-trigger required subscriber → bit 0 cleared (required inputs
-        // gate whether or not they trigger)
-        compare_bitmask(vec![make_subscriber(false, false)], usize::MAX - 1);
-    }
-
-    #[test]
-    fn test_gating_bits_pack_densely_past_optional_subscribers() {
-        // Optional subscribers interleaved with gating ones consume no bits:
-        // two gating subscribers → bits 0 and 1 cleared regardless of position.
-        compare_bitmask(
-            vec![
-                make_subscriber(true, true),  // optional trigger — no bit
-                make_subscriber(true, false), // gating → bit 0
-                make_subscriber(false, true), // optional non-trigger — no bit
-                make_subscriber(true, false), // gating → bit 1
-            ],
-            usize::MAX - 3,
-        );
-    }
-
-    #[test]
-    fn test_more_than_bitwidth_optional_subscribers_is_allowed() {
-        // Only gating subscribers count against the bit-width cap. A node made
-        // entirely of optional subscribers (e.g. a logging task draining many
-        // channels) is fine at any count.
-        let subscribers = (0..(std::mem::size_of::<usize>() * 8 + 1))
-            .map(|_| make_subscriber(false, true))
-            .collect::<Vec<_>>();
-        compare_bitmask(subscribers, usize::MAX);
+        assert_eq!(compute_bitmask(0), usize::MAX);
+        assert_eq!(compute_bitmask(1), usize::MAX - 1);
+        assert_eq!(compute_bitmask(2), usize::MAX - 3);
     }
 
     #[test]
     #[should_panic(expected = "required (non-optional) subscribers")]
     fn test_more_than_bitwidth_gating_subscribers_panics() {
-        let subscribers = (0..(std::mem::size_of::<usize>() * 8 + 1))
-            .map(|_| make_subscriber(true, false))
-            .collect::<Vec<_>>();
-        starting_subscriber_bitmask(&subscribers);
+        compute_bitmask(65);
     }
 
-    /// Regression test: an optional subscriber's drain must not clear a
-    /// readiness bit (its bit is never set by publishers, so a cleared bit
-    /// would permanently keep the bitmask below usize::MAX and the node would
-    /// never be data-triggered again).
     #[test]
     fn test_optional_subscriber_drain_does_not_block_retriggering() {
         let enqueue_count = Arc::new(AtomicUsize::new(0));
         let enqueuer =
             Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
 
-        let subscribers: Vec<Box<dyn GenericSubscriber>> = vec![
-            Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: false,
-                capacity: 1,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: "required".into(),
-            })),
-            Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: true,
-                capacity: 1,
-                is_trigger: false,
-                keep_across_runs: true,
-                channel_name: "optional".into(),
-            })),
-        ];
+        let callback = VecPorts {
+            subs: vec![
+                Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: "required".into(),
+                })),
+                Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: true,
+                    capacity: 1,
+                    is_trigger: false,
+                    keep_across_runs: true,
+                    channel_name: "optional".into(),
+                })),
+            ],
+            pubs: vec![],
+        };
 
-        let mut node =
-            CallbackNode::new_with(Box::new(NoopCallback), subscribers, vec![], "mixed".into());
+        let mut node = CallbackNode::new_named(Box::new(callback), "mixed".into());
         node.register_with_executor(0, enqueuer);
 
-        // Simulate a full cycle: publisher data sets the gating bit, the node
-        // is enqueued, then both subscribers drain (clearing their bits, if
-        // they have them).
-        let Some(SubscriberReadiness::Gating(readiness, bit_index)) =
-            node.subscribers()[0].readiness_state()
-        else {
-            panic!("gating subscriber should have gating readiness state")
+        let collected = node.callback().collect_subscribers();
+        let (Some(SubscriberReadiness::Gating(readiness, bit_index)), None) = (
+            collected[0].readiness_state(),
+            collected[1].readiness_state(),
+        ) else {
+            panic!("unexpected readiness states");
         };
-        assert!(
-            node.subscribers()[1].readiness_state().is_none(),
-            "optional non-trigger subscriber should have no readiness state"
-        );
 
         readiness.set_bit(bit_index);
         assert_eq!(
@@ -871,12 +806,7 @@ mod test {
             1,
             "first data arrival should enqueue the node"
         );
-
         node.drain_subscribers();
-
-        // Second data arrival: the node must be enqueued again. Before dense
-        // gating-only bit assignment, the optional subscriber's drain had
-        // cleared a bit nobody would re-set, blocking this.
         readiness.set_bit(bit_index);
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
@@ -885,11 +815,6 @@ mod test {
         );
     }
 
-    /// A required non-trigger input must gate the node: the callback runs
-    /// only once every required input has a value, and a trigger arrival
-    /// while the gate is empty must not run (or panic on) the node. Once the
-    /// gate has a value it is retained, so later trigger data re-runs the
-    /// node — while gate data alone never triggers.
     #[test]
     fn test_required_non_trigger_input_gates_until_it_has_a_value() {
         use crate::output::Output;
@@ -900,9 +825,6 @@ mod test {
         let enqueuer =
             Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
 
-        // Publishers are declared before the CallbackNode so the node drops
-        // first; CallbackNode::drop cleans subscriber queues before the
-        // publisher arenas are freed.
         let mut trigger_pub = Publisher::<u64>::new(PublisherConfig {
             capacity: 1,
             channel_name: "trigger".into(),
@@ -912,45 +834,39 @@ mod test {
             channel_name: "gate".into(),
         });
 
-        let subscribers: Vec<Box<dyn GenericSubscriber>> = vec![
-            Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: false,
-                capacity: 1,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: "trigger".into(),
-            })),
-            Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: false,
-                capacity: 1,
-                is_trigger: false,
-                keep_across_runs: true,
-                channel_name: "gate".into(),
-            })),
-        ];
+        let callback = VecPorts {
+            subs: vec![
+                Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: "trigger".into(),
+                })),
+                Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: false,
+                    keep_across_runs: true,
+                    channel_name: "gate".into(),
+                })),
+            ],
+            pubs: vec![],
+        };
 
-        let mut node =
-            CallbackNode::new_with(Box::new(NoopCallback), subscribers, vec![], "gated".into());
+        let mut node = CallbackNode::new_named(Box::new(callback), "gated".into());
         node.register_with_executor(0, enqueuer);
 
-        assert!(
-            trigger_pub
-                .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
-                .is_ok(),
-            "trigger publisher connects"
-        );
-        assert!(
-            gate_pub
-                .connect_to_subscriber(node.subscribers_mut()[1].as_mut())
-                .is_ok(),
-            "gate publisher connects"
-        );
+        {
+            let (mut subs, _) = node.callback_mut().collect_ports_mut();
+            trigger_pub.connect_to_subscriber(&mut *subs[0]).unwrap();
+            gate_pub.connect_to_subscriber(&mut *subs[1]).unwrap();
+        }
         trigger_pub.allocate_arena();
         gate_pub.allocate_arena();
 
         let time = FrameworkTime::from_nanoseconds(1);
 
-        // Trigger fires while the gate has no value: no enqueue.
         {
             let mut out = Output::new_default(&mut trigger_pub);
             *out = 1;
@@ -963,8 +879,6 @@ mod test {
             "trigger alone must not run the node"
         );
 
-        // The gate gets a value: everyone was ready and the callback was
-        // triggered → enqueue.
         {
             let mut out = Output::new_default(&mut gate_pub);
             *out = 10;
@@ -977,11 +891,8 @@ mod test {
             "gate value arriving after the trigger must run the node"
         );
 
-        // The node runs: draining clears the trigger bit (event consumed) but
-        // keeps the gate bit (its value is retained in the read buffer).
         node.drain_subscribers();
 
-        // New trigger data while the gate value is retained: runs again.
         {
             let mut out = Output::new_default(&mut trigger_pub);
             *out = 2;
@@ -996,7 +907,6 @@ mod test {
 
         node.drain_subscribers();
 
-        // Gate data alone never re-triggers the node.
         {
             let mut out = Output::new_default(&mut gate_pub);
             *out = 11;
@@ -1010,9 +920,6 @@ mod test {
         );
     }
 
-    /// An optional+trigger input must data-trigger its node even though it
-    /// owns no readiness bit: with no required inputs the bitmask is always
-    /// MAX, so every arrival nudges an enqueue.
     #[test]
     fn test_optional_trigger_input_fires_node() {
         use crate::output::Output;
@@ -1023,39 +930,30 @@ mod test {
         let enqueuer =
             Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
 
-        // Publisher declared before CallbackNode so the node drops first and
-        // CallbackNode::drop cleans subscriber queues before the arena is freed.
         let mut publisher = Publisher::<u64>::new(PublisherConfig {
             capacity: 2,
             channel_name: "opt_trig".into(),
         });
 
-        let subscribers: Vec<Box<dyn GenericSubscriber>> =
-            vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
+        let callback = VecPorts {
+            subs: vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
                 is_optional: true,
                 capacity: 2,
                 is_trigger: true,
                 keep_across_runs: true,
                 channel_name: "opt_trig".into(),
-            }))];
+            }))],
+            pubs: vec![],
+        };
 
-        let mut node = CallbackNode::new_with(
-            Box::new(NoopCallback),
-            subscribers,
-            vec![],
-            "optional_triggered".into(),
-        );
+        let mut node = CallbackNode::new_named(Box::new(callback), "optional_triggered".into());
         node.register_with_executor(0, enqueuer);
-
-        // Registration itself enqueues once (bitmask starts at MAX) — the
-        // startup kick. Reset so the counts below reflect data arrivals.
         enqueue_count.store(0, Ordering::Relaxed);
-        assert!(
-            publisher
-                .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
-                .is_ok(),
-            "publisher connects"
-        );
+
+        {
+            let (mut subs, _) = node.callback_mut().collect_ports_mut();
+            publisher.connect_to_subscriber(&mut *subs[0]).unwrap();
+        }
         publisher.allocate_arena();
 
         let time = FrameworkTime::from_nanoseconds(1);
@@ -1075,10 +973,6 @@ mod test {
         }
     }
 
-    /// An optional+trigger input may only fire the node when its required
-    /// input has a value — otherwise the run would hit an empty required
-    /// input. While the gate is empty the nudge is swallowed; once the gate
-    /// has a value (retained), optional-trigger data enqueues again.
     #[test]
     fn test_optional_trigger_respects_required_gate() {
         use crate::output::Output;
@@ -1089,8 +983,6 @@ mod test {
         let enqueuer =
             Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
 
-        // Publishers declared before CallbackNode so the node drops first and
-        // CallbackNode::drop cleans subscriber queues before the arenas are freed.
         let mut gate_pub = Publisher::<u64>::new(PublisherConfig {
             capacity: 1,
             channel_name: "gate".into(),
@@ -1100,47 +992,39 @@ mod test {
             channel_name: "opt_trig".into(),
         });
 
-        let subscribers: Vec<Box<dyn GenericSubscriber>> = vec![
-            Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: false,
-                capacity: 1,
-                is_trigger: false,
-                keep_across_runs: true,
-                channel_name: "gate".into(),
-            })),
-            Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: true,
-                capacity: 1,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: "opt_trig".into(),
-            })),
-        ];
+        let callback = VecPorts {
+            subs: vec![
+                Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: false,
+                    capacity: 1,
+                    is_trigger: false,
+                    keep_across_runs: true,
+                    channel_name: "gate".into(),
+                })),
+                Box::new(Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: true,
+                    capacity: 1,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: "opt_trig".into(),
+                })),
+            ],
+            pubs: vec![],
+        };
 
-        let mut node = CallbackNode::new_with(
-            Box::new(NoopCallback),
-            subscribers,
-            vec![],
-            "gated_optional_trigger".into(),
-        );
+        let mut node = CallbackNode::new_named(Box::new(callback), "gated_optional_trigger".into());
         node.register_with_executor(0, enqueuer);
 
-        assert!(
-            gate_pub
-                .connect_to_subscriber(node.subscribers_mut()[0].as_mut())
-                .is_ok()
-        );
-        assert!(
-            opt_pub
-                .connect_to_subscriber(node.subscribers_mut()[1].as_mut())
-                .is_ok()
-        );
+        {
+            let (mut subs, _) = node.callback_mut().collect_ports_mut();
+            gate_pub.connect_to_subscriber(&mut *subs[0]).unwrap();
+            opt_pub.connect_to_subscriber(&mut *subs[1]).unwrap();
+        }
         gate_pub.allocate_arena();
         opt_pub.allocate_arena();
 
         let time = FrameworkTime::from_nanoseconds(1);
 
-        // Optional-trigger data while the required gate is empty: no fire.
         {
             let mut out = Output::new_default(&mut opt_pub);
             *out = 1;
@@ -1153,7 +1037,6 @@ mod test {
             "optional trigger must not fire while a required input is empty"
         );
 
-        // Gate value arrives → enqueue (required-side MAX transition).
         {
             let mut out = Output::new_default(&mut gate_pub);
             *out = 10;
@@ -1164,7 +1047,6 @@ mod test {
 
         node.drain_subscribers();
 
-        // Gate value is retained (non-trigger) → optional trigger fires again.
         {
             let mut out = Output::new_default(&mut opt_pub);
             *out = 2;
@@ -1178,76 +1060,104 @@ mod test {
         );
     }
 
-    /// `find_forwarded_channel_usage` drives how much the forwarding publisher's
-    /// arena is grown by `connect_callback_nodes`. It must account for clones
-    /// held simultaneously in each downstream subscriber's write queue *and*
-    /// its read buffer; otherwise a forwarder that re-publishes before drains
-    /// exhausts the arena and panics (and, via cleanup-ordering fallout, trips
-    /// a use-after-free under miri).
     #[test]
     fn test_forwarded_channel_usage_accounts_for_write_and_read_buffers() {
         use crate::forwarded_message::ForwardedMessage;
         use crate::publisher::{ForwardingPublisher, PublisherConfig};
-        use crate::subscriber::{Subscriber, SubscriberConfig};
 
         const FORWARDED: &str = "forwarded";
 
-        struct Forwarder;
+        struct Forwarder {
+            publisher: ForwardingPublisher<bool, u64>,
+        }
         impl Callback for Forwarder {
-            fn run_generic(
-                &mut self,
-                _: &mut [Box<dyn GenericSubscriber>],
-                _: &mut [Box<dyn GenericPublisher>],
-                _: &crate::context::Context,
-            ) -> Run {
+            fn run(&mut self, _ctx: &crate::context::Context) -> Run {
                 Run::new(0)
             }
-            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-                vec![]
+            fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+            fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+                f(&self.publisher);
             }
-            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-                vec![Box::new(ForwardingPublisher::<bool, u64>::new(
-                    PublisherConfig {
-                        capacity: 1,
-                        channel_name: FORWARDED.into(),
-                    },
-                    vec![FORWARDED.into()],
-                ))]
+            fn for_each_subscriber_mut<'a>(
+                &'a mut self,
+                _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+            ) {
+            }
+            fn for_each_publisher_mut<'a>(
+                &'a mut self,
+                f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+            ) {
+                f(&mut self.publisher);
+            }
+            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+                f(PortMut::Publisher(&mut self.publisher));
             }
         }
 
         struct Receiver {
-            capacity: usize,
+            subscriber: Subscriber<ForwardedMessage<bool, u64>>,
         }
         impl Callback for Receiver {
-            fn run_generic(
-                &mut self,
-                _: &mut [Box<dyn GenericSubscriber>],
-                _: &mut [Box<dyn GenericPublisher>],
-                _: &crate::context::Context,
-            ) -> Run {
+            fn run(&mut self, _ctx: &crate::context::Context) -> Run {
                 Run::new(0)
             }
-            fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-                vec![Box::new(Subscriber::<ForwardedMessage<bool, u64>>::new(
-                    SubscriberConfig {
-                        is_optional: true,
-                        capacity: self.capacity,
-                        is_trigger: true,
-                        keep_across_runs: true,
-                        channel_name: FORWARDED.into(),
-                    },
-                ))]
+            fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+                f(&self.subscriber);
             }
-            fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-                vec![]
+            fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+            fn for_each_subscriber_mut<'a>(
+                &'a mut self,
+                f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+            ) {
+                f(&mut self.subscriber);
+            }
+            fn for_each_publisher_mut<'a>(
+                &'a mut self,
+                _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+            ) {
+            }
+            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+                f(PortMut::Subscriber(&mut self.subscriber));
             }
         }
 
         let nodes = vec![
-            CallbackNode::new_named(Box::new(Forwarder), "Forwarder".into()),
-            CallbackNode::new_named(Box::new(Receiver { capacity: 4 }), "Receiver4".into()),
-            CallbackNode::new_named(Box::new(Receiver { capacity: 3 }), "Receiver3".into()),
+            CallbackNode::new_named(
+                Box::new(Forwarder {
+                    publisher: ForwardingPublisher::<bool, u64>::new(
+                        PublisherConfig {
+                            capacity: 1,
+                            channel_name: FORWARDED.into(),
+                        },
+                        vec![FORWARDED.into()],
+                    ),
+                }),
+                "Forwarder".into(),
+            ),
+            CallbackNode::new_named(
+                Box::new(Receiver {
+                    subscriber: Subscriber::<ForwardedMessage<bool, u64>>::new(SubscriberConfig {
+                        is_optional: true,
+                        capacity: 4,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: FORWARDED.into(),
+                    }),
+                }),
+                "Receiver4".into(),
+            ),
+            CallbackNode::new_named(
+                Box::new(Receiver {
+                    subscriber: Subscriber::<ForwardedMessage<bool, u64>>::new(SubscriberConfig {
+                        is_optional: true,
+                        capacity: 3,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: FORWARDED.into(),
+                    }),
+                }),
+                "Receiver3".into(),
+            ),
         ];
 
         let usage = super::find_forwarded_channel_usage(&nodes);

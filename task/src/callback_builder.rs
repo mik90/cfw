@@ -1,15 +1,10 @@
-use crate::callback::{Callback, CallbackNode};
-use crate::generic_publisher::GenericPublisher;
-use crate::generic_subscriber::GenericSubscriber;
+use crate::callback::{Callback, CallbackNode, CallbackViews};
 use crate::pub_sub::CallbackNodeName;
 use crate::time::FrameworkTime;
 use std::fmt;
 use std::time::Duration;
 
 pub struct CallbackBuilder {
-    subscribers: Vec<Box<dyn GenericSubscriber>>,
-    publishers: Vec<Box<dyn GenericPublisher>>,
-    /// Type-erased callback
     generic_callback: Box<dyn Callback>,
 
     next_execution_time_callback: Option<Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>>,
@@ -19,7 +14,6 @@ pub struct CallbackBuilder {
 
     name: CallbackNodeName,
 
-    /// First error seen in build tree.
     first_error: Option<CallbackBuildError>,
 }
 
@@ -37,9 +31,9 @@ impl fmt::Display for ExpectedVsActual {
 
 #[derive(Debug)]
 pub enum CallbackBuildError {
-    MismatchedSubscriberCount(ExpectedVsActual), // Number of configured subscribers doesn't match callback
-    MismatchedPublisherCount(ExpectedVsActual), // Number of configured publisher doesn't match callback
-    MissingExecutionDurationCallback,           // No execution duration callback was added.
+    MismatchedSubscriberCount(ExpectedVsActual),
+    MismatchedPublisherCount(ExpectedVsActual),
+    MissingExecutionDurationCallback,
 }
 
 impl fmt::Display for CallbackBuildError {
@@ -68,15 +62,8 @@ impl CallbackBuilder {
     }
 
     pub fn new(name: CallbackNodeName, callback: Box<dyn Callback>) -> CallbackBuilder {
-        // Build the default subscribers/publishers from the callback,
-        // the type in the function's signature should allow for some reasonable defaults.
-        let subscribers = callback.build_subscribers();
-        let publishers = callback.build_publishers();
-
         CallbackBuilder {
             name,
-            subscribers,
-            publishers,
             generic_callback: callback,
             next_execution_time_callback: None,
             execution_duration_callback: None,
@@ -86,42 +73,43 @@ impl CallbackBuilder {
     }
 
     pub fn with_subscriber_channels(mut self, subscriber_channels: &[&str]) -> CallbackBuilder {
-        if subscriber_channels.len() != self.subscribers.len() {
+        let mut subs = self.generic_callback.collect_subscribers_mut();
+        if subscriber_channels.len() != subs.len() {
             self.first_error
                 .get_or_insert(CallbackBuildError::MismatchedSubscriberCount(
                     ExpectedVsActual {
-                        expected: self.subscribers.len(),
+                        expected: subs.len(),
                         actual: subscriber_channels.len(),
                     },
                 ));
             return self;
         }
 
-        for (channel, config) in subscriber_channels.iter().zip(self.subscribers.iter_mut()) {
-            config.config_mut().channel_name = channel.to_string();
+        for (channel, s) in subscriber_channels.iter().zip(subs.iter_mut()) {
+            s.config_mut().channel_name = channel.to_string();
         }
         self
     }
 
     pub fn with_publisher_channels(mut self, publisher_channels: &[&str]) -> CallbackBuilder {
-        if publisher_channels.len() != self.publishers.len() {
+        let mut pubs = self.generic_callback.collect_publishers_mut();
+        if publisher_channels.len() != pubs.len() {
             self.first_error
                 .get_or_insert(CallbackBuildError::MismatchedPublisherCount(
                     ExpectedVsActual {
-                        expected: self.publishers.len(),
+                        expected: pubs.len(),
                         actual: publisher_channels.len(),
                     },
                 ));
             return self;
         }
 
-        for (channel, config) in publisher_channels.iter().zip(self.publishers.iter_mut()) {
-            config.config_mut().channel_name = channel.to_string();
+        for (channel, p) in publisher_channels.iter().zip(pubs.iter_mut()) {
+            p.config_mut().channel_name = channel.to_string();
         }
         self
     }
 
-    /// TODO: Why use impl intead of box here and not elsewhere?
     pub fn with_execution_duration_callback(
         mut self,
         callback: impl Fn() -> Duration + 'static,
@@ -138,8 +126,6 @@ impl CallbackBuilder {
         self
     }
 
-    /// Toggle whether this callback's executions should be recorded in an
-    /// executor's execution log. Default is off.
     pub fn with_execution_logging(mut self, enabled: bool) -> CallbackBuilder {
         self.log_executions = enabled;
         self
@@ -150,25 +136,20 @@ impl CallbackBuilder {
             return Err(error);
         }
 
-        let mut callback = CallbackNode::new_with(
-            self.generic_callback,
-            self.subscribers,
-            self.publishers,
-            self.name,
-        );
+        let mut callback = CallbackNode::new_named(self.generic_callback, self.name);
 
         if self.log_executions {
             callback.set_log_executions(true);
         }
 
-        if let Some(execution_duration_callback) = self.execution_duration_callback {
-            callback.set_execution_duration_callback(execution_duration_callback);
+        if let Some(cb) = self.execution_duration_callback {
+            callback.set_execution_duration_callback(cb);
         } else {
             return Err(CallbackBuildError::MissingExecutionDurationCallback);
         }
 
-        if let Some(next_execution_time_callback) = self.next_execution_time_callback {
-            callback.set_execution_time_callback(next_execution_time_callback);
+        if let Some(cb) = self.next_execution_time_callback {
+            callback.set_execution_time_callback(cb);
         }
 
         Ok(callback)
@@ -180,7 +161,7 @@ mod test {
     use std::assert_matches;
 
     use super::*;
-    use crate::callback::{Callback, Run};
+    use crate::callback::{Callback, PortMut, Run};
     use crate::context::Context;
     use crate::generic_publisher::GenericPublisher;
     use crate::generic_subscriber::GenericSubscriber;
@@ -188,24 +169,55 @@ mod test {
     use crate::subscriber::{Subscriber, SubscriberConfig};
     use crate::time::FrameworkTime;
 
-    /// A callback with a configurable number of default subscribers/publishers.
     struct DummyCallback {
-        num_subscribers: usize,
-        num_publishers: usize,
+        subs: Vec<Box<dyn GenericSubscriber>>,
+        pubs: Vec<Box<dyn GenericPublisher>>,
     }
 
     impl Callback for DummyCallback {
-        fn run_generic(
-            &mut self,
-            _subscribers: &mut [Box<dyn GenericSubscriber>],
-            _publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> Run {
+        fn run(&mut self, _ctx: &Context) -> Run {
             Run::new(1)
         }
 
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            (0..self.num_subscribers)
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            for s in &self.subs {
+                f(s.as_ref());
+            }
+        }
+        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+            for p in &self.pubs {
+                f(p.as_ref());
+            }
+        }
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            for s in self.subs.iter_mut() {
+                f(s.as_mut());
+            }
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+            for p in self.pubs.iter_mut() {
+                f(p.as_mut());
+            }
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            for s in self.subs.iter_mut() {
+                f(PortMut::Subscriber(s.as_mut()));
+            }
+            for p in self.pubs.iter_mut() {
+                f(PortMut::Publisher(p.as_mut()));
+            }
+        }
+    }
+
+    fn make_callback(num_subscribers: usize, num_publishers: usize) -> Box<dyn Callback> {
+        Box::new(DummyCallback {
+            subs: (0..num_subscribers)
                 .map(|_| {
                     Box::new(Subscriber::<u64>::new(SubscriberConfig {
                         is_optional: false,
@@ -215,25 +227,15 @@ mod test {
                         channel_name: String::new(),
                     })) as Box<dyn GenericSubscriber>
                 })
-                .collect()
-        }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            (0..self.num_publishers)
+                .collect(),
+            pubs: (0..num_publishers)
                 .map(|_| {
                     Box::new(Publisher::<u64>::new(PublisherConfig {
                         capacity: 1,
                         channel_name: String::new(),
                     })) as Box<dyn GenericPublisher>
                 })
-                .collect()
-        }
-    }
-
-    fn make_callback(num_subscribers: usize, num_publishers: usize) -> Box<dyn Callback> {
-        Box::new(DummyCallback {
-            num_subscribers,
-            num_publishers,
+                .collect(),
         })
     }
 
@@ -248,8 +250,12 @@ mod test {
         assert!(callback.is_ok());
         let callback = callback.unwrap();
         assert_eq!(callback.name(), "MyCallback");
-        assert_eq!(callback.subscribers()[0].config().channel_name, "in");
-        assert_eq!(callback.publishers()[0].config().channel_name, "out");
+
+        let subs = callback.callback().collect_subscribers();
+        assert_eq!(subs[0].config().channel_name, "in");
+        let pubs = callback.callback().collect_publishers();
+        assert_eq!(pubs[0].config().channel_name, "out");
+
         assert_eq!(callback.execution_duration(), Duration::from_millis(1));
         assert_eq!(
             callback.next_requested_execution_time(FrameworkTime::from_nanoseconds(0)),
@@ -260,7 +266,6 @@ mod test {
     #[test]
     fn missing_execution_duration_is_an_error() {
         let result = CallbackBuilder::new("NoDuration".into(), make_callback(0, 0)).build();
-
         assert_matches!(
             result,
             Err(CallbackBuildError::MissingExecutionDurationCallback)
@@ -320,10 +325,9 @@ mod test {
 
     #[test]
     fn first_error_wins() {
-        // Both subscriber and publisher counts are wrong; the first one configured wins.
         let result = CallbackBuilder::new("MultiError".into(), make_callback(2, 2))
-            .with_subscriber_channels(&["x"]) // wrong count first
-            .with_publisher_channels(&["y"]) // also wrong, but first error wins
+            .with_subscriber_channels(&["x"])
+            .with_publisher_channels(&["y"])
             .with_execution_duration_callback(|| Duration::from_millis(1))
             .build();
 

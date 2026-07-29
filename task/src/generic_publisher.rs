@@ -6,6 +6,7 @@ use crate::subscriber::SubscriberConfig;
 use crate::time::FrameworkTime;
 use crate::{generic_subscriber::GenericSubscriber, publisher::PublisherConfig};
 
+#[derive(Debug)]
 pub struct ConnectionTypeMismatch {}
 
 pub trait GenericPublisher {

@@ -708,6 +708,7 @@ name = "test_tasks"
 version = "0.1.0"
 dependencies = [
  "task",
+ "task_macros",
 ]
 
 [[package]]

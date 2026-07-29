@@ -1,4 +1,4 @@
-use task::callback::{Callback, Run};
+use task::callback::{Callback, PortMut, Run};
 use task::context::Context;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
@@ -6,54 +6,53 @@ use task::input::OptionalInput;
 use task::pub_sub::ChannelName;
 use task::subscriber::{Subscriber, SubscriberConfig};
 
-use crate::log_task::{LogError, log_task_diagnostics_channel};
+use crate::log_task::LogError;
 
-/// What the diagnostics task does when it observes a `LogError`.
-#[derive(Clone, Copy, Debug)]
+pub(crate) const DEFAULT_DIAGNOSTICS_TASK_NAME: &str = "log_diagnostics";
+
+#[derive(Clone, Copy, PartialEq)]
 pub enum DiagnosticsMode {
-    /// Print every error to stderr.
     Print,
-    /// Panic on the first error — useful for tests that should hard-fail.
     Panic,
-    /// Count but don't emit anything (default — keeps production quiet).
     Silent,
 }
 
-/// A `Callback` that subscribes to one `LogError` diagnostics channel per
-/// `LogTask` and reacts to errors they produce. Designed to be added to a
-/// `TaskGraph` alongside the `LoggingBuildStep` — the `LogTask`s produce,
-/// this consumes.
 pub struct LogDiagnosticsTask {
-    mode: DiagnosticsMode,
-    /// Total errors observed since construction. Inspection-only.
-    error_count: usize,
-    /// One subscriber is built per channel — typically one per `LogTask`.
     channel_names: Vec<ChannelName>,
+    subscribers: Vec<Subscriber<LogError>>,
+    error_count: u64,
+    mode: DiagnosticsMode,
 }
 
 impl LogDiagnosticsTask {
-    pub fn new(mode: DiagnosticsMode, channel_names: Vec<ChannelName>) -> Self {
+    /// Create a `LogDiagnosticsTask` that subscribes to diagnostics channels
+    /// for `count` log tasks.
+    pub fn for_log_tasks(mode: DiagnosticsMode, count: usize) -> Self {
+        let channel_names: Vec<ChannelName> = (0..count)
+            .map(crate::log_task::log_task_diagnostics_channel)
+            .collect();
+        LogDiagnosticsTask::new(channel_names, mode)
+    }
+
+    pub fn new(channel_names: Vec<ChannelName>, mode: DiagnosticsMode) -> Self {
+        let subscribers = channel_names
+            .iter()
+            .map(|cn| {
+                Subscriber::<LogError>::new(SubscriberConfig {
+                    is_optional: true,
+                    capacity: 1,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: cn.clone(),
+                })
+            })
+            .collect();
         LogDiagnosticsTask {
-            mode,
-            error_count: 0,
             channel_names,
-        }
-    }
-
-    /// Subscribe to the diagnostics channels of the first `num_log_tasks`
-    /// `LogTask`s produced by a `LoggingBuildStep`.
-    pub fn for_log_tasks(mode: DiagnosticsMode, num_log_tasks: usize) -> Self {
-        Self::new(
+            subscribers,
+            error_count: 0,
             mode,
-            (0..num_log_tasks)
-                .map(log_task_diagnostics_channel)
-                .collect(),
-        )
-    }
-
-    /// How many errors have been observed so far.
-    pub fn error_count(&self) -> usize {
-        self.error_count
+        }
     }
 
     fn react(&mut self, err: &LogError) {
@@ -77,41 +76,34 @@ impl LogDiagnosticsTask {
 }
 
 impl Callback for LogDiagnosticsTask {
-    fn run_generic(
-        &mut self,
-        subscribers: &mut [Box<dyn GenericSubscriber>],
-        _publishers: &mut [Box<dyn GenericPublisher>],
-        _ctx: &Context,
-    ) -> Run {
+    fn run(&mut self, _ctx: &Context) -> Run {
+        let mut subscribers = std::mem::take(&mut self.subscribers);
         for subscriber in subscribers.iter_mut() {
-            let mut input = OptionalInput::<LogError>::new_downcasted(subscriber.as_mut());
+            let mut input = OptionalInput::<LogError>::new(subscriber);
             if let Some(err) = input.value() {
                 self.react(err);
-                // Pop the consumed error so it isn't reprocessed on the next
-                // run (the subscriber uses `keep_across_runs: true`). Capacity
-                // is 1, so this was the whole queue.
                 input.clear();
             }
         }
+        self.subscribers = subscribers;
         Run::new(1)
     }
 
-    fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-        self.channel_names
-            .iter()
-            .map(|channel_name| {
-                Box::new(Subscriber::<LogError>::new(SubscriberConfig {
-                    is_optional: true,
-                    capacity: 1,
-                    is_trigger: true,
-                    keep_across_runs: true,
-                    channel_name: channel_name.clone(),
-                })) as Box<dyn GenericSubscriber>
-            })
-            .collect()
+    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+        for s in &self.subscribers {
+            f(s);
+        }
     }
-
-    fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-        vec![]
+    fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
+        for s in self.subscribers.iter_mut() {
+            f(s);
+        }
+    }
+    fn for_each_publisher_mut<'a>(&'a mut self, _f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {}
+    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+        for s in self.subscribers.iter_mut() {
+            f(PortMut::Subscriber(s));
+        }
     }
 }

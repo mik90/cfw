@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use task::callback::{Callback, CallbackNode};
+use task::callback::CallbackNode;
 use task::channel_registry::ChannelRegistry;
 use task::execution_log::{self, EXECUTION_LOG_CHANNEL, ExecutionLogMessage};
 use task::generic_subscriber::GenericSubscriber;
@@ -72,31 +72,28 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         let forwarded_channels: HashSet<task::pub_sub::ChannelName> = nodes
             .iter()
             .flat_map(|n| {
-                n.publishers()
-                    .iter()
-                    .flat_map(|p| p.forwarded_channels().to_vec())
+                let mut fcs = Vec::new();
+                n.callback().for_each_publisher(&mut |p| {
+                    fcs.extend(p.forwarded_channels().iter().cloned());
+                });
+                fcs
             })
             .collect();
 
         for node in nodes {
-            for publisher in node.publishers() {
+            node.callback().for_each_publisher(&mut |publisher| {
                 let channel_name = publisher.config().channel_name.clone();
 
                 if forwarded_channels.contains(&channel_name) {
-                    continue;
+                    return;
                 }
 
                 let Some(serializer) = self.registry.serializer_for(publisher.value_type_id())
                 else {
-                    // No serializer registered for this type — silently skip.
-                    // The user either didn't register this type with the
-                    // `ChannelRegistry`, or the type isn't `Loggable`.
-                    continue;
+                    return;
                 };
 
                 let sub_config = task::subscriber::SubscriberConfig {
-                    // Non-triggering optional span: the LogTask runs on its
-                    // periodic schedule and drains whatever has accumulated.
                     is_optional: true,
                     capacity: DEFAULT_LOG_QUEUE_CAPACITY,
                     is_trigger: false,
@@ -105,15 +102,12 @@ impl TaskGraphBuildStep for LoggingBuildStep {
                 };
 
                 let Some(subscriber) = publisher.build_matching_subscriber(sub_config) else {
-                    return Err(format!(
-                        "LoggingBuildStep: publisher for channel '{}' does not support build_matching_subscriber",
-                        channel_name
-                    ).into());
+                    return;
                 };
 
                 channel_loggers.push(ChannelLogger::new(channel_name, serializer));
                 subscribers.push(subscriber);
-            }
+            });
         }
 
         // Execution-log channel is published on by per-thread publishers in
@@ -171,25 +165,11 @@ impl TaskGraphBuildStep for LoggingBuildStep {
                 Box::new(shared_writer.clone()),
                 log_task_diagnostics_channel(index),
                 shard_loggers,
+                shard_subscribers,
                 Some(execution_log_descriptor.clone()),
             );
 
-            // Per the build-step contract, we drive `build_subscribers()` and
-            // `build_publishers()` on the callback to get its initial set, then
-            // extend with the subscribers we created above. LogTask's
-            // `build_subscribers` returns `vec![]` (subscribers are entirely
-            // build-step-driven); `build_publishers` returns the diagnostics
-            // publisher.
-            let mut all_subscribers = log_task.build_subscribers();
-            all_subscribers.extend(shard_subscribers);
-            let publishers = log_task.build_publishers();
-
-            let mut log_node = CallbackNode::new_with(
-                Box::new(log_task),
-                all_subscribers,
-                publishers,
-                log_task_name(index),
-            );
+            let mut log_node = CallbackNode::new_named(Box::new(log_task), log_task_name(index));
             // The simulation executor queries every running node's duration — give
             // LogTask a no-op so it doesn't panic. Logging should be invisible to
             // scheduling, so we occupy zero sim-time.

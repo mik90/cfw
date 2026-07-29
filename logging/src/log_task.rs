@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use task::callback::{Callback, Run};
+use task::callback::{Callback, PortMut, Run};
 use task::context::Context;
 use task::execution_log::{self, EXECUTION_LOG_DESCRIPTOR_CHANNEL};
 use task::generic_publisher::GenericPublisher;
@@ -158,6 +158,8 @@ pub struct LogTask {
     writer: Box<dyn LogFileWriter>,
     diagnostics_channel: ChannelName,
     channel_loggers: Vec<ChannelLogger>,
+    subscribers: Vec<Box<dyn GenericSubscriber>>,
+    diagnostics_publisher: Publisher<LogError>,
     error_buffer: ErrorBuffer,
     execution_log_descriptor: Option<execution_log::ExecutionLogDescriptor>,
 }
@@ -179,12 +181,19 @@ impl LogTask {
         writer: Box<dyn LogFileWriter>,
         diagnostics_channel: ChannelName,
         channel_loggers: Vec<ChannelLogger>,
+        subscribers: Vec<Box<dyn GenericSubscriber>>,
         execution_log_descriptor: Option<execution_log::ExecutionLogDescriptor>,
     ) -> Self {
+        let diagnostics_publisher = Publisher::<LogError>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: diagnostics_channel.clone(),
+        });
         LogTask {
             writer,
             diagnostics_channel,
             channel_loggers,
+            subscribers,
+            diagnostics_publisher,
             error_buffer: ErrorBuffer::default(),
             execution_log_descriptor,
         }
@@ -232,13 +241,8 @@ pub(crate) fn open_writer(_path: &Path) -> Box<dyn LogFileWriter> {
 }
 
 impl Callback for LogTask {
-    fn run_generic(
-        &mut self,
-        subscribers: &mut [Box<dyn GenericSubscriber>],
-        publishers: &mut [Box<dyn GenericPublisher>],
-        ctx: &Context,
-    ) -> Run {
-        // TODO clean this up. We should be logging the descriptor to disk on startup
+    fn run(&mut self, ctx: &Context) -> Run {
+        // Write execution log descriptor on first run
         if let Some(descriptor) = self.execution_log_descriptor.take() {
             let mut scratch = Vec::new();
             if let Err(e) = Loggable::serialize(&descriptor, &mut scratch) {
@@ -258,36 +262,23 @@ impl Callback for LogTask {
             }
         }
 
-        // For each subscriber-slot / channel-logger pair: drain the subscriber,
-        // serialize each message's value, write (header, body) to the shared
-        // writer. Move `channel_loggers` out of `self` to avoid a
-        // simultaneous borrow of `self.channel_loggers` and `self.writer`.
-        // TODO clean this up
         let mut channel_loggers = std::mem::take(&mut self.channel_loggers);
+        let mut subscribers = std::mem::take(&mut self.subscribers);
         for (sub, logger) in subscribers.iter_mut().zip(channel_loggers.iter_mut()) {
             if let Err(e) = logger.drain_and_log(sub.as_mut(), self.writer.as_mut()) {
                 self.record_error(logger.channel_name.clone(), e, ctx.now);
             }
         }
         self.channel_loggers = channel_loggers;
+        self.subscribers = subscribers;
 
-        // Flush so an IO error mid-run surfaces immediately as a diagnostic.
         if let Err(e) = self.flush() {
             self.record_error("<writer>".to_string(), e, ctx.now);
         }
 
-        // Publish any accumulated errors. Publisher capacity is 1 — at most
-        // one emits per cycle; older errors overflow silently. Sustained
-        // per-cycle multiple errors indicate a sustained failure mode that
-        // the one-message-per-cycle shape can't capture anyway.
-        if !self.error_buffer.is_empty()
-            && let Some(diagnostics) = publishers
-                .iter_mut()
-                .find(|p| p.config().channel_name == self.diagnostics_channel)
-            && let Some(typed) = diagnostics.as_any().downcast_mut::<Publisher<LogError>>()
-        {
+        if !self.error_buffer.is_empty() {
             for err in self.error_buffer.drain() {
-                let mut output: Output<'_, LogError> = Output::new_default(typed);
+                let mut output = Output::<LogError>::new_default(&mut self.diagnostics_publisher);
                 *output = err;
                 output.send();
             }
@@ -296,17 +287,27 @@ impl Callback for LogTask {
         Run::new(1)
     }
 
-    fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-        // Subscribers are injected by the LoggingBuildStep via
-        // `CallbackNode::new_with`; LogTask itself doesn't construct them.
-        vec![]
+    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+        for s in &self.subscribers {
+            f(s.as_ref());
+        }
     }
-
-    fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-        vec![Box::new(Publisher::<LogError>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: self.diagnostics_channel.clone(),
-        }))]
+    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+        f(&self.diagnostics_publisher);
+    }
+    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
+        for s in self.subscribers.iter_mut() {
+            f(s.as_mut());
+        }
+    }
+    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
+        f(&mut self.diagnostics_publisher);
+    }
+    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+        for s in self.subscribers.iter_mut() {
+            f(PortMut::Subscriber(s.as_mut()));
+        }
+        f(PortMut::Publisher(&mut self.diagnostics_publisher));
     }
 }
 

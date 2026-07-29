@@ -324,9 +324,9 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     fn cleanup_buffers(&mut self) {
         for arc_node in self.shared_state.nodes.iter() {
             let node = arc_node.lock().unwrap();
-            for subscriber in node.subscribers().iter() {
-                subscriber.cleanup_buffers();
-            }
+            node.callback().for_each_subscriber(&mut |s| {
+                s.cleanup_buffers();
+            });
         }
     }
 }
@@ -353,17 +353,18 @@ fn process_work_item(
 
             node_guard.drain_subscribers();
             logger.recv_scratch_clear();
-            for (ordinal, sub) in node_guard.subscribers().iter().enumerate() {
-                let ordinal = ordinal as u16;
+            let mut ordinal = 0u16;
+            node_guard.callback().for_each_subscriber(&mut |sub| {
+                let ordinal_val = ordinal;
+                ordinal += 1;
                 sub.for_each_queued_input(&mut |header, _payload| {
                     logger.recv_push(task::execution_log::LoggedMessage {
-                        ordinal,
+                        ordinal: ordinal_val,
                         direction: task::execution_log::Direction::Received,
                         header: *header,
                     });
                 });
-            }
-
+            });
             let start = task::time::FrameworkTime::from_wall_clock();
             let _ = node_guard.run(&ctx);
             let end = task::time::FrameworkTime::from_wall_clock();
@@ -550,7 +551,10 @@ mod tests {
     };
 
     use task::{
-        callback::{Callback, CallbackNode, InputKind, OutputKind, Run, connect_callback_nodes},
+        callback::{
+            Callback, CallbackNode, CallbackViews, InputKind, OutputKind, PortMut, Run,
+            connect_callback_nodes,
+        },
         callback_builder::CallbackBuilder,
         context::Context,
         executor::{Executor, ExecutorStopSignal, ThreadPoolConfig},
@@ -566,46 +570,49 @@ mod tests {
     use super::LiveExecutor;
 
     struct NoAllocPublisher {
+        publisher: Publisher<u64>,
         value: u64,
     }
 
     impl Callback for NoAllocPublisher {
-        fn run_generic(
-            &mut self,
-            _subscribers: &mut [Box<dyn GenericSubscriber>],
-            publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> Run {
-            let mut output = Output::<u64>::new_downcasted(&mut *publishers[0]);
+        fn run(&mut self, _ctx: &Context) -> Run {
+            let mut output = Output::<u64>::new_default(&mut self.publisher);
             *output = self.value;
             self.value = self.value.wrapping_add(1);
             output.send();
             Run::new(1)
         }
 
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            vec![]
+        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+            f(&self.publisher);
         }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            vec![Box::new(Publisher::<u64>::new(OutputKind::Default.into()))]
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+            f(&mut self.publisher);
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            f(PortMut::Publisher(&mut self.publisher));
         }
     }
 
     struct OptionalTriggerSubscriber {
+        subscriber: Subscriber<u64>,
         messages_received: Arc<AtomicUsize>,
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target_count: usize,
     }
 
     impl Callback for OptionalTriggerSubscriber {
-        fn run_generic(
-            &mut self,
-            subscribers: &mut [Box<dyn GenericSubscriber>],
-            _publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> Run {
-            let mut input = OptionalInput::<u64>::new_downcasted(&mut *subscribers[0]);
+        fn run(&mut self, _ctx: &Context) -> Run {
+            let mut input = OptionalInput::<u64>::new(&self.subscriber);
             while input.value().is_some() {
                 let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
                 if count >= self.target_count
@@ -618,35 +625,36 @@ mod tests {
             Run::new(1)
         }
 
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            vec![Box::new(Subscriber::<u64>::new(SubscriberConfig {
-                is_optional: true,
-                capacity: 4,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: String::new(),
-            }))]
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            f(&self.subscriber);
         }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            vec![]
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            f(&mut self.subscriber);
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            f(PortMut::Subscriber(&mut self.subscriber));
         }
     }
 
     struct NoAllocSubscriber {
+        subscriber: Subscriber<u64>,
         messages_received: Arc<AtomicUsize>,
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target_count: usize,
     }
 
     impl Callback for NoAllocSubscriber {
-        fn run_generic(
-            &mut self,
-            subscribers: &mut [Box<dyn GenericSubscriber>],
-            _publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> Run {
-            let _input = RequiredInput::<u64>::new_downcasted(&mut *subscribers[0]);
+        fn run(&mut self, _ctx: &Context) -> Run {
+            let _input = RequiredInput::<u64>::new(&self.subscriber);
             let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
             if count >= self.target_count
                 && let Some(signal) = self.stop_signal.get()
@@ -656,12 +664,23 @@ mod tests {
             Run::new(1)
         }
 
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            vec![Box::new(Subscriber::<u64>::new(InputKind::Required.into()))]
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            f(&self.subscriber);
         }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            vec![]
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            f(&mut self.subscriber);
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            f(PortMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -677,7 +696,10 @@ mod tests {
 
         let publisher_node = CallbackBuilder::new(
             "LoggingPublisher".into(),
-            Box::new(NoAllocPublisher { value: 0 }),
+            Box::new(NoAllocPublisher {
+                publisher: Publisher::<u64>::new(OutputKind::Default.into()),
+                value: 0,
+            }),
         )
         .with_publisher_channels(&["exec_log_ch"])
         .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
@@ -689,6 +711,7 @@ mod tests {
         let subscriber_node = CallbackBuilder::new(
             "LoggingSubscriber".into(),
             Box::new(NoAllocSubscriber {
+                subscriber: Subscriber::<u64>::new(InputKind::Required.into()),
                 messages_received: messages_received.clone(),
                 stop_signal: stop_signal_cell.clone(),
                 target_count: target,
@@ -704,6 +727,15 @@ mod tests {
         let collector_node = CallbackBuilder::new(
             "ExecutionLogCollector".into(),
             Box::new(ExecutionLogCollector {
+                subscriber: Subscriber::<task::execution_log::ExecutionLogMessage>::new(
+                    SubscriberConfig {
+                        is_optional: true,
+                        capacity: 8,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+                    },
+                ),
                 collected: collected.clone(),
                 stop_signal: stop_signal_cell.clone(),
                 target: 4,
@@ -735,10 +767,16 @@ mod tests {
         let string_store = StringCollector::make_string_store();
         let stop_signal_cell = Arc::new(OnceLock::new());
 
+        let mut reg = task::channel_registry::ChannelRegistry::new();
         let mut nodes = vec![
-            IncrementingIntegerPublisher::build_callback_node(),
-            FizzBuzzCalculator::build_callback_node(),
-            StringCollector::build_callback_node(string_store.clone(), stop_signal_cell.clone(), 1),
+            IncrementingIntegerPublisher::build_callback_node(&mut reg),
+            FizzBuzzCalculator::build_callback_node(&mut reg),
+            StringCollector::build_callback_node(
+                string_store.clone(),
+                stop_signal_cell.clone(),
+                1,
+                &mut reg,
+            ),
         ];
         let connect_result = connect_callback_nodes(&mut nodes);
         assert!(
@@ -746,8 +784,18 @@ mod tests {
             "Result was {}",
             connect_result.unwrap_err()
         );
-        assert!(nodes[0].publishers()[0].config().channel_name == "integer");
-        assert!(nodes[1].subscribers()[0].config().channel_name == "integer");
+        assert!(
+            nodes[0].callback().collect_publishers()[0]
+                .config()
+                .channel_name
+                == "integer"
+        );
+        assert!(
+            nodes[1].callback().collect_subscribers()[0]
+                .config()
+                .channel_name
+                == "integer"
+        );
 
         let mut exec = LiveExecutor::new(1, nodes);
 
@@ -774,10 +822,16 @@ mod tests {
         let string_store = StringCollector::make_string_store();
         let stop_signal_cell = Arc::new(OnceLock::new());
 
+        let mut all_reg = task::channel_registry::ChannelRegistry::new();
         let mut all_nodes = vec![
-            IncrementingIntegerPublisher::build_callback_node(),
-            FizzBuzzCalculator::build_callback_node(),
-            StringCollector::build_callback_node(string_store.clone(), stop_signal_cell.clone(), 1),
+            IncrementingIntegerPublisher::build_callback_node(&mut all_reg),
+            FizzBuzzCalculator::build_callback_node(&mut all_reg),
+            StringCollector::build_callback_node(
+                string_store.clone(),
+                stop_signal_cell.clone(),
+                1,
+                &mut all_reg,
+            ),
         ];
         let connect_result = connect_callback_nodes(&mut all_nodes);
         assert!(
@@ -829,7 +883,10 @@ mod tests {
 
         let publisher_node = CallbackBuilder::new(
             "NoAllocPublisher".into(),
-            Box::new(NoAllocPublisher { value: 0 }),
+            Box::new(NoAllocPublisher {
+                publisher: Publisher::<u64>::new(OutputKind::Default.into()),
+                value: 0,
+            }),
         )
         .with_publisher_channels(&["no_alloc_integer"])
         .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(2)))
@@ -840,6 +897,7 @@ mod tests {
         let subscriber_node = CallbackBuilder::new(
             "NoAllocSubscriber".into(),
             Box::new(NoAllocSubscriber {
+                subscriber: Subscriber::<u64>::new(InputKind::Required.into()),
                 messages_received: messages_received.clone(),
                 stop_signal: stop_signal_cell.clone(),
                 target_count: TARGET_COUNT,
@@ -888,7 +946,10 @@ mod tests {
 
         let publisher_node = CallbackBuilder::new(
             "OptionalTriggerPublisher".into(),
-            Box::new(NoAllocPublisher { value: 0 }),
+            Box::new(NoAllocPublisher {
+                publisher: Publisher::<u64>::new(OutputKind::Default.into()),
+                value: 0,
+            }),
         )
         .with_publisher_channels(&["optional_trigger_ch"])
         .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
@@ -899,6 +960,13 @@ mod tests {
         let subscriber_node = CallbackBuilder::new(
             "OptionalTriggerSubscriber".into(),
             Box::new(OptionalTriggerSubscriber {
+                subscriber: Subscriber::<u64>::new(SubscriberConfig {
+                    is_optional: true,
+                    capacity: 4,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: String::new(),
+                }),
                 messages_received: messages_received.clone(),
                 stop_signal: stop_signal_cell.clone(),
                 target_count: TARGET_COUNT,
@@ -944,7 +1012,10 @@ mod tests {
 
         let publisher_node = CallbackBuilder::new(
             "NoAllocPublisher".into(),
-            Box::new(NoAllocPublisher { value: 0 }),
+            Box::new(NoAllocPublisher {
+                publisher: Publisher::<u64>::new(OutputKind::Default.into()),
+                value: 0,
+            }),
         )
         .with_publisher_channels(&["many_messages_ch"])
         .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(2)))
@@ -955,6 +1026,7 @@ mod tests {
         let subscriber_node = CallbackBuilder::new(
             "NoAllocSubscriber".into(),
             Box::new(NoAllocSubscriber {
+                subscriber: Subscriber::<u64>::new(InputKind::Required.into()),
                 messages_received: messages_received.clone(),
                 stop_signal: stop_signal_cell.clone(),
                 target_count: TARGET_COUNT,
@@ -990,22 +1062,17 @@ mod tests {
     }
 
     struct ExecutionLogCollector {
+        subscriber: Subscriber<task::execution_log::ExecutionLogMessage>,
         collected: Arc<Mutex<Vec<task::execution_log::ExecutionLogMessage>>>,
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target: usize,
     }
 
     impl Callback for ExecutionLogCollector {
-        fn run_generic(
-            &mut self,
-            subscribers: &mut [Box<dyn GenericSubscriber>],
-            _publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> Run {
-            let mut input =
-                OptionalInput::<task::execution_log::ExecutionLogMessage>::new_downcasted(
-                    &mut *subscribers[0],
-                );
+        fn run(&mut self, _ctx: &Context) -> Run {
+            let mut input = OptionalInput::<task::execution_log::ExecutionLogMessage>::new(
+                &self.subscriber,
+            );
             while let Some(msg) = input.value().cloned() {
                 self.collected.lock().unwrap().push(msg);
                 input.clear();
@@ -1019,20 +1086,23 @@ mod tests {
             Run::new(1)
         }
 
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            vec![Box::new(Subscriber::<
-                task::execution_log::ExecutionLogMessage,
-            >::new(SubscriberConfig {
-                is_optional: true,
-                capacity: 8,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
-            }))]
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            f(&self.subscriber);
         }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            vec![]
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            f(&mut self.subscriber);
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            f(PortMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -1098,20 +1168,15 @@ mod tests {
     }
 
     struct ExecutionLogCounter {
+        subscriber: Subscriber<task::execution_log::ExecutionLogMessage>,
         count: Arc<AtomicUsize>,
     }
 
     impl Callback for ExecutionLogCounter {
-        fn run_generic(
-            &mut self,
-            subscribers: &mut [Box<dyn GenericSubscriber>],
-            _publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> Run {
-            let mut input =
-                OptionalInput::<task::execution_log::ExecutionLogMessage>::new_downcasted(
-                    &mut *subscribers[0],
-                );
+        fn run(&mut self, _ctx: &Context) -> Run {
+            let mut input = OptionalInput::<task::execution_log::ExecutionLogMessage>::new(
+                &self.subscriber,
+            );
             while input.value().is_some() {
                 self.count.fetch_add(1, Ordering::Relaxed);
                 input.clear();
@@ -1119,20 +1184,23 @@ mod tests {
             Run::new(1)
         }
 
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            vec![Box::new(Subscriber::<
-                task::execution_log::ExecutionLogMessage,
-            >::new(SubscriberConfig {
-                is_optional: true,
-                capacity: 4,
-                is_trigger: true,
-                keep_across_runs: true,
-                channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
-            }))]
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            f(&self.subscriber);
         }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            vec![]
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            f(&mut self.subscriber);
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            f(PortMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -1151,7 +1219,10 @@ mod tests {
 
         let publisher_node = CallbackBuilder::new(
             "NoAllocLoggingPublisher".into(),
-            Box::new(NoAllocPublisher { value: 0 }),
+            Box::new(NoAllocPublisher {
+                publisher: Publisher::<u64>::new(OutputKind::Default.into()),
+                value: 0,
+            }),
         )
         .with_publisher_channels(&["exec_log_no_alloc_ch"])
         .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
@@ -1163,6 +1234,7 @@ mod tests {
         let subscriber_node = CallbackBuilder::new(
             "NoAllocLoggingSubscriber".into(),
             Box::new(NoAllocSubscriber {
+                subscriber: Subscriber::<u64>::new(InputKind::Required.into()),
                 messages_received: messages_received.clone(),
                 stop_signal: stop_signal_cell.clone(),
                 target_count: TARGET,
@@ -1177,6 +1249,15 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let collector_node = CallbackNode::new_named(
             Box::new(ExecutionLogCounter {
+                subscriber: Subscriber::<task::execution_log::ExecutionLogMessage>::new(
+                    SubscriberConfig {
+                        is_optional: true,
+                        capacity: 8,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+                    },
+                ),
                 count: counter.clone(),
             }),
             "ExecutionLogCounter".into(),

@@ -71,7 +71,7 @@ mod tests {
     };
 
     use task::{
-        callback::{Callback, CallbackNode},
+        callback::{Callback, CallbackNode, PortMut},
         context::Context,
         executor::{Executor, ExecutorStopSignal},
         generic_publisher::GenericPublisher,
@@ -87,12 +87,7 @@ mod tests {
     }
 
     impl Callback for PeriodicCounter {
-        fn run_generic(
-            &mut self,
-            _subscribers: &mut [Box<dyn GenericSubscriber>],
-            _publishers: &mut [Box<dyn GenericPublisher>],
-            _ctx: &Context,
-        ) -> task::callback::Run {
+        fn run(&mut self, _ctx: &Context) -> task::callback::Run {
             let run_number = self.run_count.fetch_add(1, Ordering::SeqCst) + 1;
             if run_number >= self.target_runs
                 && let Some(signal) = self.stop_signal.get()
@@ -102,13 +97,19 @@ mod tests {
             task::callback::Run::new(1)
         }
 
-        fn build_subscribers(&self) -> Vec<Box<dyn GenericSubscriber>> {
-            vec![]
+        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
         }
-
-        fn build_publishers(&self) -> Vec<Box<dyn GenericPublisher>> {
-            vec![]
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
         }
+        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
     }
 
     #[test]
@@ -128,10 +129,7 @@ mod tests {
             target_runs: TARGET_RUNS,
             stop_signal: stop_signal_cell.clone(),
         });
-        let subscribers = callback.build_subscribers();
-        let publishers = callback.build_publishers();
-        let mut connected =
-            CallbackNode::new_with(callback, subscribers, publishers, "PeriodicCounter".into());
+        let mut connected = CallbackNode::new_named(callback, "PeriodicCounter".into());
         connected.set_execution_time_callback(Box::new(|now| {
             Some(now + time::Duration::from_millis(2))
         }));

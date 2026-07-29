@@ -193,17 +193,22 @@ impl ExecutionLogDescriptor {
     /// Creates a descriptor from a slice of callback nodes.
     /// This should be called after all node have been added.
     pub fn new(nodes: &[CallbackNode]) -> ExecutionLogDescriptor {
+        use crate::callback::CallbackViews;
+
         let mut index_to_callbacks = HashMap::new();
         for (callback_node_index, node) in nodes.iter().enumerate() {
             let mut subscriber_index_to_channel_name = HashMap::new();
-
-            for (subscriber_index, subscriber) in node.subscribers().iter().enumerate() {
+            for (subscriber_index, subscriber) in
+                node.callback().collect_subscribers().iter().enumerate()
+            {
                 subscriber_index_to_channel_name
                     .insert(subscriber_index, subscriber.config().channel_name.clone());
             }
 
             let mut publisher_index_to_channel_name = HashMap::new();
-            for (publisher_index, publisher) in node.publishers().iter().enumerate() {
+            for (publisher_index, publisher) in
+                node.callback().collect_publishers().iter().enumerate()
+            {
                 publisher_index_to_channel_name
                     .insert(publisher_index, publisher.config().channel_name.clone());
             }
@@ -254,15 +259,17 @@ pub fn connect(
     pools: &mut [ThreadPoolConfig],
     log_pubs: &mut [Publisher<ExecutionLogMessage>],
 ) -> Result<(), ExecutionLogConnectError> {
+    use crate::callback::CallbackViews;
+
     for pool in pools.iter_mut() {
         for node in pool.nodes.iter_mut() {
             let node_name = node.name().to_string();
-            for subscriber in node.subscribers_mut().iter_mut() {
+            for subscriber in node.callback_mut().collect_subscribers_mut() {
                 if subscriber.config().channel_name != EXECUTION_LOG_CHANNEL {
                     continue;
                 }
                 for log_pub in log_pubs.iter_mut() {
-                    match log_pub.connect_to_subscriber(subscriber.as_mut()) {
+                    match log_pub.connect_to_subscriber(subscriber) {
                         Ok(()) => {}
                         Err(ConnectionTypeMismatch {}) => {
                             return Err(ExecutionLogConnectError {
@@ -290,7 +297,10 @@ pub fn connect(
 /// could expose to `run`). Used to size a per-worker received-headers scratch
 /// buffer so the capture path never reallocates in steady state.
 pub fn worst_case_received_count(node: &crate::callback::CallbackNode) -> usize {
-    node.subscribers().iter().map(|s| s.config().capacity).sum()
+    let mut sum: usize = 0;
+    node.callback()
+        .for_each_subscriber(&mut |s| sum += s.config().capacity);
+    sum
 }
 
 #[cfg(test)]
