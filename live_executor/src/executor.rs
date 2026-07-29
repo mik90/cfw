@@ -1070,9 +1070,8 @@ mod tests {
 
     impl Callback for ExecutionLogCollector {
         fn run(&mut self, _ctx: &Context) -> Run {
-            let mut input = OptionalInput::<task::execution_log::ExecutionLogMessage>::new(
-                &self.subscriber,
-            );
+            let mut input =
+                OptionalInput::<task::execution_log::ExecutionLogMessage>::new(&self.subscriber);
             while let Some(msg) = input.value().cloned() {
                 self.collected.lock().unwrap().push(msg);
                 input.clear();
@@ -1174,9 +1173,8 @@ mod tests {
 
     impl Callback for ExecutionLogCounter {
         fn run(&mut self, _ctx: &Context) -> Run {
-            let mut input = OptionalInput::<task::execution_log::ExecutionLogMessage>::new(
-                &self.subscriber,
-            );
+            let mut input =
+                OptionalInput::<task::execution_log::ExecutionLogMessage>::new(&self.subscriber);
             while input.value().is_some() {
                 self.count.fetch_add(1, Ordering::Relaxed);
                 input.clear();
