@@ -113,11 +113,11 @@ impl ChannelRegistry {
     /// Register a serializer for `T`. Idempotent — calling twice with the
     /// same `T` overwrites the first, but since the closure is monomorphized
     /// identically there's no observable difference.
-    pub fn register_loggable<T: 'static + Loggable>(&mut self) -> &mut Self {
+    pub fn register_loggable<T: 'static + Loggable<'static>>(&mut self) -> &mut Self {
         self.register_serializer::<T>()
     }
 
-    fn register_serializer<T: 'static + Loggable>(&mut self) -> &mut Self {
+    fn register_serializer<T: 'static + Loggable<'static>>(&mut self) -> &mut Self {
         let serializer: SerializerFn = Arc::new(
             |sub: &mut dyn GenericSubscriber, scratch: &mut Vec<u8>, sink: MessageSink<'_>| {
                 let mut span = InputSpan::<T>::new_downcasted(sub);
@@ -138,12 +138,12 @@ impl ChannelRegistry {
         self
     }
 
-    fn register_deserializer<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
+    fn register_deserializer<T: 'static + Loggable<'static, Context = ()> + Send + Sync>(
         &mut self,
     ) -> &mut Self {
         // Deserializer — uses the blanket serde (Context<'static> = ()) path
         let deserializer: DeserializerFn = Arc::new(|bytes: &[u8]| {
-            let value = T::deserialize(bytes)?;
+            let value = crate::loggable::deserialize::<T>(bytes)?;
             Ok(Box::new(value) as Box<dyn std::any::Any + Send + Sync>)
         });
         self.deserializers.insert(TypeId::of::<T>(), deserializer);
@@ -151,7 +151,7 @@ impl ChannelRegistry {
     }
 
     pub fn register_publisher_factory<
-        T: 'static + Loggable<Context<'static> = ()> + Send + Sync,
+        T: 'static + Loggable<'static, Context = ()> + Send + Sync,
     >(
         &mut self,
     ) -> &mut Self {
@@ -191,10 +191,10 @@ impl ChannelRegistry {
     /// what type a given channel carries and how to deserialize its logged
     /// messages.
     ///
-    /// Requires `T: Loggable<Context<'static> = ()>` — types with a
+    /// Requires `T: Loggable<'static, Context = ()>` — types with a
     /// non-trivial deserialization context (e.g. `ForwardedMessage`) must be
     /// denylisted during replay and are not supported here.
-    pub fn register_channel<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
+    pub fn register_channel<T: 'static + Loggable<'static, Context = ()> + Send + Sync>(
         &mut self,
         channel: ChannelName,
     ) -> &mut Self {
@@ -251,23 +251,29 @@ impl Default for ChannelRegistry {
     }
 }
 
-// ── MaybeRegister pattern ───────────────────────────────────────────────────
-//
-// Detects at compile time whether a type `T` implements `Loggable` and, if so,
-// registers it. Works on stable Rust via the inherent-method-vs-blanket-trait
-// trick:
-//
-//   * `MaybeRegister` is a trait with a no-op default `try_register`.
-//   * A blanket `impl<T: ?Sized> MaybeRegister for T` covers every type, so
-//     `Probe::<X>` always has *some* `try_register` candidate via the trait.
-//   * An inherent `impl<T: 'static + Loggable> Probe<T>` overrides with the
-//     real registration. Inherent methods beat trait methods during method
-//     resolution *when the inherent impl's where-clause is satisfiable* —
-//     i.e. when `T: Loggable`. When `T: !Loggable`, the inherent candidate is
-//     filtered out and the blanket trait's no-op default applies.
-//
-// No `min_specialization` required.
-
+/// Inherent-vs-blanket-trait trick for compile-time detection of `Loggable`.
+///
+/// The goal: call `registry.register_loggable::<T>()` when `T: Loggable` and
+/// silently do nothing when `T: !Loggable` — without imposing trait bounds on
+/// the caller and without specialization.
+///
+/// How it works:
+///
+///   * `MaybeRegister` is a trait with a no-op default `try_register`.
+///   * A blanket `impl<T: ?Sized> MaybeRegister for T` covers every type, so
+///     `Probe::<X>` always has *some* `try_register` candidate via the trait.
+///   * An inherent `impl<T: 'static + Loggable<'static>> Probe<T>` overrides
+///     with the real registration. Inherent methods beat trait methods during
+///     method resolution *when the inherent impl's where-clause is satisfiable*
+///     — i.e. when `T: Loggable<'static>`. When `T: !Loggable<'static>`, the
+///     inherent candidate is filtered out and the blanket trait's no-op default
+///     applies.
+///
+/// The GAT on the old `Loggable::Context<'a>` (an associated type with a
+/// lifetime parameter) caused rust-analyzer's incremental query engine to form
+/// salsa cycles during method resolution. Removing the GAT (making `Loggable`
+/// a lifetime-parameterized trait `Loggable<'a>`) eliminated the cycle, so
+/// this pattern is now safe.
 pub trait MaybeRegister {
     fn try_register(&self, _registry: &mut ChannelRegistry) {}
 }
@@ -277,22 +283,18 @@ impl<T: ?Sized> MaybeRegister for T {}
 pub struct Probe<T>(PhantomData<T>);
 
 impl<T> Probe<T> {
-    /// Construct a `Probe<T>` for compile-time trait detection. The probe
-    /// itself carries no runtime state; method resolution on `.try_register()`
-    /// dispatches to either the inherent impl (when `T: 'static + Loggable`)
-    /// or the blanket `MaybeRegister` impl's no-op default otherwise.
     pub fn new() -> Self {
         Probe(PhantomData)
     }
 }
 
-impl<T> Default for Probe<T> {
+impl<T: Default> Default for Probe<T> {
     fn default() -> Self {
         Probe::new()
     }
 }
 
-impl<T: 'static + Loggable> Probe<T> {
+impl<T: 'static + Loggable<'static>> Probe<T> {
     pub fn try_register(&self, registry: &mut ChannelRegistry) {
         registry.register_loggable::<T>();
     }
@@ -326,7 +328,7 @@ mod tests {
         let mut registry = ChannelRegistry::new();
         // This compiles only because the blanket trait MaybeRegister for T
         // provides a no-op default; the inherent try_register is filtered out
-        // since NonLoggableType: !Loggable.
+        // since NonLoggableType: !Loggable<'static>.
         use MaybeRegister as _;
         Probe::<NonLoggableType>::new().try_register(&mut registry);
         assert!(

@@ -60,28 +60,24 @@ impl Display for DeserializeError {
 
 impl Error for DeserializeError {}
 
-pub trait Loggable: Sized {
-    type Context<'a>;
+pub trait Loggable<'a>: Sized {
+    type Context;
 
     fn serialize(&self, w: &mut dyn Write) -> Result<(), SerializeError>;
-    fn deserialize_with_ctx(bytes: &[u8], ctx: Self::Context<'_>)
-    -> Result<Self, DeserializeError>;
+    fn deserialize_with_ctx(bytes: &[u8], ctx: Self::Context) -> Result<Self, DeserializeError>;
+}
 
-    fn deserialize(bytes: &[u8]) -> Result<Self, DeserializeError>
-    where
-        Self: Loggable<Context<'static> = ()>,
-    {
-        Self::deserialize_with_ctx(bytes, ())
-    }
+pub fn deserialize<T: Loggable<'static, Context = ()>>(bytes: &[u8]) -> Result<T, DeserializeError> {
+    <T as Loggable<'static>>::deserialize_with_ctx(bytes, ())
 }
 
 /// Blanket impl for serde types
 #[cfg(feature = "serde")]
-impl<T> Loggable for T
+impl<'a, T> Loggable<'a> for T
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
-    type Context<'a> = ();
+    type Context = ();
 
     fn serialize(&self, w: &mut dyn Write) -> Result<(), SerializeError> {
         serde_json::to_writer(w, self).map_err(SerializeError::SerdeJson)
@@ -103,13 +99,13 @@ pub trait MessageLog<T> {
 /// given the serialized header. This means that the logging system avoids logging messages twice, but it does entail some channel
 /// interdepencies when logging so that lookup won't fail.
 #[cfg(feature = "serde")]
-impl<UserData, ForwardedData> Loggable
+impl<'a, UserData, ForwardedData: 'a> Loggable<'a>
     for crate::forwarded_message::ForwardedMessage<UserData, ForwardedData>
 where
     UserData: serde::Serialize + serde::de::DeserializeOwned,
-    ForwardedData: Clone + 'static,
+    ForwardedData: Clone,
 {
-    type Context<'a> = &'a dyn MessageLog<ForwardedData>;
+    type Context = &'a dyn MessageLog<ForwardedData>;
 
     fn serialize(&self, w: &mut dyn Write) -> Result<(), SerializeError> {
         #[derive(serde::Serialize)]
@@ -151,7 +147,7 @@ where
 
 #[cfg(all(test, feature = "serde"))]
 mod tests {
-    use super::Loggable;
+    use super::{deserialize, Loggable};
     use crate::{
         forwarded_message::ForwardedMessage, message::Message, message::MessageHeader,
         time::FrameworkTime,
@@ -164,7 +160,7 @@ mod tests {
         let mut buf = Vec::new();
         header.serialize(&mut buf).unwrap();
 
-        let deserialized = MessageHeader::deserialize(&buf).unwrap();
+        let deserialized = deserialize::<MessageHeader>(&buf).unwrap();
         assert_eq!(
             deserialized.published_at,
             FrameworkTime::from_nanoseconds(42)
@@ -264,7 +260,7 @@ mod tests {
         let mut buf = Vec::new();
         message.serialize(&mut buf).unwrap();
 
-        let deserialized = Message::<MyMessage>::deserialize(&buf).unwrap();
+        let deserialized = deserialize::<Message<MyMessage>>(&buf).unwrap();
         assert_eq!(
             deserialized.header.published_at,
             FrameworkTime::from_nanoseconds(42)

@@ -123,8 +123,8 @@ impl ExecutionLogMessage {
 }
 
 #[cfg(feature = "serde")]
-impl Loggable for ExecutionLogMessage {
-    type Context<'a> = ();
+impl<'a> Loggable<'a> for ExecutionLogMessage {
+    type Context = ();
 
     fn serialize(&self, w: &mut dyn Write) -> Result<(), SerializeError> {
         #[derive(serde::Serialize)]

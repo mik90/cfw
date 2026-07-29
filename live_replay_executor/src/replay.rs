@@ -249,6 +249,7 @@ mod tests {
 
     use task::callback::CallbackViews;
     use task::channel_registry::ChannelRegistry; // used in test
+    use task::loggable::Loggable;
     use task::context::Context;
     use task::executor::ExecutorStopSignal;
     use task::input::OptionalInput;
@@ -277,7 +278,7 @@ mod tests {
             use task::message::MessageHeader;
             let header = MessageHeader::new(FrameworkTime::from_nanoseconds(ns));
             let mut buf = Vec::new();
-            task::loggable::Loggable::serialize(&val, &mut buf).unwrap();
+            val.serialize(&mut buf).unwrap();
             OwnedLogEntry {
                 header,
                 channel_name: "integer".into(),
@@ -380,7 +381,7 @@ mod tests {
             use task::message::MessageHeader;
             let header = MessageHeader::new(FrameworkTime::from_nanoseconds(ns));
             let mut buf = Vec::new();
-            task::loggable::Loggable::serialize(&val, &mut buf).unwrap();
+            val.serialize(&mut buf).unwrap();
             OwnedLogEntry {
                 header,
                 channel_name: channel.into(),
