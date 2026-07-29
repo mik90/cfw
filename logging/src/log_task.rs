@@ -14,9 +14,9 @@ use std::time::Duration;
 use task::callback::{Callback, PortMut, Run};
 use task::context::Context;
 use task::execution_log::{self, EXECUTION_LOG_DESCRIPTOR_CHANNEL};
-use task::loggable::Loggable;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
+use task::loggable::Loggable;
 use task::message::MessageHeader;
 use task::output::Output;
 use task::pub_sub::{CallbackNodeName, ChannelName};
@@ -245,7 +245,7 @@ impl Callback for LogTask {
         // Write execution log descriptor on first run
         if let Some(descriptor) = self.execution_log_descriptor.take() {
             let mut scratch = Vec::new();
-            if let Err(e) = descriptor.serialize(&mut scratch) {
+            if let Err(e) = Loggable::serialize(&descriptor, &mut scratch) {
                 self.record_error(
                     EXECUTION_LOG_DESCRIPTOR_CHANNEL.to_owned(),
                     e.into(),
