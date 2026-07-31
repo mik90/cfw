@@ -1,7 +1,8 @@
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use base::mpsc_queue::{ExperimentalMpscQueue, MpscQueue};
+use base::experimental_mpsc_queue::ExperimentalMpscQueue;
+use base::mpsc_queue::MpscQueue;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use crossbeam_queue::ArrayQueue;
 
@@ -60,12 +61,32 @@ fn bench_throughput(c: &mut Criterion) {
 
         group.bench_function(format!("mpsc_crossbeam_{n_threads}p"), |b| {
             let queue = Arc::new(MpscQueue::<u64>::new(CAP));
-            b.iter(|| run_workers(&queue, n_threads, per_prod, |q, v| { q.push(v); }, |q| q.pop()));
+            b.iter(|| {
+                run_workers(
+                    &queue,
+                    n_threads,
+                    per_prod,
+                    |q, v| {
+                        q.push(v);
+                    },
+                    |q| q.pop(),
+                )
+            });
         });
 
         group.bench_function(format!("mpsc_experimental_{n_threads}p"), |b| {
             let queue = Arc::new(ExperimentalMpscQueue::<u64>::new(CAP));
-            b.iter(|| run_workers(&queue, n_threads, per_prod, |q, v| { q.push(v); }, |q| q.pop()));
+            b.iter(|| {
+                run_workers(
+                    &queue,
+                    n_threads,
+                    per_prod,
+                    |q, v| {
+                        q.push(v);
+                    },
+                    |q| q.pop(),
+                )
+            });
         });
 
         group.bench_function(format!("crossbeam_arrayqueue_{n_threads}p"), |b| {
