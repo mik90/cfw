@@ -1,17 +1,15 @@
 use crossbeam_queue::ArrayQueue;
 use std::cell::UnsafeCell;
+use std::hint;
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{
-    AtomicBool, AtomicU8, AtomicUsize,
+    AtomicUsize,
     Ordering::{self, Acquire, Relaxed, Release},
 };
 
 /// A bounded, lock-free MPSC queue backed by `crossbeam_queue::ArrayQueue`.
 /// When the queue is full, `push` displaces the oldest element (front) to make room.
-///
-/// The internals can be replaced with a hand-rolled implementation without
-/// changing any call sites — the public API is the only contract.
 pub struct MpscQueue<T> {
     inner: ArrayQueue<T>,
     /// Cumulative count of elements displaced by `push` due to overflow.
@@ -50,9 +48,7 @@ impl<T> MpscQueue<T> {
     }
 
     pub fn clear(&self) {
-        while self.pop().is_some() {
-            // Keep popping while there are inputs
-        }
+        while self.pop().is_some() {}
     }
 
     pub fn len(&self) -> usize {
@@ -60,7 +56,11 @@ impl<T> MpscQueue<T> {
     }
 }
 
-// Default to 64, could differ per platform
+// ---------------------------------------------------------------------------
+// Hand-rolled experimental queue
+// ---------------------------------------------------------------------------
+
+// Cache line size; the common denominator across platforms.
 #[repr(align(64))]
 #[derive(Debug)]
 struct CacheAligned<T> {
@@ -68,7 +68,7 @@ struct CacheAligned<T> {
 }
 
 impl<T> CacheAligned<T> {
-    pub fn new(value: T) -> Self {
+    fn new(value: T) -> Self {
         CacheAligned { value }
     }
 }
@@ -92,68 +92,89 @@ impl<T> From<T> for CacheAligned<T> {
     }
 }
 
-struct QueueSlot<T> {
-    pub turn: CacheAligned<AtomicU8>,
-    pub full: CacheAligned<AtomicBool>,
-    pub value: UnsafeCell<MaybeUninit<T>>,
+struct Slot<T> {
+    sequence: CacheAligned<AtomicUsize>,
+    value: UnsafeCell<MaybeUninit<T>>,
 }
 
-///  https://blog.bearcats.nl/simple-message-queue/ (modified rigtorp?) to replace cross-beam channel usage which is MPMC
-pub struct MpscQueue2<T> {
-    /// Cumulative count of elements displaced by `push` due to overflow.
+/// An experimental bounded MPSC queue with force-push semantics.
+///
+/// When the queue is full, `push` displaces the oldest element to make room.
+/// Returns `false` if a displacement occurred (also reflected in `dropped()`).
+///
+/// This is a hand-rolled ring-buffer similar to crossbeam's `ArrayQueue` but
+/// specialised for MPSC. Kept as `pub(crate)` for internal benchmarking and
+/// testing; production code should use the crossbeam-backed [`MpscQueue`].
+pub struct ExperimentalMpscQueue<T> {
+    /// Consumer position; also CAS'ed by producers for displacement.
+    head: CacheAligned<AtomicUsize>,
+    /// Producer position for the next push.
+    tail: CacheAligned<AtomicUsize>,
+    /// Cumulative count of displaced elements.
     dropped: CacheAligned<AtomicUsize>,
-    write_ticket: CacheAligned<AtomicUsize>,
-    /// Read ticket doesn't need to be atomic, there's a single reader
-    read_ticket: CacheAligned<UnsafeCell<usize>>,
     capacity: usize,
-    slots: Vec<QueueSlot<T>>,
+    slots: Vec<Slot<T>>,
 }
 
-impl<T> MpscQueue2<T> {
+impl<T> ExperimentalMpscQueue<T> {
     pub fn new(capacity: usize) -> Self {
         let mut vec = Vec::with_capacity(capacity);
-        vec.resize_with(capacity, || QueueSlot {
-            turn: AtomicU8::new(0).into(),
-            full: AtomicBool::new(false).into(),
-            value: UnsafeCell::new(MaybeUninit::<T>::uninit()),
-        });
+        for i in 0..capacity {
+            vec.push(Slot {
+                sequence: CacheAligned::new(AtomicUsize::new(i)),
+                value: UnsafeCell::new(MaybeUninit::<T>::uninit()),
+            });
+        }
         Self {
+            head: AtomicUsize::new(0).into(),
+            tail: AtomicUsize::new(0).into(),
             dropped: AtomicUsize::new(0).into(),
-            write_ticket: AtomicUsize::new(0).into(),
-            read_ticket: UnsafeCell::new(0).into(),
             capacity,
             slots: vec,
         }
     }
 
+    /// Push a value. If the queue is full, the oldest element is displaced.
+    /// Returns `false` if a displacement occurred.
     pub fn push(&self, value: T) -> bool {
+        let t = self.tail.fetch_add(1, Relaxed);
+        let slot = &self.slots[t % self.capacity];
+        let mut displaced = false;
+
         loop {
-            let ticket = self.write_ticket.load(Relaxed);
-            let slot = &self.slots[ticket % self.capacity];
-            let turn = (ticket / self.capacity) as u8;
-
-            // Slot not yet consumed by reader for this turn — can't write.
-            if turn != slot.turn.load(Acquire) {
-                self.dropped.fetch_add(1, Relaxed);
-                return false;
+            let seq = slot.sequence.load(Acquire);
+            if seq == t {
+                break;
             }
 
-            // Try to claim this ticket. If CAS fails, another producer
-            // already claimed it — retry with the new ticket.
-            if self
-                .write_ticket
-                .compare_exchange_weak(ticket, ticket + 1, Acquire, Relaxed)
-                .is_ok()
-            {
-                // SAFETY: Claimed exclusive access via successful CAS.
-                // The slot's previous value was left uninitialized by pop().
-                unsafe {
-                    *slot.value.get() = MaybeUninit::new(value);
+            // Slot is busy. If we are at least capacity positions ahead of the
+            // consumer, displace the oldest item to make room.
+            let h = self.head.load(Relaxed);
+            if t.wrapping_sub(h) >= self.capacity {
+                if self
+                    .head
+                    .compare_exchange_weak(h, h + 1, Acquire, Relaxed)
+                    .is_ok()
+                {
+                    let old = &self.slots[h % self.capacity];
+                    old.sequence.store(h + self.capacity, Release);
+                    // SAFETY: The displaced slot was written for position h.
+                    // The consumer will never read it because head moved past h.
+                    unsafe {
+                        (*old.value.get()).assume_init_drop();
+                    }
+                    self.dropped.fetch_add(1, Relaxed);
+                    displaced = true;
                 }
-                slot.full.store(true, Release); // publish to reader
-                return true;
             }
+            hint::spin_loop();
         }
+
+        // SAFETY: The sequence check guarantees exclusive write access.
+        unsafe { *slot.value.get() = MaybeUninit::new(value); }
+        // Signal the consumer: position t has data.
+        slot.sequence.store(t + 1, Release);
+        !displaced
     }
 
     pub fn dropped(&self) -> usize {
@@ -161,40 +182,48 @@ impl<T> MpscQueue2<T> {
     }
 
     pub fn pop(&self) -> Option<T> {
-        // SAFETY: Single consumer — only one thread ever calls pop().
-        let read_ticket = unsafe { *self.read_ticket.get() };
+        let mut h = self.head.load(Relaxed);
 
-        let turn = (read_ticket / self.capacity) as u8;
+        loop {
+            let t = self.tail.load(Acquire);
+            if h == t {
+                return None;
+            }
 
-        let cur_slot = &self.slots[read_ticket % self.capacity];
-        if !cur_slot.full.load(Acquire) {
-            // nothing left
-            return None;
+            let slot = &self.slots[h % self.capacity];
+            let seq = slot.sequence.load(Acquire);
+            if seq != h + 1 {
+                return None;
+            }
+
+            match self
+                .head
+                .compare_exchange_weak(h, h + 1, Acquire, Relaxed)
+            {
+                Ok(_) => {
+                    let mut return_value = MaybeUninit::uninit();
+                    // SAFETY: We own this slot after the CAS. Its data is
+                    // initialized (producer published with Release on sequence).
+                    unsafe {
+                        std::ptr::swap(
+                            (*slot.value.get()).as_mut_ptr(),
+                            return_value.as_mut_ptr(),
+                        );
+                    }
+                    // Free the slot for the writer at position h + capacity.
+                    slot.sequence.store(h + self.capacity, Release);
+                    return unsafe { Some(return_value.assume_init()) };
+                }
+                Err(actual) => {
+                    // Head was advanced by a displacing producer – retry.
+                    h = actual;
+                }
+            }
         }
-        // SAFETY: Single consumer — only one thread ever calls pop().
-        unsafe {
-            *self.read_ticket.get() = read_ticket + 1;
-        }
-        let mut return_value = MaybeUninit::uninit();
-
-        // SAFETY: Both the cur slot and return value are the same type/alignment.
-        // The return value now has the data from the current slot.
-        // So the current slot is uninitialized memory.
-        unsafe {
-            std::ptr::swap(
-                (*cur_slot.value.get()).as_mut_ptr(),
-                return_value.as_mut_ptr(),
-            );
-        }
-
-        cur_slot.full.store(false, Release);
-        cur_slot.turn.store(turn + 1, Release); // serialize w/ writer
-        // SAFETY: We initialize values in push(), and we just swapped with an initialized value
-        unsafe { Some(return_value.assume_init()) }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.slots.iter().all(|slot| !slot.full.load(Relaxed))
+        self.head.load(Relaxed) == self.tail.load(Relaxed)
     }
 
     pub fn clear(&self) {
@@ -202,45 +231,39 @@ impl<T> MpscQueue2<T> {
     }
 
     pub fn len(&self) -> usize {
-        let mut count = 0;
-        for entry in self.slots.iter() {
-            if entry.full.load(Relaxed) {
-                count += 1;
-            }
-        }
-        count
+        let t = self.tail.load(Relaxed);
+        let h = self.head.load(Relaxed);
+        t.saturating_sub(h)
     }
 }
 
-// SAFETY: The ticket/turn algorithm serializes writers so only one thread
-// has access to a given slot's value at a time, and the reader synchronizes
-// via Acquire/Release on the `full` flag. T: Send ensures queued values
-// can safely move between threads.
-unsafe impl<T: Send> Sync for MpscQueue2<T> {}
-
-impl<T> Drop for MpscQueue2<T> {
+impl<T> Drop for ExperimentalMpscQueue<T> {
     fn drop(&mut self) {
-        for slot in self.slots.iter_mut() {
-            if slot.full.load(Acquire) {
-                // SAFETY: The value must've been initialized if it is full
-                unsafe {
-                    slot.value.get_mut().assume_init_drop();
-                }
-            }
+        let h = self.head.load(Relaxed);
+        let t = self.tail.load(Relaxed);
+        for pos in h..t {
+            let slot = &mut self.slots[pos % self.capacity];
+            unsafe { std::ptr::drop_in_place(slot.value.get_mut().as_mut_ptr()); }
         }
     }
 }
+
+// SAFETY: The sequence/head/tail protocol ensures that only one thread
+// can access a given slot's value at a time, and the reader synchronises
+// via Acquire/Release on the `sequence` field.
+unsafe impl<T: Send> Sync for ExperimentalMpscQueue<T> {}
+
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    use crate::mpsc_queue::MpscQueue2;
+    use crate::mpsc_queue::ExperimentalMpscQueue;
 
     #[test]
     fn test_push_pop() {
-        let queue = MpscQueue2::<usize>::new(2);
+        let queue = ExperimentalMpscQueue::<usize>::new(2);
         assert!(queue.push(1));
         assert_matches!(queue.pop(), Some(1));
     }
@@ -248,7 +271,7 @@ mod tests {
     #[test]
     fn test_single_producer_single_consumer() {
         let n = 1_000;
-        let queue = MpscQueue2::<usize>::new(64);
+        let queue = ExperimentalMpscQueue::<usize>::new(64);
 
         for i in 0..n {
             assert!(queue.push(i));
@@ -264,11 +287,10 @@ mod tests {
         #[cfg(not(miri))]
         let n_per_producer = 1_000;
         #[cfg(miri)]
-        // Miri is much slower to run
         let n_per_producer = 50;
 
         let total = n_producers * n_per_producer;
-        let queue = Arc::new(MpscQueue2::<usize>::new(64));
+        let queue = Arc::new(ExperimentalMpscQueue::<usize>::new(4096));
         let start = Arc::new(Barrier::new(n_producers + 1));
         let done = Arc::new(Barrier::new(n_producers + 1));
 
@@ -281,9 +303,7 @@ mod tests {
                 start.wait();
                 for i in 0..n_per_producer {
                     let value = thread_id * n_per_producer + i;
-                    while !queue.push(value) {
-                        thread::yield_now();
-                    }
+                    queue.push(value);
                 }
                 done.wait();
             }));
@@ -324,7 +344,7 @@ mod tests {
     fn test_overflow() {
         let capacity = 8;
         let total = 128;
-        let queue = Arc::new(MpscQueue2::<usize>::new(capacity));
+        let queue = Arc::new(ExperimentalMpscQueue::<usize>::new(capacity));
         let producer_count = 4;
         let barrier = Arc::new(Barrier::new(producer_count));
 
