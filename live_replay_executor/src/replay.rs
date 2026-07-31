@@ -135,14 +135,16 @@ impl TaskGraphBuildStep for ReplayBuildStep {
             if !seen.insert(entry.channel_name.clone()) {
                 continue;
             }
-            let Some(type_id) = self.registry.channel_type(&entry.channel_name) else {
+            if let Some(type_id) = self.registry.channel_type(&entry.channel_name) {
+                replay_channels.push((entry.channel_name.clone(), type_id));
+            } else {
+                // Type appeared in log but wasn't registered
                 return Err(format!(
                     "ReplayBuildStep: channel '{}' appears in log but was not registered via ChannelRegistry::register_channel",
                     entry.channel_name
                 )
                 .into());
             };
-            replay_channels.push((entry.channel_name.clone(), type_id));
         }
 
         if replay_channels.is_empty() {
