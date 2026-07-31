@@ -21,6 +21,11 @@ pub trait LogFileWriter: Send {
         body: &[u8],
     ) -> Result<(), BoxedLogError>;
 
+    /// Write a single artifact line: `{"artifact":"<name>","body":<json>}`.
+    /// Called once per artifact (e.g. the execution-log descriptor). The `body`
+    /// must be valid JSON; the implementation embeds it as a JSON value.
+    fn write_artifact(&mut self, name: &str, body: &[u8]) -> Result<(), BoxedLogError>;
+
     /// Flush any buffered writes to the underlying sink. The default no-op
     /// suits writers that don't buffer; concrete writers like
     /// `JsonLogFileWriter<BufWriter<_>>` should override to flush.
@@ -62,6 +67,13 @@ impl LogFileWriter for SharedLogFileWriter {
             .store_message(channel_name, header, body)
     }
 
+    fn write_artifact(&mut self, name: &str, body: &[u8]) -> Result<(), BoxedLogError> {
+        self.inner
+            .lock()
+            .expect("shared log writer lock poisoned")
+            .write_artifact(name, body)
+    }
+
     fn flush(&mut self) -> Result<(), BoxedLogError> {
         self.inner
             .lock()
@@ -88,6 +100,12 @@ pub trait LogFileReader {
     }
 
     fn entry(&self, index: usize) -> Option<LogEntry<'_>>;
+
+    /// Look up an artifact by name. Returns the raw JSON bytes of the artifact
+    /// value, or `None` if no artifact with that name exists.
+    fn artifact(&self, _name: &str) -> Option<&[u8]> {
+        None
+    }
 
     fn iter(&self) -> LogEntryIter<'_>
     where

@@ -1,7 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
 use task::channel_registry::ChannelRegistry;
-use task::execution_log::ExecutionLogDescriptor;
 use task::executor::ExecutorStopSignal;
 use task::task_graph_builder::{BuiltTaskGraph, TaskGraphBuilder};
 
@@ -60,7 +59,6 @@ pub fn build_replay_graph(
 ) -> Result<(BuiltGraph, live_replay_executor::LiveReplayConfig), BuildError> {
     let mut registry = ChannelRegistry::new();
     registry.register_channel::<u64>("integer".into());
-    registry.register_channel::<ExecutionLogDescriptor>("execution_log_descriptor".into());
 
     let registry = Arc::new(registry);
     let (replay_cfg, build_step) = live_replay_executor::build_replay(

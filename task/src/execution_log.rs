@@ -16,8 +16,8 @@ use std::io::Write;
 
 /// Channel every execution-log publisher publishes on.
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
-/// Descriptor that describes the index->channel mapping
-pub const EXECUTION_LOG_DESCRIPTOR_CHANNEL: &str = "execution_log_descriptor";
+/// Artifact name used to store the execution log descriptor in the log file.
+pub const EXECUTION_LOG_DESCRIPTOR_ARTIFACT: &str = "execution_log_descriptor";
 
 /// Number of logged messages packed into a single [`ExecutionLogEntry`].
 /// A single callback execution that produces/receives more than this many

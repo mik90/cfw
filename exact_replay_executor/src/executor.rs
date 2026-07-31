@@ -238,7 +238,7 @@ mod tests {
     use task::callback::{Callback, PortMut, Run};
     use task::context::Context;
     use task::execution_log::{
-        Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_CHANNEL, ExecutionLogDescriptor,
+        Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
         ExecutionLogEntry, LoggedMessage,
     };
     use task::generic_publisher::GenericPublisher;
@@ -323,11 +323,7 @@ mod tests {
 
         let desc_bytes = serde_json::to_vec(desc).unwrap();
         writer
-            .store_message(
-                EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-                &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-                &desc_bytes,
-            )
+            .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes)
             .unwrap();
 
         for chunk in entries.chunks(task::execution_log::ENTRIES_PER_MESSAGE) {
@@ -435,11 +431,7 @@ mod tests {
         let mut writer = JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
         writer
-            .store_message(
-                EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-                &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-                &desc_bytes,
-            )
+            .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes)
             .unwrap();
         finish_writer(writer);
 
@@ -464,11 +456,7 @@ mod tests {
         let mut writer = JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
         writer
-            .store_message(
-                EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-                &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-                &desc_bytes,
-            )
+            .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes)
             .unwrap();
         let msg_bytes = serde_json::to_vec(&serde_json::json!({
             "number_of_dropped_entries": 3,
@@ -533,11 +521,7 @@ mod tests {
         let mut writer = JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
         writer
-            .store_message(
-                EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-                &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-                &desc_bytes,
-            )
+            .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes)
             .unwrap();
         finish_writer(writer);
 
@@ -561,11 +545,7 @@ mod tests {
         let mut writer = JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
         writer
-            .store_message(
-                EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-                &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-                &desc_bytes,
-            )
+            .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes)
             .unwrap();
         finish_writer(writer);
 
@@ -677,11 +657,7 @@ mod tests {
         let mut writer = JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
         writer
-            .store_message(
-                EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-                &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-                &desc_bytes,
-            )
+            .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes)
             .unwrap();
         finish_writer(writer);
 
@@ -762,11 +738,7 @@ mod tests {
         let mut writer = JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
         writer
-            .store_message(
-                EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-                &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-                &desc_bytes,
-            )
+            .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes)
             .unwrap();
         finish_writer(writer);
 

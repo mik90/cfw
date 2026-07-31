@@ -13,11 +13,10 @@ use std::time::Duration;
 
 use task::callback::{Callback, PortMut, Run};
 use task::context::Context;
-use task::execution_log::{self, EXECUTION_LOG_DESCRIPTOR_CHANNEL};
+use task::execution_log::{self, EXECUTION_LOG_DESCRIPTOR_ARTIFACT};
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
 use task::loggable::Loggable;
-use task::message::MessageHeader;
 use task::output::Output;
 use task::pub_sub::{CallbackNodeName, ChannelName};
 use task::publisher::{Publisher, PublisherConfig};
@@ -271,22 +270,22 @@ pub(crate) fn open_writer(_path: &Path) -> Box<dyn LogFileWriter> {
 
 impl Callback for LogTask {
     fn run(&mut self, ctx: &Context) -> Run {
-        // Write execution log descriptor on first run
+        // Write execution log descriptor as artifact on first run
         if let Some(descriptor) = self.execution_log_descriptor.take() {
             let mut scratch = Vec::new();
             if let Err(e) = Loggable::serialize(&descriptor, &mut scratch) {
                 self.record_error(
-                    EXECUTION_LOG_DESCRIPTOR_CHANNEL.to_owned(),
+                    EXECUTION_LOG_DESCRIPTOR_ARTIFACT.to_owned(),
                     e.into(),
                     ctx.now,
                 );
             } else {
-                if let Err(e) = self.writer.as_mut().store_message(
-                    EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-                    &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-                    &scratch,
-                ) {
-                    self.record_error(EXECUTION_LOG_DESCRIPTOR_CHANNEL.to_owned(), e, ctx.now);
+                if let Err(e) = self
+                    .writer
+                    .as_mut()
+                    .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &scratch)
+                {
+                    self.record_error(EXECUTION_LOG_DESCRIPTOR_ARTIFACT.to_owned(), e, ctx.now);
                 }
             }
         }

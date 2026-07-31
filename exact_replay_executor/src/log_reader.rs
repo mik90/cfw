@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use logging::log_file::LogFileReader;
 use task::execution_log::{
-    EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_CHANNEL, ExecutionLogDescriptor,
+    EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
     ExecutionLogEntry, ExecutionLogMessage,
 };
 use task::loggable::Loggable;
@@ -67,7 +67,21 @@ struct ExecutionGroup {
 /// replay executions.
 pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, ReplayError> {
     // ── Phase 1: collect raw data ──────────────────────────────────────
-    let mut descriptor: Option<ExecutionLogDescriptor> = None;
+    let descriptor: ExecutionLogDescriptor = reader
+        .artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT)
+        .ok_or_else(|| {
+            ReplayError::MissingOrInvalidDescriptor(
+                "no execution log descriptor artifact found in log file".to_owned(),
+            )
+        })
+        .and_then(|bytes| {
+            serde_json::from_slice(bytes).map_err(|e| {
+                ReplayError::MissingOrInvalidDescriptor(format!(
+                    "failed to parse execution log descriptor: {e}"
+                ))
+            })
+        })?;
+
     let mut execution_log_entries: Vec<ExecutionLogMessage> = Vec::new();
     // Ordinary log entries: channel -> FIFO queue of (header, body)
     let mut ordinary_log: HashMap<ChannelName, Vec<(MessageHeader, Vec<u8>)>> = HashMap::new();
@@ -77,15 +91,7 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
         let Some(entry) = reader.entry(i) else {
             continue;
         };
-        if entry.channel_name == EXECUTION_LOG_DESCRIPTOR_CHANNEL {
-            let desc: ExecutionLogDescriptor = serde_json::from_slice(entry.serialized_body)
-                .map_err(|e| {
-                    ReplayError::MissingOrInvalidDescriptor(format!(
-                        "failed to parse execution log descriptor: {e}"
-                    ))
-                })?;
-            descriptor = Some(desc);
-        } else if entry.channel_name == EXECUTION_LOG_CHANNEL {
+        if entry.channel_name == EXECUTION_LOG_CHANNEL {
             let msg = ExecutionLogMessage::deserialize(entry.serialized_body).map_err(|e| {
                 ReplayError::MissingOrInvalidDescriptor(format!(
                     "failed to parse execution log message: {e}"
@@ -99,12 +105,6 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
                 .push((entry.header, entry.serialized_body.to_vec()));
         }
     }
-
-    let descriptor = descriptor.ok_or_else(|| {
-        ReplayError::MissingOrInvalidDescriptor(
-            "no execution log descriptor found in log file".to_owned(),
-        )
-    })?;
 
     // Check for dropped entries
     let total_dropped: usize = execution_log_entries
@@ -294,6 +294,11 @@ mod tests {
         writer.store_message(channel, header, body).unwrap();
     }
 
+    /// Helper to write an artifact to a buffer.
+    fn write_artifact(writer: &mut dyn LogFileWriter, name: &str, body: &[u8]) {
+        writer.write_artifact(name, body).unwrap();
+    }
+
     // `JsonLogFileWriter` borrows the backing buffer but has no Drop
     // implementation. Consume it explicitly so that the borrow ends without
     // triggering clippy::drop_non_drop.
@@ -314,13 +319,7 @@ mod tests {
 
         let desc = ExecutionLogDescriptor::new(&[]);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
-        let header = MessageHeader::new(FrameworkTime::from_nanoseconds(0));
-        write_entry(
-            &mut writer,
-            EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-            &header,
-            &desc_bytes,
-        );
+        write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
         finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
@@ -337,15 +336,10 @@ mod tests {
 
         let desc = ExecutionLogDescriptor::new(&[]);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
-        let header = MessageHeader::new(FrameworkTime::from_nanoseconds(0));
-        write_entry(
-            &mut writer,
-            EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-            &header,
-            &desc_bytes,
-        );
+        write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
 
         let scratch = execution_log_bytes(&[], 5);
+        let header = MessageHeader::new(FrameworkTime::from_nanoseconds(0));
         write_entry(&mut writer, EXECUTION_LOG_CHANNEL, &header, &scratch);
         finish_writer(writer);
 
@@ -391,12 +385,7 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
-        write_entry(
-            &mut writer,
-            EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-            &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-            &desc_bytes,
-        );
+        write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
 
         let mut entry = task::execution_log::ExecutionLogEntry {
             callback_node_index: 0,
@@ -433,12 +422,7 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
-        write_entry(
-            &mut writer,
-            EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-            &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-            &desc_bytes,
-        );
+        write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
 
         let entry = task::execution_log::ExecutionLogEntry {
             callback_node_index: 5,
@@ -483,12 +467,7 @@ mod tests {
         let mut buf = Vec::<u8>::new();
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(&mut buf);
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
-        write_entry(
-            &mut writer,
-            EXECUTION_LOG_DESCRIPTOR_CHANNEL,
-            &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
-            &desc_bytes,
-        );
+        write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
 
         // Two ordinary-log entries on "ch" at the same time.
         let hdr = MessageHeader::new(FrameworkTime::from_nanoseconds(100));

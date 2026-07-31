@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 
 use task::message::MessageHeader;
@@ -9,6 +10,23 @@ struct JsonLogEntry {
     header: MessageHeader,
     channel_name: String,
     body: Vec<u8>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct JsonLogArtifact {
+    artifact: String,
+    body: serde_json::Value,
+}
+
+/// Discriminated line from the log file: either an artifact or a message.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum JsonLogFileLine {
+    Artifact {
+        artifact: String,
+        body: serde_json::Value,
+    },
+    Message(JsonLogEntry),
 }
 
 pub struct JsonLogFileWriter<W> {
@@ -41,6 +59,25 @@ impl<W: Write + Send> LogFileWriter for JsonLogFileWriter<W> {
         Ok(())
     }
 
+    fn write_artifact(
+        &mut self,
+        name: &str,
+        body: &[u8],
+    ) -> Result<(), crate::log_file::BoxedLogError> {
+        let value: serde_json::Value = serde_json::from_slice(body)
+            .map_err(|e| -> crate::log_file::BoxedLogError { Box::new(e) })?;
+        let artifact = JsonLogArtifact {
+            artifact: name.to_owned(),
+            body: value,
+        };
+        serde_json::to_writer(&mut self.writer, &artifact)
+            .map_err(|e| -> crate::log_file::BoxedLogError { Box::new(e) })?;
+        self.writer
+            .write_all(b"\n")
+            .map_err(|e| -> crate::log_file::BoxedLogError { Box::new(e) })?;
+        Ok(())
+    }
+
     fn flush(&mut self) -> Result<(), crate::log_file::BoxedLogError> {
         self.writer
             .flush()
@@ -50,19 +87,29 @@ impl<W: Write + Send> LogFileWriter for JsonLogFileWriter<W> {
 
 pub struct JsonLogFileReader {
     entries: Vec<JsonLogEntry>,
+    artifacts: HashMap<String, Vec<u8>>,
 }
 
 impl JsonLogFileReader {
     pub fn from_reader<R: BufRead>(reader: R) -> Result<Self, serde_json::Error> {
         let mut entries = Vec::new();
+        let mut artifacts = HashMap::new();
         for line in reader.lines() {
             let line = line.map_err(serde_json::Error::io)?;
             if line.is_empty() {
                 continue;
             }
-            entries.push(serde_json::from_str(&line)?);
+            match serde_json::from_str::<JsonLogFileLine>(&line)? {
+                JsonLogFileLine::Artifact { artifact, body } => {
+                    let bytes = serde_json::to_vec(&body)?;
+                    artifacts.insert(artifact, bytes);
+                }
+                JsonLogFileLine::Message(entry) => {
+                    entries.push(entry);
+                }
+            }
         }
-        Ok(Self { entries })
+        Ok(Self { entries, artifacts })
     }
 }
 
@@ -82,6 +129,10 @@ impl LogFileReader for JsonLogFileReader {
             channel_name: &e.channel_name,
             serialized_body: &e.body,
         })
+    }
+
+    fn artifact(&self, name: &str) -> Option<&[u8]> {
+        self.artifacts.get(name).map(|v| v.as_slice())
     }
 }
 

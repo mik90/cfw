@@ -12,7 +12,7 @@ use task::executor::Executor;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct CliArgs {
-    /// Path to the JSON log file to replay.
+    /// Path to the NDJSON log file to replay.
     #[arg(short, long)]
     log_path: PathBuf,
 
