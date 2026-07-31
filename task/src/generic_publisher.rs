@@ -35,17 +35,6 @@ pub trait GenericPublisher {
         self.flush_loaned_values(timestamp);
     }
 
-    /// Flush sent loans, stamping each with its own header timestamp from
-    /// `headers` (one per sent loan, in order). The default stamps all loans
-    /// with the first header's timestamp (or [`FrameworkTime::INVALID`] if
-    /// `headers` is empty) — publishers that don't participate in replay
-    /// hydration are unaffected.
-    ///
-    /// [`FrameworkTime::INVALID`]: crate::time::FrameworkTime::INVALID
-    fn flush_loaned_values_with_headers(&mut self, headers: &[FrameworkTime]) {
-        self.flush_loaned_values(headers.first().copied().unwrap_or(FrameworkTime::INVALID));
-    }
-
     fn allocate_arena(&mut self);
 
     fn increase_arena_size(&mut self, additional_capacity: usize);

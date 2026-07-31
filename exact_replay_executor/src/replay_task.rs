@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use crate::error::ReplayError;
+use crate::log_reader::ReplayExecution;
 use logging::log_capture::PublisherCapture;
 use task::callback::{CallbackNode, CallbackViews};
 use task::channel_registry::ChannelRegistry;
@@ -10,10 +12,6 @@ use task::context::Context;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
 use task::message::MessageHeader;
-use task::time::FrameworkTime;
-
-use crate::error::ReplayError;
-use crate::log_reader::ReplayExecution;
 
 /// Policy for handling output mismatches (actual vs. expected).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -320,19 +318,16 @@ fn hydrate_subscribers(
             }
         })?;
 
-        // Deserialize and write each message, collecting original timestamps.
-        let mut timestamps: Vec<FrameworkTime> = Vec::with_capacity(messages.len());
+        // Deserialize, write, and flush each message individually with
+        // its original header timestamp.
         for (_header, body) in messages {
             let value = deserializer(body).map_err(|e| ReplayError::DeserializationFailed {
                 channel: channel_name.clone(),
                 details: e.to_string(),
             })?;
-            timestamps.push(_header.published_at);
             writer(publisher.as_mut(), value);
+            publisher.flush_loaned_values(_header.published_at);
         }
-
-        // Flush with per-message original header timestamps.
-        publisher.flush_loaned_values_with_headers(&timestamps);
     }
 
     // Drain subscribers (write → read) so the callback sees the data.
@@ -627,6 +622,133 @@ mod tests {
         assert_eq!(
             results[0].0.published_at,
             FrameworkTime::from_nanoseconds(1000)
+        );
+    }
+
+    /// Test that two hydrated messages on a single subscriber preserve
+    /// order and original header timestamps.
+    ///
+    /// Each message is deserialized, written via the ChannelPublisherWriter,
+    /// and flushed individually with its original header timestamp. The
+    /// subscriber has capacity 2 so both messages fit. After hydration,
+    /// the subscriber's reader buffer contains both messages with their
+    /// original timestamps in order.
+    ///
+    /// Note: ChannelPublisherWriter writes one value per call (the registry
+    /// factory creates a Publisher with capacity 1, and each write+flush
+    /// cycle completes before the next message begins). This is the
+    /// current invariant.
+    #[test]
+    fn test_two_hydrated_messages_preserve_order_and_headers() {
+        use std::sync::{Arc, Mutex};
+
+        let mut registry = ChannelRegistry::new();
+        registry.register_channel::<u64>("input".into());
+
+        // Shared storage for received messages (Arc+ Mutex so the callback
+        // can write into it and the test can read it after replay_execution).
+        let received = Arc::new(Mutex::new(Vec::new()));
+
+        struct RecordingCallback {
+            subscriber: Subscriber<u64>,
+            received: Arc<Mutex<Vec<(FrameworkTime, u64)>>>,
+        }
+        impl Callback for RecordingCallback {
+            fn run(&mut self, _ctx: &Context) -> Run {
+                let mut input = task::input::InputSpan::<u64>::new_downcasted(&mut self.subscriber);
+                let mut records = self.received.lock().unwrap();
+                for msg in input.inputs() {
+                    records.push((msg.header.published_at, msg.message));
+                }
+                Run::new(1)
+            }
+            fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+                f(&self.subscriber);
+            }
+            fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+            fn for_each_subscriber_mut<'a>(
+                &'a mut self,
+                f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+            ) {
+                f(&mut self.subscriber);
+            }
+            fn for_each_publisher_mut<'a>(
+                &'a mut self,
+                _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+            ) {
+            }
+            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+                f(PortMut::Subscriber(&mut self.subscriber));
+            }
+        }
+
+        let callback = RecordingCallback {
+            subscriber: Subscriber::<u64>::new(SubscriberConfig {
+                is_optional: true,
+                capacity: 2,
+                is_trigger: true,
+                keep_across_runs: true,
+                channel_name: "input".into(),
+            }),
+            received: received.clone(),
+        };
+
+        let mut node = CallbackNode::new_named(Box::new(callback), "Recorder".into());
+
+        // Two received messages with different timestamps.
+        let execution = ReplayExecution {
+            callback_node_index: 0,
+            execution_time: FrameworkTime::from_nanoseconds(100),
+            execution_duration_ns: 0,
+            received: {
+                let mut m = HashMap::new();
+                m.insert(
+                    0u16,
+                    vec![
+                        (
+                            MessageHeader::new(FrameworkTime::from_nanoseconds(10)),
+                            serde_json::to_vec(&42u64).unwrap(),
+                        ),
+                        (
+                            MessageHeader::new(FrameworkTime::from_nanoseconds(20)),
+                            serde_json::to_vec(&99u64).unwrap(),
+                        ),
+                    ],
+                );
+                m
+            },
+            published: HashMap::new(),
+        };
+
+        let mut state = ReplayNodeState::new();
+        let mut errors = Vec::new();
+        replay_execution(
+            &mut node,
+            &mut state,
+            &execution,
+            &registry,
+            DivergencePolicy::Strict,
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+
+        // Verify the callback received both values in order with correct
+        // header timestamps (matching the original hydrated message timestamps).
+        let records = received.lock().unwrap();
+        assert_eq!(records.len(), 2, "should have received 2 messages");
+
+        // First message: value 42, timestamp 10
+        assert_eq!(
+            records[0],
+            (FrameworkTime::from_nanoseconds(10), 42),
+            "first message: timestamp=10, value=42"
+        );
+
+        // Second message: value 99, timestamp 20
+        assert_eq!(
+            records[1],
+            (FrameworkTime::from_nanoseconds(20), 99),
+            "second message: timestamp=20, value=99"
         );
     }
 }
