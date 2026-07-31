@@ -261,7 +261,12 @@ mod tests {
     #[test]
     fn test_multi_producer_single_consumer() {
         let n_producers = 4;
+        #[cfg(not(miri))]
         let n_per_producer = 1_000;
+        #[cfg(miri)]
+        // Miri is much slower to run
+        let n_per_producer = 50;
+
         let total = n_producers * n_per_producer;
         let queue = Arc::new(MpscQueue2::<usize>::new(64));
         let start = Arc::new(Barrier::new(n_producers + 1));
