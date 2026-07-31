@@ -281,8 +281,7 @@ fn pop_payload(
 mod tests {
     use super::*;
     use logging::log_file::LogFileWriter;
-    use logging::log_file_json::JsonLogFileReader;
-    use task::execution_log::ExecutionLogMessage;
+    use logging::log_file_json::{JsonLogFileReader, JsonLogFileWriter};
     use task::time::FrameworkTime;
 
     /// Helper to write a JSON log entry to a buffer.
@@ -293,6 +292,19 @@ mod tests {
         body: &[u8],
     ) {
         writer.store_message(channel, header, body).unwrap();
+    }
+
+    // `JsonLogFileWriter` borrows the backing buffer but has no Drop
+    // implementation. Consume it explicitly so that the borrow ends without
+    // triggering clippy::drop_non_drop.
+    fn finish_writer<W: std::io::Write>(_: JsonLogFileWriter<W>) {}
+
+    fn execution_log_bytes(entries: &[ExecutionLogEntry], dropped: usize) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "number_of_dropped_entries": dropped,
+            "entries": entries,
+        }))
+        .unwrap()
     }
 
     #[test]
@@ -309,7 +321,7 @@ mod tests {
             &header,
             &desc_bytes,
         );
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let result = parse_replay_log(&reader);
@@ -333,12 +345,9 @@ mod tests {
             &desc_bytes,
         );
 
-        let mut msg = ExecutionLogMessage::default();
-        msg.number_of_dropped_entries = std::num::Saturating(5);
-        let mut scratch = Vec::new();
-        Loggable::serialize(&msg, &mut scratch).unwrap();
+        let scratch = execution_log_bytes(&[], 5);
         write_entry(&mut writer, EXECUTION_LOG_CHANNEL, &header, &scratch);
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let result = parse_replay_log(&reader);
@@ -355,7 +364,7 @@ mod tests {
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(&mut buf);
         let header = MessageHeader::new(FrameworkTime::from_nanoseconds(0));
         write_entry(&mut writer, "some_other_channel", &header, b"hello");
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let result = parse_replay_log(&reader);
@@ -400,17 +409,14 @@ mod tests {
             direction: task::execution_log::Direction::Received,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        let mut msg = ExecutionLogMessage::default();
-        msg.entries[0] = entry;
-        let mut scratch = Vec::new();
-        Loggable::serialize(&msg, &mut scratch).unwrap();
+        let scratch = execution_log_bytes(&[entry], 0);
         write_entry(
             &mut writer,
             EXECUTION_LOG_CHANNEL,
             &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
             &scratch,
         );
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let result = parse_replay_log(&reader);
@@ -440,17 +446,14 @@ mod tests {
             execution_duration_ns: 0,
             messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
         };
-        let mut msg = ExecutionLogMessage::default();
-        msg.entries[0] = entry;
-        let mut scratch = Vec::new();
-        Loggable::serialize(&msg, &mut scratch).unwrap();
+        let scratch = execution_log_bytes(&[entry], 0);
         write_entry(
             &mut writer,
             EXECUTION_LOG_CHANNEL,
             &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
             &scratch,
         );
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let log = parse_replay_log(&reader).expect("should parse");
@@ -509,10 +512,7 @@ mod tests {
                 direction: Direction::Received,
                 header: hdr,
             };
-            let mut msg = ExecutionLogMessage::default();
-            msg.entries[0] = entry;
-            let mut scratch = Vec::new();
-            Loggable::serialize(&msg, &mut scratch).unwrap();
+            let scratch = execution_log_bytes(&[entry], 0);
             write_entry(
                 &mut writer,
                 EXECUTION_LOG_CHANNEL,
@@ -520,7 +520,7 @@ mod tests {
                 &scratch,
             );
         }
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let log = parse_replay_log(&reader).expect("should parse");

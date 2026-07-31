@@ -107,6 +107,10 @@ impl Executor for ExactReplayExecutor {
             return;
         }
         self.started = true;
+        if self.total_execution_count == 0 {
+            self.should_run.store(false, Ordering::Release);
+            return;
+        }
         self.should_run.store(true, Ordering::Release);
         let should_run = self.should_run.clone();
         let mut scheduler = self.scheduler.take().expect("scheduler already taken");
@@ -357,8 +361,13 @@ mod tests {
             }
         }
 
-        drop(writer);
+        finish_writer(writer);
     }
+
+    // `JsonLogFileWriter` borrows the backing buffer but has no Drop
+    // implementation. Consume it explicitly so that the borrow ends without
+    // triggering clippy::drop_non_drop.
+    fn finish_writer<W: std::io::Write>(_: JsonLogFileWriter<W>) {}
 
     #[test]
     fn test_exact_replay_passthrough() {
@@ -432,7 +441,7 @@ mod tests {
                 &desc_bytes,
             )
             .unwrap();
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("Empty");
@@ -473,7 +482,7 @@ mod tests {
                 &msg_bytes,
             )
             .unwrap();
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("Dropped");
@@ -501,7 +510,7 @@ mod tests {
                 b"hello",
             )
             .unwrap();
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("NoDesc");
@@ -530,7 +539,7 @@ mod tests {
                 &desc_bytes,
             )
             .unwrap();
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("StopBeforeStart");
@@ -558,7 +567,7 @@ mod tests {
                 &desc_bytes,
             )
             .unwrap();
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("RepeatedStart");
@@ -674,7 +683,7 @@ mod tests {
                 &desc_bytes,
             )
             .unwrap();
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("Natural");
@@ -759,7 +768,7 @@ mod tests {
                 &desc_bytes,
             )
             .unwrap();
-        drop(writer);
+        finish_writer(writer);
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = CallbackNode::new_named(

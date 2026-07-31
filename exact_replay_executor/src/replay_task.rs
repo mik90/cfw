@@ -257,7 +257,9 @@ fn hydrate_subscribers(
 
     for (&ordinal, messages) in received {
         // Ensure a hydration publisher exists for this ordinal.
-        if let std::collections::hash_map::Entry::Vacant(e) = state.hydration_publishers.entry(ordinal) {
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            state.hydration_publishers.entry(ordinal)
+        {
             let mut subs = node.callback_mut().collect_subscribers_mut();
             let Some(subscriber) = subs.get_mut(ordinal as usize) else {
                 return Err(ReplayError::InvalidSubscriberOrdinal {
@@ -748,5 +750,10 @@ mod tests {
             (FrameworkTime::from_nanoseconds(20), 99),
             "second message: timestamp=20, value=99"
         );
+
+        // The node owns subscriber buffers containing pointers into the
+        // persistent hydration publisher. Drop it first so those pointers
+        // are released before the replay state drops the publisher arena.
+        drop(node);
     }
 }
