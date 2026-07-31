@@ -6,8 +6,8 @@ use std::sync::atomic::{
     AtomicUsize,
     Ordering::{Acquire, Relaxed, Release},
 };
-/// I'd like to avoid deps where possible, i doubt i can improve off crossbeam but im wondering
-/// if we can leverage MPSC over MPMC
+// I'd like to avoid deps where possible, i doubt i can improve off crossbeam but im wondering
+// if we can leverage MPSC over MPMC
 
 // ---------------------------------------------------------------------------
 // Hand-rolled experimental queue
@@ -110,22 +110,21 @@ impl<T> ExperimentalMpscQueue<T> {
             if t.wrapping_sub(h) >= self.capacity {
                 let old = &self.slots[h % self.capacity];
                 // Only displace if the slot actually holds a published value.
-                if old.sequence.load(Acquire) == h + 1 {
-                    if self
+                if old.sequence.load(Acquire) == h + 1
+                    && self
                         .head
                         .compare_exchange_weak(h, h + 1, Acquire, Relaxed)
                         .is_ok()
-                    {
-                        old.sequence.store(h + self.capacity, Release);
-                        // SAFETY: The sequence check above guarantees the
-                        // value at position h was fully written.
-                        unsafe {
-                            (*old.value.get()).assume_init_drop();
-                        }
-
-                        self.dropped.fetch_add(1, Relaxed);
-                        displaced = true;
+                {
+                    old.sequence.store(h + self.capacity, Release);
+                    // SAFETY: The sequence check above guarantees the
+                    // value at position h was fully written.
+                    unsafe {
+                        (*old.value.get()).assume_init_drop();
                     }
+
+                    self.dropped.fetch_add(1, Relaxed);
+                    displaced = true;
                 }
             }
             hint::spin_loop();
@@ -176,6 +175,7 @@ impl<T> ExperimentalMpscQueue<T> {
                     }
                     // Free the slot for the writer at position h + capacity.
                     slot.sequence.store(h + self.capacity, Release);
+                    // SAFETY: We swapped the uninit return value with a value was initialized
                     return unsafe { Some(return_value.assume_init()) };
                 }
                 Err(actual) => {
@@ -207,6 +207,7 @@ impl<T> Drop for ExperimentalMpscQueue<T> {
         let t = self.tail.load(Relaxed);
         for pos in h..t {
             let slot = &mut self.slots[pos % self.capacity];
+            // SAFETY: All slots between head and tail should be occupied
             unsafe {
                 std::ptr::drop_in_place(slot.value.get_mut().as_mut_ptr());
             }

@@ -257,7 +257,7 @@ fn hydrate_subscribers(
 
     for (&ordinal, messages) in received {
         // Ensure a hydration publisher exists for this ordinal.
-        if !state.hydration_publishers.contains_key(&ordinal) {
+        if let std::collections::hash_map::Entry::Vacant(e) = state.hydration_publishers.entry(ordinal) {
             let mut subs = node.callback_mut().collect_subscribers_mut();
             let Some(subscriber) = subs.get_mut(ordinal as usize) else {
                 return Err(ReplayError::InvalidSubscriberOrdinal {
@@ -296,9 +296,7 @@ fn hydrate_subscribers(
                     node: node_name.to_owned(),
                 })?;
             publisher.allocate_arena();
-            state
-                .hydration_publishers
-                .insert(ordinal, (publisher, writer));
+            e.insert((publisher, writer));
         }
 
         let (publisher, writer) = state.hydration_publishers.get_mut(&ordinal).unwrap();
