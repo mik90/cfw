@@ -153,9 +153,6 @@ impl<T> MpscQueue2<T> {
 
     pub fn pop(&mut self) -> Option<T> {
         let read_ticket = *self.read_ticket;
-        // TODO could just make read ticket atomic even though i dont have a way to
-        // avoid exposing reader interface to multiple threads
-        *self.read_ticket += 1;
 
         let turn = (read_ticket / self.capacity) as u8;
 
@@ -164,6 +161,9 @@ impl<T> MpscQueue2<T> {
             // nothing left
             return None;
         }
+        // TODO could just make read ticket atomic even though i dont have a way to
+        // avoid exposing reader interface to multiple threads
+        *self.read_ticket += 1;
         let mut return_value = MaybeUninit::uninit();
 
         // SAFETY: Both the cur slot and return value are the same type/alignment
@@ -200,6 +200,18 @@ impl<T> MpscQueue2<T> {
     }
 }
 
+impl<T> Drop for MpscQueue2<T> {
+    fn drop(&mut self) {
+        for slot in self.slots.iter_mut() {
+            if slot.full.load(Acquire) {
+                // SAFETY: The value must've been initialized if it is full
+                unsafe {
+                    slot.value.get_mut().assume_init_drop();
+                }
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
