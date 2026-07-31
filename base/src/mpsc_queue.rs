@@ -1,5 +1,5 @@
 use crossbeam_queue::ArrayQueue;
-use std::env::temp_dir;
+use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::{
     ops::{Deref, DerefMut},
@@ -97,16 +97,7 @@ impl<T> From<T> for CacheAligned<T> {
 struct QueueSlot<T> {
     pub turn: CacheAligned<AtomicU8>,
     pub full: CacheAligned<AtomicBool>,
-    pub value: MaybeUninit<T>,
-}
-impl<T> QueueSlot<T> {
-    pub fn new(value: T) -> Self {
-        QueueSlot {
-            turn: AtomicU8::new(0).into(),
-            full: AtomicBool::new(false).into(),
-            value: MaybeUninit::<T>::new(value),
-        }
-    }
+    pub value: UnsafeCell<MaybeUninit<T>>,
 }
 
 ///  https://blog.bearcats.nl/simple-message-queue/ (modified rigtorp?) to replace cross-beam channel usage which is MPMC
@@ -122,20 +113,26 @@ pub struct MpscQueue2<T> {
 
 impl<T> MpscQueue2<T> {
     pub fn new(capacity: usize) -> Self {
+        let mut vec = Vec::with_capacity(capacity);
+        vec.resize_with(capacity, || QueueSlot {
+            turn: AtomicU8::new(0).into(),
+            full: AtomicBool::new(false).into(),
+            value: UnsafeCell::new(MaybeUninit::<T>::uninit()),
+        });
         Self {
             dropped: AtomicUsize::new(0).into(),
             write_ticket: AtomicUsize::new(0).into(),
             read_ticket: 0.into(),
             capacity,
-            slots: Vec::with_capacity(capacity),
+            slots: vec,
         }
     }
 
-    pub fn push(&mut self, value: T) -> bool {
+    pub fn push(&self, value: T) -> bool {
         let new_write_ticket = self.write_ticket.fetch_add(1, Relaxed);
         let turn = (new_write_ticket / self.capacity) as u8;
 
-        let cur_slot = &mut self.slots[new_write_ticket % self.capacity];
+        let cur_slot = &self.slots[new_write_ticket % self.capacity];
         // Check if it's not our turn and if we should drop
         // serialize with reader
         if turn != cur_slot.turn.load(Acquire) {
@@ -144,7 +141,9 @@ impl<T> MpscQueue2<T> {
         }
 
         cur_slot.full.store(true, Release); // serialize with reader
-        cur_slot.value = MaybeUninit::new(value);
+        // We can assume that this value was not initialized since pop should de-init entries
+        *cur_slot.value.get_mut() = MaybeUninit::new(value);
+
         true
     }
 
@@ -198,5 +197,19 @@ impl<T> MpscQueue2<T> {
             }
         }
         count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+
+    use crate::mpsc_queue::MpscQueue2;
+
+    #[test]
+    fn test_push_pop() {
+        let mut queue = MpscQueue2::<usize>::new(2);
+        assert!(queue.push(1));
+        assert_matches!(queue.pop(), Some(1));
     }
 }
