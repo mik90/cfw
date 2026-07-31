@@ -367,4 +367,59 @@ mod tests {
 
         assert!(queue.dropped() > 0, "overflow should have caused drops");
     }
+
+    #[test]
+    fn test_capacity_one() {
+        let queue = ExperimentalMpscQueue::<usize>::new(1);
+
+        assert!(queue.push(1));
+        assert_eq!(queue.len(), 1);
+        assert!(!queue.is_empty());
+
+        // Push with consumer not popped: displacement.
+        assert!(!queue.push(2));
+        assert_eq!(queue.dropped(), 1);
+        assert_eq!(queue.pop(), Some(2));
+
+        assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_capacity_one_multi_producer() {
+        let n_producers = 2;
+        let n_per_producer = 100;
+        let queue = Arc::new(ExperimentalMpscQueue::<usize>::new(1));
+        let start = Arc::new(Barrier::new(n_producers + 1));
+
+        let mut handles = Vec::new();
+        for thread_id in 0..n_producers {
+            let queue = Arc::clone(&queue);
+            let start = Arc::clone(&start);
+            handles.push(thread::spawn(move || {
+                start.wait();
+                for i in 0..n_per_producer {
+                    queue.push(thread_id * n_per_producer + i);
+                }
+            }));
+        }
+
+        start.wait();
+        let mut count = 0;
+        while count < n_producers * n_per_producer {
+            if queue.pop().is_some() {
+                count += 1;
+            } else {
+                thread::yield_now();
+            }
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert!(queue.is_empty());
+        // With capacity 1, most items should be displaced.
+        assert!(queue.dropped() > 0);
+    }
 }
