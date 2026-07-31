@@ -127,23 +127,31 @@ impl<T> MpscQueue2<T> {
     }
 
     pub fn push(&self, value: T) -> bool {
-        let new_write_ticket = self.write_ticket.fetch_add(1, Relaxed);
-        let turn = (new_write_ticket / self.capacity) as u8;
+        loop {
+            let ticket = self.write_ticket.load(Relaxed);
+            let slot = &self.slots[ticket % self.capacity];
+            let turn = (ticket / self.capacity) as u8;
 
-        let cur_slot = &self.slots[new_write_ticket % self.capacity];
-        // Check if it's not our turn and if we should drop
-        // serialize with reader
-        if turn != cur_slot.turn.load(Acquire) {
-            self.dropped.fetch_add(1, Relaxed);
-            return false;
+            // Slot not yet consumed by reader for this turn — can't write.
+            if turn != slot.turn.load(Acquire) {
+                self.dropped.fetch_add(1, Relaxed);
+                return false;
+            }
+
+            // Try to claim this ticket. If CAS fails, another producer
+            // already claimed it — retry with the new ticket.
+            if self
+                .write_ticket
+                .compare_exchange_weak(ticket, ticket + 1, Acquire, Relaxed)
+                .is_ok()
+            {
+                // SAFETY: Claimed exclusive access via successful CAS.
+                // The slot's previous value was left uninitialized by pop().
+                unsafe { *slot.value.get() = MaybeUninit::new(value); }
+                slot.full.store(true, Release); // publish to reader
+                return true;
+            }
         }
-
-        // SAFETY: The ticket/turn check above guarantees exclusive write access to this slot.
-        // The slot's value was left uninitialized by the reader's ptr::swap in pop().
-        unsafe { *cur_slot.value.get() = MaybeUninit::new(value); }
-        cur_slot.full.store(true, Release); // publish to reader
-
-        true
     }
 
     pub fn dropped(&self) -> usize {
@@ -266,19 +274,10 @@ mod tests {
                 start.wait();
                 for i in 0..n_per_producer {
                     let value = thread_id * n_per_producer + i;
-                    let mut spins = 0u64;
                     while !queue.push(value) {
-                        spins += 1;
-                        if spins % 100_000 == 0 {
-                            eprintln!("producer {thread_id} still spinning, i={i}, value={value}, dropped={}", queue.dropped());
-                        }
-                        if spins > 1_000_000 {
-                            thread::yield_now();
-                            spins = 0;
-                        }
+                        thread::yield_now();
                     }
                 }
-                eprintln!("producer {thread_id} done");
                 done.wait();
             }));
         }
@@ -286,7 +285,6 @@ mod tests {
         start.wait();
         let mut popped = vec![0usize; n_producers];
         let mut count = 0;
-        let mut empty_spins = 0u64;
         while count < total {
             if let Some(value) = queue.pop() {
                 let thread_id = value / n_per_producer;
@@ -294,19 +292,10 @@ mod tests {
                 assert!(popped[thread_id] < n_per_producer, "duplicate from thread {thread_id}");
                 popped[thread_id] += 1;
                 count += 1;
-                empty_spins = 0;
-                if count % 500 == 0 {
-                    eprintln!("consumer popped {count}/{total}, len={}, dropped={}", queue.len(), queue.dropped());
-                }
             } else {
-                empty_spins += 1;
-                if empty_spins % 500_000 == 0 {
-                    eprintln!("consumer starved: {empty_spins} empty pops, len={}, dropped={}", queue.len(), queue.dropped());
-                }
                 thread::yield_now();
             }
         }
-        eprintln!("consumer done, {count} items popped");
         done.wait();
 
         for handle in handles {
