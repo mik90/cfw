@@ -1,12 +1,10 @@
 use crossbeam_queue::ArrayQueue;
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
-use std::{
-    ops::{Deref, DerefMut},
-    sync::atomic::{
-        AtomicBool, AtomicU8, AtomicUsize,
-        Ordering::{self, Acquire, Relaxed, Release},
-    },
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{
+    AtomicBool, AtomicU8, AtomicUsize,
+    Ordering::{self, Acquire, Relaxed, Release},
 };
 
 /// A bounded, lock-free MPSC queue backed by `crossbeam_queue::ArrayQueue`.
@@ -106,7 +104,7 @@ pub struct MpscQueue2<T> {
     dropped: CacheAligned<AtomicUsize>,
     write_ticket: CacheAligned<AtomicUsize>,
     /// Read ticket doesn't need to be atomic, there's a single reader
-    read_ticket: CacheAligned<usize>,
+    read_ticket: CacheAligned<UnsafeCell<usize>>,
     capacity: usize,
     slots: Vec<QueueSlot<T>>,
 }
@@ -122,7 +120,7 @@ impl<T> MpscQueue2<T> {
         Self {
             dropped: AtomicUsize::new(0).into(),
             write_ticket: AtomicUsize::new(0).into(),
-            read_ticket: 0.into(),
+            read_ticket: UnsafeCell::new(0).into(),
             capacity,
             slots: vec,
         }
@@ -140,9 +138,10 @@ impl<T> MpscQueue2<T> {
             return false;
         }
 
-        cur_slot.full.store(true, Release); // serialize with reader
-        // We can assume that this value was not initialized since pop should de-init entries
-        *cur_slot.value.get_mut() = MaybeUninit::new(value);
+        // SAFETY: The ticket/turn check above guarantees exclusive write access to this slot.
+        // The slot's value was left uninitialized by the reader's ptr::swap in pop().
+        unsafe { *cur_slot.value.get() = MaybeUninit::new(value); }
+        cur_slot.full.store(true, Release); // publish to reader
 
         true
     }
@@ -151,26 +150,29 @@ impl<T> MpscQueue2<T> {
         self.dropped.load(Relaxed)
     }
 
-    pub fn pop(&mut self) -> Option<T> {
-        let read_ticket = *self.read_ticket;
+    pub fn pop(&self) -> Option<T> {
+        // SAFETY: Single consumer — only one thread ever calls pop().
+        let read_ticket = unsafe { *self.read_ticket.get() };
 
         let turn = (read_ticket / self.capacity) as u8;
 
-        let cur_slot = &mut self.slots[read_ticket % self.capacity];
+        let cur_slot = &self.slots[read_ticket % self.capacity];
         if !cur_slot.full.load(Acquire) {
             // nothing left
             return None;
         }
-        // TODO could just make read ticket atomic even though i dont have a way to
-        // avoid exposing reader interface to multiple threads
-        *self.read_ticket += 1;
+        // SAFETY: Single consumer — only one thread ever calls pop().
+        unsafe { *self.read_ticket.get() = read_ticket + 1; }
         let mut return_value = MaybeUninit::uninit();
 
-        // SAFETY: Both the cur slot and return value are the same type/alignment
+        // SAFETY: Both the cur slot and return value are the same type/alignment.
+        // The return value now has the data from the current slot.
+        // So the current slot is uninitialized memory.
         unsafe {
-            // The return value now has the data from the current slot.
-            // So the current slot is uninitialized memory.
-            std::ptr::swap(cur_slot.value.as_mut_ptr(), return_value.as_mut_ptr());
+            std::ptr::swap(
+                (*cur_slot.value.get()).as_mut_ptr(),
+                return_value.as_mut_ptr(),
+            );
         }
 
         cur_slot.full.store(false, Release);
@@ -185,7 +187,7 @@ impl<T> MpscQueue2<T> {
             .all(|slot| slot.full.load(Relaxed) == false)
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&self) {
         while let Some(_) = self.pop() {}
     }
 
@@ -199,6 +201,12 @@ impl<T> MpscQueue2<T> {
         count
     }
 }
+
+// SAFETY: The ticket/turn algorithm serializes writers so only one thread
+// has access to a given slot's value at a time, and the reader synchronizes
+// via Acquire/Release on the `full` flag. T: Send ensures queued values
+// can safely move between threads.
+unsafe impl<T: Send> Sync for MpscQueue2<T> {}
 
 impl<T> Drop for MpscQueue2<T> {
     fn drop(&mut self) {
@@ -215,13 +223,129 @@ impl<T> Drop for MpscQueue2<T> {
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     use crate::mpsc_queue::MpscQueue2;
 
     #[test]
     fn test_push_pop() {
-        let mut queue = MpscQueue2::<usize>::new(2);
+        let queue = MpscQueue2::<usize>::new(2);
         assert!(queue.push(1));
         assert_matches!(queue.pop(), Some(1));
+    }
+
+    #[test]
+    fn test_single_producer_single_consumer() {
+        let n = 1_000;
+        let queue = MpscQueue2::<usize>::new(64);
+
+        for i in 0..n {
+            assert!(queue.push(i));
+            assert_eq!(queue.pop(), Some(i));
+        }
+        assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_multi_producer_single_consumer() {
+        let n_producers = 4;
+        let n_per_producer = 1_000;
+        let total = n_producers * n_per_producer;
+        let queue = Arc::new(MpscQueue2::<usize>::new(64));
+        let start = Arc::new(Barrier::new(n_producers + 1));
+        let done = Arc::new(Barrier::new(n_producers + 1));
+
+        let mut handles = Vec::new();
+        for thread_id in 0..n_producers {
+            let queue = Arc::clone(&queue);
+            let start = Arc::clone(&start);
+            let done = Arc::clone(&done);
+            handles.push(thread::spawn(move || {
+                start.wait();
+                for i in 0..n_per_producer {
+                    let value = thread_id * n_per_producer + i;
+                    let mut spins = 0u64;
+                    while !queue.push(value) {
+                        spins += 1;
+                        if spins % 100_000 == 0 {
+                            eprintln!("producer {thread_id} still spinning, i={i}, value={value}, dropped={}", queue.dropped());
+                        }
+                        if spins > 1_000_000 {
+                            thread::yield_now();
+                            spins = 0;
+                        }
+                    }
+                }
+                eprintln!("producer {thread_id} done");
+                done.wait();
+            }));
+        }
+
+        start.wait();
+        let mut popped = vec![0usize; n_producers];
+        let mut count = 0;
+        let mut empty_spins = 0u64;
+        while count < total {
+            if let Some(value) = queue.pop() {
+                let thread_id = value / n_per_producer;
+                assert!(thread_id < n_producers, "unexpected thread_id {thread_id}");
+                assert!(popped[thread_id] < n_per_producer, "duplicate from thread {thread_id}");
+                popped[thread_id] += 1;
+                count += 1;
+                empty_spins = 0;
+                if count % 500 == 0 {
+                    eprintln!("consumer popped {count}/{total}, len={}, dropped={}", queue.len(), queue.dropped());
+                }
+            } else {
+                empty_spins += 1;
+                if empty_spins % 500_000 == 0 {
+                    eprintln!("consumer starved: {empty_spins} empty pops, len={}, dropped={}", queue.len(), queue.dropped());
+                }
+                thread::yield_now();
+            }
+        }
+        eprintln!("consumer done, {count} items popped");
+        done.wait();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        for (id, count) in popped.iter().enumerate() {
+            assert_eq!(*count, n_per_producer, "thread {id} missing items");
+        }
+
+        assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_overflow() {
+        let capacity = 8;
+        let total = 128;
+        let queue = Arc::new(MpscQueue2::<usize>::new(capacity));
+        let producer_count = 4;
+        let barrier = Arc::new(Barrier::new(producer_count));
+
+        let mut handles = Vec::new();
+        for thread_id in 0..producer_count {
+            let queue = Arc::clone(&queue);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..total / producer_count {
+                    let value = thread_id * (total / producer_count) + i;
+                    queue.push(value);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert!(queue.dropped() > 0, "overflow should have caused drops");
     }
 }

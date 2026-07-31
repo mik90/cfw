@@ -6,5 +6,12 @@ edition = "2024"
 [dependencies]
 crossbeam-queue = "0.3" # Used for thread-safe pub/sub queues
 
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "mpsc_benchmark"
+harness = false
+
 [lints]
 workspace = true
