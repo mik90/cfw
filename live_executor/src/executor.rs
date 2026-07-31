@@ -105,12 +105,13 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         flush_period: Duration,
         time_source: T,
     ) -> Self {
-        debug_assert_eq!(
-            log_publishers.len(),
-            pools.iter().map(|p| p.thread_count).sum::<usize>(),
-            "execution-log publisher count must equal the total worker thread count"
-        );
-
+        if !log_publishers.is_empty() {
+            debug_assert_eq!(
+                log_publishers.len(),
+                pools.iter().map(|p| p.thread_count).sum::<usize>(),
+                "execution-log publisher count must equal the total worker thread count"
+            );
+        }
         let per_pool_scratch_cap: Vec<usize> = pools
             .iter()
             .map(|pool| {
