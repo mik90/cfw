@@ -77,6 +77,17 @@ impl fmt::Debug for BuiltTaskGraph {
     }
 }
 
+impl BuiltTaskGraph {
+    pub fn print(&self) {
+        for (i, pool) in self.pools.iter().enumerate() {
+            println!("Pool {i} ({} threads):", pool.thread_count);
+            for node in &pool.nodes {
+                println!("  {node}");
+            }
+        }
+    }
+}
+
 pub struct BuiltTaskGraphWithDebugInfo {
     pub pools: Vec<ThreadPoolConfig>,
     pub execution_log_publishers: Vec<Publisher<execution_log::ExecutionLogMessage>>,

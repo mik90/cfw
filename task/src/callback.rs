@@ -403,6 +403,22 @@ impl std::fmt::Debug for CallbackNode {
     }
 }
 
+impl std::fmt::Display for CallbackNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Node: {}", self.name)?;
+        let mut inputs = Vec::new();
+        self.callback.for_each_subscriber(&mut |s| {
+            inputs.push(s.config().channel_name.clone());
+        });
+        let mut outputs = Vec::new();
+        self.callback.for_each_publisher(&mut |p| {
+            outputs.push(p.config().channel_name.clone());
+        });
+        writeln!(f, "  inputs:  {:?}", inputs)?;
+        write!(f, "  outputs: {:?}", outputs)
+    }
+}
+
 /// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
 unsafe impl Sync for CallbackNode {}
 /// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions

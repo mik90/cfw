@@ -14,6 +14,10 @@ struct CliArgs {
     /// File to log to including file extension.
     #[arg(short, long, default_value = "./tmp/log.json")]
     log_path: PathBuf,
+
+    /// Print the task graph and exit without running.
+    #[arg(long)]
+    print: bool,
 }
 
 fn main() {
@@ -28,6 +32,11 @@ fn main() {
     println!("Building fizz buzz callback nodes for live execution");
 
     let built = build_live_graph(&args.log_path).expect("Could not build task graph");
+
+    if args.print {
+        built.graph.print();
+        return;
+    }
 
     let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
         built.graph.pools,

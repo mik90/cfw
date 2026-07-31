@@ -23,6 +23,10 @@ struct CliArgs {
     /// Comma-separated channel names to exclude from replay.
     #[arg(long, default_value = "fizz_buzz_string,execution_log")]
     denylist: String,
+
+    /// Print the task graph and exit without running.
+    #[arg(long)]
+    print: bool,
 }
 
 fn main() {
@@ -53,6 +57,11 @@ fn main() {
         stop_signal_cell.clone(),
     )
     .expect("Could not build replay task graph");
+
+    if args.print {
+        built.graph.print();
+        return;
+    }
 
     let mut executor = LiveReplayExecutor::new_with_execution_log(
         built.graph.pools,
