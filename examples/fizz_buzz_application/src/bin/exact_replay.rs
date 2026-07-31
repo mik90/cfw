@@ -24,15 +24,19 @@ struct CliArgs {
     print: bool,
 }
 
-fn print_nodes(nodes: &[task::callback::CallbackNode]) {
-    for (index, node) in nodes.iter().enumerate() {
-        println!("node[{index}] '{}'", node.name());
-        node.callback().for_each_subscriber(&mut |s| {
-            println!("\t subscriber -> {}", s.config().channel_name);
-        });
-        node.callback().for_each_publisher(&mut |p| {
-            println!("\t publisher  -> {}", p.config().channel_name);
-        });
+fn print_nodes(pools: &[task::executor::ThreadPoolConfig]) {
+    let mut index = 0;
+    for pool in pools {
+        for node in &pool.nodes {
+            println!("node[{index}] '{}'", node.name());
+            node.callback().for_each_subscriber(&mut |s| {
+                println!("\t subscriber -> {}", s.config().channel_name);
+            });
+            node.callback().for_each_publisher(&mut |p| {
+                println!("\t publisher  -> {}", p.config().channel_name);
+            });
+            index += 1;
+        }
     }
 }
 
@@ -50,11 +54,11 @@ fn main() {
         build_exact_replay_graph(&args.log_path).expect("Could not build exact replay graph");
 
     if args.print {
-        print_nodes(&graph.nodes);
+        print_nodes(&graph.pools);
         return;
     }
 
-    let config = ExactReplayConfig::new(graph.nodes, graph.registry, graph.log_reader);
+    let config = ExactReplayConfig::new(graph.pools, graph.registry, graph.log_reader);
     let config = if args.best_effort {
         config.with_divergence_policy(DivergencePolicy::BestEffort)
     } else {

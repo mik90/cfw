@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use task::channel_registry::ChannelRegistry;
-use task::executor::ExecutorStopSignal;
+use task::executor::{ExecutorStopSignal, ThreadPoolConfig};
 use task::task_graph_builder::{BuiltTaskGraph, TaskGraphBuilder};
 
 pub struct BuiltGraph {
@@ -11,6 +11,22 @@ pub struct BuiltGraph {
 
 /// Constructs the callback graph in live mode (original publishers + logging).
 pub type BuildError = Box<dyn std::error::Error + Send + Sync>;
+
+/// The standard fizz-buzz application graph: a single 2-thread pool with the
+/// integer publisher, calculator, and string collector. Callers layer on
+/// build steps / execution-logging settings as needed.
+fn app_graph_builder() -> TaskGraphBuilder {
+    let mut node_registry = ChannelRegistry::new();
+    TaskGraphBuilder::new().add_pool(2, |p| {
+        p.add_callback(
+            test_tasks::IncrementingIntegerPublisher::build_callback_node(&mut node_registry),
+        )
+        .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node(
+            &mut node_registry,
+        ))
+        .add_callback(test_tasks::StringCollector::build_callback_node_lite())
+    })
+}
 
 pub fn build_live_graph(log_path: &std::path::Path) -> Result<BuiltGraph, BuildError> {
     let config = logging::LogTaskConfiguration {
@@ -28,18 +44,8 @@ pub fn build_live_graph(log_path: &std::path::Path) -> Result<BuiltGraph, BuildE
         config, registry,
     ));
 
-    let mut node_registry = ChannelRegistry::new();
     let stop_signal_cell = Arc::new(OnceLock::new());
-    let graph = TaskGraphBuilder::new()
-        .add_pool(2, |p| {
-            p.add_callback(
-                test_tasks::IncrementingIntegerPublisher::build_callback_node(&mut node_registry),
-            )
-            .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node(
-                &mut node_registry,
-            ))
-            .add_callback(test_tasks::StringCollector::build_callback_node_lite())
-        })
+    let graph = app_graph_builder()
         .add_build_step(logging_build_step)
         .with_log_executions(true)
         .build()
@@ -91,11 +97,11 @@ pub fn build_replay_graph(
 }
 
 /// Everything the exact replay executor needs to replay a recorded log: the
-/// application callback nodes (rebuilt in the same global order as the
-/// original run), a channel registry for deserialization/output capture, and
-/// the parsed log file.
+/// application thread pools (rebuilt in the same global order as the original
+/// run), a channel registry for deserialization/output capture, and the parsed
+/// log file.
 pub struct ExactReplayGraph {
-    pub nodes: Vec<task::callback::CallbackNode>,
+    pub pools: Vec<ThreadPoolConfig>,
     pub registry: ChannelRegistry,
     pub log_reader: Box<dyn logging::log_file::LogFileReader>,
 }
@@ -113,28 +119,9 @@ pub fn build_exact_replay_graph(
     registry.register_channel::<u64>("integer".into());
     registry.register_channel::<String>("fizz_buzz_string".into());
 
-    let mut node_registry = ChannelRegistry::new();
-    let graph = TaskGraphBuilder::new()
-        .add_pool(2, |p| {
-            p.add_callback(
-                test_tasks::IncrementingIntegerPublisher::build_callback_node(&mut node_registry),
-            )
-            .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node(
-                &mut node_registry,
-            ))
-            .add_callback(test_tasks::StringCollector::build_callback_node_lite())
-        })
+    let graph = app_graph_builder()
         .build()
         .map_err(|e| -> BuildError { e.to_string().into() })?;
-
-    // Flatten pools into the same global node order used by the execution log
-    // descriptor. The example uses a single pool, so this preserves the
-    // application node indices 0..3 from the live run.
-    let nodes = graph
-        .pools
-        .into_iter()
-        .flat_map(|pool| pool.nodes)
-        .collect::<Vec<_>>();
 
     let file = std::fs::File::open(log_path)?;
     let reader = std::io::BufReader::new(file);
@@ -143,7 +130,7 @@ pub fn build_exact_replay_graph(
     )?);
 
     Ok(ExactReplayGraph {
-        nodes,
+        pools: graph.pools,
         registry,
         log_reader,
     })

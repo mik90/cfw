@@ -53,17 +53,25 @@ impl ExactReplayExecutor {
         // Parse the log file at construction time so errors surface early.
         let replay_log = parse_replay_log(config.log_reader.as_ref())?;
 
+        // Flatten pools into the global node order used by the execution-log
+        // descriptor indices.
+        let nodes = config
+            .pools
+            .into_iter()
+            .flat_map(|pool| pool.nodes)
+            .collect::<Vec<_>>();
+
         // Validate the descriptor against the supplied nodes.
-        validate_descriptor(&replay_log, &config.nodes, &config.registry)?;
+        validate_descriptor(&replay_log, &nodes, &config.registry)?;
 
         // Validate descriptor-less executions (infra nodes allowed).
-        validate_descriptor_less_executions(&replay_log.descriptor_less_executions, &config.nodes)?;
+        validate_descriptor_less_executions(&replay_log.descriptor_less_executions, &nodes)?;
 
         let total_execution_count = replay_log.executions.len();
         let scheduler = ReplayScheduler::new(replay_log.executions);
 
         Ok(ExactReplayExecutor {
-            nodes: config.nodes,
+            nodes,
             registry: config.registry,
             scheduler: Some(scheduler),
             total_execution_count,
@@ -241,6 +249,7 @@ mod tests {
         Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
         ExecutionLogDescriptor, ExecutionLogEntry, LoggedMessage,
     };
+    use task::executor::ThreadPoolConfig;
     use task::generic_publisher::GenericPublisher;
     use task::generic_subscriber::GenericSubscriber;
     use task::message::MessageHeader;
@@ -408,7 +417,11 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("Passthrough");
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let mut executor = ExactReplayExecutor::new(config).expect("should build");
         assert_eq!(executor.execution_count(), 1);
@@ -437,7 +450,11 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("Empty");
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let mut executor = ExactReplayExecutor::new(config).expect("should build");
         assert_eq!(executor.execution_count(), 0);
@@ -474,7 +491,11 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("Dropped");
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let result = ExactReplayExecutor::new(config);
         let Err(err) = result else {
@@ -502,7 +523,11 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("NoDesc");
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let result = ExactReplayExecutor::new(config);
         let Err(err) = result else {
@@ -527,7 +552,11 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("StopBeforeStart");
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let mut executor = ExactReplayExecutor::new(config).expect("should build");
         // Stop before start — should not panic and should return Ok (no threads to join).
@@ -551,7 +580,11 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("RepeatedStart");
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let mut executor = ExactReplayExecutor::new(config).expect("should build");
 
@@ -627,7 +660,11 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("Passthrough");
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let mut executor = ExactReplayExecutor::new(config).expect("should build");
         assert_eq!(executor.execution_count(), 2);
@@ -663,7 +700,11 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let node = make_passthrough_node("Natural");
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let mut executor = ExactReplayExecutor::new(config).expect("should build");
         assert_eq!(executor.execution_count(), 0);
@@ -752,7 +793,11 @@ mod tests {
             }),
             "Always".into(),
         );
-        let config = ExactReplayConfig::new(vec![node], registry, Box::new(reader));
+        let config = ExactReplayConfig::new(
+            vec![ThreadPoolConfig::new(1, vec![node])],
+            registry,
+            Box::new(reader),
+        );
 
         let mut executor = ExactReplayExecutor::new(config).expect("should build");
 
