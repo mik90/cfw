@@ -147,7 +147,9 @@ impl<T> MpscQueue2<T> {
             {
                 // SAFETY: Claimed exclusive access via successful CAS.
                 // The slot's previous value was left uninitialized by pop().
-                unsafe { *slot.value.get() = MaybeUninit::new(value); }
+                unsafe {
+                    *slot.value.get() = MaybeUninit::new(value);
+                }
                 slot.full.store(true, Release); // publish to reader
                 return true;
             }
@@ -170,7 +172,9 @@ impl<T> MpscQueue2<T> {
             return None;
         }
         // SAFETY: Single consumer — only one thread ever calls pop().
-        unsafe { *self.read_ticket.get() = read_ticket + 1; }
+        unsafe {
+            *self.read_ticket.get() = read_ticket + 1;
+        }
         let mut return_value = MaybeUninit::uninit();
 
         // SAFETY: Both the cur slot and return value are the same type/alignment.
@@ -190,13 +194,11 @@ impl<T> MpscQueue2<T> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.slots
-            .iter()
-            .all(|slot| slot.full.load(Relaxed) == false)
+        self.slots.iter().all(|slot| !slot.full.load(Relaxed))
     }
 
     pub fn clear(&self) {
-        while let Some(_) = self.pop() {}
+        while self.pop().is_some() {}
     }
 
     pub fn len(&self) -> usize {
@@ -289,7 +291,10 @@ mod tests {
             if let Some(value) = queue.pop() {
                 let thread_id = value / n_per_producer;
                 assert!(thread_id < n_producers, "unexpected thread_id {thread_id}");
-                assert!(popped[thread_id] < n_per_producer, "duplicate from thread {thread_id}");
+                assert!(
+                    popped[thread_id] < n_per_producer,
+                    "duplicate from thread {thread_id}"
+                );
                 popped[thread_id] += 1;
                 count += 1;
             } else {
