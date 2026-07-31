@@ -421,11 +421,14 @@ fn run_executor_thread<T: TimeSource>(
         logger.flush_remaining(time_source.now());
     }
 
+    // Update the predicate while holding the same mutex used by the waiter.
+    // Otherwise the notification can be lost between the waiter's predicate
+    // check and its call to `wait`.
+    let guard = shared_state.shutdown_mutex.lock().unwrap();
     if shared_state.barrier_count.fetch_add(1, Ordering::AcqRel) + 1 == shared_state.worker_count {
         shared_state.shutdown_cv.notify_all();
     }
 
-    let guard = shared_state.shutdown_mutex.lock().unwrap();
     // drop: discard the MutexGuard from wait_while immediately, releasing
     // shutdown_mutex. _ = ... would trigger let_underscore_lock.
     drop(shared_state.shutdown_cv.wait_while(guard, |_| {
@@ -463,11 +466,11 @@ fn no_alloc_worker_loop(
         logger.flush_remaining(time_source.now());
     }
 
+    let guard = shared.shutdown_mutex.lock().unwrap();
     if shared.barrier_count.fetch_add(1, Ordering::AcqRel) + 1 == shared.worker_count {
         shared.shutdown_cv.notify_all();
     }
 
-    let guard = shared.shutdown_mutex.lock().unwrap();
     // drop: discard the MutexGuard from wait_while immediately, releasing
     // shutdown_mutex. _ = ... would trigger let_underscore_lock.
     drop(
