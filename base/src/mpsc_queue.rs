@@ -25,13 +25,13 @@ impl<T> MpscQueue<T> {
     }
 
     /// Push a value, displacing the oldest element if the queue is at capacity.
-    /// Returns `true` if a drop occurred (also reflected in `dropped()`).
+    /// Returns `false` if a displacement occurred (also reflected in `dropped()`).
     pub fn push(&self, value: T) -> bool {
         let displaced = self.inner.force_push(value).is_some();
         if displaced {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
-        displaced
+        !displaced
     }
 
     /// Cumulative number of elements ever displaced by `push` due to overflow.
@@ -118,6 +118,7 @@ pub struct ExperimentalMpscQueue<T> {
 
 impl<T> ExperimentalMpscQueue<T> {
     pub fn new(capacity: usize) -> Self {
+        assert!(capacity >= 2, "ExperimentalMpscQueue requires capacity >= 2");
         let mut vec = Vec::with_capacity(capacity);
         for i in 0..capacity {
             vec.push(Slot {
@@ -148,23 +149,27 @@ impl<T> ExperimentalMpscQueue<T> {
             }
 
             // Slot is busy. If we are at least capacity positions ahead of the
-            // consumer, displace the oldest item to make room.
+            // consumer, we can displace the oldest item to make room.
             let h = self.head.load(Relaxed);
             if t.wrapping_sub(h) >= self.capacity {
-                if self
-                    .head
-                    .compare_exchange_weak(h, h + 1, Acquire, Relaxed)
-                    .is_ok()
-                {
-                    let old = &self.slots[h % self.capacity];
-                    old.sequence.store(h + self.capacity, Release);
-                    // SAFETY: The displaced slot was written for position h.
-                    // The consumer will never read it because head moved past h.
-                    unsafe {
-                        (*old.value.get()).assume_init_drop();
+                let old = &self.slots[h % self.capacity];
+                // Only displace if the slot actually holds a published value.
+                if old.sequence.load(Acquire) == h + 1 {
+                    if self
+                        .head
+                        .compare_exchange_weak(h, h + 1, Acquire, Relaxed)
+                        .is_ok()
+                    {
+                        old.sequence.store(h + self.capacity, Release);
+                        // SAFETY: The sequence check above guarantees the
+                        // value at position h was fully written.
+                        unsafe {
+                            (*old.value.get()).assume_init_drop();
+}
+
+                        self.dropped.fetch_add(1, Relaxed);
+                        displaced = true;
                     }
-                    self.dropped.fetch_add(1, Relaxed);
-                    displaced = true;
                 }
             }
             hint::spin_loop();
@@ -193,6 +198,15 @@ impl<T> ExperimentalMpscQueue<T> {
             let slot = &self.slots[h % self.capacity];
             let seq = slot.sequence.load(Acquire);
             if seq != h + 1 {
+                // Slot may have been displaced (seq == h + capacity).
+                // Try to skip past it so the consumer doesn't stall.
+                if seq == h + self.capacity {
+                    let _ = self
+                        .head
+                        .compare_exchange_weak(h, h + 1, Relaxed, Relaxed);
+                    h = self.head.load(Relaxed);
+                    continue;
+                }
                 return None;
             }
 
@@ -254,7 +268,7 @@ impl<T> Drop for ExperimentalMpscQueue<T> {
 unsafe impl<T: Send> Sync for ExperimentalMpscQueue<T> {}
 
 #[cfg(test)]
-mod tests {
+mod experimental_tests {
     use std::assert_matches;
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -369,28 +383,37 @@ mod tests {
     }
 
     #[test]
-    fn test_capacity_one() {
-        let queue = ExperimentalMpscQueue::<usize>::new(1);
+    fn test_minimum_capacity() {
+        let queue = ExperimentalMpscQueue::<usize>::new(2);
 
         assert!(queue.push(1));
         assert_eq!(queue.len(), 1);
         assert!(!queue.is_empty());
 
-        // Push with consumer not popped: displacement.
-        assert!(!queue.push(2));
-        assert_eq!(queue.dropped(), 1);
-        assert_eq!(queue.pop(), Some(2));
+        assert!(queue.push(2));
+        assert_eq!(queue.len(), 2);
 
+        // Queue full; third push displaces the oldest.
+        assert!(!queue.push(3));
+        assert_eq!(queue.dropped(), 1);
+        assert_eq!(queue.pop(), Some(2)); // oldest (1) was displaced
+        assert_eq!(queue.pop(), Some(3));
         assert_eq!(queue.pop(), None);
         assert!(queue.is_empty());
     }
 
     #[test]
-    fn test_capacity_one_multi_producer() {
+    #[should_panic(expected = "capacity >= 2")]
+    fn test_capacity_one_rejected() {
+        ExperimentalMpscQueue::<usize>::new(1);
+    }
+
+    #[test]
+    fn test_minimum_capacity_multi_producer() {
         let n_producers = 2;
-        let n_per_producer = 100;
-        let queue = Arc::new(ExperimentalMpscQueue::<usize>::new(1));
-        let start = Arc::new(Barrier::new(n_producers + 1));
+        let n_per_producer = 20;
+        let queue = Arc::new(ExperimentalMpscQueue::<usize>::new(2));
+        let start = Arc::new(Barrier::new(n_producers));
 
         let mut handles = Vec::new();
         for thread_id in 0..n_producers {
@@ -404,22 +427,88 @@ mod tests {
             }));
         }
 
-        start.wait();
-        let mut count = 0;
-        while count < n_producers * n_per_producer {
-            if queue.pop().is_some() {
-                count += 1;
-            } else {
-                thread::yield_now();
-            }
-        }
-
+        // Producers push concurrently. Wait for them to finish, then drain.
         for handle in handles {
             handle.join().unwrap();
         }
 
+        while queue.pop().is_some() {
+            // keep draining
+        }
         assert!(queue.is_empty());
-        // With capacity 1, most items should be displaced.
         assert!(queue.dropped() > 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::mpsc_queue::MpscQueue;
+
+    #[test]
+    fn test_push_pop() {
+        let queue = MpscQueue::<usize>::new(1);
+        assert!(queue.push(1));
+        assert_eq!(queue.pop(), Some(1));
+        assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
+    fn test_capacity_one() {
+        let queue = MpscQueue::<usize>::new(1);
+
+        assert!(queue.push(1));
+        // Queue full; push displaces oldest.
+        assert!(!queue.push(2)); // displacement occurred
+        assert_eq!(queue.dropped(), 1);
+        assert_eq!(queue.pop(), Some(2));
+        assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_multi_producer() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let n_producers = 4;
+        let n_per_producer = 1_000;
+        let queue = Arc::new(MpscQueue::<usize>::new(256));
+        let start = Arc::new(Barrier::new(n_producers));
+        let done = Arc::new(Barrier::new(n_producers + 1));
+
+        let mut handles = Vec::new();
+        for thread_id in 0..n_producers {
+            let queue = Arc::clone(&queue);
+            let start = Arc::clone(&start);
+            let done = Arc::clone(&done);
+            handles.push(thread::spawn(move || {
+                start.wait();
+                for i in 0..n_per_producer {
+                    queue.push(thread_id * n_per_producer + i);
+                }
+                done.wait();
+            }));
+        }
+
+        // Consumer runs concurrently.
+        let mut popped = vec![0usize; n_producers];
+        let mut count = 0;
+        while count < n_producers * n_per_producer {
+            if let Some(value) = queue.pop() {
+                let thread_id = value / n_per_producer;
+                assert!(thread_id < n_producers);
+                popped[thread_id] += 1;
+                count += 1;
+            }
+        }
+        done.wait();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        for (id, c) in popped.iter().enumerate() {
+            assert_eq!(*c, n_per_producer, "thread {id} missing");
+        }
+        assert!(queue.is_empty());
     }
 }
