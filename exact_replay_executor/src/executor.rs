@@ -238,8 +238,8 @@ mod tests {
     use task::callback::{Callback, PortMut, Run};
     use task::context::Context;
     use task::execution_log::{
-        Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
-        ExecutionLogEntry, LoggedMessage,
+        Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
+        ExecutionLogDescriptor, ExecutionLogEntry, LoggedMessage,
     };
     use task::generic_publisher::GenericPublisher;
     use task::generic_subscriber::GenericSubscriber;
