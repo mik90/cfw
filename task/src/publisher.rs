@@ -109,6 +109,35 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         self.flush_loaned_values_with(timestamp, hook);
     }
 
+    fn flush_loaned_values_with_headers(&mut self, headers: &[FrameworkTime]) {
+        let mut header_idx = 0;
+        for loaned_value in self.loaned_values.drain(..) {
+            if loaned_value.sent {
+                let ts = headers
+                    .get(header_idx)
+                    .copied()
+                    .unwrap_or(FrameworkTime::INVALID);
+                header_idx += 1;
+                let header = MessageHeader { published_at: ts };
+                unsafe {
+                    (*loaned_value.ptr.payload.get()).assume_init_mut().header = header;
+                }
+                for subscriber_buffer in &mut self.subscriber_write_buffers {
+                    subscriber_buffer.buffer.write(loaned_value.ptr.clone());
+                    match &subscriber_buffer.readiness {
+                        Some(SubscriberReadiness::Gating(readiness, bit_index)) => {
+                            readiness.set_bit(*bit_index);
+                        }
+                        Some(SubscriberReadiness::OptionalTrigger(readiness)) => {
+                            readiness.enqueue_if_ready();
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn allocate_arena(&mut self) {
         self.arena.allocate_slots();
     }

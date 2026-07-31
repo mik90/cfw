@@ -93,6 +93,7 @@ pub type ChannelPublisherWriter =
 /// Build steps query this by `TypeId` (obtained from `GenericPublisher::value_type_id`)
 /// to find a matching `SerializerFn` for a publisher's value type, or a
 /// `DeserializerFn` for replaying logged messages.
+#[derive(Clone)]
 pub struct ChannelRegistry {
     serializers: HashMap<TypeId, SerializerFn>,
     deserializers: HashMap<TypeId, DeserializerFn>,
@@ -324,10 +325,10 @@ mod tests {
     #[test]
     fn probe_silently_skips_non_loggable_type() {
         let mut registry = ChannelRegistry::new();
+        use MaybeRegister as _;
         // This compiles only because the blanket trait MaybeRegister for T
         // provides a no-op default; the inherent try_register is filtered out
         // since NonLoggableType: !Loggable.
-        use MaybeRegister as _;
         Probe::<NonLoggableType>::new().try_register(&mut registry);
         assert!(
             registry

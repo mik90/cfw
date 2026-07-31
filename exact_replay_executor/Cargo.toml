@@ -5,6 +5,14 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task" }
+logging = { path = "../logging" }
+serde_json = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+testing = { path = "../testing" }
+simulation_executor = { path = "../simulation_executor" }
+task_macros = { path = "../task_macros" }
 
 [lints]
 workspace = true

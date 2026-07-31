@@ -1,4 +1,5 @@
 pub mod log_build_step;
+pub mod log_capture;
 pub mod log_diagnostics_task;
 pub mod log_file;
 #[cfg(feature = "serde")]

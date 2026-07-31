@@ -63,10 +63,10 @@ impl Default for LogError {
 /// One channel's serializer closure (looked up in a `ChannelRegistry` by
 /// `value_type_id`) plus a per-channel scratch buffer. `scratch` is per-logger
 /// so future per-channel parallelization doesn't need a lock.
-pub(crate) struct ChannelLogger {
-    channel_name: task::pub_sub::ChannelName,
-    serialize: task::channel_registry::SerializerFn,
-    scratch: Vec<u8>,
+pub struct ChannelLogger {
+    pub channel_name: task::pub_sub::ChannelName,
+    pub serialize: task::channel_registry::SerializerFn,
+    pub scratch: Vec<u8>,
 }
 
 impl ChannelLogger {
@@ -100,6 +100,35 @@ impl ChannelLogger {
         )
         .map_err(|e| -> BoxedLogError { Box::new(e) })?;
         Ok(())
+    }
+
+    /// Drain `sub`, serialize each message, and append each `(header, body)`
+    /// pair to `out`. Uses the exact same serializer semantics as
+    /// [`Self::drain_and_log`]; the sink collects into memory instead of
+    /// writing to a `LogFileWriter`. Used by the replay executor to compare
+    /// actual outputs against logged ones.
+    pub(crate) fn drain_to_vec(
+        &mut self,
+        sub: &mut dyn GenericSubscriber,
+        out: &mut Vec<(task::message::MessageHeader, Vec<u8>)>,
+    ) -> Result<(), BoxedLogError> {
+        (self.serialize)(
+            sub,
+            &mut self.scratch,
+            &mut |header: &task::message::MessageHeader,
+                  body: &[u8]|
+             -> Result<(), BoxedLogError> {
+                out.push((*header, body.to_vec()));
+                Ok(())
+            },
+        )
+        .map_err(|e| -> BoxedLogError { Box::new(e) })?;
+        Ok(())
+    }
+
+    /// The channel name this logger drains.
+    pub(crate) fn channel_name(&self) -> &str {
+        &self.channel_name
     }
 }
 
