@@ -83,8 +83,12 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
         })?;
 
     let mut execution_log_entries: Vec<ExecutionLogMessage> = Vec::new();
-    // Ordinary log entries: channel -> FIFO queue of (header, body)
-    let mut ordinary_log: HashMap<ChannelName, Vec<(MessageHeader, Vec<u8>)>> = HashMap::new();
+    // Ordinary log entries, indexed by `(channel, published_at_ns)` with the
+    // ordered bodies of every message that shares that key. A message is
+    // recorded once here but referenced twice by the execution log — once by
+    // the producer (Published) and once by the consumer (Received) — so the
+    // payload is resolved by indexed lookup rather than consumed.
+    let mut ordinary_log: HashMap<(ChannelName, i64), Vec<Vec<u8>>> = HashMap::new();
 
     let len = reader.len();
     for i in 0..len {
@@ -100,9 +104,12 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
             execution_log_entries.push(msg);
         } else {
             ordinary_log
-                .entry(entry.channel_name.to_owned())
+                .entry((
+                    entry.channel_name.to_owned(),
+                    entry.header.published_at.to_nanoseconds(),
+                ))
                 .or_default()
-                .push((entry.header, entry.serialized_body.to_vec()));
+                .push(entry.serialized_body.to_vec());
         }
     }
 
@@ -162,6 +169,10 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
 
     let mut executions = Vec::new();
     let mut descriptor_less_executions = Vec::new();
+    // Per-`(channel, published_at)` occurrence cursors, tracked independently
+    // for received and published references so the producer and consumer of a
+    // shared message each resolve to the same payload deterministically.
+    let mut consumed: HashMap<(ChannelName, i64, bool), usize> = HashMap::new();
 
     for group in &groups {
         let node_idx = group.key.0;
@@ -206,13 +217,14 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
                         (ch.clone(), false)
                     };
 
-                // Consume one ordinary-log payload FIFO per channel.
-                let body = pop_payload(
-                    &mut ordinary_log,
+                // Resolve the ordinary-log payload for this (channel, header).
+                let body = lookup_payload(
+                    &ordinary_log,
+                    &mut consumed,
                     &channel_name,
                     &msg.header,
-                    node_idx,
                     is_received,
+                    node_idx,
                 )?;
 
                 if is_received {
@@ -245,36 +257,53 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
     })
 }
 
-/// Pop the first ordinary-log payload for `(channel, header_time)` from the
-/// FIFO queue, or return a `MissingOrdinaryPayload` error.
-fn pop_payload(
-    ordinary_log: &mut HashMap<ChannelName, Vec<(MessageHeader, Vec<u8>)>>,
+/// Resolve the ordinary-log payload for a `(channel, header_time)` reference.
+///
+/// The same physical message appears once in the ordinary log but is
+/// referenced by both the producing execution (`Published`) and the consuming
+/// execution (`Received`). Rather than consuming the entry, this indexes into
+/// the ordered list of bodies for that `(channel, published_at)` key, using a
+/// per-direction occurrence cursor. Unique timestamps resolve to the same
+/// payload for both references; multiple same-timestamp messages are handed
+/// out deterministically in log order.
+fn lookup_payload(
+    ordinary_log: &HashMap<(ChannelName, i64), Vec<Vec<u8>>>,
+    consumed: &mut HashMap<(ChannelName, i64, bool), usize>,
     channel_name: &str,
     header: &MessageHeader,
-    node_idx: usize,
     is_received: bool,
+    node_idx: usize,
 ) -> Result<Vec<u8>, ReplayError> {
-    let msgs =
-        ordinary_log
-            .get_mut(channel_name)
-            .ok_or_else(|| ReplayError::MissingOrdinaryPayload {
-                channel: channel_name.to_owned(),
-                header_time: format!("{:?}", header.published_at),
-                direction: if is_received { "received" } else { "published" }.to_owned(),
-                node: format!("node[{node_idx}]"),
-            })?;
-
-    let pos = msgs
-        .iter()
-        .position(|(h, _)| h.published_at == header.published_at)
+    let key = (
+        channel_name.to_owned(),
+        header.published_at.to_nanoseconds(),
+    );
+    let bodies = ordinary_log
+        .get(&key)
         .ok_or_else(|| ReplayError::MissingOrdinaryPayload {
             channel: channel_name.to_owned(),
             header_time: format!("{:?}", header.published_at),
             direction: if is_received { "received" } else { "published" }.to_owned(),
             node: format!("node[{node_idx}]"),
         })?;
-    let (_, body) = msgs.remove(pos);
-    Ok(body)
+
+    let cursor = consumed
+        .entry((
+            channel_name.to_owned(),
+            header.published_at.to_nanoseconds(),
+            is_received,
+        ))
+        .or_insert(0);
+    let body = bodies
+        .get(*cursor)
+        .ok_or_else(|| ReplayError::MissingOrdinaryPayload {
+            channel: channel_name.to_owned(),
+            header_time: format!("{:?}", header.published_at),
+            direction: if is_received { "received" } else { "published" }.to_owned(),
+            node: format!("node[{node_idx}]"),
+        })?;
+    *cursor += 1;
+    Ok(body.clone())
 }
 
 #[cfg(test)]

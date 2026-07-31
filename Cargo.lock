@@ -310,6 +310,7 @@ name = "fizz_buzz_application"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "exact_replay_executor",
  "live_executor",
  "live_replay_executor",
  "logging",

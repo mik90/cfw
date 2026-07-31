@@ -89,3 +89,62 @@ pub fn build_replay_graph(
         replay_cfg,
     ))
 }
+
+/// Everything the exact replay executor needs to replay a recorded log: the
+/// application callback nodes (rebuilt in the same global order as the
+/// original run), a channel registry for deserialization/output capture, and
+/// the parsed log file.
+pub struct ExactReplayGraph {
+    pub nodes: Vec<task::callback::CallbackNode>,
+    pub registry: ChannelRegistry,
+    pub log_reader: Box<dyn logging::log_file::LogFileReader>,
+}
+
+/// Builds the application callback graph for exact replay. Unlike the live
+/// builder, this does **not** add logging tasks (they would truncate the log
+/// being replayed) and does not enable execution logging.
+pub fn build_exact_replay_graph(
+    log_path: &std::path::Path,
+) -> Result<ExactReplayGraph, BuildError> {
+    // Register the channels that appear in the replay records. `register_channel`
+    // provides the serializer (output capture), deserializer and publisher
+    // factory (input hydration) the exact replay executor needs.
+    let mut registry = ChannelRegistry::new();
+    registry.register_channel::<u64>("integer".into());
+    registry.register_channel::<String>("fizz_buzz_string".into());
+
+    let mut node_registry = ChannelRegistry::new();
+    let graph = TaskGraphBuilder::new()
+        .add_pool(2, |p| {
+            p.add_callback(
+                test_tasks::IncrementingIntegerPublisher::build_callback_node(&mut node_registry),
+            )
+            .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node(
+                &mut node_registry,
+            ))
+            .add_callback(test_tasks::StringCollector::build_callback_node_lite())
+        })
+        .build()
+        .map_err(|e| -> BuildError { e.to_string().into() })?;
+
+    // Flatten pools into the same global node order used by the execution log
+    // descriptor. The example uses a single pool, so this preserves the
+    // application node indices 0..3 from the live run.
+    let nodes = graph
+        .pools
+        .into_iter()
+        .flat_map(|pool| pool.nodes)
+        .collect::<Vec<_>>();
+
+    let file = std::fs::File::open(log_path)?;
+    let reader = std::io::BufReader::new(file);
+    let log_reader = Box::new(logging::log_file_json::JsonLogFileReader::from_reader(
+        reader,
+    )?);
+
+    Ok(ExactReplayGraph {
+        nodes,
+        registry,
+        log_reader,
+    })
+}

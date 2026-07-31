@@ -159,19 +159,25 @@ pub(crate) fn validate_descriptor(
     Ok(())
 }
 
-/// Validate descriptor-less execution records.  An execution for a node
-/// index that is out of range is always an error.  In-range indices must
-/// be infrastructure nodes (LogTask); otherwise fail.
+/// Validate descriptor-less execution records.
+///
+/// Descriptor-less executions come from infrastructure nodes that were added
+/// by build steps *after* the descriptor was generated (e.g. `LogTask`). In
+/// the original graph those nodes are appended after the application nodes,
+/// so their indices may be at or beyond `nodes.len()` in the replay graph
+/// (which omits them). Such out-of-range records are treated as
+/// infrastructure and skipped.
+///
+/// An in-range descriptor-less execution is only valid for an explicit
+/// infrastructure node (`LogTask`); anything else indicates a graph mismatch.
 pub(crate) fn validate_descriptor_less_executions(
     descriptor_less: &[(usize, FrameworkTime)],
     nodes: &[CallbackNode],
 ) -> Result<(), ReplayError> {
     for (node_idx, _time) in descriptor_less {
         if *node_idx >= nodes.len() {
-            return Err(ReplayError::InvalidCallbackNodeIndex {
-                index: *node_idx,
-                node_count: nodes.len(),
-            });
+            // Appended infrastructure nodes are not part of the replay graph.
+            continue;
         }
         let node_name = nodes[*node_idx].name().to_owned();
         if !node_name.starts_with("LogTask") {
@@ -462,5 +468,20 @@ mod tests {
             result.unwrap_err(),
             ReplayError::DescriptorlessApplicationNode { .. }
         ));
+    }
+
+    #[test]
+    fn descriptor_less_out_of_range_infrastructure_is_skipped() {
+        // LogTask nodes are appended after the application nodes by build
+        // steps, so their execution records carry indices at or beyond
+        // `nodes.len()`. The replay graph omits them; these records should
+        // be treated as infrastructure and skipped, not rejected.
+        let nodes = vec![make_passthrough_node("App")];
+        let desc_less = vec![
+            (3usize, FrameworkTime::from_nanoseconds(100)),
+            (7usize, FrameworkTime::from_nanoseconds(200)),
+        ];
+        let result = validate_descriptor_less_executions(&desc_less, &nodes);
+        assert!(result.is_ok());
     }
 }

@@ -45,4 +45,10 @@ impl ExactReplayConfig {
             divergence_policy: DEFAULT_DIVERGENCE_POLICY,
         }
     }
+
+    /// Override the divergence policy (e.g. for a `--best-effort` CLI flag).
+    pub fn with_divergence_policy(mut self, policy: DivergencePolicy) -> Self {
+        self.divergence_policy = policy;
+        self
+    }
 }

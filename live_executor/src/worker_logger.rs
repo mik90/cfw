@@ -83,9 +83,32 @@ impl WorkerLogger {
         time: FrameworkTime,
         duration: Duration,
     ) {
+        // Finalize any partially-filled entry left by the previous execution
+        // so each [`ExecutionLogEntry`] describes exactly one execution. The
+        // replay side groups entries by `(callback_node_index, execution_time)`
+        // and attributes every message in an entry to that execution; without
+        // this roll, consecutive executions would share one entry and their
+        // messages would be misattributed.
+        self.roll_to_fresh_entry();
         self.cur_node = node_index;
         self.cur_time = time;
         self.cur_duration = duration;
+    }
+
+    /// Move to a fresh, unused entry slot so the current execution's messages
+    /// start a new entry. No-op when the current entry is already empty.
+    fn roll_to_fresh_entry(&mut self) {
+        if self.next_msg == 0 {
+            return;
+        }
+        self.next_entry += 1;
+        self.next_msg = 0;
+        if self.next_entry == ENTRIES_PER_MESSAGE && !self.flush_current(self.cur_time) {
+            // No loan available; `append` counts the drop. On success
+            // `flush_current` already resets both cursors.
+            self.next_entry = 0;
+            self.next_msg = 0;
+        }
     }
 
     pub(crate) fn append(&mut self, msg: LoggedMessage) {
