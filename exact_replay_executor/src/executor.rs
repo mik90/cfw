@@ -1,6 +1,7 @@
 //! Execution lifecycle: [`ExactReplayExecutor`], [`StopSignal`], construction,
 //! and replay worker orchestration.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
@@ -9,6 +10,7 @@ use task::callback::CallbackNode;
 use task::channel_registry::ChannelRegistry;
 use task::executor::{Executor, ExecutorStopSignal};
 use task::generic_subscriber::GenericSubscriber;
+use task::message::MessageHeader;
 
 use crate::config::ExactReplayConfig;
 use crate::descriptor::{validate_descriptor, validate_descriptor_less_executions};
@@ -32,6 +34,9 @@ pub struct ExactReplayExecutor {
     nodes: Vec<CallbackNode>,
     registry: ChannelRegistry,
     scheduler: Option<ReplayScheduler>,
+    /// Ordinary-log payloads per channel, retained for forwarded-message
+    /// context resolution during replay.
+    source_messages: HashMap<task::pub_sub::ChannelName, Vec<(MessageHeader, Vec<u8>)>>,
     /// Total number of executions parsed from the log (cached at construction).
     total_execution_count: usize,
     /// Number of executions consumed so far, shared with the replay thread.
@@ -74,6 +79,7 @@ impl ExactReplayExecutor {
             nodes,
             registry: config.registry,
             scheduler: Some(scheduler),
+            source_messages: replay_log.source_messages,
             total_execution_count,
             consumed_count: Arc::new(AtomicUsize::new(0)),
             execution_threads: Vec::new(),
@@ -124,6 +130,7 @@ impl Executor for ExactReplayExecutor {
         let mut scheduler = self.scheduler.take().expect("scheduler already taken");
         let mut nodes = std::mem::take(&mut self.nodes);
         let registry = self.registry.clone();
+        let source_messages = std::mem::take(&mut self.source_messages);
         let divergence_policy = self.divergence_policy;
         let collected_errors = self.collected_errors.clone();
         let consumed_count = self.consumed_count.clone();
@@ -160,6 +167,7 @@ impl Executor for ExactReplayExecutor {
                     &mut node_states[node_idx],
                     execution,
                     &registry,
+                    &source_messages,
                     divergence_policy,
                     &mut errors,
                 );

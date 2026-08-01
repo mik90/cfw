@@ -11,6 +11,7 @@ use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
+use task::loggable::ForwardedMessageContext;
 use task::message::MessageHeader;
 
 /// Policy for handling output mismatches (actual vs. expected).
@@ -20,6 +21,32 @@ pub enum DivergencePolicy {
     Strict,
     /// Log the mismatch and continue with best-effort replay.
     BestEffort,
+}
+
+/// Either a plain type-erased deserializer or a forwarded-message deserializer
+/// paired with its source-channel context. `hydrate_subscribers` picks one per
+/// channel and calls [`deserialize`](Self::deserialize) uniformly for each
+/// logged body.
+enum DeserializerForHydration {
+    Plain(task::channel_registry::DeserializerFn),
+    Forwarded(
+        task::channel_registry::ForwardedDeserializerFn,
+        ForwardedMessageContext,
+    ),
+}
+
+impl DeserializerForHydration {
+    fn deserialize(
+        &self,
+        body: &[u8],
+    ) -> Result<Box<dyn std::any::Any>, task::loggable::DeserializeError> {
+        match self {
+            DeserializerForHydration::Plain(deserializer) => deserializer(body),
+            DeserializerForHydration::Forwarded(deserializer, context) => {
+                deserializer(body, context)
+            }
+        }
+    }
 }
 
 /// Per-node persistent state for replay: hydration publishers keyed by
@@ -61,6 +88,7 @@ pub(crate) fn replay_execution(
     state: &mut ReplayNodeState,
     execution: &ReplayExecution,
     registry: &ChannelRegistry,
+    source_messages: &HashMap<task::pub_sub::ChannelName, Vec<(MessageHeader, Vec<u8>)>>,
     policy: DivergencePolicy,
     errors: &mut Vec<ReplayError>,
 ) {
@@ -78,7 +106,14 @@ pub(crate) fn replay_execution(
     }
 
     // ── Hydrate subscribers ────────────────────────────────────────────
-    if let Err(e) = hydrate_subscribers(node, state, &execution.received, registry, &node_name) {
+    if let Err(e) = hydrate_subscribers(
+        node,
+        state,
+        &execution.received,
+        registry,
+        source_messages,
+        &node_name,
+    ) {
         errors.push(e);
         if policy == DivergencePolicy::Strict {
             return;
@@ -240,11 +275,16 @@ fn bind_capture_subscribers(
 ///
 /// Clears all subscriber buffers **once** before hydrating any ordinal, so
 /// earlier injections are not wiped by later ordinals.
+///
+/// `source_messages` supplies the ordinary-log payloads used to build a
+/// [`ForwardedMessageContext`] for forwarded channels.
+#[allow(clippy::too_many_arguments)]
 fn hydrate_subscribers(
     node: &mut CallbackNode,
     state: &mut ReplayNodeState,
     received: &HashMap<u16, Vec<(MessageHeader, Vec<u8>)>>,
     registry: &ChannelRegistry,
+    source_messages: &HashMap<task::pub_sub::ChannelName, Vec<(MessageHeader, Vec<u8>)>>,
     node_name: &str,
 ) -> Result<(), ReplayError> {
     // ── Clear all subscriber buffers once before any hydration ─────────
@@ -311,20 +351,57 @@ fn hydrate_subscribers(
                 node: node_name.to_owned(),
             }
         })?;
-        let deserializer = registry.deserializer_for(type_id).ok_or_else(|| {
-            ReplayError::UnregisteredDeserializer {
-                channel: channel_name.clone(),
-                node: node_name.to_owned(),
-            }
-        })?;
+
+        // Forwarded channels deserialize their logged body through a
+        // `ForwardedMessageContext` built from the source channel's logged
+        // payloads, so the forwarded payload can be resolved by header.
+        let deserializer: DeserializerForHydration =
+            if let Some(info) = registry.forwarded_channel_info(&channel_name) {
+                let source_deserializer = registry
+                    .deserializer_for(info.forwarded_data_type_id)
+                    .ok_or_else(|| ReplayError::UnregisteredDeserializer {
+                        channel: info.source_channel.clone(),
+                        node: node_name.to_owned(),
+                    })?;
+                let mut source_values = Vec::new();
+                if let Some(source_bodies) = source_messages.get(&info.source_channel) {
+                    for (header, body) in source_bodies {
+                        let value = source_deserializer(body).map_err(|e| {
+                            ReplayError::DeserializationFailed {
+                                channel: info.source_channel.clone(),
+                                details: e.to_string(),
+                            }
+                        })?;
+                        source_values.push((*header, value));
+                    }
+                }
+                let context = ForwardedMessageContext::new(source_values);
+                let forwarded = registry
+                    .forwarded_deserializer_for(type_id)
+                    .ok_or_else(|| ReplayError::UnregisteredDeserializer {
+                        channel: channel_name.clone(),
+                        node: node_name.to_owned(),
+                    })?;
+                DeserializerForHydration::Forwarded(forwarded, context)
+            } else {
+                DeserializerForHydration::Plain(registry.deserializer_for(type_id).ok_or_else(
+                    || ReplayError::UnregisteredDeserializer {
+                        channel: channel_name.clone(),
+                        node: node_name.to_owned(),
+                    },
+                )?)
+            };
 
         // Deserialize, write, and flush each message individually with
         // its original header timestamp.
         for (_header, body) in messages {
-            let value = deserializer(body).map_err(|e| ReplayError::DeserializationFailed {
-                channel: channel_name.clone(),
-                details: e.to_string(),
-            })?;
+            let value =
+                deserializer
+                    .deserialize(body)
+                    .map_err(|e| ReplayError::DeserializationFailed {
+                        channel: channel_name.clone(),
+                        details: e.to_string(),
+                    })?;
             writer(publisher.as_mut(), value);
             publisher.flush_loaned_values(_header.published_at);
         }
@@ -425,6 +502,7 @@ mod tests {
             &mut state,
             &execution,
             &registry,
+            &HashMap::new(),
             DivergencePolicy::Strict,
             &mut errors,
         );
@@ -507,6 +585,7 @@ mod tests {
             &mut state,
             &execution,
             &registry,
+            &HashMap::new(),
             DivergencePolicy::Strict,
             &mut errors,
         );
@@ -577,6 +656,7 @@ mod tests {
             &mut state,
             &execution,
             &registry,
+            &HashMap::new(),
             DivergencePolicy::Strict,
             &mut errors,
         );
@@ -727,6 +807,7 @@ mod tests {
             &mut state,
             &execution,
             &registry,
+            &HashMap::new(),
             DivergencePolicy::Strict,
             &mut errors,
         );

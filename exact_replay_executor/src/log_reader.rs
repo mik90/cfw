@@ -53,6 +53,13 @@ pub(crate) struct ReplayLog {
     /// descriptor entry. The executor filters these against known
     /// infrastructure nodes; any that are not infrastructure are an error.
     pub descriptor_less_executions: Vec<(usize, FrameworkTime)>,
+    /// Ordinary-log payloads retained per channel, in log order. Replay needs
+    /// these to build the [`ReplayMessageLog`] context that resolves the
+    /// payload a forwarded message references by header. Messages on the
+    /// execution-log channel are excluded (nothing forwards them).
+    ///
+    /// [`ReplayMessageLog`]: task::loggable::ReplayMessageLog
+    pub source_messages: HashMap<ChannelName, Vec<(MessageHeader, Vec<u8>)>>,
 }
 
 /// A group of split entries for one execution, tracking insertion order so
@@ -89,6 +96,9 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
     // the producer (Published) and once by the consumer (Received) — so the
     // payload is resolved by indexed lookup rather than consumed.
     let mut ordinary_log: HashMap<(ChannelName, i64), Vec<Vec<u8>>> = HashMap::new();
+    // Ordinary-log payloads retained per channel for forwarded-message context
+    // resolution (see [`ReplayLog::source_messages`]).
+    let mut source_messages: HashMap<ChannelName, Vec<(MessageHeader, Vec<u8>)>> = HashMap::new();
 
     let len = reader.len();
     for i in 0..len {
@@ -110,6 +120,10 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
                 ))
                 .or_default()
                 .push(entry.serialized_body.to_vec());
+            source_messages
+                .entry(entry.channel_name.to_owned())
+                .or_default()
+                .push((entry.header, entry.serialized_body.to_vec()));
         }
     }
 
@@ -254,6 +268,7 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
         descriptor,
         executions,
         descriptor_less_executions,
+        source_messages,
     })
 }
 

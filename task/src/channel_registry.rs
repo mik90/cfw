@@ -1,4 +1,4 @@
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -6,9 +6,12 @@ use std::sync::Arc;
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::input::InputSpan;
-use crate::loggable::{DeserializeError, Loggable, SerializeError};
+use crate::loggable::{DeserializeError, ForwardedMessageContext, Loggable, SerializeError};
 use crate::message::MessageHeader;
 use crate::pub_sub::ChannelName;
+
+#[cfg(feature = "serde")]
+use crate::forwarded_message::ForwardedMessage;
 
 /// Per-message sink error — either the value failed to serialize, or the
 /// writer rejected the bytes. Both surface uniformly inside the serializer
@@ -72,8 +75,22 @@ pub type SerializerFn = Arc<
 /// Type-erased deserializer closure: takes raw bytes and returns a
 /// heap-allocated, type-erased value. Used by replay executors to reconstruct
 /// typed messages from a log file before publishing them.
-pub type DeserializerFn = Arc<
-    dyn Fn(&[u8]) -> Result<Box<dyn std::any::Any + Send + Sync>, DeserializeError> + Send + Sync,
+///
+/// The returned value is not `Send`/`Sync`: deserialized messages are created
+/// and consumed on the same replay thread. Only the closure itself (which
+/// captures nothing) needs `Send + Sync` so the registry can cross threads.
+pub type DeserializerFn =
+    Arc<dyn Fn(&[u8]) -> Result<Box<dyn Any>, DeserializeError> + Send + Sync>;
+
+/// Type-erased deserializer for forwarded-message channels.
+///
+/// Same contract as [`DeserializerFn`], but additionally receives a
+/// [`ForwardedMessageContext`] — the source channel's logged payloads — so it
+/// can resolve the forwarded message's referenced payload by header. Kept
+/// separate from [`DeserializerFn`] because only forwarded channels need a
+/// context; plain deserializers shouldn't have to acknowledge one.
+pub type ForwardedDeserializerFn = Arc<
+    dyn Fn(&[u8], &ForwardedMessageContext) -> Result<Box<dyn Any>, DeserializeError> + Send + Sync,
 >;
 
 /// Per-channel factory closure stored alongside a deserializer. Given a
@@ -86,8 +103,27 @@ pub type ChannelPublisherFactory =
 /// Type-erased writer that publishes a heap-allocated value through a
 /// `GenericPublisher`. Monomorphized per `T` at registration time so the
 /// hot path avoids a runtime type check inside the loop.
+///
+/// The value is not `Send`/`Sync` (see [`DeserializerFn`]); it is produced
+/// and consumed on the same replay thread.
 pub type ChannelPublisherWriter =
-    Arc<dyn Fn(&mut dyn GenericPublisher, Box<dyn std::any::Any + Send + Sync>) + Send + Sync>;
+    Arc<dyn Fn(&mut dyn GenericPublisher, Box<dyn Any>) + Send + Sync>;
+
+/// How a forwarded channel relates to its source channel.
+///
+/// A forwarded channel carries [`ForwardedMessage<T, F>`] values whose payload
+/// (`F`) lives on the *source* channel. Replay uses this mapping to build the
+/// [`ReplayMessageLog<F>`] context that resolves forwarded payloads by header.
+///
+/// [`ForwardedMessage<T, F>`]: crate::forwarded_message::ForwardedMessage
+/// [`ReplayMessageLog<F>`]: crate::loggable::ReplayMessageLog
+#[derive(Debug, Clone)]
+pub struct ForwardedChannelInfo {
+    /// The channel that carries the forwarded payload type `F`.
+    pub source_channel: ChannelName,
+    /// The `TypeId` of the forwarded payload type `F`.
+    pub forwarded_data_type_id: TypeId,
+}
 
 /// Type-keyed registry of serializers and deserializers.
 /// Build steps query this by `TypeId` (obtained from `GenericPublisher::value_type_id`)
@@ -97,8 +133,10 @@ pub type ChannelPublisherWriter =
 pub struct ChannelRegistry {
     serializers: HashMap<TypeId, SerializerFn>,
     deserializers: HashMap<TypeId, DeserializerFn>,
+    forwarded_deserializers: HashMap<TypeId, ForwardedDeserializerFn>,
     publisher_factories: HashMap<TypeId, ChannelPublisherFactory>,
     channels: HashMap<ChannelName, TypeId>,
+    forwarded_channels: HashMap<ChannelName, ForwardedChannelInfo>,
 }
 
 impl ChannelRegistry {
@@ -106,8 +144,10 @@ impl ChannelRegistry {
         ChannelRegistry {
             serializers: HashMap::new(),
             deserializers: HashMap::new(),
+            forwarded_deserializers: HashMap::new(),
             publisher_factories: HashMap::new(),
             channels: HashMap::new(),
+            forwarded_channels: HashMap::new(),
         }
     }
 
@@ -145,7 +185,7 @@ impl ChannelRegistry {
         // Deserializer — uses the blanket serde (Context<'static> = ()) path
         let deserializer: DeserializerFn = Arc::new(|bytes: &[u8]| {
             let value = T::deserialize(bytes)?;
-            Ok(Box::new(value) as Box<dyn std::any::Any + Send + Sync>)
+            Ok(Box::new(value) as Box<dyn Any>)
         });
         self.deserializers.insert(TypeId::of::<T>(), deserializer);
         self
@@ -166,8 +206,8 @@ impl ChannelRegistry {
                     capacity: 1,
                     channel_name,
                 }));
-            let writer: ChannelPublisherWriter = Arc::new(
-                |pub_ref: &mut dyn GenericPublisher, val: Box<dyn std::any::Any + Send + Sync>| {
+            let writer: ChannelPublisherWriter =
+                Arc::new(|pub_ref: &mut dyn GenericPublisher, val: Box<dyn Any>| {
                     let typed = pub_ref
                         .as_any()
                         .downcast_mut::<Publisher<T>>()
@@ -179,8 +219,7 @@ impl ChannelRegistry {
                         slot.write(*val);
                     });
                     output.send();
-                },
-            );
+                });
             (publisher, writer)
         });
         self.publisher_factories.insert(TypeId::of::<T>(), factory);
@@ -193,8 +232,10 @@ impl ChannelRegistry {
     /// messages.
     ///
     /// Requires `T: Loggable<Context<'static> = ()>` — types with a
-    /// non-trivial deserialization context (e.g. `ForwardedMessage`) must be
-    /// denylisted during replay and are not supported here.
+    /// non-trivial deserialization context, like
+    /// [`ForwardedMessage`](crate::forwarded_message::ForwardedMessage), use
+    /// [`register_forwarded_channel`](Self::register_forwarded_channel)
+    /// instead.
     pub fn register_channel<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
         &mut self,
         channel: ChannelName,
@@ -206,6 +247,83 @@ impl ChannelRegistry {
         self.register_publisher_factory::<T>();
 
         self.channels.insert(channel, TypeId::of::<T>());
+        self
+    }
+
+    /// Register a forwarded channel's value type.
+    ///
+    /// A forwarded channel carries [`ForwardedMessage<T, F>`] values: the extra
+    /// payload `T` plus a reference to a message on `source_channel` (whose
+    /// payload type is `F`). Registration provides:
+    ///
+    /// - a serializer for `ForwardedMessage<T, F>` (output capture + logging),
+    /// - a deserializer that resolves the forwarded payload via a
+    ///   [`ForwardedMessageContext`] built from `source_channel`'s logged
+    ///   messages, and
+    /// - a publisher factory that hydrates `Subscriber<ForwardedMessage<T, F>>`.
+    ///
+    /// The forwarding node's own `ForwardableSubscriber<F>` input is hydrated
+    /// normally — register `source_channel` with [`register_channel`] too.
+    ///
+    /// [`ForwardedMessage<T, F>`]: crate::forwarded_message::ForwardedMessage
+    #[cfg(feature = "serde")]
+    pub fn register_forwarded_channel<
+        T: serde::Serialize + serde::de::DeserializeOwned + 'static,
+        F: Clone + Send + Sync + 'static,
+    >(
+        &mut self,
+        forwarded_channel: ChannelName,
+        source_channel: ChannelName,
+    ) -> &mut Self {
+        let forwarded_type_id = TypeId::of::<ForwardedMessage<T, F>>();
+
+        self.register_serializer::<ForwardedMessage<T, F>>();
+
+        let forwarded_deserializer: ForwardedDeserializerFn =
+            Arc::new(|bytes: &[u8], context: &ForwardedMessageContext| {
+                let log = context.to_log::<F>();
+                let value = ForwardedMessage::<T, F>::deserialize_with_ctx(bytes, &log)?;
+                Ok(Box::new(value) as Box<dyn Any>)
+            });
+        self.forwarded_deserializers
+            .insert(forwarded_type_id, forwarded_deserializer);
+
+        let factory: ChannelPublisherFactory = Arc::new(move |channel_name: ChannelName| {
+            use crate::output::Output;
+            use crate::publisher::{Publisher, PublisherConfig};
+
+            let publisher: Box<dyn GenericPublisher> =
+                Box::new(Publisher::<ForwardedMessage<T, F>>::new(PublisherConfig {
+                    capacity: 1,
+                    channel_name,
+                }));
+            let writer: ChannelPublisherWriter =
+                Arc::new(|pub_ref: &mut dyn GenericPublisher, val: Box<dyn Any>| {
+                    let typed = pub_ref
+                        .as_any()
+                        .downcast_mut::<Publisher<ForwardedMessage<T, F>>>()
+                        .expect("ReplayTask: forwarded publisher type mismatch");
+                    let val = val
+                        .downcast::<ForwardedMessage<T, F>>()
+                        .expect("ReplayTask: forwarded value type mismatch");
+                    let output = Output::new_with_factory(typed, |slot| {
+                        slot.write(*val);
+                    });
+                    output.send();
+                });
+            (publisher, writer)
+        });
+        self.publisher_factories.insert(forwarded_type_id, factory);
+
+        self.channels
+            .insert(forwarded_channel.clone(), forwarded_type_id);
+        self.forwarded_channels.insert(
+            forwarded_channel,
+            ForwardedChannelInfo {
+                source_channel,
+                forwarded_data_type_id: TypeId::of::<F>(),
+            },
+        );
         self
     }
 
@@ -221,11 +339,25 @@ impl ChannelRegistry {
         self.channels.get(channel).copied()
     }
 
+    /// Look up the forwarded-channel mapping for `channel`. Returns `None` for
+    /// ordinary channels or unknown channel names.
+    pub fn forwarded_channel_info(&self, channel: &str) -> Option<&ForwardedChannelInfo> {
+        self.forwarded_channels.get(channel)
+    }
+
     /// Look up the deserializer registered for the given type.
     /// Returns `None` if the type was never registered.
     pub fn deserializer_for(&self, type_id: TypeId) -> Option<DeserializerFn> {
         // TODO: expose reference to function instead of copied Arc
         self.deserializers.get(&type_id).cloned()
+    }
+
+    /// Look up the forwarded-message deserializer registered for the given
+    /// type. Returns `None` if the type was never registered as a forwarded
+    /// channel.
+    pub fn forwarded_deserializer_for(&self, type_id: TypeId) -> Option<ForwardedDeserializerFn> {
+        // TODO: expose reference to function instead of copied Arc
+        self.forwarded_deserializers.get(&type_id).cloned()
     }
 
     /// Look up the publisher factory registered for the given type.
@@ -241,8 +373,11 @@ impl ChannelRegistry {
     pub fn merge(&mut self, other: ChannelRegistry) {
         self.serializers.extend(other.serializers);
         self.deserializers.extend(other.deserializers);
+        self.forwarded_deserializers
+            .extend(other.forwarded_deserializers);
         self.publisher_factories.extend(other.publisher_factories);
         self.channels.extend(other.channels);
+        self.forwarded_channels.extend(other.forwarded_channels);
     }
 }
 

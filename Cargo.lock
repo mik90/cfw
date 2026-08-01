@@ -296,6 +296,7 @@ dependencies = [
 name = "exact_replay_executor"
 version = "0.1.0"
 dependencies = [
+ "live_executor",
  "logging",
  "serde",
  "serde_json",

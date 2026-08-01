@@ -29,8 +29,11 @@ pub struct ForwardedMessage<UserData, ForwardedData> {
 }
 
 impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
-    // Mainly relevant for deserialization
-    pub(crate) fn new_boxed_forward(
+    /// Build a forwarded message that owns its forwarded payload (as opposed
+    /// to borrowing it from an arena). Primarily relevant for deserialization
+    /// from a log, and for tests that need to serialize/compare forwarded
+    /// messages directly.
+    pub fn new_boxed_forward(
         message: UserData,
         forwarded_message: Box<Message<ForwardedData>>,
     ) -> Self {

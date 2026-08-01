@@ -16,6 +16,20 @@ pub trait GenericPublisher {
 
     fn config_mut(&mut self) -> &mut PublisherConfig;
 
+    /// The channel names this publisher forwards onto.
+    ///
+    /// For a plain [`Publisher`](crate::publisher::Publisher) this is always
+    /// empty. For a [`ForwardingPublisher`](crate::publisher::ForwardingPublisher)
+    /// it lists the *output* channels — the channels on which it publishes
+    /// [`ForwardedMessage`](crate::forwarded_message::ForwardedMessage)
+    /// values that reference messages from one of its forwardable input
+    /// channels.
+    ///
+    /// The graph builder uses this to size arenas correctly: every subscriber
+    /// on one of the listed channels contributes `2 * capacity` slots to the
+    /// forwarding publisher's arena, because each forwarded message is cloned
+    /// into the subscriber's write queue *and* read buffer while still
+    /// pointing at the forwarding publisher's arena.
     fn forwarded_channels(&self) -> &[ChannelName];
 
     fn flush_loaned_values(&mut self, timestamp: FrameworkTime);
@@ -52,6 +66,16 @@ pub trait GenericPublisher {
     /// Returns `None` for publishers that don't support introspection-based
     /// subscription (the default). Logging build steps use this to wire up
     /// a `ChannelLogger` without statically knowing `T`.
+    ///
+    /// - A plain [`Publisher<T>`](crate::publisher::Publisher) returns
+    ///   [`Subscriber<T>`](crate::subscriber::Subscriber).
+    /// - A [`ForwardingPublisher<T, F>`](crate::publisher::ForwardingPublisher)
+    ///   returns `Subscriber<ForwardedMessage<T, F>>` — the type its
+    ///   downstream consumers subscribe with.
+    ///
+    /// Replay's output-capture path (`PublisherCapture::connect_from`) relies
+    /// on this so capture subscribers match the publisher's real value type
+    /// without static knowledge of `T`.
     fn build_matching_subscriber(
         &self,
         _config: SubscriberConfig,

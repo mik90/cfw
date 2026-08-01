@@ -214,4 +214,8 @@ impl<T: 'static> GenericSubscriber for ForwardableSubscriber<T> {
     fn readiness_state(&self) -> Option<SubscriberReadiness> {
         self.subscriber.readiness_state()
     }
+
+    fn for_each_queued_input(&self, f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any)) {
+        self.subscriber.for_each_queued_input(f);
+    }
 }

@@ -98,7 +98,14 @@ pub(crate) fn validate_descriptor(
                         node: node_name.clone(),
                     }
                 })?;
-                if registry.deserializer_for(type_id).is_none() {
+                // Forwarded channels resolve their deserializer from the
+                // forwarded-deserializer map; plain channels use the regular one.
+                let has_deserializer = if registry.forwarded_channel_info(desc_ch).is_some() {
+                    registry.forwarded_deserializer_for(type_id).is_some()
+                } else {
+                    registry.deserializer_for(type_id).is_some()
+                };
+                if !has_deserializer {
                     return Err(ReplayError::UnregisteredDeserializer {
                         channel: desc_ch.clone(),
                         node: node_name.clone(),
@@ -267,6 +274,7 @@ mod tests {
             descriptor: desc,
             executions,
             descriptor_less_executions: Vec::new(),
+            source_messages: HashMap::new(),
         }
     }
 

@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::error::Error;
 use std::fmt::Display;
 use std::io::{self, Write};
@@ -95,6 +96,71 @@ where
 /// Allows lookup of a message from the log. Assumes that the log is scoped to a given channel.
 pub trait MessageLog<T> {
     fn lookup(&self, header: &MessageHeader) -> Option<&Message<T>>;
+}
+
+/// An owned, header-indexed log of messages from one channel.
+///
+/// Used by replay to resolve the payload a
+/// [`ForwardedMessage`](crate::forwarded_message::ForwardedMessage) references:
+/// the forwarded message's serialized body only carries the forwarded header,
+/// and `deserialize_with_ctx` reconstructs the full forwarded message by
+/// looking up that header here.
+#[derive(Debug, Default)]
+pub struct ReplayMessageLog<F> {
+    messages: Vec<Message<F>>,
+}
+
+impl<F> ReplayMessageLog<F> {
+    pub fn new(messages: Vec<Message<F>>) -> Self {
+        ReplayMessageLog { messages }
+    }
+}
+
+impl<F: Clone> MessageLog<F> for ReplayMessageLog<F> {
+    fn lookup(&self, header: &MessageHeader) -> Option<&Message<F>> {
+        self.messages
+            .iter()
+            .find(|m| m.header.published_at == header.published_at)
+    }
+}
+
+/// Type-erased context handed to a forwarded-message deserializer.
+///
+/// Holds the source channel's messages already deserialized to `F`, so the
+/// forwarded deserializer (which knows `F` statically but is reached through
+/// a `Box<dyn Any>` boundary) can build a [`ReplayMessageLog<F>`] and resolve
+/// forwarded payloads by header without the caller knowing `F`.
+///
+/// Values are not `Send`/`Sync`: the context is built and consumed on the
+/// same replay thread.
+#[derive(Default)]
+pub struct ForwardedMessageContext {
+    messages: Vec<(MessageHeader, Box<dyn Any>)>,
+}
+
+impl ForwardedMessageContext {
+    pub fn new(messages: Vec<(MessageHeader, Box<dyn Any>)>) -> Self {
+        ForwardedMessageContext { messages }
+    }
+
+    /// Reinterpret the type-erased values as `F`, cloning them into an owned
+    /// [`ReplayMessageLog<F>`]. Panics if the context was built with a
+    /// different payload type than `F`.
+    pub fn to_log<F: Clone + 'static>(&self) -> ReplayMessageLog<F> {
+        ReplayMessageLog {
+            messages: self
+                .messages
+                .iter()
+                .map(|(header, value)| Message {
+                    header: *header,
+                    message: value
+                        .downcast_ref::<F>()
+                        .expect("forwarded message context holds the wrong payload type")
+                        .clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Implement loggability for ForwardedMessage.

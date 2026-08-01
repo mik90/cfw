@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use task::callback::CallbackNode;
 use task::channel_registry::ChannelRegistry;
 use task::execution_log::{self, EXECUTION_LOG_CHANNEL, ExecutionLogMessage};
@@ -64,29 +62,9 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         let mut channel_loggers: Vec<ChannelLogger> = Vec::new();
         let mut subscribers = Vec::new();
 
-        // Forwarded-source channels are covered by their `ForwardingPublisher`'s
-        // own `ForwardedMessage<T, F>` logger — which serializes only the
-        // forwarded message's header, avoiding double-logging. Skip them
-        // here so we don't subscribe to a channel whose subscriber type won't
-        // match a `ForwardingPublisher`'s expected `Subscriber<ForwardedMessage<T, F>>`.
-        let forwarded_channels: HashSet<task::pub_sub::ChannelName> = nodes
-            .iter()
-            .flat_map(|n| {
-                let mut fcs = Vec::new();
-                n.callback().for_each_publisher(&mut |p| {
-                    fcs.extend(p.forwarded_channels().iter().cloned());
-                });
-                fcs
-            })
-            .collect();
-
         for node in nodes {
             node.callback().for_each_publisher(&mut |publisher| {
                 let channel_name = publisher.config().channel_name.clone();
-
-                if forwarded_channels.contains(&channel_name) {
-                    return;
-                }
 
                 let Some(serializer) = self.registry.serializer_for(publisher.value_type_id())
                 else {
