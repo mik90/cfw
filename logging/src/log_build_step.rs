@@ -1,7 +1,10 @@
+use std::collections::HashSet;
+
 use task::callback::CallbackNode;
 use task::channel_registry::ChannelRegistry;
 use task::execution_log::{self, EXECUTION_LOG_CHANNEL, ExecutionLogMessage};
 use task::generic_subscriber::GenericSubscriber;
+use task::pub_sub::ChannelName;
 use task::subscriber::{Subscriber, SubscriberConfig};
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 
@@ -114,6 +117,18 @@ impl TaskGraphBuildStep for LoggingBuildStep {
             return Ok(vec![]);
         }
 
+        // Annotate which channels were logged so exact replay can tell logged
+        // channels (resolved from the ordinary log) from unlogged ones (which
+        // it reproduces by re-running the producing node).
+        let execution_log_descriptor =
+            execution_log::ExecutionLogDescriptor::new_with_logged_channels(
+                nodes,
+                channel_loggers
+                    .iter()
+                    .map(|logger| logger.channel_name.clone())
+                    .collect::<HashSet<ChannelName>>(),
+            );
+
         // Spread the channels round-robin across the requested number of log
         // tasks (clamped so every task gets at least one channel).
         // Round-robin rather than contiguous chunks so channels from the same
@@ -135,8 +150,6 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         let shared_writer = SharedLogFileWriter::new(open_writer(&self.config.output_path));
 
         let mut log_nodes = Vec::with_capacity(num_tasks);
-
-        let execution_log_descriptor = execution_log::ExecutionLogDescriptor::new(nodes);
 
         for (index, Shard(shard_loggers, shard_subscribers)) in shards.into_iter().enumerate() {
             let log_task = LogTask::new(

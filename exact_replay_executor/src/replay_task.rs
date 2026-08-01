@@ -2,9 +2,12 @@
 //! subscribers, and per-execution hydrate/run/compare logic.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use crate::error::ReplayError;
-use crate::log_reader::ReplayExecution;
+use crate::log_reader::{PayloadSource, ReplayExecution};
+use crate::report::ReplayReport;
+use crate::reproduce::ReproducedPayloadStore;
 use logging::log_capture::PublisherCapture;
 use task::callback::{CallbackNode, CallbackViews};
 use task::channel_registry::ChannelRegistry;
@@ -83,15 +86,24 @@ impl ReplayNodeState {
 
 /// Replay a single execution step: hydrate subscribers, run the callback,
 /// flush publishers, drain capture subscribers, and compare outputs.
+///
+/// `store` holds payloads reproduced from unlogged channels (producers store
+/// their captured output, consumers pull it back out). `report` accumulates
+/// the accuracy report; it is locked once for the whole execution.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn replay_execution(
     node: &mut CallbackNode,
     state: &mut ReplayNodeState,
     execution: &ReplayExecution,
     registry: &ChannelRegistry,
     source_messages: &HashMap<task::pub_sub::ChannelName, Vec<(MessageHeader, Vec<u8>)>>,
+    store: &ReproducedPayloadStore,
+    report: &Mutex<ReplayReport>,
     policy: DivergencePolicy,
     errors: &mut Vec<ReplayError>,
 ) {
+    let mut report_guard = report.lock().expect("report lock poisoned");
+    let report = &mut *report_guard;
     let node_name = node.name().to_owned();
 
     // ── Ensure capture subscribers exist for ALL publishers ───────────
@@ -112,6 +124,8 @@ pub(crate) fn replay_execution(
         &execution.received,
         registry,
         source_messages,
+        store,
+        report,
         &node_name,
     ) {
         errors.push(e);
@@ -142,10 +156,12 @@ pub(crate) fn replay_execution(
 
         let mut actual_outputs: Vec<(MessageHeader, Vec<u8>)> = Vec::new();
         if let Err(e) = capture.drain_to_vec(&mut actual_outputs) {
+            let detail = format!("failed to capture outputs: {e}");
+            report.record_mismatch(&channel_name, detail.clone());
             errors.push(ReplayError::OutputMismatch {
                 node: node_name.clone(),
                 channel: channel_name.clone(),
-                details: format!("failed to capture outputs: {e}"),
+                details: detail,
             });
             if policy == DivergencePolicy::Strict {
                 return;
@@ -157,14 +173,16 @@ pub(crate) fn replay_execution(
             Some(expected_msgs) => {
                 // Compare counts
                 if actual_outputs.len() != expected_msgs.len() {
+                    let detail = format!(
+                        "expected {} output(s), got {}",
+                        expected_msgs.len(),
+                        actual_outputs.len()
+                    );
+                    report.record_mismatch(&channel_name, detail.clone());
                     errors.push(ReplayError::OutputMismatch {
                         node: node_name.clone(),
                         channel: channel_name.clone(),
-                        details: format!(
-                            "expected {} output(s), got {}",
-                            expected_msgs.len(),
-                            actual_outputs.len()
-                        ),
+                        details: detail,
                     });
                     if policy == DivergencePolicy::Strict {
                         return;
@@ -172,28 +190,85 @@ pub(crate) fn replay_execution(
                     continue;
                 }
 
-                // Compare each output header and body
-                for (i, ((actual_header, actual_body), (expected_header, expected_body))) in
+                // Unlogged (reproduced) channels: there is no logged expected
+                // body to compare against. Store the reproduced output so the
+                // consuming node can hydrate from it, and verify the count and
+                // header timestamps line up with the execution-log references.
+                let is_reproduced = expected_msgs
+                    .iter()
+                    .all(|(_, source)| matches!(source, PayloadSource::Reproduce));
+                if is_reproduced {
+                    for (i, ((actual_header, actual_body), (expected_header, _))) in
+                        actual_outputs.iter().zip(expected_msgs.iter()).enumerate()
+                    {
+                        report.record_reproduced(&channel_name);
+                        store.store(
+                            channel_name.clone(),
+                            actual_header.published_at.to_nanoseconds(),
+                            actual_body.clone(),
+                        );
+                        if actual_header.published_at != expected_header.published_at {
+                            let detail = format!(
+                                "output {i}: header time mismatch: actual={:?}, expected={:?}",
+                                actual_header.published_at, expected_header.published_at
+                            );
+                            report.record_mismatch(&channel_name, detail.clone());
+                            errors.push(ReplayError::OutputMismatch {
+                                node: node_name.clone(),
+                                channel: channel_name.clone(),
+                                details: detail,
+                            });
+                            if policy == DivergencePolicy::Strict {
+                                return;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Logged channels: compare each output header and body.
+                for (i, ((actual_header, actual_body), (expected_header, expected_source))) in
                     actual_outputs.iter().zip(expected_msgs.iter()).enumerate()
                 {
+                    let expected_body = match expected_source {
+                        PayloadSource::Logged(body) => body,
+                        PayloadSource::Reproduce | PayloadSource::Gap => {
+                            let detail = format!("output {i}: expected an unreproducible payload");
+                            report.record_mismatch(&channel_name, detail.clone());
+                            errors.push(ReplayError::OutputMismatch {
+                                node: node_name.clone(),
+                                channel: channel_name.clone(),
+                                details: detail,
+                            });
+                            if policy == DivergencePolicy::Strict {
+                                return;
+                            }
+                            continue;
+                        }
+                    };
+                    report.record_logged(&channel_name);
                     if actual_header.published_at != expected_header.published_at {
+                        let detail = format!(
+                            "output {i}: header time mismatch: actual={:?}, expected={:?}",
+                            actual_header.published_at, expected_header.published_at
+                        );
+                        report.record_mismatch(&channel_name, detail.clone());
                         errors.push(ReplayError::OutputMismatch {
                             node: node_name.clone(),
                             channel: channel_name.clone(),
-                            details: format!(
-                                "output {i}: header time mismatch: actual={:?}, expected={:?}",
-                                actual_header.published_at, expected_header.published_at
-                            ),
+                            details: detail,
                         });
                         if policy == DivergencePolicy::Strict {
                             return;
                         }
                     }
                     if actual_body != expected_body {
+                        let detail = format!("output {i}: body mismatch");
+                        report.record_mismatch(&channel_name, detail.clone());
                         errors.push(ReplayError::OutputMismatch {
                             node: node_name.clone(),
                             channel: channel_name.clone(),
-                            details: format!("output {i}: body mismatch"),
+                            details: detail,
                         });
                         if policy == DivergencePolicy::Strict {
                             return;
@@ -204,13 +279,15 @@ pub(crate) fn replay_execution(
             None => {
                 // No expected output for this ordinal — detect unexpected.
                 if !actual_outputs.is_empty() {
+                    let detail = format!(
+                        "unexpected {} output(s) with no expected entry",
+                        actual_outputs.len()
+                    );
+                    report.record_mismatch(&channel_name, detail.clone());
                     errors.push(ReplayError::OutputMismatch {
                         node: node_name.clone(),
                         channel: channel_name.clone(),
-                        details: format!(
-                            "unexpected {} output(s) with no expected entry",
-                            actual_outputs.len()
-                        ),
+                        details: detail,
                     });
                     if policy == DivergencePolicy::Strict {
                         return;
@@ -277,14 +354,17 @@ fn bind_capture_subscribers(
 /// earlier injections are not wiped by later ordinals.
 ///
 /// `source_messages` supplies the ordinary-log payloads used to build a
-/// [`ForwardedMessageContext`] for forwarded channels.
+/// [`ForwardedMessageContext`] for forwarded channels. `store` supplies
+/// reproduced payloads for unlogged channels.
 #[allow(clippy::too_many_arguments)]
 fn hydrate_subscribers(
     node: &mut CallbackNode,
     state: &mut ReplayNodeState,
-    received: &HashMap<u16, Vec<(MessageHeader, Vec<u8>)>>,
+    received: &HashMap<u16, Vec<(MessageHeader, PayloadSource)>>,
     registry: &ChannelRegistry,
     source_messages: &HashMap<task::pub_sub::ChannelName, Vec<(MessageHeader, Vec<u8>)>>,
+    store: &ReproducedPayloadStore,
+    report: &mut ReplayReport,
     node_name: &str,
 ) -> Result<(), ReplayError> {
     // ── Clear all subscriber buffers once before any hydration ─────────
@@ -393,17 +473,53 @@ fn hydrate_subscribers(
             };
 
         // Deserialize, write, and flush each message individually with
-        // its original header timestamp.
-        for (_header, body) in messages {
-            let value =
-                deserializer
-                    .deserialize(body)
-                    .map_err(|e| ReplayError::DeserializationFailed {
+        // its original header timestamp. Logged payloads come straight from
+        // the ordinary log; unlogged payloads are pulled from the reproduction
+        // store, which the producing node populated when it was replayed.
+        for (header, source) in messages {
+            let body = match source {
+                PayloadSource::Logged(body) => {
+                    report.record_logged(&channel_name);
+                    body.clone()
+                }
+                PayloadSource::Reproduce => {
+                    let Some(body) =
+                        store.take(&channel_name, header.published_at.to_nanoseconds())
+                    else {
+                        report.record_gap(&channel_name);
+                        return Err(ReplayError::UnreproducibleMessage {
+                            channel: channel_name.clone(),
+                            header_time: header.published_at,
+                            direction: task::execution_log::Direction::Received,
+                            node: node_name.to_owned(),
+                            reason: "channel is not logged; the producing node has not \
+                                    reproduced this payload"
+                                .to_owned(),
+                        });
+                    };
+                    report.record_reproduced(&channel_name);
+                    body
+                }
+                PayloadSource::Gap => {
+                    report.record_gap(&channel_name);
+                    return Err(ReplayError::UnreproducibleMessage {
                         channel: channel_name.clone(),
-                        details: e.to_string(),
-                    })?;
+                        header_time: header.published_at,
+                        direction: task::execution_log::Direction::Received,
+                        node: node_name.to_owned(),
+                        reason: "unreproducible gap".to_owned(),
+                    });
+                }
+            };
+
+            let value = deserializer.deserialize(&body).map_err(|e| {
+                ReplayError::DeserializationFailed {
+                    channel: channel_name.clone(),
+                    details: e.to_string(),
+                }
+            })?;
             writer(publisher.as_mut(), value);
-            publisher.flush_loaned_values(_header.published_at);
+            publisher.flush_loaned_values(header.published_at);
         }
     }
 
@@ -416,6 +532,7 @@ fn hydrate_subscribers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::DEFAULT_MAX_MISMATCH_DETAILS;
     use task::callback::{Callback, PortMut, Run};
     use task::output::Output;
     use task::publisher::{Publisher, PublisherConfig};
@@ -497,12 +614,16 @@ mod tests {
 
         let mut state = ReplayNodeState::new();
         let mut errors = Vec::new();
+        let store = ReproducedPayloadStore::new();
+        let report = Mutex::new(ReplayReport::new(1, DEFAULT_MAX_MISMATCH_DETAILS));
         replay_execution(
             &mut node,
             &mut state,
             &execution,
             &registry,
             &HashMap::new(),
+            &store,
+            &report,
             DivergencePolicy::Strict,
             &mut errors,
         );
@@ -571,7 +692,7 @@ mod tests {
                     0u16,
                     vec![(
                         MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
-                        serde_json::to_vec(&7u64).unwrap(),
+                        PayloadSource::Logged(serde_json::to_vec(&7u64).unwrap()),
                     )],
                 );
                 m
@@ -580,12 +701,16 @@ mod tests {
 
         let mut state = ReplayNodeState::new();
         let mut errors = Vec::new();
+        let store = ReproducedPayloadStore::new();
+        let report = Mutex::new(ReplayReport::new(1, DEFAULT_MAX_MISMATCH_DETAILS));
         replay_execution(
             &mut node,
             &mut state,
             &execution,
             &registry,
             &HashMap::new(),
+            &store,
+            &report,
             DivergencePolicy::Strict,
             &mut errors,
         );
@@ -657,6 +782,8 @@ mod tests {
             &execution,
             &registry,
             &HashMap::new(),
+            &ReproducedPayloadStore::new(),
+            &Mutex::new(ReplayReport::new(1, DEFAULT_MAX_MISMATCH_DETAILS)),
             DivergencePolicy::Strict,
             &mut errors,
         );
@@ -787,11 +914,11 @@ mod tests {
                     vec![
                         (
                             MessageHeader::new(FrameworkTime::from_nanoseconds(10)),
-                            serde_json::to_vec(&42u64).unwrap(),
+                            PayloadSource::Logged(serde_json::to_vec(&42u64).unwrap()),
                         ),
                         (
                             MessageHeader::new(FrameworkTime::from_nanoseconds(20)),
-                            serde_json::to_vec(&99u64).unwrap(),
+                            PayloadSource::Logged(serde_json::to_vec(&99u64).unwrap()),
                         ),
                     ],
                 );
@@ -802,12 +929,16 @@ mod tests {
 
         let mut state = ReplayNodeState::new();
         let mut errors = Vec::new();
+        let store = ReproducedPayloadStore::new();
+        let report = Mutex::new(ReplayReport::new(1, DEFAULT_MAX_MISMATCH_DETAILS));
         replay_execution(
             &mut node,
             &mut state,
             &execution,
             &registry,
             &HashMap::new(),
+            &store,
+            &report,
             DivergencePolicy::Strict,
             &mut errors,
         );

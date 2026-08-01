@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use fizz_buzz_application::build_live_graph;
+use fizz_buzz_application::build_live_graph_with;
 use live_executor::LiveExecutor;
 use task::executor::Executor;
 
@@ -14,6 +14,11 @@ struct CliArgs {
     /// File to log to including file extension.
     #[arg(short, long, default_value = "./tmp/log.ndjson")]
     log_path: PathBuf,
+
+    /// Do not log the intermediate `integer` channel, so exact replay must
+    /// reproduce the integers by re-running the producer.
+    #[arg(long)]
+    no_log_integer: bool,
 
     /// Print the task graph and exit without running.
     #[arg(long)]
@@ -31,7 +36,8 @@ fn main() {
 
     println!("Building fizz buzz callback nodes for live execution");
 
-    let built = build_live_graph(&args.log_path).expect("Could not build task graph");
+    let built = build_live_graph_with(&args.log_path, !args.no_log_integer)
+        .expect("Could not build task graph");
 
     if args.print {
         built.graph.print();

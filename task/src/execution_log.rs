@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::Saturating;
 
 use crate::callback::CallbackNode;
@@ -187,12 +187,28 @@ pub struct CallbackDescriptor {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExecutionLogDescriptor {
     pub index_to_callbacks: HashMap<usize, CallbackDescriptor>,
+    /// Channel names whose messages were written to the ordinary log by the
+    /// logging build step. `#[serde(default)]` keeps logs written before this
+    /// annotation existed parseable — exact replay then falls back to whatever
+    /// channels it observes in the ordinary log.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub logged_channels: HashSet<ChannelName>,
 }
 
 impl ExecutionLogDescriptor {
-    /// Creates a descriptor from a slice of callback nodes.
-    /// This should be called after all node have been added.
+    /// Creates a descriptor from a slice of callback nodes, annotating no
+    /// channels as logged. Equivalent to
+    /// `new_with_logged_channels(nodes, HashSet::new())`.
     pub fn new(nodes: &[CallbackNode]) -> ExecutionLogDescriptor {
+        Self::new_with_logged_channels(nodes, HashSet::new())
+    }
+
+    /// Creates a descriptor from a slice of callback nodes, annotating which
+    /// channels were written to the ordinary log.
+    pub fn new_with_logged_channels(
+        nodes: &[CallbackNode],
+        logged_channels: HashSet<ChannelName>,
+    ) -> ExecutionLogDescriptor {
         use crate::callback::CallbackViews;
 
         let mut index_to_callbacks = HashMap::new();
@@ -222,7 +238,10 @@ impl ExecutionLogDescriptor {
             );
         }
 
-        ExecutionLogDescriptor { index_to_callbacks }
+        ExecutionLogDescriptor {
+            index_to_callbacks,
+            logged_channels,
+        }
     }
 }
 

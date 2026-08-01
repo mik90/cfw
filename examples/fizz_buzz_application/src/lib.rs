@@ -29,6 +29,18 @@ fn app_graph_builder() -> TaskGraphBuilder {
 }
 
 pub fn build_live_graph(log_path: &std::path::Path) -> Result<BuiltGraph, BuildError> {
+    build_live_graph_with(log_path, true)
+}
+
+/// Like [`build_live_graph`], but `log_integer: false` skips registering `u64`
+/// as loggable, so the intermediate `integer` channel is **not** written to
+/// the ordinary log. Exact replay then reproduces the integer values by
+/// re-running the producer (see the exact replay executor's reproduction
+/// store).
+pub fn build_live_graph_with(
+    log_path: &std::path::Path,
+    log_integer: bool,
+) -> Result<BuiltGraph, BuildError> {
     let config = logging::LogTaskConfiguration {
         output_path: log_path.to_path_buf(),
         period: std::time::Duration::from_millis(1000),
@@ -38,7 +50,9 @@ pub fn build_live_graph(log_path: &std::path::Path) -> Result<BuiltGraph, BuildE
     let mut registry = ChannelRegistry::new();
     registry.register_loggable::<task::execution_log::ExecutionLogMessage>();
     registry.register_loggable::<String>();
-    registry.register_loggable::<u64>();
+    if log_integer {
+        registry.register_loggable::<u64>();
+    }
 
     let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
         config, registry,

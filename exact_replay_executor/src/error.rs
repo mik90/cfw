@@ -1,7 +1,10 @@
 //! Structured error types for the exact replay executor.
 
 use std::fmt;
-use task::pub_sub::ChannelName;
+
+use task::execution_log::Direction;
+use task::pub_sub::{CallbackNodeName, ChannelName};
+use task::time::FrameworkTime;
 
 /// Errors that can occur during exact replay.
 #[derive(Debug, Clone)]
@@ -56,13 +59,15 @@ pub enum ReplayError {
     /// An execution from the log references a node index that has no
     /// descriptor entry and is not an infrastructure node.
     DescriptorlessApplicationNode { index: usize, node_name: String },
-    /// An ordinary-log payload that the execution log references was not
-    /// found in the log file.
-    MissingOrdinaryPayload {
+    /// A message reference in the execution log could not be reproduced: the
+    /// channel was logged but its ordinary-log payload is missing, or the
+    /// channel was not logged and no in-graph producer exists to reproduce it.
+    UnreproducibleMessage {
         channel: ChannelName,
-        header_time: String,
-        direction: String,
-        node: String,
+        header_time: FrameworkTime,
+        direction: Direction,
+        node: CallbackNodeName,
+        reason: String,
     },
 }
 
@@ -151,16 +156,17 @@ impl fmt::Display for ReplayError {
                      and is not an infrastructure node"
                 )
             }
-            ReplayError::MissingOrdinaryPayload {
+            ReplayError::UnreproducibleMessage {
                 channel,
                 header_time,
                 direction,
                 node,
+                reason,
             } => {
                 write!(
                     f,
-                    "no ordinary log payload for {direction} on channel '{channel}' at time {header_time} \
-                     (node '{node}')"
+                    "cannot reproduce {direction:?} message on channel '{channel}' at {header_time} \
+                     (node '{node}'): {reason}"
                 )
             }
         }

@@ -17,6 +17,8 @@ use crate::descriptor::{validate_descriptor, validate_descriptor_less_executions
 use crate::error::{ExactReplayExecutorError, ReplayError};
 use crate::log_reader::parse_replay_log;
 use crate::replay_task::{DivergencePolicy, ReplayNodeState, replay_execution};
+use crate::report::{DEFAULT_MAX_MISMATCH_DETAILS, ReplayReport};
+use crate::reproduce::ReproducedPayloadStore;
 use crate::scheduler::ReplayScheduler;
 
 /// Signal used to request that the executor stop.
@@ -37,6 +39,11 @@ pub struct ExactReplayExecutor {
     /// Ordinary-log payloads per channel, retained for forwarded-message
     /// context resolution during replay.
     source_messages: HashMap<task::pub_sub::ChannelName, Vec<(MessageHeader, Vec<u8>)>>,
+    /// Reproduced payloads for unlogged channels, shared with the replay
+    /// thread.
+    store: ReproducedPayloadStore,
+    /// Accuracy report, shared with the replay thread.
+    report: Arc<std::sync::Mutex<ReplayReport>>,
     /// Total number of executions parsed from the log (cached at construction).
     total_execution_count: usize,
     /// Number of executions consumed so far, shared with the replay thread.
@@ -80,6 +87,11 @@ impl ExactReplayExecutor {
             registry: config.registry,
             scheduler: Some(scheduler),
             source_messages: replay_log.source_messages,
+            store: ReproducedPayloadStore::new(),
+            report: Arc::new(std::sync::Mutex::new(ReplayReport::new(
+                total_execution_count,
+                DEFAULT_MAX_MISMATCH_DETAILS,
+            ))),
             total_execution_count,
             consumed_count: Arc::new(AtomicUsize::new(0)),
             execution_threads: Vec::new(),
@@ -110,6 +122,12 @@ impl ExactReplayExecutor {
             .expect("error lock poisoned")
             .clone()
     }
+
+    /// Snapshot of the replay accuracy report. Works while running and after
+    /// completion; call after [`stop`](Self::stop) for the final numbers.
+    pub fn replay_report(&self) -> ReplayReport {
+        self.report.lock().expect("report lock poisoned").clone()
+    }
 }
 
 impl Executor for ExactReplayExecutor {
@@ -131,6 +149,8 @@ impl Executor for ExactReplayExecutor {
         let mut nodes = std::mem::take(&mut self.nodes);
         let registry = self.registry.clone();
         let source_messages = std::mem::take(&mut self.source_messages);
+        let store = self.store.clone();
+        let report = self.report.clone();
         let divergence_policy = self.divergence_policy;
         let collected_errors = self.collected_errors.clone();
         let consumed_count = self.consumed_count.clone();
@@ -153,6 +173,7 @@ impl Executor for ExactReplayExecutor {
                         index: node_idx,
                         node_count: nodes.len(),
                     });
+                    report.lock().unwrap().record_error();
                     consumed_count.fetch_add(1, Ordering::Release);
                     if divergence_policy == DivergencePolicy::Strict {
                         should_run.store(false, Ordering::Release);
@@ -168,16 +189,26 @@ impl Executor for ExactReplayExecutor {
                     execution,
                     &registry,
                     &source_messages,
+                    &store,
+                    &report,
                     divergence_policy,
                     &mut errors,
                 );
 
                 // Advance consumed count after each execution.
                 consumed_count.fetch_add(1, Ordering::Release);
+                report.lock().unwrap().mark_consumed();
 
                 if !errors.is_empty() {
+                    let new_errors = errors.len();
                     let mut errs = collected_errors.lock().expect("error lock poisoned");
                     errs.extend(errors);
+                    {
+                        let mut rep = report.lock().unwrap();
+                        for _ in 0..new_errors {
+                            rep.record_error();
+                        }
+                    }
                     if divergence_policy == DivergencePolicy::Strict {
                         should_run.store(false, Ordering::Release);
                         break;

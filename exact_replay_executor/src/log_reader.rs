@@ -11,11 +11,11 @@
 //!    groups are in replay order, so same-channel/same-timestamp payloads are
 //!    consumed deterministically (FIFO per channel).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use logging::log_file::LogFileReader;
 use task::execution_log::{
-    EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
+    Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
     ExecutionLogEntry, ExecutionLogMessage,
 };
 use task::loggable::Loggable;
@@ -25,20 +25,34 @@ use task::time::FrameworkTime;
 
 use crate::error::ReplayError;
 
+/// Where a message reference's payload comes from during replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PayloadSource {
+    /// The payload was found in the ordinary log (the channel was logged).
+    Logged(Vec<u8>),
+    /// The payload was not logged; replay reproduces it by re-running the
+    /// producing node and feeding its captured output to consumers.
+    Reproduce,
+    /// The payload was not logged and cannot be reproduced.
+    Gap,
+}
+
 /// A single replayed execution: the callback node index, the time it executed,
 /// the received messages (by subscriber ordinal), and the published messages
-/// (by publisher ordinal with their serialized bytes from the ordinary log).
+/// (by publisher ordinal). Each message reference carries its [`PayloadSource`]
+/// — logged payloads are resolved at parse time, reproduced payloads are
+/// recovered from the reproduction store during replay.
 #[derive(Debug, Clone)]
 pub(crate) struct ReplayExecution {
     pub callback_node_index: usize,
     pub execution_time: FrameworkTime,
     pub execution_duration_ns: u64,
     /// Messages received by each subscriber ordinal during this execution.
-    /// Key: subscriber ordinal, Value: (header, serialized_body)
-    pub received: HashMap<u16, Vec<(MessageHeader, Vec<u8>)>>,
+    /// Key: subscriber ordinal, Value: (header, payload source)
+    pub received: HashMap<u16, Vec<(MessageHeader, PayloadSource)>>,
     /// Messages published by each publisher ordinal during this execution.
-    /// Key: publisher ordinal, Value: (header, serialized_body)
-    pub published: HashMap<u16, Vec<(MessageHeader, Vec<u8>)>>,
+    /// Key: publisher ordinal, Value: (header, payload source)
+    pub published: HashMap<u16, Vec<(MessageHeader, PayloadSource)>>,
 }
 
 /// Parsed log data: the execution log descriptor, a time-ordered list of
@@ -144,6 +158,20 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
     // `HashMap` so that groups preserve the order they were first seen in
     // the log.  Then sort by execution time with stable ordering for ties.
 
+    // The effective set of logged channels: whatever the descriptor annotated
+    // plus whatever we actually observe in the ordinary log (backward
+    // compatible with logs written before the annotation existed).
+    let mut logged_channels: HashSet<ChannelName> = descriptor.logged_channels.clone();
+    logged_channels.extend(ordinary_log.keys().map(|(channel, _)| channel.clone()));
+
+    // Channels some node in the replay graph produces. A message on a channel
+    // outside this set cannot be reproduced by re-running a producer.
+    let reproducible_channels: HashSet<ChannelName> = descriptor
+        .index_to_callbacks
+        .values()
+        .flat_map(|cd| cd.publisher_index_to_channel_name.values().cloned())
+        .collect();
+
     let mut groups: Vec<ExecutionGroup> = Vec::new();
     let mut group_index: HashMap<(usize, i64), usize> = HashMap::new();
 
@@ -198,8 +226,8 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
             continue;
         };
 
-        let mut received: HashMap<u16, Vec<(MessageHeader, Vec<u8>)>> = HashMap::new();
-        let mut published: HashMap<u16, Vec<(MessageHeader, Vec<u8>)>> = HashMap::new();
+        let mut received: HashMap<u16, Vec<(MessageHeader, PayloadSource)>> = HashMap::new();
+        let mut published: HashMap<u16, Vec<(MessageHeader, PayloadSource)>> = HashMap::new();
 
         for entry in &group.entries {
             for msg in &entry.messages {
@@ -232,25 +260,54 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
                     };
 
                 // Resolve the ordinary-log payload for this (channel, header).
-                let body = lookup_payload(
+                // A channel that was logged must always resolve; a channel that
+                // was not logged falls back to reproduction.
+                let source = match lookup_payload(
                     &ordinary_log,
                     &mut consumed,
                     &channel_name,
                     &msg.header,
                     is_received,
                     node_idx,
-                )?;
+                )? {
+                    Some(body) => PayloadSource::Logged(body),
+                    None => {
+                        if logged_channels.contains(&channel_name)
+                            || !reproducible_channels.contains(&channel_name)
+                        {
+                            return Err(ReplayError::UnreproducibleMessage {
+                                channel: channel_name.clone(),
+                                header_time: msg.header.published_at,
+                                direction: if is_received {
+                                    Direction::Received
+                                } else {
+                                    Direction::Published
+                                },
+                                node: format!("node[{node_idx}]"),
+                                reason: if logged_channels.contains(&channel_name) {
+                                    "channel was logged but no ordinary-log payload was recorded"
+                                        .to_owned()
+                                } else {
+                                    "channel was not logged and has no producer in the replay \
+                                     graph"
+                                        .to_owned()
+                                },
+                            });
+                        }
+                        PayloadSource::Reproduce
+                    }
+                };
 
                 if is_received {
                     received
                         .entry(msg.ordinal)
                         .or_default()
-                        .push((msg.header, body));
+                        .push((msg.header, source));
                 } else {
                     published
                         .entry(msg.ordinal)
                         .or_default()
-                        .push((msg.header, body));
+                        .push((msg.header, source));
                 }
             }
         }
@@ -281,6 +338,10 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
 /// per-direction occurrence cursor. Unique timestamps resolve to the same
 /// payload for both references; multiple same-timestamp messages are handed
 /// out deterministically in log order.
+///
+/// Returns `Ok(None)` when the channel has no entries at all for that
+/// timestamp — a channel that was not logged. A logged channel that runs out
+/// of bodies is an error (the ordinary log is incomplete).
 fn lookup_payload(
     ordinary_log: &HashMap<(ChannelName, i64), Vec<Vec<u8>>>,
     consumed: &mut HashMap<(ChannelName, i64, bool), usize>,
@@ -288,19 +349,14 @@ fn lookup_payload(
     header: &MessageHeader,
     is_received: bool,
     node_idx: usize,
-) -> Result<Vec<u8>, ReplayError> {
+) -> Result<Option<Vec<u8>>, ReplayError> {
     let key = (
         channel_name.to_owned(),
         header.published_at.to_nanoseconds(),
     );
-    let bodies = ordinary_log
-        .get(&key)
-        .ok_or_else(|| ReplayError::MissingOrdinaryPayload {
-            channel: channel_name.to_owned(),
-            header_time: format!("{:?}", header.published_at),
-            direction: if is_received { "received" } else { "published" }.to_owned(),
-            node: format!("node[{node_idx}]"),
-        })?;
+    let Some(bodies) = ordinary_log.get(&key) else {
+        return Ok(None);
+    };
 
     let cursor = consumed
         .entry((
@@ -311,14 +367,19 @@ fn lookup_payload(
         .or_insert(0);
     let body = bodies
         .get(*cursor)
-        .ok_or_else(|| ReplayError::MissingOrdinaryPayload {
+        .ok_or_else(|| ReplayError::UnreproducibleMessage {
             channel: channel_name.to_owned(),
-            header_time: format!("{:?}", header.published_at),
-            direction: if is_received { "received" } else { "published" }.to_owned(),
+            header_time: header.published_at,
+            direction: if is_received {
+                Direction::Received
+            } else {
+                Direction::Published
+            },
             node: format!("node[{node_idx}]"),
+            reason: "logged channel is missing an ordinary-log payload".to_owned(),
         })?;
     *cursor += 1;
-    Ok(body.clone())
+    Ok(Some(body.clone()))
 }
 
 #[cfg(test)]
@@ -453,11 +514,137 @@ mod tests {
 
         let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
         let result = parse_replay_log(&reader);
-        assert!(result.is_err(), "missing ordinary payload must be an error");
+        assert!(
+            result.is_err(),
+            "an unreproducible payload must be an error"
+        );
         assert!(matches!(
             result.unwrap_err(),
-            ReplayError::MissingOrdinaryPayload { .. }
+            ReplayError::UnreproducibleMessage { .. }
         ));
+    }
+
+    /// A message on a channel that is neither logged nor produced by any node
+    /// in the graph is unreproducible and must be an error.
+    #[test]
+    fn unreproducible_message_is_an_error() {
+        let mut desc = ExecutionLogDescriptor::new(&[]);
+        let mut sub_map = HashMap::new();
+        sub_map.insert(0usize, "input".to_string());
+        desc.index_to_callbacks.insert(
+            0usize,
+            task::execution_log::CallbackDescriptor {
+                subscriber_index_to_channel_name: sub_map,
+                publisher_index_to_channel_name: HashMap::new(),
+            },
+        );
+
+        let mut buf = Vec::<u8>::new();
+        let mut writer = logging::log_file_json::JsonLogFileWriter::new(&mut buf);
+        let desc_bytes = serde_json::to_vec(&desc).unwrap();
+        write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
+
+        let mut entry = task::execution_log::ExecutionLogEntry {
+            callback_node_index: 0,
+            execution_time: FrameworkTime::from_nanoseconds(100),
+            execution_duration_ns: 0,
+            messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
+        };
+        entry.messages[0] = task::execution_log::LoggedMessage {
+            ordinal: 0,
+            direction: task::execution_log::Direction::Received,
+            header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
+        };
+        let scratch = execution_log_bytes(&[entry], 0);
+        write_entry(
+            &mut writer,
+            EXECUTION_LOG_CHANNEL,
+            &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
+            &scratch,
+        );
+        finish_writer(writer);
+
+        let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
+        let result = parse_replay_log(&reader);
+        assert!(result.is_err(), "unproducible channel must be an error");
+        assert!(matches!(
+            result.unwrap_err(),
+            ReplayError::UnreproducibleMessage { .. }
+        ));
+    }
+
+    /// A message on a channel that is not logged but IS produced by a node in
+    /// the graph is classified as [`PayloadSource::Reproduce`] so replay can
+    /// recover it by re-running the producer.
+    #[test]
+    fn unlogged_producible_channel_is_reproduced() {
+        let mut desc = ExecutionLogDescriptor::new(&[]);
+        // Node 0 publishes "source" (unlogged), node 1 subscribes to it.
+        let mut pub_map = HashMap::new();
+        pub_map.insert(0usize, "source".to_string());
+        desc.index_to_callbacks.insert(
+            0usize,
+            task::execution_log::CallbackDescriptor {
+                subscriber_index_to_channel_name: HashMap::new(),
+                publisher_index_to_channel_name: pub_map,
+            },
+        );
+        let mut sub_map = HashMap::new();
+        sub_map.insert(0usize, "source".to_string());
+        desc.index_to_callbacks.insert(
+            1usize,
+            task::execution_log::CallbackDescriptor {
+                subscriber_index_to_channel_name: sub_map,
+                publisher_index_to_channel_name: HashMap::new(),
+            },
+        );
+
+        let mut buf = Vec::<u8>::new();
+        let mut writer = logging::log_file_json::JsonLogFileWriter::new(&mut buf);
+        let desc_bytes = serde_json::to_vec(&desc).unwrap();
+        write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
+
+        // Node 0 published "source" at 100; node 1 received it at 100. No
+        // ordinary-log entry for "source" — it was not logged.
+        let mut producer = task::execution_log::ExecutionLogEntry {
+            callback_node_index: 0,
+            execution_time: FrameworkTime::from_nanoseconds(100),
+            execution_duration_ns: 0,
+            messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
+        };
+        producer.messages[0] = task::execution_log::LoggedMessage {
+            ordinal: 0,
+            direction: task::execution_log::Direction::Published,
+            header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
+        };
+        let mut consumer = task::execution_log::ExecutionLogEntry {
+            callback_node_index: 1,
+            execution_time: FrameworkTime::from_nanoseconds(150),
+            execution_duration_ns: 0,
+            messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
+        };
+        consumer.messages[0] = task::execution_log::LoggedMessage {
+            ordinal: 0,
+            direction: task::execution_log::Direction::Received,
+            header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
+        };
+        let scratch = execution_log_bytes(&[producer, consumer], 0);
+        write_entry(
+            &mut writer,
+            EXECUTION_LOG_CHANNEL,
+            &MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
+            &scratch,
+        );
+        finish_writer(writer);
+
+        let reader = JsonLogFileReader::from_reader(buf.as_slice()).unwrap();
+        let log = parse_replay_log(&reader).expect("should parse");
+        assert_eq!(log.executions.len(), 2);
+
+        let produced = log.executions[0].published.get(&0).unwrap();
+        let received = log.executions[1].received.get(&0).unwrap();
+        assert!(matches!(produced[0].1, PayloadSource::Reproduce));
+        assert!(matches!(received[0].1, PayloadSource::Reproduce));
     }
 
     #[test]
@@ -557,11 +744,13 @@ mod tests {
         assert_eq!(msgs0.len(), 1);
         assert_eq!(msgs1.len(), 1);
         assert_eq!(
-            msgs0[0].1, b"first",
+            msgs0[0].1,
+            PayloadSource::Logged(b"first".to_vec()),
             "first execution should get the first ordinary-log entry"
         );
         assert_eq!(
-            msgs1[0].1, b"second",
+            msgs1[0].1,
+            PayloadSource::Logged(b"second".to_vec()),
             "second execution should get the second ordinary-log entry"
         );
     }

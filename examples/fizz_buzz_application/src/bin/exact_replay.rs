@@ -91,4 +91,24 @@ fn main() {
     for error in replay_errors {
         println!("  - {error}");
     }
+
+    let report = executor.replay_report();
+    println!(
+        "Reproduction: exact={} ratio={:.3} logged={} reproduced={} mismatches={} gaps={}",
+        report.is_exact(),
+        report.exact_reproduction_ratio(),
+        report.logged_count(),
+        report.reproduced_count(),
+        report.mismatch_count(),
+        report.gap_count()
+    );
+    for (channel, stats) in report.channel_stats() {
+        println!(
+            "  channel '{channel}': logged={} reproduced={} mismatches={} gaps={}",
+            stats.logged, stats.reproduced, stats.mismatches, stats.gaps
+        );
+    }
+    for detail in report.mismatch_details() {
+        println!("  mismatch: {detail}");
+    }
 }

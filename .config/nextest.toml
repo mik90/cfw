@@ -6,4 +6,4 @@
 # excluded from the default miri run. Pass `--ignore-default-filter` to run
 # everything anyway.
 [profile.default-miri]
-default-filter = 'not binary(forwarded_replay) and not binary(exact_replay_integration) and not test(executor::tests)'
+default-filter = 'not binary(forwarded_replay) and not binary(exact_replay_integration) and not binary(reproduce_unlogged) and not test(executor::tests)'
