@@ -10,6 +10,8 @@ pub enum SerializeError {
     IoError(io::Error),
     #[cfg(feature = "serde")]
     SerdeJson(serde_json::Error),
+    /// Any non-serde backend's error (facet, protobuf, etc.).
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl Display for SerializeError {
@@ -18,6 +20,7 @@ impl Display for SerializeError {
             SerializeError::IoError(i) => write!(f, "IoError: {i}"),
             #[cfg(feature = "serde")]
             SerializeError::SerdeJson(e) => write!(f, "SerdeJson: {e}"),
+            SerializeError::Other(e) => write!(f, "Other: {e}"),
         }
     }
 }
@@ -39,6 +42,8 @@ pub enum DeserializeError {
     MissingForwardedMessage,
     #[cfg(feature = "serde")]
     SerdeJson(serde_json::Error),
+    /// Any non-serde backend's error (facet, protobuf, etc.).
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl Display for DeserializeError {
@@ -55,6 +60,7 @@ impl Display for DeserializeError {
             }
             #[cfg(feature = "serde")]
             DeserializeError::SerdeJson(e) => write!(f, "SerdeJson: {e}"),
+            DeserializeError::Other(e) => write!(f, "Other: {e}"),
         }
     }
 }

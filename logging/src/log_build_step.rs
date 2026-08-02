@@ -39,12 +39,29 @@ struct Shard(Vec<ChannelLogger>, Vec<Box<dyn GenericSubscriber>>);
 /// own diagnostics channel (`log_task_diagnostics_channel`).
 pub struct LoggingBuildStep {
     config: LogTaskConfiguration,
-    registry: ChannelRegistry,
+    /// Channels to skip even when their value type is loggable. Lets callers
+    /// keep intermediates out of the ordinary log (exact replay then
+    /// reproduces them by re-running the producing node).
+    unlogged_channels: HashSet<ChannelName>,
 }
 
 impl LoggingBuildStep {
-    pub fn new(config: LogTaskConfiguration, registry: ChannelRegistry) -> Self {
-        LoggingBuildStep { config, registry }
+    pub fn new(config: LogTaskConfiguration) -> Self {
+        LoggingBuildStep {
+            config,
+            unlogged_channels: HashSet::new(),
+        }
+    }
+
+    /// Exclude `channels` from logging. Channels that aren't loggable are
+    /// skipped anyway; this additionally skips loggable ones.
+    pub fn with_unlogged_channels(
+        mut self,
+        channels: impl IntoIterator<Item = impl Into<ChannelName>>,
+    ) -> Self {
+        self.unlogged_channels
+            .extend(channels.into_iter().map(Into::into));
+        self
     }
 }
 
@@ -57,11 +74,12 @@ impl TaskGraphBuildStep for LoggingBuildStep {
     fn build_step(
         &self,
         nodes: &[CallbackNode],
+        channel_registry: &mut ChannelRegistry,
     ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
         // Build a `ChannelLogger` for each (publisher, matching-serializer)
-        // pair found across all existing callback nodes. Subscribers are
-        // collected in lockstep so the LogTask's subscriber slots line up
-        // 1:1 with its `channel_loggers`.
+        // pair found across all existing callback nodes, skipping denylisted
+        // channels. Subscribers are collected in lockstep so the LogTask's
+        // subscriber slots line up 1:1 with its `channel_loggers`.
         let mut channel_loggers: Vec<ChannelLogger> = Vec::new();
         let mut subscribers = Vec::new();
 
@@ -69,7 +87,11 @@ impl TaskGraphBuildStep for LoggingBuildStep {
             node.callback().for_each_publisher(&mut |publisher| {
                 let channel_name = publisher.config().channel_name.clone();
 
-                let Some(serializer) = self.registry.serializer_for(publisher.value_type_id())
+                if self.unlogged_channels.contains(&channel_name) {
+                    return;
+                }
+
+                let Some(serializer) = channel_registry.serializer_for(publisher.value_type_id())
                 else {
                     return;
                 };
@@ -96,9 +118,9 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         // unconditionally so the LogTask can drain and log execution metadata.
         // Silently skipped if ExecutionLogMessage wasn't registered in the
         // ChannelRegistry (same behavior as regular publisher introspection).
-        if let Some(serializer) = self
-            .registry
-            .serializer_for(std::any::TypeId::of::<ExecutionLogMessage>())
+        if !self.unlogged_channels.contains(EXECUTION_LOG_CHANNEL)
+            && let Some(serializer) =
+                channel_registry.serializer_for(std::any::TypeId::of::<ExecutionLogMessage>())
         {
             let sub_config = SubscriberConfig {
                 is_optional: true,

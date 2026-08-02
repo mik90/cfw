@@ -64,6 +64,12 @@ impl Callback for IntegerProducer {
         output.send();
         Run::new(1)
     }
+    fn register_channels(&self, registry: &mut ChannelRegistry) {
+        // Hand-rolled callback: register the concrete port type explicitly.
+        task::channel_registry::Probe::<u32>::new().try_register(registry);
+        task::channel_registry::Probe::<u32>::new()
+            .try_register_channel(registry, self.publisher.config().channel_name.clone());
+    }
     fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
     fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
         f(&self.publisher);
@@ -95,6 +101,19 @@ impl Callback for Forwarder {
             fwd.send();
         }
         Run::new(1)
+    }
+    fn register_channels(&self, registry: &mut ChannelRegistry) {
+        // Hand-rolled callback: register the concrete port types explicitly.
+        // The forwarded channel only gets its serializer here — the full
+        // channel mapping (deserializer + publisher factory) is registered by
+        // the replay executor via `register_forwarded_channel`.
+        use task::channel_registry::MaybeRegister as _;
+        task::channel_registry::Probe::<u32>::new().try_register(registry);
+        task::channel_registry::Probe::<u32>::new()
+            .try_register_channel(registry, self.subscriber.config().channel_name.clone());
+        task::channel_registry::Probe::<ForwardedMessage<bool, u32>>::new().try_register(registry);
+        task::channel_registry::Probe::<ForwardedMessage<bool, u32>>::new()
+            .try_register_channel(registry, self.publisher.config().channel_name.clone());
     }
     fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
         f(&self.subscriber);
@@ -139,6 +158,13 @@ impl Callback for Consumer {
             signal.request_stop();
         }
         Run::new(1)
+    }
+    fn register_channels(&self, registry: &mut ChannelRegistry) {
+        // Hand-rolled callback: register the concrete port type explicitly.
+        use task::channel_registry::MaybeRegister as _;
+        task::channel_registry::Probe::<ForwardedMessage<bool, u32>>::new().try_register(registry);
+        task::channel_registry::Probe::<ForwardedMessage<bool, u32>>::new()
+            .try_register_channel(registry, self.subscriber.config().channel_name.clone());
     }
     fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
         f(&self.subscriber);
@@ -442,18 +468,12 @@ fn replays_a_live_forwarding_run() {
     let stop_signal_cell = Arc::new(OnceLock::new());
     let producer_done = Arc::new(AtomicUsize::new(0));
 
-    let mut log_registry = ChannelRegistry::new();
-    log_registry.register_loggable::<u32>();
-    log_registry.register_loggable::<ForwardedMessage<bool, u32>>();
-    log_registry.register_loggable::<ExecutionLogMessage>();
-
     let logging_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
         logging::log_task::LogTaskConfiguration {
             output_path: log_path.clone(),
             period: Duration::from_millis(10),
             num_tasks: 1,
         },
-        log_registry,
     ));
 
     let graph = task::task_graph_builder::TaskGraphBuilder::new()

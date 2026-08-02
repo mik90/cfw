@@ -771,16 +771,10 @@ mod tests {
         let string_store = StringCollector::make_string_store();
         let stop_signal_cell = Arc::new(OnceLock::new());
 
-        let mut reg = task::channel_registry::ChannelRegistry::new();
         let mut nodes = vec![
-            IncrementingIntegerPublisher::build_callback_node(&mut reg),
-            FizzBuzzCalculator::build_callback_node(&mut reg),
-            StringCollector::build_callback_node(
-                string_store.clone(),
-                stop_signal_cell.clone(),
-                1,
-                &mut reg,
-            ),
+            IncrementingIntegerPublisher::build_callback_node(),
+            FizzBuzzCalculator::build_callback_node(),
+            StringCollector::build_callback_node(string_store.clone(), stop_signal_cell.clone(), 1),
         ];
         let connect_result = connect_callback_nodes(&mut nodes);
         assert!(
@@ -826,16 +820,10 @@ mod tests {
         let string_store = StringCollector::make_string_store();
         let stop_signal_cell = Arc::new(OnceLock::new());
 
-        let mut all_reg = task::channel_registry::ChannelRegistry::new();
         let mut all_nodes = vec![
-            IncrementingIntegerPublisher::build_callback_node(&mut all_reg),
-            FizzBuzzCalculator::build_callback_node(&mut all_reg),
-            StringCollector::build_callback_node(
-                string_store.clone(),
-                stop_signal_cell.clone(),
-                1,
-                &mut all_reg,
-            ),
+            IncrementingIntegerPublisher::build_callback_node(),
+            FizzBuzzCalculator::build_callback_node(),
+            StringCollector::build_callback_node(string_store.clone(), stop_signal_cell.clone(), 1),
         ];
         let connect_result = connect_callback_nodes(&mut all_nodes);
         assert!(

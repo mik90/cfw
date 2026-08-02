@@ -122,6 +122,7 @@ impl TaskGraphBuildStep for ReplayBuildStep {
     fn build_step(
         &self,
         _nodes: &[CallbackNode],
+        _channel_registry: &mut task::channel_registry::ChannelRegistry,
     ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
         let mut replay_channels: Vec<(ChannelName, std::any::TypeId)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -303,7 +304,9 @@ mod tests {
             stop_signal_cell: stop_signal_cell.clone(),
         };
 
-        let nodes = build_step.build_step(&[]).unwrap();
+        let nodes = build_step
+            .build_step(&[], &mut ChannelRegistry::new())
+            .unwrap();
         assert_eq!(nodes.len(), 1);
         let mut node = nodes.into_iter().next().unwrap();
         assert_eq!(node.name(), "ReplayTask");
@@ -404,7 +407,9 @@ mod tests {
             stop_signal_cell,
         };
 
-        let nodes = build_step.build_step(&[]).unwrap();
+        let nodes = build_step
+            .build_step(&[], &mut ChannelRegistry::new())
+            .unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].callback().collect_publishers().len(), 1);
         assert_eq!(
@@ -438,7 +443,9 @@ mod tests {
             stop_signal_cell,
         };
 
-        let nodes = build_step.build_step(&[]).unwrap();
+        let nodes = build_step
+            .build_step(&[], &mut ChannelRegistry::new())
+            .unwrap();
         assert!(nodes.is_empty());
     }
 }

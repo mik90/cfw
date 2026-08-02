@@ -34,6 +34,5 @@ pub use output::{Output, OutputSpan};
 pub use publisher::{Publisher, PublisherConfig};
 pub use subscriber::{Subscriber, SubscriberConfig};
 pub use task_graph_builder::{
-    BuiltTaskGraph, BuiltTaskGraphWithDebugInfo, TaskGraphBuildError, TaskGraphBuildStepError,
-    TaskGraphBuilder,
+    BuiltTaskGraph, GraphDebugInfo, TaskGraphBuildError, TaskGraphBuildStepError, TaskGraphBuilder,
 };

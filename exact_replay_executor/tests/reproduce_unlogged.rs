@@ -119,7 +119,7 @@ fn producer_builder(max: u64, done: Arc<AtomicUsize>) -> CallbackBuilder {
                 max,
                 done,
             }
-            .build(&mut ChannelRegistry::new()),
+            .build(),
         ),
     )
     .with_publisher_channels(&[SOURCE_CHANNEL])
@@ -134,13 +134,10 @@ fn producer_builder(max: u64, done: Arc<AtomicUsize>) -> CallbackBuilder {
 }
 
 fn doubler_builder(received: Arc<Mutex<Vec<(FrameworkTime, u64)>>>) -> CallbackBuilder {
-    CallbackBuilder::new(
-        "Doubler".into(),
-        Box::new(Doubler { received }.build(&mut ChannelRegistry::new())),
-    )
-    .with_subscriber_channels(&[SOURCE_CHANNEL])
-    .with_publisher_channels(&[OUTPUT_CHANNEL])
-    .with_execution_duration_callback(|| Duration::from_millis(1))
+    CallbackBuilder::new("Doubler".into(), Box::new(Doubler { received }.build()))
+        .with_subscriber_channels(&[SOURCE_CHANNEL])
+        .with_publisher_channels(&[OUTPUT_CHANNEL])
+        .with_execution_duration_callback(|| Duration::from_millis(1))
 }
 
 fn collector_builder(
@@ -156,7 +153,7 @@ fn collector_builder(
                 stop_signal,
                 target,
             }
-            .build(&mut ChannelRegistry::new()),
+            .build(),
         ),
     )
     .with_subscriber_channels(&[OUTPUT_CHANNEL])
@@ -166,7 +163,7 @@ fn collector_builder(
 fn external_consumer_node(channel: &str) -> CallbackNode {
     CallbackBuilder::new(
         "ExternalConsumer".into(),
-        Box::new(ExternalConsumer.build(&mut ChannelRegistry::new())),
+        Box::new(ExternalConsumer.build()),
     )
     .with_subscriber_channels(&[channel])
     .with_execution_duration_callback(|| Duration::from_millis(1))
@@ -540,18 +537,14 @@ fn replays_a_live_run_with_unlogged_intermediates() {
     let stop_signal_cell = Arc::new(OnceLock::new());
     let producer_done = Arc::new(AtomicUsize::new(0));
 
-    let mut log_registry = ChannelRegistry::new();
-    log_registry.register_loggable::<String>();
-    log_registry.register_loggable::<ExecutionLogMessage>();
-
-    let logging_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
-        logging::log_task::LogTaskConfiguration {
+    let logging_step = Box::new(
+        logging::log_build_step::LoggingBuildStep::new(logging::log_task::LogTaskConfiguration {
             output_path: log_path.clone(),
             period: Duration::from_millis(10),
             num_tasks: 1,
-        },
-        log_registry,
-    ));
+        })
+        .with_unlogged_channels([SOURCE_CHANNEL]),
+    );
 
     let graph = task::task_graph_builder::TaskGraphBuilder::new()
         .add_pool(1, |p| {

@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use task::channel_registry::ChannelRegistry;
 use task::loggable::Loggable;
 use task::{CallbackBuilder, Output, task_graph_builder};
 use task_macros::task_callback;
@@ -53,36 +52,33 @@ impl MyTask {
     fn run(&self, context: &task::Context, mut output: Output<MyCustomData>) {
         output.integer = context.now.to_nanoseconds() as u64;
         output.string = output.integer.to_string();
+        output.send();
     }
 
-    fn callback_builder(registry: &mut ChannelRegistry) -> CallbackBuilder {
-        CallbackBuilder::new("CustomTask".to_owned(), Box::new(MyTask {}.build(registry)))
+    fn callback_builder() -> CallbackBuilder {
+        CallbackBuilder::new("CustomTask".to_owned(), Box::new(MyTask {}.build()))
             .with_publisher_channels(&["custom_data"])
             .with_next_execution_time_callback(|t| Some(t + Duration::from_millis(100)))
+            .with_execution_duration_callback(|| Duration::from_micros(100))
     }
 }
 
+/// Serialization backend lives outside the framework: `Loggable` is backend
+/// agnostic, so facet can stand in for serde without the framework knowing.
 impl Loggable for MyCustomData {
     type Context<'a> = ();
-    fn deserialize(_bytes: &[u8]) -> Result<Self, task::loggable::DeserializeError>
-    where
-        Self: Loggable<Context<'static> = ()>,
-    {
-        todo!()
+
+    fn serialize(&self, w: &mut dyn std::io::Write) -> Result<(), task::loggable::SerializeError> {
+        facet_json::to_writer_std(w, self)?;
+        Ok(())
     }
 
     fn deserialize_with_ctx(
-        _bytes: &[u8],
+        bytes: &[u8],
         _ctx: Self::Context<'_>,
     ) -> Result<Self, task::loggable::DeserializeError> {
-        todo!()
-    }
-
-    fn serialize(
-        &self,
-        _w: &mut dyn std::io::prelude::Write,
-    ) -> Result<(), task::loggable::SerializeError> {
-        todo!()
+        facet_json::from_slice(bytes)
+            .map_err(|e| task::loggable::DeserializeError::Other(Box::new(e)))
     }
 }
 
@@ -104,20 +100,16 @@ fn main() {
         } => output_log_path,
     };
 
-    let mut registry = ChannelRegistry::new();
     let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
         logging::LogTaskConfiguration {
             output_path: output_log_path,
             period: std::time::Duration::from_millis(1000),
             num_tasks: 1,
         },
-        registry,
     ));
 
     let graph = task_graph_builder::TaskGraphBuilder::new()
-        .add_pool(1, |p| {
-            p.add_callback_builder(MyTask::callback_builder(&mut registry))
-        })
+        .add_pool(1, |p| p.add_callback_builder(MyTask::callback_builder()))
         .with_log_executions(true)
         .add_build_step(logging_build_step)
         .build()

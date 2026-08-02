@@ -16,15 +16,10 @@ pub type BuildError = Box<dyn std::error::Error + Send + Sync>;
 /// integer publisher, calculator, and string collector. Callers layer on
 /// build steps / execution-logging settings as needed.
 fn app_graph_builder() -> TaskGraphBuilder {
-    let mut node_registry = ChannelRegistry::new();
     TaskGraphBuilder::new().add_pool(2, |p| {
-        p.add_callback(
-            test_tasks::IncrementingIntegerPublisher::build_callback_node(&mut node_registry),
-        )
-        .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node(
-            &mut node_registry,
-        ))
-        .add_callback(test_tasks::StringCollector::build_callback_node_lite())
+        p.add_callback(test_tasks::IncrementingIntegerPublisher::build_callback_node())
+            .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
+            .add_callback(test_tasks::StringCollector::build_callback_node_lite())
     })
 }
 
@@ -32,11 +27,11 @@ pub fn build_live_graph(log_path: &std::path::Path) -> Result<BuiltGraph, BuildE
     build_live_graph_with(log_path, true)
 }
 
-/// Like [`build_live_graph`], but `log_integer: false` skips registering `u64`
-/// as loggable, so the intermediate `integer` channel is **not** written to
-/// the ordinary log. Exact replay then reproduces the integer values by
-/// re-running the producer (see the exact replay executor's reproduction
-/// store).
+/// Like [`build_live_graph`], but `log_integer: false` adds the `integer`
+/// channel to the logging build step's unlogged-channels denylist, so the
+/// intermediate `integer` channel is **not** written to the ordinary log.
+/// Exact replay then reproduces the integer values by re-running the producer
+/// (see the exact replay executor's reproduction store).
 pub fn build_live_graph_with(
     log_path: &std::path::Path,
     log_integer: bool,
@@ -47,16 +42,11 @@ pub fn build_live_graph_with(
         num_tasks: 1,
     };
 
-    let mut registry = ChannelRegistry::new();
-    registry.register_loggable::<task::execution_log::ExecutionLogMessage>();
-    registry.register_loggable::<String>();
-    if log_integer {
-        registry.register_loggable::<u64>();
+    let mut logging_build_step = logging::log_build_step::LoggingBuildStep::new(config);
+    if !log_integer {
+        logging_build_step = logging_build_step.with_unlogged_channels(["integer"]);
     }
-
-    let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
-        config, registry,
-    ));
+    let logging_build_step = Box::new(logging_build_step);
 
     let stop_signal_cell = Arc::new(OnceLock::new());
     let graph = app_graph_builder()
@@ -89,13 +79,10 @@ pub fn build_replay_graph(
         stop_signal_cell.clone(),
     )?;
 
-    let mut node_registry = ChannelRegistry::new();
     let graph = TaskGraphBuilder::new()
         .add_pool(2, |p| {
-            p.add_callback(test_tasks::FizzBuzzCalculator::build_callback_node(
-                &mut node_registry,
-            ))
-            .add_callback(test_tasks::StringCollector::build_callback_node_lite())
+            p.add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
+                .add_callback(test_tasks::StringCollector::build_callback_node_lite())
         })
         .add_build_step(Box::new(build_step))
         .build()
@@ -126,13 +113,10 @@ pub struct ExactReplayGraph {
 pub fn build_exact_replay_graph(
     log_path: &std::path::Path,
 ) -> Result<ExactReplayGraph, BuildError> {
-    // Register the channels that appear in the replay records. `register_channel`
-    // provides the serializer (output capture), deserializer and publisher
-    // factory (input hydration) the exact replay executor needs.
-    let mut registry = ChannelRegistry::new();
-    registry.register_channel::<u64>("integer".into());
-    registry.register_channel::<String>("fizz_buzz_string".into());
-
+    // The builder auto-registers every loggable channel it sees across the
+    // graph's publishers/subscribers (plus the execution-log channel), so the
+    // built graph's registry carries the serializers/deserializers the exact
+    // replay executor needs for output capture and input hydration.
     let graph = app_graph_builder()
         .build()
         .map_err(|e| -> BuildError { e.to_string().into() })?;
@@ -145,7 +129,7 @@ pub fn build_exact_replay_graph(
 
     Ok(ExactReplayGraph {
         pools: graph.pools,
-        registry,
+        registry: graph.channel_registry,
         log_reader,
     })
 }

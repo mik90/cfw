@@ -1,10 +1,11 @@
 use std::any::{Any, TypeId};
 
+use crate::generic_subscriber::GenericSubscriber;
 use crate::message::MessageHeader;
 use crate::pub_sub::ChannelName;
+use crate::publisher::PublisherConfig;
 use crate::subscriber::SubscriberConfig;
 use crate::time::FrameworkTime;
-use crate::{generic_subscriber::GenericSubscriber, publisher::PublisherConfig};
 
 #[derive(Debug)]
 pub struct ConnectionTypeMismatch {}

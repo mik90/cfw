@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use task::callback::{Callback, CallbackNode, PortMut, Run};
 use task::callback_builder::CallbackBuilder;
-use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::executor::ExecutorStopSignal;
 use task::generic_publisher::GenericPublisher;
@@ -32,20 +31,15 @@ pub fn build_fizz_buzz_callback_nodes() -> (Vec<CallbackNode>, FizzBuzzTaskInfo)
     let string_store = StringCollector::make_string_store();
     let stop_signal = Arc::new(OnceLock::new());
 
-    let mut registry = ChannelRegistry::new();
-
     let build_result = TaskGraphBuilder::new()
         .add_pool(1, |p| {
-            p.add_callback(IncrementingIntegerPublisher::build_callback_node(
-                &mut registry,
-            ))
-            .add_callback(FizzBuzzCalculator::build_callback_node(&mut registry))
-            .add_callback(StringCollector::build_callback_node(
-                string_store.clone(),
-                stop_signal.clone(),
-                1,
-                &mut registry,
-            ))
+            p.add_callback(IncrementingIntegerPublisher::build_callback_node())
+                .add_callback(FizzBuzzCalculator::build_callback_node())
+                .add_callback(StringCollector::build_callback_node(
+                    string_store.clone(),
+                    stop_signal.clone(),
+                    1,
+                ))
         })
         .build();
 
@@ -79,10 +73,10 @@ impl IncrementingIntegerPublisher {
     }
 }
 impl IncrementingIntegerPublisher {
-    pub fn build_callback_node(registry: &mut ChannelRegistry) -> CallbackNode {
+    pub fn build_callback_node() -> CallbackNode {
         CallbackBuilder::new(
             "IncrementingIntegerPublisher".into(),
-            Box::new(IncrementingIntegerPublisher { value: 0 }.build(registry)),
+            Box::new(IncrementingIntegerPublisher { value: 0 }.build()),
         )
         .with_publisher_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
         .with_next_execution_time_callback(|t| Some(t + std::time::Duration::from_millis(500)))
@@ -114,10 +108,10 @@ impl FizzBuzzCalculator {
     }
 }
 impl FizzBuzzCalculator {
-    pub fn build_callback_node(registry: &mut ChannelRegistry) -> CallbackNode {
+    pub fn build_callback_node() -> CallbackNode {
         CallbackBuilder::new(
             "FizzBuzzCalculator".into(),
-            Box::new(FizzBuzzCalculator {}.build(registry)),
+            Box::new(FizzBuzzCalculator {}.build()),
         )
         .with_subscriber_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
         .with_publisher_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
@@ -154,7 +148,6 @@ impl StringCollector {
         string_store: Arc<Mutex<Vec<String>>>,
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target_count: usize,
-        registry: &mut ChannelRegistry,
     ) -> CallbackNode {
         CallbackBuilder::new(
             "StringCollector".into(),
@@ -164,7 +157,7 @@ impl StringCollector {
                     stop_signal,
                     target_count,
                 }
-                .build(registry),
+                .build(),
             ),
         )
         .with_subscriber_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
@@ -184,7 +177,7 @@ impl StringCollector {
                     stop_signal,
                     target_count: usize::MAX,
                 }
-                .build(&mut ChannelRegistry::new()),
+                .build(),
             ),
         )
         .with_subscriber_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])

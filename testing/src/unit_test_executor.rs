@@ -349,9 +349,7 @@ mod tests {
     fn test_individual_callback() {
         // test single callback node using test_publisher and test_subscriber
 
-        let calculator = FizzBuzzCalculator::build_callback_node(
-            &mut task::channel_registry::ChannelRegistry::new(),
-        );
+        let calculator = FizzBuzzCalculator::build_callback_node();
 
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
         let mut integer_publisher = builder.add_test_publisher::<u64>("integer");
@@ -371,9 +369,7 @@ mod tests {
         expected = "Type mismatch connecting TestPublisher to channel 'integer' on callback node 'FizzBuzzCalculator'"
     )]
     fn test_publisher_type_mismatch_fails() {
-        let calculator = FizzBuzzCalculator::build_callback_node(
-            &mut task::channel_registry::ChannelRegistry::new(),
-        );
+        let calculator = FizzBuzzCalculator::build_callback_node();
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
 
         // Should panic since integer doesn't take a string
@@ -385,9 +381,7 @@ mod tests {
         expected = "Type mismatch connecting TestSubscriber to channel 'fizz_buzz_string' on callback node 'FizzBuzzCalculator'"
     )]
     fn test_susbcriber_type_mismatch_fails() {
-        let calculator = FizzBuzzCalculator::build_callback_node(
-            &mut task::channel_registry::ChannelRegistry::new(),
-        );
+        let calculator = FizzBuzzCalculator::build_callback_node();
         let mut builder = UnitTestExecutorBuilder::new(vec![calculator]);
 
         // Should panic since integer doesn't take a string

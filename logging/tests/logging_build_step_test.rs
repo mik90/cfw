@@ -1,10 +1,10 @@
 //! Integration tests for the logging build step.
 //!
 //! Flows exercised:
-//!  - producer callback → register_loggables → ChannelRegistry → LogTask subscriber
-//!    → JSONL log file (round trip via `JsonLogFileReader`)
-//!  - build-step silently skips channels whose types aren't registered
-//!  - empty registry produces no LogTask node
+//!  - producer callback → auto-registered channel → ChannelRegistry → LogTask
+//!    subscriber → JSONL log file (round trip via `JsonLogFileReader`)
+//!  - build-step silently skips channels whose types aren't loggable
+//!  - `with_unlogged_channels` denylists loggable channels
 //!  - `LogDiagnosticsTask` subscribes to one diagnostics channel per `LogTask`
 //!  - channels split across multiple `LogTask`s that share one log file
 
@@ -24,7 +24,7 @@ use testing::unit_test_executor::UnitTestExecutor;
 use logging::log_file::LogFileReader;
 use logging::log_file_json::JsonLogFileReader;
 use logging::{
-    ChannelRegistry, DiagnosticsMode, LogDiagnosticsTask, LogTaskConfiguration, LoggingBuildStep,
+    DiagnosticsMode, LogDiagnosticsTask, LogTaskConfiguration, LoggingBuildStep,
     log_task_diagnostics_channel, log_task_name,
 };
 
@@ -62,6 +62,14 @@ impl Callback for CounterProducer {
         Run::new(1)
     }
 
+    fn register_channels(&self, registry: &mut task::channel_registry::ChannelRegistry) {
+        // Hand-written callbacks register their concrete port types explicitly;
+        // `#[task_callback]` does this for you.
+        task::channel_registry::Probe::<u64>::new().try_register(registry);
+        task::channel_registry::Probe::<u64>::new()
+            .try_register_channel(registry, self.publisher.config().channel_name.clone());
+    }
+
     fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
     fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
         f(&self.publisher);
@@ -93,6 +101,69 @@ fn build_producer(name: &str, max: u64) -> task::callback::CallbackNode {
     build_producer_on(name, "values", max)
 }
 
+/// A payload type that deliberately does NOT implement `Loggable` (no serde
+/// derives), so its channel is never registered and always skipped by the
+/// logging build step.
+#[derive(Default)]
+struct NonLoggable {
+    _value: u32,
+}
+
+/// A minimal producer publishing `NonLoggable` values on the `opaque` channel.
+struct NonLoggableProducer {
+    publisher: Publisher<NonLoggable>,
+    counter: u32,
+}
+
+impl NonLoggableProducer {
+    fn new() -> Self {
+        NonLoggableProducer {
+            publisher: Publisher::<NonLoggable>::new(PublisherConfig {
+                capacity: 1,
+                channel_name: String::new(),
+            }),
+            counter: 0,
+        }
+    }
+}
+
+impl Callback for NonLoggableProducer {
+    fn run(&mut self, _ctx: &Context) -> Run {
+        if self.counter < 1 {
+            let mut out = Output::<NonLoggable>::new_default(&mut self.publisher);
+            out._value = self.counter;
+            out.send();
+            self.counter += 1;
+        }
+        Run::new(1)
+    }
+
+    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+        f(&self.publisher);
+    }
+    fn for_each_subscriber_mut<'a>(
+        &'a mut self,
+        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+    ) {
+    }
+    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
+        f(&mut self.publisher);
+    }
+    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+        f(PortMut::Publisher(&mut self.publisher));
+    }
+}
+
+fn build_non_loggable_producer(name: &str) -> task::callback::CallbackNode {
+    CallbackBuilder::new(name.into(), Box::new(NonLoggableProducer::new()))
+        .with_publisher_channels(&["opaque"])
+        .with_execution_duration_callback(|| Duration::from_nanos(1))
+        .with_next_execution_time_callback(|t| Some(t + Duration::from_nanos(1)))
+        .build()
+        .expect("non-loggable producer builds")
+}
+
 fn temp_path(suffix: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!(
@@ -115,23 +186,13 @@ fn writes_loggable_channel_to_jsonl() {
 
     let producer = build_producer("Counter", 3);
 
-    // Register u64 (the producer's message type) with the registry. In a
-    // macro-decorated producer this would be `CounterProducer::register_loggables(&mut registry)`
-    // — but our hand-rolled producer isn't `#[task_callback]`-decorated, so
-    // we register its single type directly.
-    let mut registry = ChannelRegistry::new();
-    registry.register_loggable::<u64>();
-
     let mut graph = TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback(producer))
-        .add_build_step(Box::new(LoggingBuildStep::new(
-            LogTaskConfiguration {
-                output_path: out.clone(),
-                period: Duration::from_nanos(1),
-                num_tasks: 1,
-            },
-            registry,
-        )))
+        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
+            output_path: out.clone(),
+            period: Duration::from_nanos(1),
+            num_tasks: 1,
+        })))
         .build()
         .expect("graph builds");
 
@@ -164,56 +225,81 @@ fn writes_loggable_channel_to_jsonl() {
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
-fn empty_registry_produces_no_log_task() {
-    // With no types registered, the build step finds nothing to log and
-    // doesn't add a LogTask node at all. Confirm it doesn't panic and the
-    // graph still builds with just the producer node.
-    let producer = build_producer("Counter", 1);
+fn non_loggable_channel_silently_skipped() {
+    // The producer's payload type doesn't implement Loggable, and the
+    // framework's execution-log channel is denylisted, so there are no
+    // loggable channels at all — no LogTask node is added and the build
+    // still succeeds.
+    let producer = build_non_loggable_producer("OpaqueProducer");
 
     let graph = TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback(producer))
-        .add_build_step(Box::new(LoggingBuildStep::new(
-            LogTaskConfiguration {
-                output_path: temp_path("empty_registry"),
+        .add_build_step(Box::new(
+            LoggingBuildStep::new(LogTaskConfiguration {
+                output_path: temp_path("non_loggable"),
                 period: Duration::from_nanos(1),
                 num_tasks: 1,
-            },
-            ChannelRegistry::new(),
-        )))
-        .build()
-        .expect("graph builds");
-
-    assert_eq!(graph.pools[0].nodes.len(), 1);
-    assert_eq!(graph.pools[0].nodes[0].name(), "Counter");
-}
-
-#[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
-fn unregistered_type_silently_skipped() {
-    // Build with a producer on "values" of type u64 but DON'T register u64
-    // with the registry — build should succeed with no LogTask node added
-    // since the registry knows nothing about u64.
-    let producer = build_producer("Counter", 1);
-
-    let graph = TaskGraphBuilder::new()
-        .add_pool(1, |p| p.add_callback(producer))
-        .add_build_step(Box::new(LoggingBuildStep::new(
-            LogTaskConfiguration {
-                output_path: temp_path("unregistered"),
-                period: Duration::from_nanos(1),
-                num_tasks: 1,
-            },
-            ChannelRegistry::new(), // empty by design
-        )))
+            })
+            .with_unlogged_channels([task::execution_log::EXECUTION_LOG_CHANNEL]),
+        ))
         .build()
         .expect("graph builds");
 
     assert_eq!(
         graph.pools[0].nodes.len(),
         1,
-        "no LogTask should be added when nothing is registered"
+        "no LogTask should be added when nothing is loggable"
     );
-    assert_eq!(graph.pools[0].nodes[0].name(), "Counter");
+    assert_eq!(graph.pools[0].nodes[0].name(), "OpaqueProducer");
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
+fn denylisted_channel_silently_skipped() {
+    // `values` is loggable and logged; `secret` is loggable but denylisted,
+    // so it must not appear in the log. The execution-log channel is also
+    // denylisted to keep this test focused on the two producer channels.
+    let out = temp_path("denylisted");
+
+    let mut graph = TaskGraphBuilder::new()
+        .add_pool(1, |p| {
+            p.add_callback(build_producer_on("Counter", "values", 3))
+                .add_callback(build_producer_on("SecretProducer", "secret", 3))
+        })
+        .add_build_step(Box::new(
+            LoggingBuildStep::new(LogTaskConfiguration {
+                output_path: out.clone(),
+                period: Duration::from_nanos(1),
+                num_tasks: 1,
+            })
+            .with_unlogged_channels([
+                "secret".to_owned(),
+                task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+            ]),
+        ))
+        .build()
+        .expect("graph builds");
+
+    let mut executor = UnitTestExecutor::new(graph.pools.remove(0).nodes);
+    for _ in 0..20 {
+        executor.step();
+    }
+    drop(executor);
+
+    let reader =
+        JsonLogFileReader::from_reader(std::io::BufReader::new(std::fs::File::open(&out).unwrap()))
+            .unwrap();
+    let entries: Vec<_> = reader.iter().collect();
+    assert!(
+        !entries.is_empty(),
+        "logged channels should produce entries"
+    );
+    for entry in &entries {
+        assert_eq!(
+            entry.channel_name, "values",
+            "denylisted 'secret' channel must not be logged"
+        );
+    }
 }
 
 #[test]
@@ -235,19 +321,13 @@ fn diagnostics_task_picks_up_logtask_errors() {
     .build()
     .expect("diagnostics builds");
 
-    let mut registry = ChannelRegistry::new();
-    registry.register_loggable::<u64>();
-
     let mut graph = TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback(producer).add_callback(diag))
-        .add_build_step(Box::new(LoggingBuildStep::new(
-            LogTaskConfiguration {
-                output_path: out,
-                period: Duration::from_nanos(1),
-                num_tasks: 1,
-            },
-            registry,
-        )))
+        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
+            output_path: out,
+            period: Duration::from_nanos(1),
+            num_tasks: 1,
+        })))
         .build()
         .expect("graph builds");
 
@@ -275,9 +355,6 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
     let channels = ["ch0", "ch1", "ch2", "ch3"];
     const MESSAGES_PER_CHANNEL: u64 = 3;
 
-    let mut registry = ChannelRegistry::new();
-    registry.register_loggable::<u64>();
-
     let mut graph = TaskGraphBuilder::new()
         .add_pool(1, |mut p| {
             for (i, channel) in channels.iter().enumerate() {
@@ -289,14 +366,11 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
             }
             p
         })
-        .add_build_step(Box::new(LoggingBuildStep::new(
-            LogTaskConfiguration {
-                output_path: out.clone(),
-                period: Duration::from_nanos(1),
-                num_tasks: 2,
-            },
-            registry,
-        )))
+        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
+            output_path: out.clone(),
+            period: Duration::from_nanos(1),
+            num_tasks: 2,
+        })))
         .build()
         .expect("graph builds");
 
@@ -356,31 +430,27 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
 #[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn num_tasks_clamped_to_channel_count() {
     // Requesting more log tasks than there are loggable channels must not
-    // produce empty LogTask nodes.
+    // produce empty LogTask nodes. One producer channel plus the framework's
+    // execution-log channel = two loggers, so num_tasks clamps to two.
     let producer = build_producer("Counter", 1);
-
-    let mut registry = ChannelRegistry::new();
-    registry.register_loggable::<u64>();
 
     let graph = TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback(producer))
-        .add_build_step(Box::new(LoggingBuildStep::new(
-            LogTaskConfiguration {
-                output_path: temp_path("clamped"),
-                period: Duration::from_nanos(1),
-                num_tasks: 10,
-            },
-            registry,
-        )))
+        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
+            output_path: temp_path("clamped"),
+            period: Duration::from_nanos(1),
+            num_tasks: 10,
+        })))
         .build()
         .expect("graph builds");
 
     assert_eq!(
         graph.pools[0].nodes.len(),
-        2,
-        "only one loggable channel → exactly one LogTask node"
+        3,
+        "two loggable channels → two LogTask nodes"
     );
     assert_eq!(graph.pools[0].nodes[1].name(), log_task_name(0));
+    assert_eq!(graph.pools[0].nodes[2].name(), log_task_name(1));
 }
 
 #[test]
@@ -389,9 +459,6 @@ fn diagnostics_task_subscribes_to_every_log_task() {
     // With two log tasks, the diagnostics task must build one subscriber per
     // per-task diagnostics channel.
     let out = temp_path("multi_diagnostics");
-
-    let mut registry = ChannelRegistry::new();
-    registry.register_loggable::<u64>();
 
     let diag = CallbackBuilder::new(
         "Diagnostics".into(),
@@ -410,14 +477,11 @@ fn diagnostics_task_subscribes_to_every_log_task() {
                 .add_callback(build_producer_on("ProducerB", "ch_b", 1))
                 .add_callback(diag)
         })
-        .add_build_step(Box::new(LoggingBuildStep::new(
-            LogTaskConfiguration {
-                output_path: out,
-                period: Duration::from_nanos(1),
-                num_tasks: 2,
-            },
-            registry,
-        )))
+        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
+            output_path: out,
+            period: Duration::from_nanos(1),
+            num_tasks: 2,
+        })))
         .build()
         .expect("graph builds");
 

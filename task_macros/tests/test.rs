@@ -4,7 +4,6 @@ mod tests {
     use task::input::RequiredInput;
     use task::output::Output;
 
-    use task::channel_registry::ChannelRegistry;
     use task_macros::task_callback;
 
     struct MyCallback {}
@@ -20,8 +19,7 @@ mod tests {
 
     #[test]
     fn test_build_and_run() {
-        let mut registry = ChannelRegistry::new();
-        let task = MyCallback {}.build(&mut registry);
+        let task = MyCallback {}.build();
 
         let subs = task.collect_subscribers();
         assert!(subs.len() == 1);

@@ -305,7 +305,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut sub_exec_terms: Vec<syn::Expr> = Vec::new();
     let mut able_terms: Vec<syn::Expr> = Vec::new();
     let mut input_ready_terms: Vec<syn::Expr> = Vec::new();
-    let mut registrations: Vec<syn::Stmt> = Vec::new();
+    let mut register_stmts: Vec<syn::Stmt> = Vec::new();
     let mut drop_stmts: Vec<syn::Stmt> = Vec::new();
 
     for sig_arg in sig.arguments.iter() {
@@ -340,8 +340,14 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 input_ready_terms.push(parse_quote!(
                     self.ports.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.ports.#fname)
                 ));
-                registrations.push(parse_quote!(
+                register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<#msg>::new().try_register(registry);
+                ));
+                register_stmts.push(parse_quote!(
+                    task::channel_registry::Probe::<#msg>::new().try_register_channel(
+                        registry,
+                        self.ports.#fname.config().channel_name.clone(),
+                    );
                 ));
                 drop_stmts.push(parse_quote!(
                     GenericSubscriber::cleanup_buffers(&self.ports.#fname);
@@ -380,8 +386,14 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 input_ready_terms.push(parse_quote!(
                     self.ports.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.ports.#fname)
                 ));
-                registrations.push(parse_quote!(
+                register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<#msg>::new().try_register(registry);
+                ));
+                register_stmts.push(parse_quote!(
+                    task::channel_registry::Probe::<#msg>::new().try_register_channel(
+                        registry,
+                        self.ports.#fname.config().channel_name.clone(),
+                    );
                 ));
                 drop_stmts.push(parse_quote!(
                     GenericSubscriber::cleanup_buffers(&self.ports.#fname);
@@ -412,8 +424,14 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     GenericPublisher::flush_loaned_values_logged(&mut self.ports.#fname, timestamp, &mut |h| hook(ordinal, h));
                 ));
                 flush_logged_stmts.push(parse_quote!(ordinal += 1;));
-                registrations.push(parse_quote!(
+                register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<#msg>::new().try_register(registry);
+                ));
+                register_stmts.push(parse_quote!(
+                    task::channel_registry::Probe::<#msg>::new().try_register_channel(
+                        registry,
+                        self.ports.#fname.config().channel_name.clone(),
+                    );
                 ));
             }
             PortKind::ForwardingPub {
@@ -435,10 +453,18 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     GenericPublisher::flush_loaned_values_logged(&mut self.ports.#fname, timestamp, &mut |h| hook(ordinal, h));
                 ));
                 flush_logged_stmts.push(parse_quote!(ordinal += 1;));
-                registrations.push(parse_quote!(
+                register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<
                         task::forwarded_message::ForwardedMessage<#user_data, #forwarded>
                     >::new().try_register(registry);
+                ));
+                register_stmts.push(parse_quote!(
+                    task::channel_registry::Probe::<
+                        task::forwarded_message::ForwardedMessage<#user_data, #forwarded>
+                    >::new().try_register_channel(
+                        registry,
+                        self.ports.#fname.config().channel_name.clone(),
+                    );
                 ));
             }
             PortKind::Context => {
@@ -490,13 +516,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl #struct_name {
-            pub fn build(
-                self,
-                registry: &mut task::channel_registry::ChannelRegistry,
-            ) -> #callback_name {
-                use task::channel_registry::MaybeRegister as _;
-                #(#registrations)*
-
+            pub fn build(self) -> #callback_name {
                 #callback_name {
                     user: self,
                     ports: #ports_name {
@@ -545,6 +565,11 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 fn subscribers_request_execution(&self) -> bool #sub_exec_body
                 fn able_to_run(&self) -> bool #able_body
                 fn required_inputs_ready(&self) -> bool #input_ready_body
+
+                fn register_channels(&self, registry: &mut task::channel_registry::ChannelRegistry) {
+                    use task::channel_registry::MaybeRegister as _;
+                    #(#register_stmts)*
+                }
             }
 
             impl Drop for #callback_name {

@@ -140,15 +140,25 @@ pub struct ChannelRegistry {
 }
 
 impl ChannelRegistry {
+    /// A fresh registry, pre-populated with the framework's own
+    /// [`ExecutionLogMessage`](crate::execution_log::ExecutionLogMessage)
+    /// channel so build steps and replay executors can always resolve it. The
+    /// probe is a no-op when the `serde` feature is off (and thus
+    /// `ExecutionLogMessage` isn't loggable).
     pub fn new() -> Self {
-        ChannelRegistry {
+        let mut registry = ChannelRegistry {
             serializers: HashMap::new(),
             deserializers: HashMap::new(),
             forwarded_deserializers: HashMap::new(),
             publisher_factories: HashMap::new(),
             channels: HashMap::new(),
             forwarded_channels: HashMap::new(),
-        }
+        };
+        Probe::<crate::execution_log::ExecutionLogMessage>::new().try_register_channel(
+            &mut registry,
+            crate::execution_log::EXECUTION_LOG_CHANNEL.into(),
+        );
+        registry
     }
 
     /// Register a serializer for `T`. Idempotent — calling twice with the
@@ -367,17 +377,9 @@ impl ChannelRegistry {
         self.publisher_factories.get(&type_id).cloned()
     }
 
-    /// Absorb another registry's entries into this one. Used by `TaskGraphBuilder`
-    /// to merge per-CallbackBuilder registries into a single shared registry
-    /// for build-step consumption.
-    pub fn merge(&mut self, other: ChannelRegistry) {
-        self.serializers.extend(other.serializers);
-        self.deserializers.extend(other.deserializers);
-        self.forwarded_deserializers
-            .extend(other.forwarded_deserializers);
-        self.publisher_factories.extend(other.publisher_factories);
-        self.channels.extend(other.channels);
-        self.forwarded_channels.extend(other.forwarded_channels);
+    /// Number of registered serializer types. Used for diagnostics.
+    pub fn serializer_count(&self) -> usize {
+        self.serializers.len()
     }
 }
 
@@ -406,6 +408,7 @@ impl Default for ChannelRegistry {
 
 pub trait MaybeRegister {
     fn try_register(&self, _registry: &mut ChannelRegistry) {}
+    fn try_register_channel(&self, _registry: &mut ChannelRegistry, _channel: ChannelName) {}
 }
 
 impl<T: ?Sized> MaybeRegister for T {}
@@ -431,6 +434,12 @@ impl<T> Default for Probe<T> {
 impl<T: 'static + Loggable> Probe<T> {
     pub fn try_register(&self, registry: &mut ChannelRegistry) {
         registry.register_loggable::<T>();
+    }
+}
+
+impl<T: 'static + Loggable<Context<'static> = ()> + Send + Sync> Probe<T> {
+    pub fn try_register_channel(&self, registry: &mut ChannelRegistry, channel: ChannelName) {
+        registry.register_channel::<T>(channel);
     }
 }
 

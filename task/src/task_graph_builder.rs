@@ -50,6 +50,7 @@ pub trait TaskGraphBuildStep {
     fn build_step(
         &self,
         nodes: &[CallbackNode],
+        channel_registry: &mut ChannelRegistry,
     ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError>;
 }
 
@@ -58,6 +59,7 @@ pub struct TaskGraphBuilder {
     build_steps: Vec<Box<dyn TaskGraphBuildStep>>,
     log_executions: bool,
     channel_registry: ChannelRegistry,
+    debug_info: bool,
 }
 
 pub struct BuiltTaskGraph {
@@ -65,6 +67,20 @@ pub struct BuiltTaskGraph {
     /// Per-worker execution-log publishers, wired to any execution-log
     /// subscribers found in the graph. Empty when execution logging is off.
     pub execution_log_publishers: Vec<Publisher<execution_log::ExecutionLogMessage>>,
+    /// Channel registry populated with every loggable channel found across the
+    /// graph's publishers/subscribers (plus the framework's execution-log
+    /// channel). Replay executors consume this to deserialize logged messages.
+    pub channel_registry: ChannelRegistry,
+    /// Dangling-channel diagnostics, present when built with
+    /// [`TaskGraphBuilder::with_debug_info`].
+    pub debug_info: Option<GraphDebugInfo>,
+}
+
+/// Dangling-channel diagnostics, produced when built with
+/// [`TaskGraphBuilder::with_debug_info`].
+pub struct GraphDebugInfo {
+    pub dangling_subscribers: Vec<ChannelName>,
+    pub dangling_publishers: Vec<ChannelName>,
 }
 
 impl fmt::Debug for BuiltTaskGraph {
@@ -75,6 +91,20 @@ impl fmt::Debug for BuiltTaskGraph {
                 "execution_log_publishers",
                 &self.execution_log_publishers.len(),
             )
+            .field(
+                "channel_registry",
+                &self.channel_registry.serializer_count(),
+            )
+            .field("debug_info", &self.debug_info)
+            .finish()
+    }
+}
+
+impl fmt::Debug for GraphDebugInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GraphDebugInfo")
+            .field("dangling_subscribers", &self.dangling_subscribers)
+            .field("dangling_publishers", &self.dangling_publishers)
             .finish()
     }
 }
@@ -87,27 +117,6 @@ impl BuiltTaskGraph {
                 println!("  {node}");
             }
         }
-    }
-}
-
-pub struct BuiltTaskGraphWithDebugInfo {
-    pub pools: Vec<ThreadPoolConfig>,
-    pub execution_log_publishers: Vec<Publisher<execution_log::ExecutionLogMessage>>,
-    pub dangling_subscribers: Vec<ChannelName>,
-    pub dangling_publishers: Vec<ChannelName>,
-}
-
-impl fmt::Debug for BuiltTaskGraphWithDebugInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BuiltTaskGraphWithDebugInfo")
-            .field("pools", &self.pools)
-            .field(
-                "execution_log_publishers",
-                &self.execution_log_publishers.len(),
-            )
-            .field("dangling_subscribers", &self.dangling_subscribers)
-            .field("dangling_publishers", &self.dangling_publishers)
-            .finish()
     }
 }
 
@@ -203,6 +212,7 @@ impl TaskGraphBuilder {
             build_steps: vec![],
             log_executions: false,
             channel_registry: ChannelRegistry::new(),
+            debug_info: false,
         }
     }
 
@@ -211,6 +221,13 @@ impl TaskGraphBuilder {
     /// build-step-created nodes are included.
     pub fn with_log_executions(mut self, enabled: bool) -> TaskGraphBuilder {
         self.log_executions = enabled;
+        self
+    }
+
+    /// Set to `true` to compute dangling-channel diagnostics and return them on
+    /// [`BuiltTaskGraph::debug_info`]. Defaults to `false`.
+    pub fn with_debug_info(mut self, enabled: bool) -> TaskGraphBuilder {
+        self.debug_info = enabled;
         self
     }
 
@@ -236,12 +253,33 @@ impl TaskGraphBuilder {
         self
     }
 
-    pub fn build(mut self) -> Result<BuiltTaskGraph, TaskGraphBuildError> {
-        let pool_thread_counts: Vec<usize> = self.pools.iter().map(|p| p.thread_count).collect();
-        let mut all_nodes: Vec<CallbackNode> = Vec::new();
-        let mut pool_node_counts: Vec<usize> = Vec::with_capacity(self.pools.len());
+    /// Expose channel registry in case users need it. Most channels are
+    /// registered automatically during [`build`](Self::build); this is an
+    /// escape hatch for channels the graph can't introspect (e.g. forwarded
+    /// channels, whose source-channel link is graph topology).
+    pub fn channel_registry_mut(&mut self) -> &mut ChannelRegistry {
+        &mut self.channel_registry
+    }
 
-        for mut pool in self.pools {
+    /// Register every node's channels into `registry`. Idempotent: `#[task_callback]`
+    /// callbacks register their loggable ports via `Probe` (no-op for
+    /// non-loggable types); hand-written callbacks default to a no-op.
+    fn register_nodes(nodes: &[CallbackNode], registry: &mut ChannelRegistry) {
+        for node in nodes {
+            node.callback().register_channels(registry);
+        }
+    }
+
+    pub fn build(mut self) -> Result<BuiltTaskGraph, TaskGraphBuildError> {
+        // Destructure so `self.pools` isn't partially moved by the loop below
+        // (which would block borrowing `self.channel_registry` later).
+        let pools_builders = std::mem::take(&mut self.pools);
+        let pool_thread_counts: Vec<usize> =
+            pools_builders.iter().map(|p| p.thread_count).collect();
+        let mut all_nodes: Vec<CallbackNode> = Vec::new();
+        let mut pool_node_counts: Vec<usize> = Vec::with_capacity(pools_builders.len());
+
+        for mut pool in pools_builders {
             let start = all_nodes.len();
             for builder in pool.pending_builders.drain(..) {
                 let callback_name = builder.name().to_owned();
@@ -258,21 +296,32 @@ impl TaskGraphBuilder {
             pool_node_counts.push(all_nodes.len() - start);
         }
 
+        // Register the graph's channels before build steps run so they can
+        // introspect the registry (e.g. the logging build step asks for a
+        // serializer per publisher).
+        Self::register_nodes(&all_nodes, &mut self.channel_registry);
+
         for step in self.build_steps.drain(..) {
             let step_name = step.name();
-            let mut additional_nodes = step.build_step(&all_nodes).map_err(|error| {
-                TaskGraphBuildError::BuildStepError {
+            let mut additional_nodes = step
+                .build_step(&all_nodes, &mut self.channel_registry)
+                .map_err(|error| TaskGraphBuildError::BuildStepError {
                     step_name: step_name.to_owned(),
                     error,
-                }
-            })?;
+                })?;
             all_nodes.append(&mut additional_nodes);
         }
+
+        // Build-step-created nodes may add channels of their own; register them
+        // too (idempotent) so later steps and replay can resolve them.
+        Self::register_nodes(&all_nodes, &mut self.channel_registry);
 
         if all_nodes.is_empty() {
             return Ok(BuiltTaskGraph {
                 pools: vec![],
                 execution_log_publishers: vec![],
+                channel_registry: self.channel_registry,
+                debug_info: None,
             });
         }
 
@@ -285,9 +334,13 @@ impl TaskGraphBuilder {
                 }
             }
             connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
+            let pools = vec![ThreadPoolConfig::new(1, all_nodes)];
+            let debug_info = self.compute_debug_info(&pools);
             return Ok(BuiltTaskGraph {
-                pools: vec![ThreadPoolConfig::new(1, all_nodes)],
+                pools,
                 execution_log_publishers: vec![],
+                channel_registry: self.channel_registry,
+                debug_info,
             });
         }
         pool_node_counts[0] += extra;
@@ -315,27 +368,26 @@ impl TaskGraphBuilder {
             vec![]
         };
 
+        let debug_info = self.compute_debug_info(&pools);
+
         Ok(BuiltTaskGraph {
             pools,
             execution_log_publishers,
+            channel_registry: self.channel_registry,
+            debug_info,
         })
     }
 
-    pub fn build_with_debug_info(self) -> Result<BuiltTaskGraphWithDebugInfo, TaskGraphBuildError> {
-        let built_graph = self.build()?;
-
-        let all_nodes: Vec<&CallbackNode> = built_graph
-            .pools
-            .iter()
-            .flat_map(|p| p.nodes.iter())
-            .collect();
-        let dangling_subscribers = find_dangling_subscribers(&all_nodes);
-        let dangling_publishers = find_dangling_publishers(&all_nodes);
-        Ok(BuiltTaskGraphWithDebugInfo {
-            pools: built_graph.pools,
-            execution_log_publishers: built_graph.execution_log_publishers,
-            dangling_subscribers,
-            dangling_publishers,
+    /// Compute dangling-channel diagnostics when `with_debug_info(true)` was
+    /// requested, otherwise `None`.
+    fn compute_debug_info(&self, pools: &[ThreadPoolConfig]) -> Option<GraphDebugInfo> {
+        if !self.debug_info {
+            return None;
+        }
+        let all_nodes: Vec<&CallbackNode> = pools.iter().flat_map(|p| p.nodes.iter()).collect();
+        Some(GraphDebugInfo {
+            dangling_subscribers: find_dangling_subscribers(&all_nodes),
+            dangling_publishers: find_dangling_publishers(&all_nodes),
         })
     }
 }
@@ -500,6 +552,7 @@ mod test {
             fn build_step(
                 &self,
                 nodes: &[CallbackNode],
+                _channel_registry: &mut ChannelRegistry,
             ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
                 let name = format!("extra_{}", nodes.len());
                 Ok(vec![make_callback_node(&name, 0, &[], 0, &[])])
@@ -532,6 +585,7 @@ mod test {
             fn build_step(
                 &self,
                 _nodes: &[CallbackNode],
+                _channel_registry: &mut ChannelRegistry,
             ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
                 Err("intentional failure".into())
             }
@@ -612,16 +666,28 @@ mod test {
     }
 
     #[test]
-    fn build_with_debug_info_returns_callbacks() {
+    fn with_debug_info_returns_diagnostics() {
         let callback = make_callback_node("debug", 0, &[], 0, &[]);
         let result = TaskGraphBuilder::new()
             .add_pool(1, |p| p.add_callback(callback))
-            .build_with_debug_info();
+            .with_debug_info(true)
+            .build();
 
         assert!(result.is_ok());
         let built = result.unwrap();
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].nodes.len(), 1);
         assert_eq!(built.pools[0].nodes[0].name(), "debug");
+        assert!(built.debug_info.is_some());
+    }
+
+    #[test]
+    fn without_debug_info_no_diagnostics() {
+        let callback = make_callback_node("nodebug", 0, &[], 0, &[]);
+        let built = TaskGraphBuilder::new()
+            .add_pool(1, |p| p.add_callback(callback))
+            .build()
+            .expect("build");
+        assert!(built.debug_info.is_none());
     }
 }
