@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt};
 
 use crate::{
+    ChannelRegistry,
     callback::{CallbackNode, MismatchTypeError, connect_callback_nodes},
     callback_builder::CallbackBuilder,
     execution_log,
@@ -56,6 +57,7 @@ pub struct TaskGraphBuilder {
     pools: Vec<PoolBuilder>,
     build_steps: Vec<Box<dyn TaskGraphBuildStep>>,
     log_executions: bool,
+    channel_registry: ChannelRegistry,
 }
 
 pub struct BuiltTaskGraph {
@@ -200,6 +202,7 @@ impl TaskGraphBuilder {
             pools: vec![],
             build_steps: vec![],
             log_executions: false,
+            channel_registry: ChannelRegistry::new(),
         }
     }
 

@@ -11,7 +11,7 @@ members = [
     "testing",
     "logging",
     "examples/fizz_buzz_application",  
-    "base",
+    "base", "examples/facet_serialization",
 ]
 resolver = "3"
 
