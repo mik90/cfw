@@ -50,9 +50,9 @@ In order of priority
   - [x] optionally log executions via publisher in other (threadpool / sim executor)
   - [x] see if we can avoid more allocations with Vecs in logging
   - [x] create workflow to log data
-  - [ ] add code to parse logged data and replay specific executions
+  - [x] add code to parse logged data and replay specific executions
   - [ ] configuration to log only execution duration (so, execution log enum for options)
-- [ ] live replay executor
+- [x] live replay executor
   - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
   - useful for development of viz tools
 - [ ] add log replay task to simulation executor to run over logged data
@@ -71,18 +71,21 @@ In order of priority
   - but will this be portable across all use-cases?
 - [x] unit test executor (in `testing`)
   - allows for testing whole tasks in unit test, based on sim executor
-- [ ] dump connections in graphviz or some other diagram tool
+- [x] dump connections in graphviz or some other diagram tool
+  - just dumped via Display
 - [ ] provide a stop message that the executor can subscribe to
-- [ ] flesh out callback construction and how we want to handle configuration
+- [x] flesh out callback construction and how we want to handle configuration
 - [ ] do some better testing to ensure that users can't hold onto reference of messages in the pub/sub system
 - [ ] see if I should use pins in the arenas to avoid moving MaybeUninit, the current setup may suffice
-- [ ] add tests to make sure we aren't dynamically allocating after everything is connected
+- [x] add tests to make sure we aren't dynamically allocating after everything is connected
+  - live executor has some no_alloc tests
 - [ ] more consistent handling of MaybeUninit in subscriber, maybe specialize on it in read buffer?
 - [ ] better stress testing for multi-threaded determinism in sim 
 - [ ] inputs should just store ref or optional ref of type instead of entire subscriber
-- [ ] readiness shouldn't be limited to 64 inputs, use an array or vec or something to contain many atomic bitsets
+- [x] readiness shouldn't be limited to 64 inputs, use an array or vec or something to contain many atomic bitsets
+  - not ideal, but we only track readiness on required inputs, optional ones are not tracked
 - [ ] log queue capacity shouldn't have a default value of 10, and we should have better configuration for per channel configuration
-- [ ] register loggable types even without macro usage (how??)
+- [x] register loggable types even without macro usage (use register_channels)
 - [ ] impl mpsc queue https://blog.bearcats.nl/simple-message-queue/ (modified rigtorp?) to replace cross-beam channel usage which is MPMC
 - [ ] interned channel names and callback names to avoid allocations
     - use arena type, maybe leak at startup?
