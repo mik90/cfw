@@ -119,16 +119,20 @@ struct MyTask {}
 
 #[task_callback]
 impl MyTask {
-    fn run(&self, context: &task::Context, mut output: Output<MyCustomData>) {
+    fn run(
+        &self,
+        context: &task::Context,
+        #[channel("custom_data")] mut output: Output<MyCustomData>,
+    ) {
         output.integer = context.now.to_nanoseconds() as u64;
         output.string = output.integer.to_string();
         output.send();
     }
 
-    fn callback_builder() -> CallbackBuilder {
-        CallbackBuilder::new("CustomTask".to_owned(), Box::new(MyTask {}.build()))
-            .with_publisher_channels(&["custom_data"])
-            .with_next_execution_time_callback(|t| Some(t + Duration::from_millis(100)))
+    fn callback_builder(self) -> CallbackBuilder {
+        self.builder()
+            .with_name("CustomTask")
+            .with_periodic_execution(Duration::from_millis(100))
             .with_execution_duration_callback(|| Duration::from_micros(100))
     }
 }
@@ -161,7 +165,7 @@ fn run_live(log_path: PathBuf, print: bool) -> Result<(), Box<dyn std::error::Er
     ));
 
     let graph = task_graph_builder::TaskGraphBuilder::new()
-        .add_pool(1, |p| p.add_callback_builder(MyTask::callback_builder()))
+        .add_pool(1, |p| p.add_callback_builder(MyTask {}.callback_builder()))
         .with_log_executions(true)
         .add_build_step(logging_build_step)
         .build()

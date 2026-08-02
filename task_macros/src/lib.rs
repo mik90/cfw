@@ -37,6 +37,8 @@ enum PortKind {
 struct SigArg {
     port_kind: PortKind,
     field_name: Ident,
+    /// Channel name expression from an optional `#[channel(...)]` attribute.
+    channel: Option<syn::Expr>,
 }
 
 #[derive(Clone)]
@@ -142,6 +144,67 @@ fn field_name(pat_ty: &PatType) -> Result<Ident, syn::Error> {
     }
 }
 
+/// Extract the channel-name expression from an optional `#[channel(...)]`
+/// attribute on a run argument. Returns `Ok(None)` when the attribute is
+/// absent, and an error when it's malformed or appears on a `Context` arg.
+fn channel_expr(pat_ty: &PatType, is_context: bool) -> Result<Option<syn::Expr>, syn::Error> {
+    let attr = match pat_ty.attrs.iter().find(|a| a.path().is_ident("channel")) {
+        Some(a) => a,
+        None => return Ok(None),
+    };
+    if is_context {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "`#[channel(...)]` is not valid on a `Context` argument",
+        ));
+    }
+    match attr.parse_args::<syn::Expr>() {
+        Ok(expr) => Ok(Some(expr)),
+        Err(_) => Err(syn::Error::new_spanned(
+            attr,
+            "`#[channel(...)]` expects an expression that converts into a channel name, e.g. \
+             `#[channel(\"custom_data\")]` or `#[channel(SOURCE_CHANNEL)]`",
+        )),
+    }
+}
+
+/// Clone `item_impl` with the `#[channel(...)]` attributes stripped from the
+/// `run` function's arguments. The attribute is a macro-internal marker: the
+/// emitted impl must not carry it (rustc would reject the unknown attribute).
+fn sanitize_impl(item_impl: &ItemImpl) -> ItemImpl {
+    let mut sanitized = item_impl.clone();
+    for item in &mut sanitized.items {
+        if let syn::ImplItem::Fn(f) = item
+            && f.sig.ident == "run"
+        {
+            for input in f.sig.inputs.iter_mut() {
+                if let FnArg::Typed(pat_ty) = input {
+                    pat_ty.attrs.retain(|a| !a.path().is_ident("channel"));
+                }
+            }
+        }
+    }
+    sanitized
+}
+
+/// Wrap a port's default config expression so it carries the `#[channel(...)]`
+/// name, e.g. `{ let mut __cfg: SubscriberConfig = ...; __cfg.channel_name = "x".into(); __cfg }`.
+/// Returns the expression unchanged when no channel was declared.
+fn with_channel(
+    cfg: syn::Expr,
+    channel: Option<&syn::Expr>,
+    config_ty: proc_macro2::TokenStream,
+) -> syn::Expr {
+    match channel {
+        None => cfg,
+        Some(channel) => syn::parse_quote!({
+            let mut __cfg: #config_ty = #cfg;
+            __cfg.channel_name = (#channel).into();
+            __cfg
+        }),
+    }
+}
+
 fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::Error> {
     let struct_ident = match item_impl.self_ty.as_ref() {
         syn::Type::Path(p) => p
@@ -172,6 +235,29 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
         .ok_or_else(|| {
             syn::Error::new_spanned(item_impl, "impl block must contain a run() function")
         })?;
+
+    // `callback_builder` is the user-owned construction entry point: it's what
+    // gets unit-tested, so it must be declared explicitly rather than generated.
+    let has_callback_builder = item_impl.items.iter().any(|item| {
+        matches!(
+            item,
+            syn::ImplItem::Fn(f) if f.sig.ident == "callback_builder"
+        )
+    });
+    if !has_callback_builder {
+        return Err(syn::Error::new_spanned(
+            item_impl,
+            "`#[task_callback]` requires a user-defined `callback_builder` method that returns a \
+             `CallbackBuilder`, e.g.\n\n\
+             \x20   impl MyTask {\n\
+             \x20       fn callback_builder(self) -> task::callback_builder::CallbackBuilder {\n\
+             \x20           self.builder()\n\
+             \x20               .with_execution_duration_callback(|| Duration::from_micros(100))\n\
+             \x20               .with_periodic_execution(Duration::from_millis(100))\n\
+             \x20       }\n\
+             \x20   }",
+        ));
+    }
 
     let mut arguments = Vec::new();
     for arg in run_fn.sig.inputs.iter() {
@@ -265,9 +351,12 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                 ));
             }
         };
+        let is_context = matches!(port_kind, PortKind::Context);
+        let channel = channel_expr(pat_ty, is_context)?;
         arguments.push(SigArg {
             port_kind,
             field_name: fname,
+            channel,
         });
     }
 
@@ -317,6 +406,11 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     InputKind::Optional => parse_quote!(task::callback::InputKind::Optional.into()),
                     InputKind::Span => parse_quote!(task::callback::InputKind::Span.into()),
                 };
+                let cfg = with_channel(
+                    cfg,
+                    sig_arg.channel.as_ref(),
+                    quote!(task::subscriber::SubscriberConfig),
+                );
                 field_defs.push(parse_quote!(pub #fname: task::subscriber::Subscriber<#msg>));
                 field_ctors
                     .push(parse_quote!(#fname: task::subscriber::Subscriber::<#msg>::new(#cfg)));
@@ -361,6 +455,11 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 };
                 field_defs
                     .push(parse_quote!(pub #fname: task::subscriber::ForwardableSubscriber<#msg>));
+                let cfg = with_channel(
+                    cfg,
+                    sig_arg.channel.as_ref(),
+                    quote!(task::subscriber::SubscriberConfig),
+                );
                 field_ctors.push(parse_quote!(#fname: task::subscriber::ForwardableSubscriber::<#msg>::new(#cfg)));
 
                 let ctor: syn::Expr = match ikind {
@@ -404,6 +503,11 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     OutputKind::Default => parse_quote!(task::callback::OutputKind::Default.into()),
                     OutputKind::Span => parse_quote!(task::callback::OutputKind::Span.into()),
                 };
+                let cfg = with_channel(
+                    cfg,
+                    sig_arg.channel.as_ref(),
+                    quote!(task::publisher::PublisherConfig),
+                );
                 field_defs.push(parse_quote!(pub #fname: task::publisher::Publisher<#msg>));
                 field_ctors
                     .push(parse_quote!(#fname: task::publisher::Publisher::<#msg>::new(#cfg)));
@@ -439,8 +543,13 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 forwarded,
             } => {
                 field_defs.push(parse_quote!(pub #fname: task::publisher::ForwardingPublisher<#user_data, #forwarded>));
+                let cfg = with_channel(
+                    parse_quote!(task::callback::OutputKind::Default.into()),
+                    sig_arg.channel.as_ref(),
+                    quote!(task::publisher::PublisherConfig),
+                );
                 field_ctors.push(parse_quote!(#fname: task::publisher::ForwardingPublisher::<#user_data, #forwarded>::new(
-                    task::callback::OutputKind::Default.into(), vec![]
+                    #cfg, vec![]
                 )));
 
                 run_args.push(parse_quote!(ForwardingOutput::new(&mut self.ports.#fname)));
@@ -502,8 +611,10 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    let sanitized_impl = sanitize_impl(&item_impl);
+
     let tokens = quote! {
-        #item_impl
+        #sanitized_impl
 
         #[allow(non_camel_case_types)]
         pub struct #ports_name {
@@ -516,13 +627,21 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl #struct_name {
-            pub fn build(self) -> #callback_name {
-                #callback_name {
-                    user: self,
-                    ports: #ports_name {
-                        #(#field_ctors,)*
-                    },
-                }
+            /// Wrap this task in a [`CallbackBuilder`](task::callback_builder::CallbackBuilder)
+            /// named after the type, with channels taken from any
+            /// `#[channel(...)]` annotations on the run arguments. Users must
+            /// declare their own `callback_builder` method that calls this and
+            /// adds timing/name configuration.
+            pub fn builder(self) -> task::callback_builder::CallbackBuilder {
+                task::callback_builder::CallbackBuilder::new(
+                    stringify!(#struct_name).into(),
+                    Box::new(#callback_name {
+                        user: self,
+                        ports: #ports_name {
+                            #(#field_ctors,)*
+                        },
+                    }),
+                )
             }
         }
 

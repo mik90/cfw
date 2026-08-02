@@ -65,31 +65,36 @@ pub struct IncrementingIntegerPublisher {
 }
 #[task_callback]
 impl IncrementingIntegerPublisher {
-    fn run(&mut self, mut output: Output<u64>) {
+    fn run(&mut self, #[channel(FizzBuzzTaskInfo::INTEGER_CHANNEL)] mut output: Output<u64>) {
         println!("IncrementingIntegerPublisher run");
         *output = self.value;
         self.value += 1;
         output.send();
     }
+
+    fn callback_builder(self) -> CallbackBuilder {
+        self.builder()
+            .with_periodic_execution(std::time::Duration::from_millis(500))
+            .with_execution_duration_callback(|| std::time::Duration::from_millis(1))
+    }
 }
 impl IncrementingIntegerPublisher {
     pub fn build_callback_node() -> CallbackNode {
-        CallbackBuilder::new(
-            "IncrementingIntegerPublisher".into(),
-            Box::new(IncrementingIntegerPublisher { value: 0 }.build()),
-        )
-        .with_publisher_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
-        .with_next_execution_time_callback(|t| Some(t + std::time::Duration::from_millis(500)))
-        .with_execution_duration_callback(|| std::time::Duration::from_millis(1))
-        .build()
-        .unwrap()
+        IncrementingIntegerPublisher { value: 0 }
+            .callback_builder()
+            .build()
+            .unwrap()
     }
 }
 
 pub struct FizzBuzzCalculator {}
 #[task_callback]
 impl FizzBuzzCalculator {
-    fn run(&mut self, integer: RequiredInput<u64>, mut fizz_buzz_string: Output<String>) {
+    fn run(
+        &mut self,
+        #[channel(FizzBuzzTaskInfo::INTEGER_CHANNEL)] integer: RequiredInput<u64>,
+        #[channel(FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<String>,
+    ) {
         println!("FizzBuzzCalculator run");
         let is_fizz = (*integer).is_multiple_of(3);
         let is_buzz = (*integer).is_multiple_of(5);
@@ -106,18 +111,15 @@ impl FizzBuzzCalculator {
         }
         fizz_buzz_string.send();
     }
+
+    fn callback_builder(self) -> CallbackBuilder {
+        self.builder()
+            .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
+    }
 }
 impl FizzBuzzCalculator {
     pub fn build_callback_node() -> CallbackNode {
-        CallbackBuilder::new(
-            "FizzBuzzCalculator".into(),
-            Box::new(FizzBuzzCalculator {}.build()),
-        )
-        .with_subscriber_channels(&[FizzBuzzTaskInfo::INTEGER_CHANNEL])
-        .with_publisher_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
-        .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
-        .build()
-        .unwrap()
+        FizzBuzzCalculator {}.callback_builder().build().unwrap()
     }
 }
 
@@ -128,7 +130,10 @@ pub struct StringCollector {
 }
 #[task_callback]
 impl StringCollector {
-    fn run(&self, string: RequiredInput<String>) {
+    fn run(
+        &self,
+        #[channel(FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL)] string: RequiredInput<String>,
+    ) {
         println!("StringCollector run");
         let mut store = self.string_store.lock().unwrap();
         store.push(string.clone());
@@ -137,6 +142,11 @@ impl StringCollector {
         {
             signal.request_stop();
         }
+    }
+
+    fn callback_builder(self) -> CallbackBuilder {
+        self.builder()
+            .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
     }
 }
 impl StringCollector {
@@ -149,19 +159,12 @@ impl StringCollector {
         stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
         target_count: usize,
     ) -> CallbackNode {
-        CallbackBuilder::new(
-            "StringCollector".into(),
-            Box::new(
-                StringCollector {
-                    string_store,
-                    stop_signal,
-                    target_count,
-                }
-                .build(),
-            ),
-        )
-        .with_subscriber_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
-        .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
+        StringCollector {
+            string_store,
+            stop_signal,
+            target_count,
+        }
+        .callback_builder()
         .build()
         .unwrap()
     }
@@ -169,19 +172,12 @@ impl StringCollector {
     pub fn build_callback_node_lite() -> CallbackNode {
         let string_store = StringCollector::make_string_store();
         let stop_signal = Arc::new(OnceLock::new());
-        CallbackBuilder::new(
-            "StringCollector".into(),
-            Box::new(
-                StringCollector {
-                    string_store,
-                    stop_signal,
-                    target_count: usize::MAX,
-                }
-                .build(),
-            ),
-        )
-        .with_subscriber_channels(&[FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL])
-        .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
+        StringCollector {
+            string_store,
+            stop_signal,
+            target_count: usize::MAX,
+        }
+        .callback_builder()
         .build()
         .unwrap()
     }

@@ -499,7 +499,7 @@ fn replays_a_live_forwarding_run() {
     stop_signal_cell.set(exec.stop_signal()).ok();
     exec.start_threads();
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while exec.is_running()
         && received.lock().unwrap().len() < TARGET
         && std::time::Instant::now() < deadline

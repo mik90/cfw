@@ -72,6 +72,21 @@ impl CallbackBuilder {
         }
     }
 
+    /// Override the callback node's name (defaults to the task type name for
+    /// `#[task_callback]`-generated builders).
+    pub fn with_name(mut self, name: impl Into<CallbackNodeName>) -> CallbackBuilder {
+        self.name = name.into();
+        self
+    }
+
+    /// Run this callback once every `period`, starting `period` after the
+    /// previous execution. Shorthand for
+    /// `with_next_execution_time_callback(move |t| Some(t + period))`.
+    pub fn with_periodic_execution(mut self, period: Duration) -> CallbackBuilder {
+        self.next_execution_time_callback = Some(Box::new(move |t| Some(t + period)));
+        self
+    }
+
     pub fn with_subscriber_channels(mut self, subscriber_channels: &[&str]) -> CallbackBuilder {
         let mut subs = self.generic_callback.collect_subscribers_mut();
         if subscriber_channels.len() != subs.len() {

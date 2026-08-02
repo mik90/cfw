@@ -45,7 +45,7 @@ struct IntegerProducer {
 
 #[task_callback]
 impl IntegerProducer {
-    fn run(&mut self, mut output: Output<u64>) {
+    fn run(&mut self, #[channel(SOURCE_CHANNEL)] mut output: Output<u64>) {
         if self.value >= self.max {
             self.done.store(1, Ordering::Release);
             return;
@@ -53,6 +53,19 @@ impl IntegerProducer {
         *output = self.value;
         self.value += 1;
         output.send();
+    }
+
+    fn callback_builder(self) -> CallbackBuilder {
+        let done = self.done.clone();
+        self.builder()
+            .with_execution_duration_callback(|| Duration::from_millis(1))
+            .with_next_execution_time_callback(move |now| {
+                if done.load(Ordering::Acquire) == 1 {
+                    None
+                } else {
+                    Some(now + Duration::from_millis(50))
+                }
+            })
     }
 }
 
@@ -64,7 +77,11 @@ struct Doubler {
 
 #[task_callback]
 impl Doubler {
-    fn run(&mut self, mut input: InputSpan<u64>, mut output: Output<String>) {
+    fn run(
+        &mut self,
+        #[channel(SOURCE_CHANNEL)] mut input: InputSpan<u64>,
+        #[channel(OUTPUT_CHANNEL)] mut output: Output<String>,
+    ) {
         if let Some(msg) = input.drain_inputs().next() {
             self.received
                 .lock()
@@ -73,6 +90,11 @@ impl Doubler {
             *output = format!("value:{}", msg.message);
             output.send();
         }
+    }
+
+    fn callback_builder(self) -> CallbackBuilder {
+        self.builder()
+            .with_execution_duration_callback(|| Duration::from_millis(1))
     }
 }
 
@@ -85,7 +107,7 @@ struct Collector {
 
 #[task_callback]
 impl Collector {
-    fn run(&mut self, mut input: InputSpan<String>) {
+    fn run(&mut self, #[channel(OUTPUT_CHANNEL)] mut input: InputSpan<String>) {
         let mut received = self.received.lock().unwrap();
         for msg in input.drain_inputs() {
             received.push(msg.message.clone());
@@ -95,6 +117,11 @@ impl Collector {
         {
             signal.request_stop();
         }
+    }
+
+    fn callback_builder(self) -> CallbackBuilder {
+        self.builder()
+            .with_execution_duration_callback(|| Duration::from_millis(1))
     }
 }
 
@@ -107,37 +134,24 @@ impl ExternalConsumer {
     fn run(&mut self, mut input: InputSpan<u64>) {
         let _ = input.drain_inputs();
     }
+
+    fn callback_builder(self) -> CallbackBuilder {
+        self.builder()
+            .with_execution_duration_callback(|| Duration::from_millis(1))
+    }
 }
 
 fn producer_builder(max: u64, done: Arc<AtomicUsize>) -> CallbackBuilder {
-    let done_closure = done.clone();
-    CallbackBuilder::new(
-        "IntegerProducer".into(),
-        Box::new(
-            IntegerProducer {
-                value: 0,
-                max,
-                done,
-            }
-            .build(),
-        ),
-    )
-    .with_publisher_channels(&[SOURCE_CHANNEL])
-    .with_execution_duration_callback(|| Duration::from_millis(1))
-    .with_next_execution_time_callback(move |now| {
-        if done_closure.load(Ordering::Acquire) == 1 {
-            None
-        } else {
-            Some(now + Duration::from_millis(50))
-        }
-    })
+    IntegerProducer {
+        value: 0,
+        max,
+        done,
+    }
+    .callback_builder()
 }
 
 fn doubler_builder(received: Arc<Mutex<Vec<(FrameworkTime, u64)>>>) -> CallbackBuilder {
-    CallbackBuilder::new("Doubler".into(), Box::new(Doubler { received }.build()))
-        .with_subscriber_channels(&[SOURCE_CHANNEL])
-        .with_publisher_channels(&[OUTPUT_CHANNEL])
-        .with_execution_duration_callback(|| Duration::from_millis(1))
+    Doubler { received }.callback_builder()
 }
 
 fn collector_builder(
@@ -145,30 +159,20 @@ fn collector_builder(
     stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
     target: usize,
 ) -> CallbackBuilder {
-    CallbackBuilder::new(
-        "Collector".into(),
-        Box::new(
-            Collector {
-                received,
-                stop_signal,
-                target,
-            }
-            .build(),
-        ),
-    )
-    .with_subscriber_channels(&[OUTPUT_CHANNEL])
-    .with_execution_duration_callback(|| Duration::from_millis(1))
+    Collector {
+        received,
+        stop_signal,
+        target,
+    }
+    .callback_builder()
 }
 
 fn external_consumer_node(channel: &str) -> CallbackNode {
-    CallbackBuilder::new(
-        "ExternalConsumer".into(),
-        Box::new(ExternalConsumer.build()),
-    )
-    .with_subscriber_channels(&[channel])
-    .with_execution_duration_callback(|| Duration::from_millis(1))
-    .build()
-    .expect("build external consumer")
+    ExternalConsumer
+        .callback_builder()
+        .with_subscriber_channels(&[channel])
+        .build()
+        .expect("build external consumer")
 }
 
 fn serialize<T: Loggable>(value: &T) -> Vec<u8> {
@@ -530,8 +534,8 @@ fn replays_a_live_run_with_unlogged_intermediates() {
     ));
 
     // Live run: producer + doubler + collector + LogTask, execution logging
-    // on. Only `String` (output) is registered as loggable, so the `u64`
-    // source channel is not logged.
+    // on. Both channels are loggable, but the `u64` source channel is
+    // denylisted so it's not written to the ordinary log.
     let doubler_received = Arc::new(Mutex::new(Vec::new()));
     let collector_received = Arc::new(Mutex::new(Vec::new()));
     let stop_signal_cell = Arc::new(OnceLock::new());
