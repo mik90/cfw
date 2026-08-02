@@ -23,3 +23,17 @@ pub mod testing_subscriber;
 #[cfg(feature = "testing")]
 pub mod testing_time;
 pub mod time;
+
+// TODO re-export more utils
+pub use callback_builder::{CallbackBuildError, CallbackBuilder};
+pub use channel_registry::ChannelRegistry;
+pub use context::Context;
+pub use input::{InputSpan, OptionalInput, RequiredInput};
+pub use loggable::{DeserializeError, Loggable, SerializeError};
+pub use output::{Output, OutputSpan};
+pub use publisher::{Publisher, PublisherConfig};
+pub use subscriber::{Subscriber, SubscriberConfig};
+pub use task_graph_builder::{
+    BuiltTaskGraph, BuiltTaskGraphWithDebugInfo, TaskGraphBuildError, TaskGraphBuildStepError,
+    TaskGraphBuilder,
+};
