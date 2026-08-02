@@ -467,12 +467,10 @@ dependencies = [
  "facet",
  "facet-json",
  "live_executor",
- "live_replay_executor",
  "logging",
  "signal-hook",
  "task",
  "task_macros",
- "test_tasks",
 ]
 
 [[package]]
