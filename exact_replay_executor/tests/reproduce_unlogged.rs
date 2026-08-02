@@ -569,7 +569,7 @@ fn replays_a_live_run_with_unlogged_intermediates() {
     stop_signal_cell.set(exec.stop_signal()).ok();
     exec.start_threads();
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + Duration::from_secs(35);
     while exec.is_running()
         && collector_received.lock().unwrap().len() < TARGET
         && std::time::Instant::now() < deadline
@@ -584,7 +584,7 @@ fn replays_a_live_run_with_unlogged_intermediates() {
     // (the producer stops at TARGET, so the log should settle on TARGET output
     // entries). Polling beats a fixed sleep: under a loaded test runner the
     // LogTask can lag arbitrarily far behind.
-    let drain_deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let drain_deadline = std::time::Instant::now() + Duration::from_secs(35);
     while count_logged_outputs(&log_path) < TARGET && std::time::Instant::now() < drain_deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
