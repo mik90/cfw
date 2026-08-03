@@ -17,9 +17,7 @@ for arg in "$@"; do
   esac
 done
 
-cargo check --workspace --all-targets --all-features
-cargo fmt
-cargo clippy --fix --workspace --all-targets --all-features --allow-dirty --allow-staged
+./lint.sh
 cargo nextest run --all-features
 
 if [ "$MIRI" -eq 1 ]; then
