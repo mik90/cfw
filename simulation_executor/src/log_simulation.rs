@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use logging::sorted_log_stream::{
@@ -15,30 +16,36 @@ use task::pub_sub::ChannelName;
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 use task::time::FrameworkTime;
 
-use crate::LiveReplayConfig;
+const INVALID_NS: i64 = i64::MIN;
 
-pub struct ReplayTask {
+pub struct LogSimulationTask {
     reader: SortedLogStreamReader,
     sinks: ReplaySinkMap,
+    next_time_ns: Arc<AtomicI64>,
     stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
 }
 
-impl Callback for ReplayTask {
+impl Callback for LogSimulationTask {
     fn run(&mut self, ctx: &Context) -> Run {
         let (batch, next_time) = self.reader.read_until(ctx.now);
         for entry in &batch {
             self.sinks.publish(entry);
         }
 
-        let done = next_time.is_none();
-        if done {
-            if let Some(signal) = self.stop_signal.get() {
-                signal.request_stop();
+        match next_time {
+            Some(t) => {
+                self.next_time_ns
+                    .store(t.to_nanoseconds(), Ordering::Relaxed);
             }
-            Run::new(0)
-        } else {
-            Run::new(1)
+            None => {
+                self.next_time_ns.store(INVALID_NS, Ordering::Relaxed);
+                if let Some(signal) = self.stop_signal.get() {
+                    signal.request_stop();
+                }
+            }
         }
+
+        Run::new(0)
     }
 
     fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
@@ -58,16 +65,53 @@ impl Callback for ReplayTask {
     }
 }
 
-pub struct ReplayBuildStep {
+pub struct LogSimulationBuildStep {
     reader: Arc<Mutex<Option<SortedLogStreamReader>>>,
-    first_time: FrameworkTime,
+    next_time_ns: Arc<AtomicI64>,
     denylist: HashSet<ChannelName>,
     stop_signal_cell: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+    first_time: FrameworkTime,
 }
 
-impl TaskGraphBuildStep for ReplayBuildStep {
+impl LogSimulationBuildStep {
+    /// Construct a new build step from a log file path.
+    ///
+    /// Opens the file, creates a streaming reader, and seeds the first
+    /// execution time from the earliest logged entry.
+    pub fn new(
+        path: PathBuf,
+        denylist: HashSet<ChannelName>,
+        stop_signal_cell: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut log_reader = SortedLogStreamReader::from_path(&path, 65536)?;
+
+        if log_reader.is_empty() {
+            return Err("Log file is empty".into());
+        }
+
+        let first_time = log_reader
+            .peek_time()
+            .unwrap_or(FrameworkTime::from_nanoseconds(0));
+        let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
+
+        Ok(LogSimulationBuildStep {
+            reader: Arc::new(Mutex::new(Some(log_reader))),
+            next_time_ns,
+            denylist,
+            stop_signal_cell,
+            first_time,
+        })
+    }
+
+    /// Timestamp of the earliest entry in the log.
+    pub fn first_log_time(&self) -> FrameworkTime {
+        self.first_time
+    }
+}
+
+impl TaskGraphBuildStep for LogSimulationBuildStep {
     fn name(&self) -> &str {
-        "ReplayBuildStep"
+        "LogSimulationBuildStep"
     }
 
     fn build_step(
@@ -78,7 +122,7 @@ impl TaskGraphBuildStep for ReplayBuildStep {
         let reader_guard = self.reader.lock().unwrap();
         let reader = reader_guard
             .as_ref()
-            .expect("ReplayBuildStep: reader already taken; build_step may only be called once");
+            .expect("LogSimulationBuildStep: reader already taken; build_step may only be called once");
         let sinks = build_replay_sinks(reader, channel_registry, &self.denylist)?;
         drop(reader_guard);
 
@@ -89,75 +133,51 @@ impl TaskGraphBuildStep for ReplayBuildStep {
         let mut reader_guard = self.reader.lock().unwrap();
         let reader = reader_guard
             .take()
-            .expect("ReplayBuildStep: reader already taken");
+            .expect("LogSimulationBuildStep: reader already taken");
         drop(reader_guard);
 
-        let first_time = self.first_time;
+        let next_time_ns = self.next_time_ns.clone();
         let stop_signal = self.stop_signal_cell.clone();
 
-        let replay_task = ReplayTask {
+        let log_task = LogSimulationTask {
             reader,
             sinks,
+            next_time_ns: next_time_ns.clone(),
             stop_signal,
         };
 
-        let mut node = CallbackNode::new_named(Box::new(replay_task), "ReplayTask".into());
+        let mut node = CallbackNode::new_named(Box::new(log_task), "LogSimulationTask".into());
         node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
-        node.set_execution_time_callback(Box::new(move |_now| Some(first_time)));
+        node.set_execution_time_callback(Box::new(move |_now| {
+            let ns = next_time_ns.load(Ordering::Relaxed);
+            if ns == INVALID_NS {
+                None
+            } else {
+                Some(FrameworkTime::from_nanoseconds(ns))
+            }
+        }));
 
         Ok(vec![node])
     }
 }
 
-pub fn build_replay(
-    path: PathBuf,
-    speed: f32,
-    _registry: Arc<ChannelRegistry>,
-    denylist: HashSet<ChannelName>,
-    stop_signal_cell: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
-) -> Result<(LiveReplayConfig, ReplayBuildStep), Box<dyn std::error::Error + Send + Sync>> {
-    let mut log_reader = SortedLogStreamReader::from_path(&path, 65536)?;
-
-    if log_reader.is_empty() {
-        return Err("Log file is empty".into());
-    }
-
-    let first_log_time = log_reader
-        .peek_time()
-        .unwrap_or(FrameworkTime::from_nanoseconds(0));
-
-    let config = LiveReplayConfig {
-        replay_speed: speed,
-        first_log_time,
-        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    };
-
-    let build_step = ReplayBuildStep {
-        reader: Arc::new(Mutex::new(Some(log_reader))),
-        first_time: first_log_time,
-        denylist,
-        stop_signal_cell,
-    };
-
-    Ok((config, build_step))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, OnceLock};
 
     use logging::log_file::LogFileWriter;
     use logging::log_file_json::JsonLogFileWriter;
-    use logging::sorted_log_stream::SortedLogStreamReader;
     use task::callback::CallbackViews;
     use task::channel_registry::ChannelRegistry;
-    use task::context::Context;
     use task::executor::ExecutorStopSignal;
     use task::input::OptionalInput;
     use task::publisher::Publisher;
     use task::subscriber::{Subscriber, SubscriberConfig};
     use task::time::FrameworkTime;
+
+    use crate::state::SimulationState;
 
     use super::*;
 
@@ -175,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn test_replay_task_publishes_u64_driven_by_time() {
+    fn test_log_simulation_schedules_by_log_time() {
         let stopped = Arc::new(AtomicBool::new(false));
 
         let mut registry = ChannelRegistry::new();
@@ -199,6 +219,13 @@ mod tests {
                     &serialize_u64(7u64),
                 )
                 .unwrap();
+            writer
+                .store_message(
+                    "integer",
+                    &task::message::MessageHeader::new(FrameworkTime::from_nanoseconds(5_000)),
+                    &serialize_u64(9u64),
+                )
+                .unwrap();
         }
 
         let stop_signal_cell = Arc::new(OnceLock::new());
@@ -208,12 +235,14 @@ mod tests {
         let mut reader =
             SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
+        let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
 
-        let build_step = ReplayBuildStep {
+        let build_step = LogSimulationBuildStep {
             reader: Arc::new(Mutex::new(Some(reader))),
-            first_time,
+            next_time_ns: next_time_ns.clone(),
             denylist: HashSet::new(),
             stop_signal_cell: stop_signal_cell.clone(),
+            first_time,
         };
 
         let mut channel_registry = ChannelRegistry::new();
@@ -222,10 +251,10 @@ mod tests {
             .build_step(&[], &mut channel_registry)
             .unwrap();
         assert_eq!(nodes.len(), 1);
-        let mut node = nodes.into_iter().next().unwrap();
-        assert_eq!(node.name(), "ReplayTask");
+        assert_eq!(nodes[0].name(), "LogSimulationTask");
 
-        // Create a subscriber on "integer" to observe published messages
+        let mut node = nodes.into_iter().next().unwrap();
+
         let mut sub = Subscriber::<u64>::new(SubscriberConfig {
             is_optional: false,
             capacity: 4,
@@ -243,54 +272,38 @@ mod tests {
             pub_ref.allocate_arena();
         }
 
-        // Time 500: nothing due yet
-        let t500 = FrameworkTime::from_nanoseconds(500);
-        node.run(&Context::new(t500));
-        node.flush_publishers(t500);
-        sub.drain_writer_to_reader();
-        {
-            let input = OptionalInput::<u64>::new_downcasted(&mut sub);
-            assert!(input.value().is_none());
+        let mut state = SimulationState::new(1, vec![node]);
+        state.start();
+
+        let mut observed_values: Vec<u64> = Vec::new();
+
+        for _ in 0..20 {
+            if stopped.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let _executed = state.step().unwrap();
+
+            sub.drain_writer_to_reader();
+            {
+                let mut input = OptionalInput::<u64>::new_downcasted(&mut sub);
+                if let Some(val) = input.value() {
+                    observed_values.push(*val);
+                    input.clear();
+                }
+            }
         }
 
-        // Time 1000: first entry should publish
-        let t1000 = FrameworkTime::from_nanoseconds(1_000);
-        node.run(&Context::new(t1000));
-        node.flush_publishers(t1000);
-        sub.drain_writer_to_reader();
-        {
-            let mut input = OptionalInput::<u64>::new_downcasted(&mut sub);
-            assert_eq!(input.value(), Some(&42u64));
-            input.clear();
-            assert!(input.value().is_none());
-        }
-
-        // Time 2000: cursor behind second entry — nothing new
-        let t2000 = FrameworkTime::from_nanoseconds(2_000);
-        node.run(&Context::new(t2000));
-        node.flush_publishers(t2000);
-        sub.drain_writer_to_reader();
-        {
-            let input = OptionalInput::<u64>::new_downcasted(&mut sub);
-            assert!(input.value().is_none());
-        }
-
-        // Time 3000: second entry should publish, then stop
-        let t3000 = FrameworkTime::from_nanoseconds(3_000);
-        node.run(&Context::new(t3000));
-        node.flush_publishers(t3000);
-        sub.drain_writer_to_reader();
-        {
-            let mut input = OptionalInput::<u64>::new_downcasted(&mut sub);
-            assert_eq!(input.value(), Some(&7u64));
-            input.clear();
-            assert!(input.value().is_none());
-        }
+        assert_eq!(observed_values, vec![42u64, 7u64, 9u64]);
+        assert_eq!(
+            state.simulation_time(),
+            FrameworkTime::from_nanoseconds(5_000)
+        );
         assert!(stopped.load(Ordering::Relaxed));
     }
 
     #[test]
-    fn test_replay_task_drylists_execution_log() {
+    fn test_log_simulation_drylists_execution_log() {
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("integer".into());
 
@@ -317,17 +330,18 @@ mod tests {
         let mut reader =
             SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
+        let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
+
+        let build_step = LogSimulationBuildStep {
+            reader: Arc::new(Mutex::new(Some(reader))),
+            next_time_ns,
+            denylist: HashSet::new(),
+            stop_signal_cell,
+            first_time,
+        };
 
         let mut channel_registry = ChannelRegistry::new();
         channel_registry.register_channel::<u64>("integer".into());
-
-        let build_step = ReplayBuildStep {
-            reader: Arc::new(Mutex::new(Some(reader))),
-            first_time,
-            denylist: HashSet::new(),
-            stop_signal_cell,
-        };
-
         let nodes = build_step
             .build_step(&[], &mut channel_registry)
             .unwrap();
@@ -342,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn test_drylised_channels_skipped() {
+    fn test_log_simulation_denylisted_channels_skipped() {
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("integer".into());
 
@@ -362,20 +376,21 @@ mod tests {
         let mut reader =
             SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
+        let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
 
         let mut denylist = HashSet::new();
         denylist.insert("integer".to_string());
 
-        let mut channel_registry = ChannelRegistry::new();
-        channel_registry.register_channel::<u64>("integer".into());
-
-        let build_step = ReplayBuildStep {
+        let build_step = LogSimulationBuildStep {
             reader: Arc::new(Mutex::new(Some(reader))),
-            first_time,
+            next_time_ns,
             denylist,
             stop_signal_cell,
+            first_time,
         };
 
+        let mut channel_registry = ChannelRegistry::new();
+        channel_registry.register_channel::<u64>("integer".into());
         let nodes = build_step
             .build_step(&[], &mut channel_registry)
             .unwrap();

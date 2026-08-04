@@ -42,7 +42,7 @@ In order of priority
     - maybe we can just use `()` as the T?
   - [ ] forwarded message that includes messages from multiple subscribers (with or without extra data)
     - [ ] probably need declarative macros and have something like `ForwardedMessageTuple${N}` for each arity
-- [ ] exact replay executor
+- [x] exact replay executor
   - prob should mimic thread pool constraints but we should be able to execute stuff in any order as long as callbacks aren't stateful
   - I'll need to consider logging executions and message queues for this
   - Should allow for reproduction of a given message
@@ -55,7 +55,7 @@ In order of priority
 - [x] live replay executor
   - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
   - useful for development of viz tools
-- [ ] add log replay task to simulation executor to run over logged data
+- [x] add log replay task to simulation executor to run over logged data
 - [ ] allow for foreign subscribers/publishers such as iceoryx2
   - we should be able to swap out foreign/native impls per task at build/configuration time
   - arena configuration may be different per backing pub/sub system
@@ -64,7 +64,6 @@ In order of priority
 - [ ] maybe a manual input pull and fallable publish? allows for global defaults and configurable 
   - storing the typed publisher or subscriber might work here
   - the proc macro setup isn't required, so this may be a non-proc macro way to implement things
-- [ ] allow for run_generic on Fn and FnMut
 - [ ] provide task storage abstraction
   - cleanup subscriber buffers before publishers
   - allow for indexing with some strong types
@@ -86,7 +85,7 @@ In order of priority
   - not ideal, but we only track readiness on required inputs, optional ones are not tracked
 - [ ] log queue capacity shouldn't have a default value of 10, and we should have better configuration for per channel configuration
 - [x] register loggable types even without macro usage (use register_channels)
-- [ ] impl mpsc queue https://blog.bearcats.nl/simple-message-queue/ (modified rigtorp?) to replace cross-beam channel usage which is MPMC
+- [ ] work in experimental mpsc queue
 - [ ] interned channel names and callback names to avoid allocations
     - use arena type, maybe leak at startup?
     - we could write mapping of intern ID to values to disk at build time

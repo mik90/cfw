@@ -5,6 +5,11 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task" }
+logging = { path = "../logging", optional = true }
+
+[features]
+default = ["log_simulation"]
+log_simulation = ["dep:logging"]
 
 [dev-dependencies]
 test_tasks = { path = "../test_tasks" }

@@ -879,6 +879,7 @@ dependencies = [
 name = "simulation_executor"
 version = "0.1.0"
 dependencies = [
+ "logging",
  "task",
  "test_tasks",
 ]
