@@ -1,6 +1,7 @@
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
+use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
@@ -159,30 +160,37 @@ impl<T> Default for ArenaSlot<T> {
 
 pub struct Arena<T> {
     // A vector of slots, where each slot can be updated but each value can be mutated too
-    storage: Vec<ArenaSlot<T>>,
+    //storage: Vec<ArenaSlot<T>>,
+    storage: Pin<Box<[ArenaSlot<T>]>>,
+    capacity: usize,
 }
 
 impl<T> Arena<T> {
+    /// Sets initial capacity, although these pointers may be cleared out once slots are re-allocated
     pub fn new(capacity: usize) -> Self {
         Arena {
-            storage: Vec::with_capacity(capacity),
+            // Basically empty storage until we call allocate_slots()
+            storage: Box::into_pin(vec![].into_boxed_slice()),
+            capacity,
         }
     }
 
     pub fn capacity(&self) -> usize {
-        self.storage.capacity()
+        self.capacity
     }
 
     /// This will invalidate all ArenaPtrs
     pub fn update_capacity(&mut self, new_capacity: usize) {
-        self.storage = Vec::with_capacity(new_capacity)
+        self.capacity = new_capacity;
     }
 
     /// Once the capacity is set, this allocates slots of uninitialized memory
     pub fn allocate_slots(&mut self) {
-        for _ in 0..self.storage.capacity() {
-            self.storage.push(ArenaSlot::default());
+        let mut vec_storage = Vec::with_capacity(self.capacity);
+        for _ in 0..self.capacity {
+            vec_storage.push(ArenaSlot::<T>::default());
         }
+        self.storage = Box::into_pin(vec_storage.into_boxed_slice());
     }
 }
 
