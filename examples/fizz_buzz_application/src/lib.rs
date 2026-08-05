@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use task::channel_registry::ChannelRegistry;
+use task::execution_log::ExecutionLogLevel;
 use task::executor::{ExecutorStopSignal, ThreadPoolConfig};
 use task::task_graph_builder::{BuiltTaskGraph, TaskGraphBuilder};
 
@@ -51,7 +52,7 @@ pub fn build_live_graph_with(
     let stop_signal_cell = Arc::new(OnceLock::new());
     let graph = app_graph_builder()
         .add_build_step(logging_build_step)
-        .with_log_executions(true)
+        .with_execution_log_level(ExecutionLogLevel::Whole)
         .build()
         .map_err(|e| -> BuildError { e.to_string().into() })?;
 

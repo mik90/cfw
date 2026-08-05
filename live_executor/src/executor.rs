@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 use task::callback::CallbackNode;
 use task::context::Context;
-use task::execution_log::{self, ExecutionLogMessage};
+use task::execution_log::{self, ExecutionLogLevel, ExecutionLogMessage};
 use task::executor::{
     CallbackNodeEnqueuer, Executor, ExecutorStopSignal, ThreadPoolConfig, TimeSource, WallClock,
 };
@@ -352,38 +352,58 @@ fn process_work_item(
                 return;
             }
 
-            node_guard.drain_subscribers();
-            logger.recv_scratch_clear();
-            let mut ordinal = 0u16;
-            node_guard.callback().for_each_subscriber(&mut |sub| {
-                let ordinal_val = ordinal;
-                ordinal += 1;
-                sub.for_each_queued_input(&mut |header, _payload| {
-                    logger.recv_push(task::execution_log::LoggedMessage {
-                        ordinal: ordinal_val,
-                        direction: task::execution_log::Direction::Received,
-                        header: *header,
+            match node_guard.execution_log_level() {
+                ExecutionLogLevel::Off => unreachable!("captures_for filters Off"),
+                ExecutionLogLevel::Duration => {
+                    node_guard.drain_subscribers();
+                    let start = task::time::FrameworkTime::from_wall_clock();
+                    let _ = node_guard.run(&ctx);
+                    let end = task::time::FrameworkTime::from_wall_clock();
+                    let duration =
+                        end.checked_duration_since(start).unwrap_or(Duration::ZERO);
+
+                    logger.record_duration_only(index as u32, ctx.now, duration);
+
+                    node_guard.flush_publishers(ctx.now);
+
+                    logger.maybe_flush_period(ctx.now);
+                }
+                ExecutionLogLevel::Whole => {
+                    node_guard.drain_subscribers();
+                    logger.recv_scratch_clear();
+                    let mut ordinal = 0u16;
+                    node_guard.callback().for_each_subscriber(&mut |sub| {
+                        let ordinal_val = ordinal;
+                        ordinal += 1;
+                        sub.for_each_queued_input(&mut |header, _payload| {
+                            logger.recv_push(task::execution_log::LoggedMessage {
+                                ordinal: ordinal_val,
+                                direction: task::execution_log::Direction::Received,
+                                header: *header,
+                            });
+                        });
                     });
-                });
-            });
-            let start = task::time::FrameworkTime::from_wall_clock();
-            let _ = node_guard.run(&ctx);
-            let end = task::time::FrameworkTime::from_wall_clock();
-            let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
+                    let start = task::time::FrameworkTime::from_wall_clock();
+                    let _ = node_guard.run(&ctx);
+                    let end = task::time::FrameworkTime::from_wall_clock();
+                    let duration =
+                        end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
-            logger.begin_execution(index as u32, ctx.now, duration);
+                    logger.begin_execution(index as u32, ctx.now, duration);
 
-            logger.drain_recv_into_current();
+                    logger.drain_recv_into_current();
 
-            node_guard.flush_publishers_logged(ctx.now, &mut |ordinal, header| {
-                logger.append(task::execution_log::LoggedMessage {
-                    ordinal: ordinal as u16,
-                    direction: task::execution_log::Direction::Published,
-                    header: *header,
-                });
-            });
+                    node_guard.flush_publishers_logged(ctx.now, &mut |ordinal, header| {
+                        logger.append(task::execution_log::LoggedMessage {
+                            ordinal: ordinal as u16,
+                            direction: task::execution_log::Direction::Published,
+                            header: *header,
+                        });
+                    });
 
-            logger.maybe_flush_period(ctx.now);
+                    logger.maybe_flush_period(ctx.now);
+                }
+            }
         }
         None => {
             node_guard.drain_subscribers();
@@ -561,6 +581,7 @@ mod tests {
         },
         callback_builder::CallbackBuilder,
         context::Context,
+        execution_log::ExecutionLogLevel,
         executor::{Executor, ExecutorStopSignal, ThreadPoolConfig},
         generic_publisher::GenericPublisher,
         generic_subscriber::GenericSubscriber,
@@ -691,6 +712,7 @@ mod tests {
     fn build_logging_executor(
         target: usize,
         stop_signal_cell: &Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+        level: ExecutionLogLevel,
     ) -> (
         LiveExecutor,
         Arc<Mutex<Vec<task::execution_log::ExecutionLogMessage>>>,
@@ -708,7 +730,7 @@ mod tests {
         .with_publisher_channels(&["exec_log_ch"])
         .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
         .with_execution_duration_callback(|| time::Duration::from_millis(1))
-        .with_execution_logging(true)
+        .with_execution_log_level(level)
         .build()
         .unwrap();
 
@@ -723,7 +745,7 @@ mod tests {
         )
         .with_subscriber_channels(&["exec_log_ch"])
         .with_execution_duration_callback(|| time::Duration::from_millis(1))
-        .with_execution_logging(true)
+        .with_execution_log_level(level)
         .build()
         .unwrap();
 
@@ -747,6 +769,7 @@ mod tests {
         )
         .with_subscriber_channels(&[task::execution_log::EXECUTION_LOG_CHANNEL])
         .with_execution_duration_callback(|| time::Duration::ZERO)
+        .with_execution_log_level(ExecutionLogLevel::Off)
         .build()
         .unwrap();
 
@@ -1217,7 +1240,7 @@ mod tests {
         .with_publisher_channels(&["exec_log_no_alloc_ch"])
         .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
         .with_execution_duration_callback(|| time::Duration::from_millis(1))
-        .with_execution_logging(true)
+        .with_execution_log_level(ExecutionLogLevel::Whole)
         .build()
         .unwrap();
 
@@ -1232,7 +1255,7 @@ mod tests {
         )
         .with_subscriber_channels(&["exec_log_no_alloc_ch"])
         .with_execution_duration_callback(|| time::Duration::from_millis(1))
-        .with_execution_logging(true)
+        .with_execution_log_level(ExecutionLogLevel::Whole)
         .build()
         .unwrap();
 

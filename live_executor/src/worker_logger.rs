@@ -2,7 +2,7 @@ use std::num::Saturating;
 use std::time::Duration;
 use task::callback::CallbackNode;
 use task::execution_log::{
-    ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
+    ENTRIES_PER_MESSAGE, ExecutionLogLevel, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
 };
 use task::generic_publisher::GenericPublisher;
 use task::publisher::Publisher;
@@ -50,7 +50,7 @@ impl WorkerLogger {
     }
 
     pub(crate) fn captures_for(&mut self, node: &CallbackNode) -> bool {
-        if !node.log_executions() {
+        if node.execution_log_level() == ExecutionLogLevel::Off {
             return false;
         }
         if self.current_loan.is_none() {
@@ -111,6 +111,37 @@ impl WorkerLogger {
         }
     }
 
+    /// Record a duration-only execution: a single entry carrying the node,
+    /// execution time and duration with no messages. Consumers treat such
+    /// entries as if there was no execution log at all.
+    pub(crate) fn record_duration_only(
+        &mut self,
+        node_index: u32,
+        time: FrameworkTime,
+        duration: Duration,
+    ) {
+        self.roll_to_fresh_entry();
+        let Some(loan) = self.current_loan else {
+            self.dropped += 1;
+            return;
+        };
+        let cur = self.publisher.loaned_payload_mut(loan);
+        let entry = &mut cur.entries[self.next_entry];
+        entry.callback_node_index = node_index;
+        entry.execution_time = time;
+        entry.execution_duration_ns = duration.as_nanos() as u64;
+        entry.log_whole = false;
+        self.next_entry += 1;
+        self.next_msg = 0;
+        if self.next_entry == ENTRIES_PER_MESSAGE {
+            if !self.flush_current(time) {
+                self.dropped += 1;
+            }
+            self.next_entry = 0;
+            self.next_msg = 0;
+        }
+    }
+
     pub(crate) fn append(&mut self, msg: LoggedMessage) {
         let Some(loan) = self.current_loan else {
             self.dropped += 1;
@@ -137,6 +168,7 @@ impl WorkerLogger {
             entry.callback_node_index = self.cur_node;
             entry.execution_time = self.cur_time;
             entry.execution_duration_ns = self.cur_duration.as_nanos() as u64;
+            entry.log_whole = true;
         }
         entry.messages[self.next_msg] = msg;
         self.next_msg += 1;

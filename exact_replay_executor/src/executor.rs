@@ -437,6 +437,7 @@ mod tests {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
+            log_whole: true,
             messages: std::array::from_fn(|_| LoggedMessage::default()),
         };
         entry.messages[0] = LoggedMessage {
@@ -661,6 +662,7 @@ mod tests {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
+            log_whole: true,
             messages: std::array::from_fn(|_| LoggedMessage::default()),
         };
         entry.messages[0] = LoggedMessage {
@@ -680,6 +682,7 @@ mod tests {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(200),
             execution_duration_ns: 0,
+            log_whole: true,
             messages: std::array::from_fn(|_| LoggedMessage::default()),
         };
         entry2.messages[0] = LoggedMessage {

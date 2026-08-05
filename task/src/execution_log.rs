@@ -30,6 +30,19 @@ pub const MESSAGES_PER_ENTRY: usize = 24;
 /// periodically (per the executor's flush period), or on worker exit.
 pub const ENTRIES_PER_MESSAGE: usize = 64;
 
+/// How much execution information is recorded for a callback node.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ExecutionLogLevel {
+    /// Record nothing.
+    Off,
+    /// Record only each execution's duration.
+    #[default]
+    Duration,
+    /// Record full executions: duration plus every received/published message.
+    Whole,
+}
+
 /// Which pub/sub side a logged message came from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -66,7 +79,20 @@ pub struct ExecutionLogEntry {
     pub callback_node_index: u32,
     pub execution_time: FrameworkTime,
     pub execution_duration_ns: u64,
+    /// Whether this entry records the full execution (`messages` populated) or
+    /// is duration-only. Duration-only entries carry no messages and are
+    /// treated by consumers (e.g. exact replay) as if there was no execution
+    /// log at all.
+    #[cfg_attr(feature = "serde", serde(default = "default_log_whole"))]
+    pub log_whole: bool,
     pub messages: [LoggedMessage; MESSAGES_PER_ENTRY],
+}
+
+/// Default for the `log_whole` flag when deserializing entries written before
+/// the flag existed: pre-flag logs only ever contained whole executions.
+#[cfg(feature = "serde")]
+fn default_log_whole() -> bool {
+    true
 }
 
 impl Default for ExecutionLogEntry {
@@ -75,6 +101,7 @@ impl Default for ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::INVALID,
             execution_duration_ns: 0,
+            log_whole: false,
             messages: std::array::from_fn(|_| LoggedMessage::default()),
         }
     }
@@ -325,6 +352,11 @@ pub fn worst_case_received_count(node: &crate::callback::CallbackNode) -> usize 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_log_level_defaults_to_duration() {
+        assert_eq!(ExecutionLogLevel::default(), ExecutionLogLevel::Duration);
+    }
 
     #[test]
     fn default_message_has_all_invalid_entries() {

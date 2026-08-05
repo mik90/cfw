@@ -4,7 +4,7 @@ use crate::{
     ChannelRegistry,
     callback::{CallbackNode, MismatchTypeError, connect_callback_nodes},
     callback_builder::CallbackBuilder,
-    execution_log,
+    execution_log::{self, ExecutionLogLevel},
     executor::ThreadPoolConfig,
     pub_sub::{CallbackNodeName, ChannelName},
     publisher::Publisher,
@@ -57,7 +57,7 @@ pub trait TaskGraphBuildStep {
 pub struct TaskGraphBuilder {
     pools: Vec<PoolBuilder>,
     build_steps: Vec<Box<dyn TaskGraphBuildStep>>,
-    log_executions: bool,
+    execution_log_level_override: Option<ExecutionLogLevel>,
     channel_registry: ChannelRegistry,
     debug_info: bool,
 }
@@ -210,17 +210,18 @@ impl TaskGraphBuilder {
         TaskGraphBuilder {
             pools: vec![],
             build_steps: vec![],
-            log_executions: false,
+            execution_log_level_override: None,
             channel_registry: ChannelRegistry::new(),
             debug_info: false,
         }
     }
 
-    /// Set to `true` to opt every callback node in the graph into execution
-    /// logging. Defaults to `false`. Applied after build steps run, so
-    /// build-step-created nodes are included.
-    pub fn with_log_executions(mut self, enabled: bool) -> TaskGraphBuilder {
-        self.log_executions = enabled;
+    /// Set the execution-log level for every callback node in the graph.
+    /// Defaults to [`ExecutionLogLevel::Duration`]. Applied after build steps
+    /// run, so build-step-created nodes are included. The graph level is
+    /// applied to every node, overriding any per-node builder setting.
+    pub fn with_execution_log_level(mut self, level: ExecutionLogLevel) -> TaskGraphBuilder {
+        self.execution_log_level_override = Some(level);
         self
     }
 
@@ -328,9 +329,9 @@ impl TaskGraphBuilder {
         let total_original: usize = pool_node_counts.iter().sum();
         let extra = all_nodes.len() - total_original;
         if pool_node_counts.is_empty() {
-            if self.log_executions {
+            if let Some(level_override) = self.execution_log_level_override {
                 for node in all_nodes.iter_mut() {
-                    node.set_log_executions(true);
+                    node.set_execution_log_level(level_override);
                 }
             }
             connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
@@ -345,9 +346,9 @@ impl TaskGraphBuilder {
         }
         pool_node_counts[0] += extra;
 
-        if self.log_executions {
+        if let Some(level_override) = self.execution_log_level_override {
             for node in all_nodes.iter_mut() {
-                node.set_log_executions(true);
+                node.set_execution_log_level(level_override);
             }
         }
 
@@ -359,14 +360,9 @@ impl TaskGraphBuilder {
             pools.push(ThreadPoolConfig::new(pool_thread_counts[i], nodes));
         }
 
-        let execution_log_publishers = if self.log_executions {
-            let mut log_pubs = execution_log::log_publishers(&pools);
-            execution_log::connect(&mut pools, &mut log_pubs)
-                .map_err(TaskGraphBuildError::ExecutionLogError)?;
-            log_pubs
-        } else {
-            vec![]
-        };
+        let mut execution_log_publishers = execution_log::log_publishers(&pools);
+        execution_log::connect(&mut pools, &mut execution_log_publishers)
+            .map_err(TaskGraphBuildError::ExecutionLogError)?;
 
         let debug_info = self.compute_debug_info(&pools);
 

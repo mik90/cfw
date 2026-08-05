@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use task::execution_log::ExecutionLogLevel;
 use task::loggable::Loggable;
 use task::{CallbackBuilder, Output, task_graph_builder};
 use task_macros::task_callback;
@@ -166,7 +167,7 @@ fn run_live(log_path: PathBuf, print: bool) -> Result<(), Box<dyn std::error::Er
 
     let graph = task_graph_builder::TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback_builder(MyTask {}.callback_builder()))
-        .with_log_executions(true)
+        .with_execution_log_level(ExecutionLogLevel::Whole)
         .add_build_step(logging_build_step)
         .build()
         .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;

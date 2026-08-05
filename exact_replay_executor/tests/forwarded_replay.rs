@@ -22,7 +22,7 @@ use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::execution_log::{
     Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
-    ExecutionLogEntry, ExecutionLogMessage, LoggedMessage,
+    ExecutionLogEntry, ExecutionLogLevel, ExecutionLogMessage, LoggedMessage,
 };
 use task::executor::{Executor, ExecutorStopSignal, ThreadPoolConfig};
 use task::forwarded_message::ForwardedMessage;
@@ -266,6 +266,7 @@ fn make_entry(node: u32, time_ns: i64, messages: &[LoggedMessage]) -> ExecutionL
         callback_node_index: node,
         execution_time: FrameworkTime::from_nanoseconds(time_ns),
         execution_duration_ns: 0,
+        log_whole: true,
         messages: std::array::from_fn(|_| LoggedMessage::default()),
     };
     for (i, msg) in messages.iter().enumerate() {
@@ -487,7 +488,7 @@ fn replays_a_live_forwarding_run() {
                 ))
         })
         .add_build_step(logging_step)
-        .with_log_executions(true)
+        .with_execution_log_level(ExecutionLogLevel::Whole)
         .build()
         .expect("build live graph");
 

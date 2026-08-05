@@ -1,3 +1,4 @@
+use crate::execution_log::ExecutionLogLevel;
 use crate::executor::CallbackNodeEnqueuer;
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
@@ -400,7 +401,7 @@ pub struct CallbackNode {
     execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
     name: CallbackNodeName,
     readiness: Arc<CallbackNodeReadiness>,
-    log_executions: bool,
+    log_level: ExecutionLogLevel,
 }
 
 impl std::fmt::Debug for CallbackNode {
@@ -448,7 +449,7 @@ impl CallbackNode {
             execution_duration_callback: None,
             name,
             readiness,
-            log_executions: false,
+            log_level: ExecutionLogLevel::default(),
         };
 
         let mut bit_index = 0;
@@ -517,11 +518,11 @@ impl CallbackNode {
         self.callback.flush_publishers_logged(ts, hook);
     }
 
-    pub fn log_executions(&self) -> bool {
-        self.log_executions
+    pub fn execution_log_level(&self) -> ExecutionLogLevel {
+        self.log_level
     }
-    pub fn set_log_executions(&mut self, enabled: bool) {
-        self.log_executions = enabled;
+    pub fn set_execution_log_level(&mut self, level: ExecutionLogLevel) {
+        self.log_level = level;
     }
 
     pub fn run(&mut self, ctx: &crate::context::Context) -> Run {

@@ -180,6 +180,11 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
             if !entry.is_valid() {
                 continue;
             }
+            // Duration-only entries carry no messages and are treated as if
+            // there was no execution log at all.
+            if !entry.log_whole {
+                continue;
+            }
             let key = (
                 entry.callback_node_index as usize,
                 entry.execution_time.to_nanoseconds(),
@@ -496,6 +501,7 @@ mod tests {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
+            log_whole: true,
             messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
         };
         entry.messages[0] = task::execution_log::LoggedMessage {
@@ -548,6 +554,7 @@ mod tests {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
+            log_whole: true,
             messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
         };
         entry.messages[0] = task::execution_log::LoggedMessage {
@@ -610,6 +617,7 @@ mod tests {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
+            log_whole: true,
             messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
         };
         producer.messages[0] = task::execution_log::LoggedMessage {
@@ -621,6 +629,7 @@ mod tests {
             callback_node_index: 1,
             execution_time: FrameworkTime::from_nanoseconds(150),
             execution_duration_ns: 0,
+            log_whole: true,
             messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
         };
         consumer.messages[0] = task::execution_log::LoggedMessage {
@@ -659,6 +668,7 @@ mod tests {
             callback_node_index: 5,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
+            log_whole: true,
             messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
         };
         let scratch = execution_log_bytes(&[entry], 0);
@@ -715,6 +725,7 @@ mod tests {
                 callback_node_index: 0,
                 execution_time: exec_time,
                 execution_duration_ns: 0,
+                log_whole: true,
                 messages: std::array::from_fn(|_| LoggedMessage::default()),
             };
             entry.messages[0] = LoggedMessage {

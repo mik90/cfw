@@ -1,4 +1,5 @@
 use crate::callback::{Callback, CallbackNode, CallbackViews};
+use crate::execution_log::ExecutionLogLevel;
 use crate::pub_sub::CallbackNodeName;
 use crate::time::FrameworkTime;
 use std::fmt;
@@ -10,7 +11,7 @@ pub struct CallbackBuilder {
     next_execution_time_callback: Option<Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>>,
     execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
 
-    log_executions: bool,
+    log_level: ExecutionLogLevel,
 
     name: CallbackNodeName,
 
@@ -67,7 +68,7 @@ impl CallbackBuilder {
             generic_callback: callback,
             next_execution_time_callback: None,
             execution_duration_callback: None,
-            log_executions: false,
+            log_level: ExecutionLogLevel::Duration,
             first_error: None,
         }
     }
@@ -141,8 +142,8 @@ impl CallbackBuilder {
         self
     }
 
-    pub fn with_execution_logging(mut self, enabled: bool) -> CallbackBuilder {
-        self.log_executions = enabled;
+    pub fn with_execution_log_level(mut self, level: ExecutionLogLevel) -> CallbackBuilder {
+        self.log_level = level;
         self
     }
 
@@ -152,10 +153,7 @@ impl CallbackBuilder {
         }
 
         let mut callback = CallbackNode::new_named(self.generic_callback, self.name);
-
-        if self.log_executions {
-            callback.set_log_executions(true);
-        }
+        callback.set_execution_log_level(self.log_level);
 
         if let Some(cb) = self.execution_duration_callback {
             callback.set_execution_duration_callback(cb);
