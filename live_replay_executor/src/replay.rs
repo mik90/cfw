@@ -2,9 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use logging::sorted_log_stream::{
-    ReplaySinkMap, SortedLogStreamReader, build_replay_sinks,
-};
+use logging::sorted_log_stream::{ReplaySinkMap, SortedLogStreamReader, build_replay_sinks};
 use task::callback::{Callback, CallbackNode, PortMut, Run};
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
@@ -205,8 +203,7 @@ mod tests {
         let _ = stop_signal_cell
             .set(Arc::new(TestStopSignal(stopped.clone())) as Arc<dyn ExecutorStopSignal>);
 
-        let mut reader =
-            SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
+        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
 
         let build_step = ReplayBuildStep {
@@ -218,9 +215,7 @@ mod tests {
 
         let mut channel_registry = ChannelRegistry::new();
         channel_registry.register_channel::<u64>("integer".into());
-        let nodes = build_step
-            .build_step(&[], &mut channel_registry)
-            .unwrap();
+        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
         assert_eq!(nodes.len(), 1);
         let mut node = nodes.into_iter().next().unwrap();
         assert_eq!(node.name(), "ReplayTask");
@@ -290,6 +285,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri doesn't support file open/close")]
     fn test_replay_task_drylists_execution_log() {
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("integer".into());
@@ -314,8 +310,7 @@ mod tests {
         }
 
         let stop_signal_cell = Arc::new(OnceLock::new());
-        let mut reader =
-            SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
+        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
 
         let mut channel_registry = ChannelRegistry::new();
@@ -328,9 +323,7 @@ mod tests {
             stop_signal_cell,
         };
 
-        let nodes = build_step
-            .build_step(&[], &mut channel_registry)
-            .unwrap();
+        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].callback().collect_publishers().len(), 1);
         assert_eq!(
@@ -359,8 +352,7 @@ mod tests {
         }
 
         let stop_signal_cell = Arc::new(OnceLock::new());
-        let mut reader =
-            SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
+        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
 
         let mut denylist = HashSet::new();
@@ -376,9 +368,7 @@ mod tests {
             stop_signal_cell,
         };
 
-        let nodes = build_step
-            .build_step(&[], &mut channel_registry)
-            .unwrap();
+        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
         assert!(nodes.is_empty());
     }
 }
