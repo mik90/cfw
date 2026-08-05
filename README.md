@@ -51,7 +51,7 @@ In order of priority
   - [x] see if we can avoid more allocations with Vecs in logging
   - [x] create workflow to log data
   - [x] add code to parse logged data and replay specific executions
-  - [ ] configuration to log only execution duration (so, execution log enum for options)
+  - [x] configuration to log only execution duration (so, execution log enum for options)
 - [x] live replay executor
   - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
   - useful for development of viz tools
