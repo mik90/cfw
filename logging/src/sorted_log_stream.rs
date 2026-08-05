@@ -35,8 +35,14 @@ pub struct OwnedLogEntry {
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum RawLine {
-    Artifact { artifact: String },
-    Message { header: MessageHeader, channel_name: String, body: Vec<u8> },
+    Artifact {
+        artifact: String,
+    },
+    Message {
+        header: MessageHeader,
+        channel_name: String,
+        body: Vec<u8>,
+    },
 }
 
 // Helper for serializing entries to temp run files.
@@ -61,7 +67,11 @@ fn parse_entry_line(line: &str) -> Option<OwnedLogEntry> {
     }
     match serde_json::from_str::<RawLine>(line) {
         Ok(RawLine::Artifact { .. }) => None,
-        Ok(RawLine::Message { header, channel_name, body }) => Some(OwnedLogEntry {
+        Ok(RawLine::Message {
+            header,
+            channel_name,
+            body,
+        }) => Some(OwnedLogEntry {
             header,
             channel_name,
             serialized_body: body,
@@ -76,7 +86,8 @@ fn write_entry<W: Write>(w: &mut W, entry: &OwnedLogEntry) -> Result<(), serde_j
         channel_name: &entry.channel_name,
         body: &entry.serialized_body,
     })?;
-    w.write_all(line.as_bytes()).map_err(serde_json::Error::io)?;
+    w.write_all(line.as_bytes())
+        .map_err(serde_json::Error::io)?;
     w.write_all(b"\n").map_err(serde_json::Error::io)
 }
 
@@ -97,11 +108,13 @@ fn read_run_entry(reader: &mut BufReader<File>) -> Option<OwnedLogEntry> {
             if trimmed.is_empty() {
                 None
             } else {
-                serde_json::from_str::<ReadEntry>(trimmed).ok().map(|r| OwnedLogEntry {
-                    header: r.header,
-                    channel_name: r.channel_name,
-                    serialized_body: r.body,
-                })
+                serde_json::from_str::<ReadEntry>(trimmed)
+                    .ok()
+                    .map(|r| OwnedLogEntry {
+                        header: r.header,
+                        channel_name: r.channel_name,
+                        serialized_body: r.body,
+                    })
             }
         }
     }
@@ -366,7 +379,9 @@ fn external_sort(path: &Path, sort_batch_size: usize) -> Result<PathBuf, serde_j
     let mut out = File::create(&sorted_path).map_err(serde_json::Error::io)?;
     let mut readers: Vec<BufReader<File>> = Vec::with_capacity(run_paths.len());
     for p in &run_paths {
-        readers.push(BufReader::new(File::open(p).map_err(serde_json::Error::io)?));
+        readers.push(BufReader::new(
+            File::open(p).map_err(serde_json::Error::io)?,
+        ));
     }
 
     let mut heap: BinaryHeap<Reverse<MergeEntry>> = BinaryHeap::new();

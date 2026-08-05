@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use logging::sorted_log_stream::{
-    ReplaySinkMap, SortedLogStreamReader, build_replay_sinks,
-};
+use logging::sorted_log_stream::{ReplaySinkMap, SortedLogStreamReader, build_replay_sinks};
 use task::callback::{Callback, CallbackNode, PortMut, Run};
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
@@ -120,9 +118,9 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
         channel_registry: &mut ChannelRegistry,
     ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
         let reader_guard = self.reader.lock().unwrap();
-        let reader = reader_guard
-            .as_ref()
-            .expect("LogSimulationBuildStep: reader already taken; build_step may only be called once");
+        let reader = reader_guard.as_ref().expect(
+            "LogSimulationBuildStep: reader already taken; build_step may only be called once",
+        );
         let sinks = build_replay_sinks(reader, channel_registry, &self.denylist)?;
         drop(reader_guard);
 
@@ -232,8 +230,7 @@ mod tests {
         let _ = stop_signal_cell
             .set(Arc::new(TestStopSignal(stopped.clone())) as Arc<dyn ExecutorStopSignal>);
 
-        let mut reader =
-            SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
+        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
         let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
 
@@ -247,9 +244,7 @@ mod tests {
 
         let mut channel_registry = ChannelRegistry::new();
         channel_registry.register_channel::<u64>("integer".into());
-        let nodes = build_step
-            .build_step(&[], &mut channel_registry)
-            .unwrap();
+        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].name(), "LogSimulationTask");
 
@@ -327,8 +322,7 @@ mod tests {
         }
 
         let stop_signal_cell = Arc::new(OnceLock::new());
-        let mut reader =
-            SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
+        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
         let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
 
@@ -342,9 +336,7 @@ mod tests {
 
         let mut channel_registry = ChannelRegistry::new();
         channel_registry.register_channel::<u64>("integer".into());
-        let nodes = build_step
-            .build_step(&[], &mut channel_registry)
-            .unwrap();
+        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].callback().collect_publishers().len(), 1);
         assert_eq!(
@@ -373,8 +365,7 @@ mod tests {
         }
 
         let stop_signal_cell = Arc::new(OnceLock::new());
-        let mut reader =
-            SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
+        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
         let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
 
@@ -391,9 +382,7 @@ mod tests {
 
         let mut channel_registry = ChannelRegistry::new();
         channel_registry.register_channel::<u64>("integer".into());
-        let nodes = build_step
-            .build_step(&[], &mut channel_registry)
-            .unwrap();
+        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
         assert!(nodes.is_empty());
     }
 }

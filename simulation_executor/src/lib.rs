@@ -1,8 +1,8 @@
 pub mod executor;
-mod node_executor;
-pub mod state;
 #[cfg(feature = "log_simulation")]
 pub mod log_simulation;
+mod node_executor;
+pub mod state;
 use task::callback::CallbackNode;
 use task::context::Context;
 use task::executor::ThreadPoolConfig;
