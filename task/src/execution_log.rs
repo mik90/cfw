@@ -83,16 +83,8 @@ pub struct ExecutionLogEntry {
     /// is duration-only. Duration-only entries carry no messages and are
     /// treated by consumers (e.g. exact replay) as if there was no execution
     /// log at all.
-    #[cfg_attr(feature = "serde", serde(default = "default_log_whole"))]
     pub log_whole: bool,
     pub messages: [LoggedMessage; MESSAGES_PER_ENTRY],
-}
-
-/// Default for the `log_whole` flag when deserializing entries written before
-/// the flag existed: pre-flag logs only ever contained whole executions.
-#[cfg(feature = "serde")]
-fn default_log_whole() -> bool {
-    true
 }
 
 impl Default for ExecutionLogEntry {
