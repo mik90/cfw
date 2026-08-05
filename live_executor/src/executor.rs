@@ -345,7 +345,8 @@ fn process_work_item(
 
     match logger {
         Some(logger) => {
-            if !logger.captures_for(&node_guard) {
+            if !logger.has_data() {
+                // Just track drop and continue
                 node_guard.drain_subscribers();
                 let _ = node_guard.run(&ctx);
                 node_guard.flush_publishers(ctx.now);
@@ -353,14 +354,17 @@ fn process_work_item(
             }
 
             match node_guard.execution_log_level() {
-                ExecutionLogLevel::Off => unreachable!("captures_for filters Off"),
+                ExecutionLogLevel::Off => {
+                    node_guard.drain_subscribers();
+                    let _ = node_guard.run(&ctx);
+                    node_guard.flush_publishers(ctx.now);
+                }
                 ExecutionLogLevel::Duration => {
                     node_guard.drain_subscribers();
                     let start = task::time::FrameworkTime::from_wall_clock();
                     let _ = node_guard.run(&ctx);
                     let end = task::time::FrameworkTime::from_wall_clock();
-                    let duration =
-                        end.checked_duration_since(start).unwrap_or(Duration::ZERO);
+                    let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
                     logger.record_duration_only(index as u32, ctx.now, duration);
 
@@ -386,8 +390,7 @@ fn process_work_item(
                     let start = task::time::FrameworkTime::from_wall_clock();
                     let _ = node_guard.run(&ctx);
                     let end = task::time::FrameworkTime::from_wall_clock();
-                    let duration =
-                        end.checked_duration_since(start).unwrap_or(Duration::ZERO);
+                    let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
                     logger.begin_execution(index as u32, ctx.now, duration);
 
@@ -1131,7 +1134,7 @@ mod tests {
 
         let stop_signal_cell = Arc::new(OnceLock::new());
         let (mut exec, collected, _messages_received) =
-            build_logging_executor(TARGET, &stop_signal_cell);
+            build_logging_executor(TARGET, &stop_signal_cell, ExecutionLogLevel::Whole);
         stop_signal_cell.set(exec.stop_signal()).ok();
         exec.start_threads();
 

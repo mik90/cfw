@@ -1,8 +1,7 @@
 use std::num::Saturating;
 use std::time::Duration;
-use task::callback::CallbackNode;
 use task::execution_log::{
-    ENTRIES_PER_MESSAGE, ExecutionLogLevel, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
+    ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
 };
 use task::generic_publisher::GenericPublisher;
 use task::publisher::Publisher;
@@ -49,10 +48,7 @@ impl WorkerLogger {
         }
     }
 
-    pub(crate) fn captures_for(&mut self, node: &CallbackNode) -> bool {
-        if node.execution_log_level() == ExecutionLogLevel::Off {
-            return false;
-        }
+    pub(crate) fn has_data(&mut self) -> bool {
         if self.current_loan.is_none() {
             self.current_loan = self.publisher.loan_default().ok();
         }
