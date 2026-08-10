@@ -26,3 +26,10 @@ dead_code = "allow" # Not ideal, but im iterating a lot and this is getting chat
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+
+[profile.vtune]
+# Build with `cargo b --profile vtune`
+inherits = "release" # Inherit baseline configurations from the release profile
+debug = true         # Preserve debug symbols (vital for tool mappings)
+lto = false          # Keep false; VTune struggles with LTO whole-program optimization
+strip = "none"       # Explicitly prevent symbol stripping
