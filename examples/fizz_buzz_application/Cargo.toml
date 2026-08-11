@@ -26,6 +26,5 @@ path = "src/bin/live_replay.rs"
 name = "exact-replay"
 path = "src/bin/exact_replay.rs"
 
-
 [lints]
 workspace = true

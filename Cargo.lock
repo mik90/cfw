@@ -74,6 +74,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
 name = "assert_no_alloc"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -731,6 +737,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "profiling"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "clap",
+ "live_executor",
+ "signal-hook",
+ "task",
+ "task_macros",
 ]
 
 [[package]]

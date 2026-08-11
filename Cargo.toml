@@ -10,8 +10,10 @@ members = [
     "live_replay_executor",
     "testing",
     "logging",
-    "examples/fizz_buzz_application",  
-    "base", "examples/facet_serialization",
+    "base",
+    "examples/fizz_buzz_application",
+    "examples/facet_serialization",
+    "examples/profiling",
 ]
 resolver = "3"
 

@@ -1,0 +1,16 @@
+[package]
+name = "profiling"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+task = { path = "../../task" }
+task_macros = { path = "../../task_macros" }
+live_executor = { path = "../../live_executor" }
+signal-hook = "0.3"
+clap = { version = "4.6.3", features = ["derive"] }
+arrayvec = "0.7.8"
+
+[lints]
+workspace = true
