@@ -7,6 +7,7 @@ use arrayvec::ArrayString;
 use clap::Parser;
 use live_executor::LiveExecutor;
 use signal_hook::consts::{SIGINT, SIGTERM};
+use task::callback::CallbackNode;
 use task::callback_builder::CallbackBuilder;
 use task::execution_log::ExecutionLogLevel;
 use task::input::RequiredInput;
@@ -14,7 +15,6 @@ use task::output::Output;
 use task::task_graph_builder::TaskGraphBuilder;
 use task_macros::task_callback;
 
-const INTEGER_CHANNEL: &str = "integer";
 const FIZZ_BUZZ_STRING_CHANNEL: &str = "fizz_buzz_string";
 
 type FizzBuzzString = ArrayString<32>;
@@ -26,7 +26,7 @@ struct IncrementingIntegerPublisher {
 
 #[task_callback]
 impl IncrementingIntegerPublisher {
-    fn run(&mut self, #[channel(INTEGER_CHANNEL)] mut output: Output<u64>) {
+    fn run(&mut self, mut output: Output<u64>) {
         *output = self.value;
         self.value = self.value.wrapping_add(1);
         output.send();
@@ -44,11 +44,7 @@ struct FizzBuzzCalculator;
 
 #[task_callback]
 impl FizzBuzzCalculator {
-    fn run(
-        &mut self,
-        #[channel(INTEGER_CHANNEL)] integer: RequiredInput<u64>,
-        #[channel(FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<FizzBuzzString>,
-    ) {
+    fn run(&mut self, integer: RequiredInput<u64>, mut fizz_buzz_string: Output<FizzBuzzString>) {
         let n = *integer;
         let is_fizz = n.is_multiple_of(3);
         let is_buzz = n.is_multiple_of(5);
@@ -95,7 +91,7 @@ struct StringCollector {
 
 #[task_callback]
 impl StringCollector {
-    fn run(&self, #[channel(FIZZ_BUZZ_STRING_CHANNEL)] string: RequiredInput<FizzBuzzString>) {
+    fn run(&self, string: RequiredInput<FizzBuzzString>) {
         self.counter
             .fetch_add(string.len() as u64, Ordering::Relaxed);
     }
@@ -112,6 +108,15 @@ struct CliArgs {
     /// Publisher execution period in microseconds. Lower is more stressful.
     #[arg(long, default_value_t = 100)]
     period_us: u64,
+
+    /// Number of independent integer-publisher -> fizz-buzz chains, all
+    /// feeding a single string collector. More chains means more scheduling.
+    #[arg(long, default_value_t = 1)]
+    sets: usize,
+
+    /// Number of worker threads in the pool.
+    #[arg(long, default_value_t = 2)]
+    threads: usize,
 
     /// Auto-stop the executor after this many seconds.
     #[arg(long, default_value_t = 15)]
@@ -130,32 +135,41 @@ fn main() {
 
     let args = CliArgs::parse();
     let counter = Arc::new(AtomicU64::new(0));
+    let period = Duration::from_micros(args.period_us);
 
-    let graph = TaskGraphBuilder::new()
-        .add_pool(2, |p| {
-            p.add_callback(
-                IncrementingIntegerPublisher {
-                    value: 0,
-                    period: Duration::from_micros(args.period_us),
-                }
+    let mut callbacks: Vec<CallbackNode> = Vec::new();
+    for set in 0..args.sets {
+        let integer_channel = format!("integer_{set}");
+        callbacks.push(
+            IncrementingIntegerPublisher { value: 0, period }
                 .callback_builder()
+                .with_name(format!("IncrementingIntegerPublisher({integer_channel})"))
+                .with_publisher_channels(&[integer_channel.as_str()])
                 .build()
                 .expect("build publisher"),
-            )
-            .add_callback(
-                FizzBuzzCalculator
-                    .callback_builder()
-                    .build()
-                    .expect("build calculator"),
-            )
-            .add_callback(
-                StringCollector {
-                    counter: counter.clone(),
-                }
+        );
+        callbacks.push(
+            FizzBuzzCalculator
                 .callback_builder()
+                .with_name(format!("FizzBuzzCalculator({integer_channel})"))
+                .with_subscriber_channels(&[integer_channel.as_str()])
+                .with_publisher_channels(&[FIZZ_BUZZ_STRING_CHANNEL])
                 .build()
-                .expect("build collector"),
-            )
+                .expect("build calculator"),
+        );
+    }
+    callbacks.push(
+        StringCollector {
+            counter: counter.clone(),
+        }
+        .callback_builder()
+        .with_subscriber_channels(&[FIZZ_BUZZ_STRING_CHANNEL])
+        .build()
+        .expect("build collector"),
+    );
+    let graph = TaskGraphBuilder::new()
+        .add_pool(args.threads, move |p| {
+            callbacks.into_iter().fold(p, |p, cb| p.add_callback(cb))
         })
         .with_execution_log_level(ExecutionLogLevel::Whole)
         .build()
