@@ -163,6 +163,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             Option<WorkerLoggerInit>,
             Arc<T>,
             usize,
+            String,
         ) -> thread::JoinHandle<()>,
     ) -> Vec<thread::JoinHandle<()>> {
         self.shared_state.barrier_count.store(0, Ordering::Release);
@@ -184,7 +185,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         let mut worker_index = 0;
 
         for (pool_idx, pool_arc) in self.shared_state.enqueue_state.pools.iter().enumerate() {
-            for _ in 0..pool_arc.thread_count {
+            for thread_idx in 0..pool_arc.thread_count {
                 let pool = pool_arc.clone();
                 let shared = self.shared_state.clone();
                 let ts = self.time_source.clone();
@@ -201,7 +202,15 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                     }
                     false => None,
                 };
-                handles.push(spawn_worker(pool, shared, init, ts, worker_index));
+                let thread_name = format!("cfw_pool_{pool_idx}_t_{thread_idx}");
+                handles.push(spawn_worker(
+                    pool,
+                    shared,
+                    init,
+                    ts,
+                    worker_index,
+                    thread_name,
+                ));
                 worker_index += 1;
             }
         }
@@ -212,42 +221,50 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     pub fn start_threads(&mut self) {
         let time_source = self.time_source.clone();
         self.worker_threads =
-            self.start_threads_with(move |pool, shared, init, _ts, worker_index| {
+            self.start_threads_with(move |pool, shared, init, _ts, worker_index, name| {
                 let ts = time_source.clone();
-                thread::spawn(move || {
-                    println!("Starting thread");
-                    let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
-                    run_executor_thread(
-                        pool.as_ref(),
-                        shared.as_ref(),
-                        logger,
-                        ts.as_ref(),
-                        worker_index,
-                    )
-                })
+                thread::Builder::new()
+                    .name(name)
+                    .spawn(move || {
+                        println!("Starting thread");
+                        let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
+                        run_executor_thread(
+                            pool.as_ref(),
+                            shared.as_ref(),
+                            logger,
+                            ts.as_ref(),
+                            worker_index,
+                        )
+                    })
+                    .expect("spawn worker thread")
             });
 
         let shared_state = self.shared_state.clone();
         let time_source = self.time_source.clone();
-        self.periodic_thread = Some(thread::spawn(move || {
-            let now = time_source.now();
-            let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
-            for (index, node) in shared_state.nodes.iter().enumerate() {
-                if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
-                    exec_times.push_back(TimeTriggeredNode {
-                        index,
-                        requested_exec_time: t,
-                    });
-                }
-            }
-            while shared_state.should_run.load(Ordering::Relaxed) {
-                periodic_trigger_thread(
-                    shared_state.as_ref(),
-                    &mut exec_times,
-                    time_source.as_ref(),
-                );
-            }
-        }));
+        self.periodic_thread = Some(
+            thread::Builder::new()
+                .name(String::from("cfw_periodic"))
+                .spawn(move || {
+                    let now = time_source.now();
+                    let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
+                    for (index, node) in shared_state.nodes.iter().enumerate() {
+                        if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
+                            exec_times.push_back(TimeTriggeredNode {
+                                index,
+                                requested_exec_time: t,
+                            });
+                        }
+                    }
+                    while shared_state.should_run.load(Ordering::Relaxed) {
+                        periodic_trigger_thread(
+                            shared_state.as_ref(),
+                            &mut exec_times,
+                            time_source.as_ref(),
+                        );
+                    }
+                })
+                .expect("spawn periodic thread"),
+        );
     }
 
     pub fn stop_threads(&mut self) -> Result<(), Vec<usize>> {
@@ -532,37 +549,45 @@ impl LiveExecutor<WallClock> {
     fn start_threads_no_alloc(&mut self) {
         let time_source = self.time_source.clone();
         self.worker_threads =
-            self.start_threads_with(move |pool, shared, init, _ts, worker_index| {
+            self.start_threads_with(move |pool, shared, init, _ts, worker_index, name| {
                 let pool = pool.clone();
                 let shared = shared.clone();
                 let ts = time_source.clone();
-                thread::spawn(move || {
-                    let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
-                    no_alloc_worker_loop(pool, shared, logger, ts, worker_index)
-                })
+                thread::Builder::new()
+                    .name(name)
+                    .spawn(move || {
+                        let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
+                        no_alloc_worker_loop(pool, shared, logger, ts, worker_index)
+                    })
+                    .expect("spawn worker thread")
             });
 
         let shared_state = self.shared_state.clone();
         let time_source = self.time_source.clone();
-        self.periodic_thread = Some(thread::spawn(move || {
-            let now = time_source.now();
-            let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
-            for (index, node) in shared_state.nodes.iter().enumerate() {
-                if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
-                    exec_times.push_back(TimeTriggeredNode {
-                        index,
-                        requested_exec_time: t,
-                    });
-                }
-            }
-            while shared_state.should_run.load(Ordering::Relaxed) {
-                periodic_trigger_thread(
-                    shared_state.as_ref(),
-                    &mut exec_times,
-                    time_source.as_ref(),
-                );
-            }
-        }));
+        self.periodic_thread = Some(
+            thread::Builder::new()
+                .name(String::from("cfw_periodic"))
+                .spawn(move || {
+                    let now = time_source.now();
+                    let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
+                    for (index, node) in shared_state.nodes.iter().enumerate() {
+                        if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
+                            exec_times.push_back(TimeTriggeredNode {
+                                index,
+                                requested_exec_time: t,
+                            });
+                        }
+                    }
+                    while shared_state.should_run.load(Ordering::Relaxed) {
+                        periodic_trigger_thread(
+                            shared_state.as_ref(),
+                            &mut exec_times,
+                            time_source.as_ref(),
+                        );
+                    }
+                })
+                .expect("spawn periodic thread"),
+        );
     }
 }
 
