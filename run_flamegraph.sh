@@ -13,3 +13,7 @@ RUSTFLAGS="-Clink-arg=-Wl,--no-rosegment" \
      -c "record -D $STARTUP_DELAY_MS -F 997 --call-graph dwarf,64000 -g -o $OUTPUT_DIR/perf.data" \
      -o $OUTPUT_DIR/flamegraph.svg \
      -- --duration-secs $DURATION_SECS
+
+pushd $OUTPUT_DIR
+perf script report gecko --save-only perf_gecko.json
+popd
