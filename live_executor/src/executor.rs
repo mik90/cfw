@@ -239,6 +239,15 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                     .expect("spawn worker thread")
             });
 
+        self.spawn_periodic_thread_with(|shared_state, exec_times, time_source| {
+            periodic_trigger_thread(shared_state, exec_times, time_source);
+        });
+    }
+
+    fn spawn_periodic_thread_with<F>(&mut self, mut body: F)
+    where
+        F: FnMut(&SharedThreadPoolState, &mut VecDeque<TimeTriggeredNode>, &T) + Send + 'static,
+    {
         let shared_state = self.shared_state.clone();
         let time_source = self.time_source.clone();
         self.periodic_thread = Some(
@@ -256,11 +265,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                         }
                     }
                     while shared_state.should_run.load(Ordering::Relaxed) {
-                        periodic_trigger_thread(
-                            shared_state.as_ref(),
-                            &mut exec_times,
-                            time_source.as_ref(),
-                        );
+                        body(shared_state.as_ref(), &mut exec_times, time_source.as_ref());
                     }
                 })
                 .expect("spawn periodic thread"),
@@ -433,12 +438,13 @@ fn process_work_item(
     }
 }
 
-fn run_executor_thread<T: TimeSource>(
+fn worker_loop_core<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
     mut logger: Option<WorkerLogger>,
     time_source: &T,
     worker_index: usize,
+    mut process: impl FnMut(usize, &SharedThreadPoolState, Option<&mut WorkerLogger>, FrameworkTime),
 ) {
     let _alive = shared_state.worker_liveness[worker_index].lock().unwrap();
 
@@ -453,7 +459,7 @@ fn run_executor_thread<T: TimeSource>(
             break;
         }
 
-        process_work_item(index, shared_state, logger.as_mut(), time_source.now());
+        process(index, shared_state, logger.as_mut(), time_source.now());
     }
 
     // Flush remaining entries into the channel BEFORE reaching the barrier,
@@ -477,47 +483,40 @@ fn run_executor_thread<T: TimeSource>(
     }));
 }
 
-#[cfg(test)]
-fn no_alloc_worker_loop(
-    pool: Arc<PoolState>,
-    shared: Arc<SharedThreadPoolState>,
-    mut logger: Option<WorkerLogger>,
-    time_source: Arc<WallClock>,
+fn run_executor_thread<T: TimeSource>(
+    pool_state: &PoolState,
+    shared_state: &SharedThreadPoolState,
+    logger: Option<WorkerLogger>,
+    time_source: &T,
     worker_index: usize,
 ) {
-    let _alive = shared.worker_liveness[worker_index].lock().unwrap();
+    worker_loop_core(
+        pool_state,
+        shared_state,
+        logger,
+        time_source,
+        worker_index,
+        process_work_item,
+    );
+}
 
-    loop {
-        let index = match pool.work_rx.recv() {
-            Ok(SHUTDOWN_SENTINEL) => break,
-            Ok(idx) => idx,
-            Err(_) => break,
-        };
-        if !shared.should_run.load(Ordering::Relaxed) {
-            break;
-        }
-        assert_no_alloc::assert_no_alloc(|| {
-            process_work_item(index, &shared, logger.as_mut(), time_source.now())
-        });
-    }
-
-    // Flush remaining entries before the barrier, so they're captured
-    // by the main thread's cleanup_buffers.
-    if let Some(logger) = logger.as_mut() {
-        logger.flush_remaining(time_source.now());
-    }
-
-    let guard = shared.shutdown_mutex.lock().unwrap();
-    if shared.barrier_count.fetch_add(1, Ordering::AcqRel) + 1 == shared.worker_count {
-        shared.shutdown_cv.notify_all();
-    }
-
-    // drop: discard the MutexGuard from wait_while immediately, releasing
-    // shutdown_mutex. _ = ... would trigger let_underscore_lock.
-    drop(
-        shared
-            .shutdown_cv
-            .wait_while(guard, |_| !shared.cleanup_done.load(Ordering::Acquire)),
+#[cfg(test)]
+fn no_alloc_worker_loop<T: TimeSource>(
+    pool_state: &PoolState,
+    shared_state: &SharedThreadPoolState,
+    logger: Option<WorkerLogger>,
+    time_source: &T,
+    worker_index: usize,
+) {
+    worker_loop_core(
+        pool_state,
+        shared_state,
+        logger,
+        time_source,
+        worker_index,
+        |index, shared_state, logger, now| {
+            assert_no_alloc::assert_no_alloc(|| process_work_item(index, shared_state, logger, now))
+        },
     );
 }
 
@@ -557,37 +556,22 @@ impl LiveExecutor<WallClock> {
                     .name(name)
                     .spawn(move || {
                         let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
-                        no_alloc_worker_loop(pool, shared, logger, ts, worker_index)
+                        no_alloc_worker_loop(
+                            pool.as_ref(),
+                            shared.as_ref(),
+                            logger,
+                            ts.as_ref(),
+                            worker_index,
+                        )
                     })
                     .expect("spawn worker thread")
             });
 
-        let shared_state = self.shared_state.clone();
-        let time_source = self.time_source.clone();
-        self.periodic_thread = Some(
-            thread::Builder::new()
-                .name(String::from("cfw_periodic"))
-                .spawn(move || {
-                    let now = time_source.now();
-                    let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
-                    for (index, node) in shared_state.nodes.iter().enumerate() {
-                        if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
-                            exec_times.push_back(TimeTriggeredNode {
-                                index,
-                                requested_exec_time: t,
-                            });
-                        }
-                    }
-                    while shared_state.should_run.load(Ordering::Relaxed) {
-                        periodic_trigger_thread(
-                            shared_state.as_ref(),
-                            &mut exec_times,
-                            time_source.as_ref(),
-                        );
-                    }
-                })
-                .expect("spawn periodic thread"),
-        );
+        self.spawn_periodic_thread_with(|shared_state, exec_times, time_source| {
+            assert_no_alloc::assert_no_alloc(|| {
+                periodic_trigger_thread(shared_state, exec_times, time_source);
+            });
+        });
     }
 }
 
