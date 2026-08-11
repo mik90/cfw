@@ -27,9 +27,16 @@ dead_code = "allow" # Not ideal, but im iterating a lot and this is getting chat
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 
+[profile.profiling]
+# See run_flamegraph.sh for how to run
+inherits = "release" # Inherit baseline configurations from the release profile
+debug = true         # Preserve debug symbols (vital for tool mappings)
+
 [profile.vtune]
 # Build with `cargo b --profile vtune`
+# VTune can't demangle rust symbols, so this doesn't really work well.
 inherits = "release" # Inherit baseline configurations from the release profile
 debug = true         # Preserve debug symbols (vital for tool mappings)
 lto = false          # Keep false; VTune struggles with LTO whole-program optimization
 strip = "none"       # Explicitly prevent symbol stripping
+split-debuginfo = "off" # Ensures symbols stay packed inside the binary
