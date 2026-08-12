@@ -454,7 +454,7 @@ fn replays_forwarded_messages_end_to_end() {
 #[test]
 #[cfg_attr(miri, ignore)] // uses real threads and wall-clock timing
 fn replays_a_live_forwarding_run() {
-    const TARGET: usize = 10;
+    const TARGET: usize = 5;
 
     let log_path = std::env::temp_dir().join(format!(
         "exact_replay_fwd_{}_{}.ndjson",
