@@ -248,39 +248,18 @@ impl<T> Arena<T> {
             ptr: uninit_ptr.ptr,
         })
     }
-
-    pub fn allocate_with(&mut self, factory: impl FnOnce(&mut MaybeUninit<T>)) -> ArenaPtr<T> {
-        match self.try_allocate_with(factory) {
-            Some(v) => v,
-            None => {
-                let slot_count = self.storage.len();
-                panic!(
-                    "The pub-sub system should avoid going beyond allocation capacity. Used {} slots out of capacity of {}",
-                    slot_count,
-                    self.capacity()
-                )
-            }
-        }
-    }
-}
-
-impl<T: Default> Arena<T> {
-    pub fn try_allocate_default(&mut self) -> Option<ArenaPtr<T>> {
-        self.try_allocate_with(|slot| {
-            slot.write(T::default());
-        })
-    }
-
-    pub fn allocate_default(&mut self) -> ArenaPtr<T> {
-        self.allocate_with(|slot| {
-            slot.write(T::default());
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
 
+    impl<T: Default> Arena<T> {
+        pub fn try_allocate_default(&mut self) -> Option<ArenaPtr<T>> {
+            self.try_allocate_with(|slot| {
+                slot.write(T::default());
+            })
+        }
+    }
     use super::*;
 
     #[test]

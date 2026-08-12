@@ -288,7 +288,7 @@ impl<T> Publisher<T> {
         if self.loaned_values.len() >= self.config.capacity {
             return Err(LoanError::LoanCapacityReached);
         }
-        let allocated_ptr = self.arena.allocate_with(|slot| {
+        let allocated_ptr = match self.arena.try_allocate_with(|slot| {
             let msg_ptr = slot.as_mut_ptr();
             // SAFETY: All fields of `Message<T>` are initialized before the slot is assumed init:
             // header is written here; factory is responsible for fully initializing `message`.
@@ -298,7 +298,15 @@ impl<T> Publisher<T> {
                 header.write(MessageHeader::default());
                 factory(&mut *message);
             }
-        });
+        }) {
+            Some(ptr) => ptr,
+            None => {
+                panic!(
+                    "Tried to publish on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
+                    self.config.channel_name, self.config.capacity
+                );
+            }
+        };
         self.loaned_values.push(LoanedValue::new(allocated_ptr));
         Ok(self.loaned_values.len() - 1)
     }
