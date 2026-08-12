@@ -61,9 +61,6 @@ In order of priority
   - arena configuration may be different per backing pub/sub system
   - the reason we'd do this instead of introducing another callback that publishes on a given channel is that another callback means we have another queue whose capacity we have to manage
   - blocking pub/sub is fine here since people can opt into it, if they want async pub/sub they can have a separate callback to do the work
-- [ ] maybe a manual input pull and fallable publish? allows for global defaults and configurable 
-  - storing the typed publisher or subscriber might work here
-  - the proc macro setup isn't required, so this may be a non-proc macro way to implement things
 - [ ] provide task storage abstraction
   - cleanup subscriber buffers before publishers
   - allow for indexing with some strong types
@@ -97,14 +94,8 @@ cargo expand --test test > ~/Downloads/temp.rs
 code ~/Downloads/temp.rs
 ```
 
-To view live output of test binary
+Run tests including linting and miri
 
 ```bash
-cargo t test_thread_pool_exec -- --nocapture
-```
-
-Run tests in miri (these should pass)
-
-```bash
-cargo +nightly miri test
+./run_test.sh
 ```
