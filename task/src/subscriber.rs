@@ -21,17 +21,13 @@ pub struct SubscriberConfig {
 }
 
 impl SubscriberConfig {
-    /// Maximum number of arena slots a publisher must reserve for clones of a
-    /// single published message that may be alive simultaneously via this
-    /// subscriber: one set held in the write queue plus one set held in the
-    /// read buffer (the previous message can still be live when the publisher
-    /// publishes again before the next drain). `DoubleBuffer` keeps the two
-    /// queues independently sized at `capacity`, so the upper bound is
-    /// `2 * capacity`. Publishers grow their arena by this footprint per
-    /// connected subscriber — see `Publisher::add_typed_subscriber` and
+    /// Arena slots a publisher must reserve per connected subscriber: up to
+    /// `capacity` in the write queue, up to `capacity` in the read buffer,
+    /// and one for the pointer in flight between the two queues during a
+    /// drain. See `Publisher::add_typed_subscriber` and
     /// `callback::find_forwarded_channel_usage`.
     pub fn arena_footprint(&self) -> usize {
-        2 * self.capacity
+        2 * self.capacity + 1
     }
 }
 

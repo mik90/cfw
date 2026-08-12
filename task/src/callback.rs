@@ -1188,8 +1188,8 @@ mod test {
         let usage = super::find_forwarded_channel_usage(&nodes);
         assert_eq!(
             usage.get(&String::from(FORWARDED)).copied(),
-            Some(2 * 4 + 2 * 3),
-            "each subscriber contributes 2 * capacity (write + read buffers)"
+            Some((2 * 4 + 1) + (2 * 3 + 1)),
+            "each subscriber contributes 2 * capacity + 1 (write + read buffers, plus the in-flight pointer during drain)"
         );
     }
 }

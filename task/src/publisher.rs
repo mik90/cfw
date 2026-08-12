@@ -303,7 +303,8 @@ impl<T> Publisher<T> {
             None => {
                 panic!(
                     "Tried to publish on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
-                    self.config.channel_name, self.arena.capacity().
+                    self.config.channel_name,
+                    self.arena.capacity()
                 );
             }
         };
@@ -330,11 +331,13 @@ impl<T: 'static> Publisher<T> {
             subscriber_config: config,
             readiness,
         });
-        // Grow the arena to cover clones this subscriber may hold simultaneously:
-        // up to `capacity` in its write queue plus up to `capacity` in its read
-        // buffer (the previous message can still be live when the publisher
-        // publishes again before the next drain). Without this, a back-to-back
-        // publisher run exhausts the arena slots and panics — which, because
+        // Grow the arena to cover messages this subscriber may hold
+        // simultaneously: up to `capacity` in its write queue, up to
+        // `capacity` in its read buffer (the previous message can still be
+        // live when the publisher publishes again before the next drain),
+        // and one more for the pointer in flight between the two queues
+        // during a drain. Without this, a back-to-back publisher run
+        // exhausts the arena slots and panics — which, because
         // cleanup_buffers runs *after* thread joins, also surfaces as a
         // use-after-free under Miri when the panicked worker leaves ArenaPtrs
         // in the subscriber queue and the owning arena is dropped first.
@@ -598,8 +601,8 @@ mod tests {
         publisher.add_typed_subscriber(&mut subscriber);
         assert_eq!(
             publisher.arena.capacity(),
-            2 + 2 * 4,
-            "subscriber must bump arena by 2 * capacity (write + read buffers)"
+            2 + 2 * 4 + 1,
+            "subscriber must bump arena by 2 * capacity + 1 (write + read buffers, plus the in-flight pointer during drain)"
         );
 
         let mut second_subscriber = Subscriber::<u32>::new(SubscriberConfig {
@@ -612,8 +615,8 @@ mod tests {
         publisher.add_typed_subscriber(&mut second_subscriber);
         assert_eq!(
             publisher.arena.capacity(),
-            2 + 2 * 4 + 2 * 3,
-            "each additional subscriber adds another 2 * capacity"
+            2 + 2 * 4 + 1 + 2 * 3 + 1,
+            "each additional subscriber adds another 2 * capacity + 1"
         );
     }
 
@@ -636,9 +639,13 @@ mod tests {
         });
         publisher.add_typed_subscriber(&mut subscriber);
         publisher.allocate_arena();
-        // Corrected sizing: publisher's own loan capacity + 2 * subscriber
-        // capacity (clone in write queue + clone in read buffer).
-        assert_eq!(publisher.arena.capacity(), PUB_CAPACITY + 2 * SUB_CAPACITY);
+        // Sizing: publisher's own loan capacity + 2 * subscriber capacity
+        // (clone in write queue + clone in read buffer) + 1 for the pointer
+        // in flight between the queues during drain.
+        assert_eq!(
+            publisher.arena.capacity(),
+            PUB_CAPACITY + 2 * SUB_CAPACITY + 1
+        );
 
         let time = time::FrameworkTime::from_nanoseconds(0);
 
