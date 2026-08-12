@@ -31,7 +31,6 @@ impl SubscriberConfig {
     }
 }
 
-#[allow(dead_code)]
 pub struct Subscriber<T> {
     buffers: DoubleBuffer<Message<T>>,
     queue_has_new_data: bool,

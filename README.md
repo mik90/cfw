@@ -77,7 +77,6 @@ In order of priority
 - [ ] see if I should use pins in the arenas to avoid moving MaybeUninit, the current setup may suffice
 - [x] add tests to make sure we aren't dynamically allocating after everything is connected
   - live executor has some no_alloc tests
-- [ ] more consistent handling of MaybeUninit in subscriber, maybe specialize on it in read buffer?
 - [x] inputs should just store ref or optional ref of type instead of entire subscriber
 - [x] readiness shouldn't be limited to 64 inputs, use an array or vec or something to contain many atomic bitsets
   - not ideal, but we only track readiness on required inputs, optional ones are not tracked
