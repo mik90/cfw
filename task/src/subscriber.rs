@@ -88,6 +88,10 @@ impl<T> Subscriber<T> {
         self.buffers.read_buffer()
     }
 
+    pub(crate) fn buffers(&self) -> &DoubleBuffer<Message<T>> {
+        &self.buffers
+    }
+
     /// Clear all buffered values. Should be called before the Arena is dropped
     /// to prevent ArenaPtrs from outliving their Arena.
     pub fn cleanup_buffers(&self) {

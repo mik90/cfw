@@ -78,7 +78,7 @@ In order of priority
 - [x] add tests to make sure we aren't dynamically allocating after everything is connected
   - live executor has some no_alloc tests
 - [ ] more consistent handling of MaybeUninit in subscriber, maybe specialize on it in read buffer?
-- [ ] inputs should just store ref or optional ref of type instead of entire subscriber
+- [x] inputs should just store ref or optional ref of type instead of entire subscriber
 - [x] readiness shouldn't be limited to 64 inputs, use an array or vec or something to contain many atomic bitsets
   - not ideal, but we only track readiness on required inputs, optional ones are not tracked
 - [ ] log queue capacity shouldn't have a default value of 10, and we should have better configuration for per channel configuration

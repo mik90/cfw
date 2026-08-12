@@ -3,24 +3,22 @@ use crate::message::Message;
 use crate::output::{ForwardedOutput, ForwardedOutputSpan, ForwardingOutput};
 use crate::subscriber::{ForwardableSubscriber, Subscriber};
 use base::arena::ArenaReaderPtr;
-use base::double_buffer::ReadBufferGuard;
+use base::double_buffer::{DoubleBuffer, ReadBufferGuard};
 use std::ops::Deref;
 
 pub struct RequiredInput<'a, T> {
-    _subscriber: &'a Subscriber<T>,
+    buffers: &'a DoubleBuffer<Message<T>>,
     guard: ReadBufferGuard<'a, Message<T>>,
 }
 
 impl<'a, T: 'static> RequiredInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> RequiredInput<'a, T> {
-        let guard = subscriber.read_buffer();
+        let buffers = subscriber.buffers();
+        let guard = buffers.read_buffer();
         if guard.front().is_none() {
             panic!("RequiredInput should only have been constructed on non-empty read-buffer");
         }
-        RequiredInput {
-            _subscriber: subscriber,
-            guard,
-        }
+        RequiredInput { buffers, guard }
     }
 
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> RequiredInput<'a, T> {
@@ -90,17 +88,15 @@ impl<'a, T: 'static> Deref for ForwardableRequiredInput<'a, T> {
 }
 
 pub struct OptionalInput<'a, T> {
-    _subscriber: &'a Subscriber<T>,
+    buffers: &'a DoubleBuffer<Message<T>>,
     guard: ReadBufferGuard<'a, Message<T>>,
 }
 
 impl<'a, T: 'static> OptionalInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> OptionalInput<'a, T> {
-        let guard = subscriber.read_buffer();
-        OptionalInput {
-            _subscriber: subscriber,
-            guard,
-        }
+        let buffers = subscriber.buffers();
+        let guard = buffers.read_buffer();
+        OptionalInput { buffers, guard }
     }
 
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> OptionalInput<'a, T> {
@@ -153,17 +149,15 @@ impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
 }
 
 pub struct InputSpan<'a, T> {
-    _subscriber: &'a Subscriber<T>,
+    buffers: &'a DoubleBuffer<Message<T>>,
     guard: ReadBufferGuard<'a, Message<T>>,
 }
 
 impl<'a, T: 'static> InputSpan<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> InputSpan<'a, T> {
-        let guard = subscriber.read_buffer();
-        InputSpan {
-            _subscriber: subscriber,
-            guard,
-        }
+        let buffers = subscriber.buffers();
+        let guard = buffers.read_buffer();
+        InputSpan { buffers, guard }
     }
 
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> InputSpan<'a, T> {
