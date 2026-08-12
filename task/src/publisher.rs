@@ -303,7 +303,7 @@ impl<T> Publisher<T> {
             None => {
                 panic!(
                     "Tried to publish on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
-                    self.config.channel_name, self.config.capacity
+                    self.config.channel_name, self.arena.capacity().
                 );
             }
         };
