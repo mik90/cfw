@@ -36,7 +36,7 @@ fn main() {
 
     println!("Building fizz buzz callback nodes for live execution");
 
-    let built = build_live_graph_with(&args.log_path, !args.no_log_integer)
+    let mut built = build_live_graph_with(&args.log_path, !args.no_log_integer)
         .expect("Could not build task graph");
 
     if args.print {
@@ -45,8 +45,8 @@ fn main() {
     }
 
     let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
-        built.graph.pools,
-        built.graph.execution_log_publishers,
+        std::mem::take(&mut built.graph.pools),
+        std::mem::take(&mut built.graph.execution_log_publishers),
         Duration::from_millis(500),
     );
     built.stop_signal_cell.set(executor.stop_signal()).ok();

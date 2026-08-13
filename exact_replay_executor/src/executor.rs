@@ -6,10 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
-use task::callback::CallbackNode;
+use task::callback_storage::CallbackStorage;
 use task::channel_registry::ChannelRegistry;
 use task::executor::{Executor, ExecutorStopSignal};
-use task::generic_subscriber::GenericSubscriber;
 use task::message::MessageHeader;
 
 use crate::config::ExactReplayConfig;
@@ -33,7 +32,7 @@ impl ExecutorStopSignal for StopSignal {
 /// The exact replay executor. Replays a recorded execution log through the
 /// same callback nodes, comparing actual outputs against expected outputs.
 pub struct ExactReplayExecutor {
-    nodes: Vec<CallbackNode>,
+    nodes: CallbackStorage,
     registry: ChannelRegistry,
     scheduler: Option<ReplayScheduler>,
     /// Ordinary-log payloads per channel, retained for forwarded-message
@@ -67,11 +66,13 @@ impl ExactReplayExecutor {
 
         // Flatten pools into the global node order used by the execution-log
         // descriptor indices.
-        let nodes = config
-            .pools
-            .into_iter()
-            .flat_map(|pool| pool.nodes)
-            .collect::<Vec<_>>();
+        let nodes = CallbackStorage::from_shared(
+            config
+                .pools
+                .into_iter()
+                .flat_map(|pool| pool.nodes.into_nodes())
+                .collect(),
+        );
 
         // Validate the descriptor against the supplied nodes.
         validate_descriptor(&replay_log, &nodes, &config.registry)?;
@@ -146,7 +147,7 @@ impl Executor for ExactReplayExecutor {
         self.should_run.store(true, Ordering::Release);
         let should_run = self.should_run.clone();
         let mut scheduler = self.scheduler.take().expect("scheduler already taken");
-        let mut nodes = std::mem::take(&mut self.nodes);
+        let nodes = std::mem::take(&mut self.nodes);
         let registry = self.registry.clone();
         let source_messages = std::mem::take(&mut self.source_messages);
         let store = self.store.clone();
@@ -183,8 +184,11 @@ impl Executor for ExactReplayExecutor {
                 }
 
                 let mut errors = Vec::new();
+                // The replay loop is single-threaded, so a mutable borrow of a
+                // node is uncontended for the duration of its execution.
+                let mut node = nodes[node_idx].borrow_mut();
                 replay_execution(
-                    &mut nodes[node_idx],
+                    &mut node,
                     &mut node_states[node_idx],
                     execution,
                     &registry,
@@ -218,24 +222,16 @@ impl Executor for ExactReplayExecutor {
 
             // ── Cleanup: clear subscriber buffers while persistent hydration
             //    publishers and capture subscribers (and their ArenaPtrs) are
-            //    still alive. Explicitly call cleanup_buffers on each
-            //    subscriber to discard retained ArenaPtrs that could dangle
-            //    once the node_states are dropped.
+            //    still alive. cleanup_subscribers discards retained ArenaPtrs
+            //    that would otherwise dangle once the node_states are dropped.
+            //    It uses try_borrow, so it cannot panic on a momentarily busy
+            //    node.
             //
             //    node.drain_subscribers() only moves write → read queues; it
             //    does NOT clear ArenaPtrs that subscribers may still hold in
             //    their read buffer. cleanup_buffers() is the correct API for
             //    that.
-            for node in &mut nodes {
-                if let Err(_e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut cleanup = |s: &dyn GenericSubscriber| {
-                        s.cleanup_buffers();
-                    };
-                    node.callback().for_each_subscriber(&mut cleanup);
-                })) {
-                    // Swallow panics during teardown — nothing we can do.
-                }
-            }
+            nodes.cleanup_subscribers();
         }));
     }
 
@@ -282,7 +278,7 @@ mod tests {
     use std::collections::HashMap;
     use std::thread;
 
-    use task::callback::{Callback, PortMut, Run};
+    use task::callback::{Callback, CallbackNode, PortMut, Run};
     use task::context::Context;
     use task::execution_log::{
         Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT,

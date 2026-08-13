@@ -1,10 +1,12 @@
 use crossbeam::channel;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 use task::callback::CallbackNode;
+use task::callback_storage::{CallbackStorage, WorkerNodes};
 use task::context::Context;
 use task::execution_log::{self, ExecutionLogLevel, ExecutionLogMessage};
 use task::executor::{
@@ -26,6 +28,9 @@ pub struct LiveExecutor<T: TimeSource = WallClock> {
     worker_threads: Vec<thread::JoinHandle<()>>,
     periodic_thread: Option<thread::JoinHandle<()>>,
     shared_state: Arc<SharedThreadPoolState>,
+    /// Authoritative callback-node storage, accessed only from the main
+    /// thread. Worker threads hold their own `clone_shared()` clones.
+    nodes: CallbackStorage,
     time_source: Arc<T>,
     log_publishers: Vec<Publisher<ExecutionLogMessage>>,
     per_pool_scratch_cap: Vec<usize>,
@@ -34,7 +39,7 @@ pub struct LiveExecutor<T: TimeSource = WallClock> {
 
 impl<T: TimeSource + 'static> LiveExecutor<T> {
     fn new_multi_pool_core(pools: Vec<ThreadPoolConfig>, time_source: T) -> Self {
-        let mut all_arc_nodes: Vec<Arc<Mutex<CallbackNode>>> = Vec::new();
+        let mut all_arc_nodes: Vec<Arc<RefCell<CallbackNode>>> = Vec::new();
         let mut node_to_pool: Vec<usize> = Vec::new();
         let mut pool_states: Vec<Arc<PoolState>> = Vec::new();
 
@@ -48,9 +53,9 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                 work_rx,
             }));
 
-            for node in pool.nodes {
+            for node in pool.nodes.into_nodes() {
                 node_to_pool.push(pool_idx);
-                all_arc_nodes.push(Arc::new(Mutex::new(node)));
+                all_arc_nodes.push(node);
             }
         }
 
@@ -66,7 +71,6 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             enqueue_state: enqueue_state.clone(),
             periodic_mutex: Mutex::new(()),
             periodic_cond_var: Condvar::new(),
-            nodes: all_arc_nodes,
             should_run: true.into(),
             worker_count,
             worker_liveness: (0..worker_count).map(|_| Mutex::new(())).collect(),
@@ -76,18 +80,18 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             shutdown_cv: Condvar::new(),
         });
 
+        let nodes = CallbackStorage::from_shared(all_arc_nodes);
+
         let enqueuer = enqueue_state as Arc<dyn CallbackNodeEnqueuer>;
-        for (index, arc_node) in shared_state.nodes.iter().enumerate() {
-            arc_node
-                .lock()
-                .unwrap()
-                .register_with_executor(index, enqueuer.clone());
+        for (index, node) in nodes.iter_borrowed_enumerated() {
+            node.register_with_executor(index, enqueuer.clone());
         }
 
         LiveExecutor {
             worker_threads: Vec::new(),
             periodic_thread: None,
             shared_state,
+            nodes,
             time_source: Arc::new(time_source),
             log_publishers: vec![],
             per_pool_scratch_cap: Vec::new(),
@@ -116,8 +120,8 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             .iter()
             .map(|pool| {
                 pool.nodes
-                    .iter()
-                    .map(execution_log::worst_case_received_count)
+                    .iter_borrowed()
+                    .map(|node| execution_log::worst_case_received_count(&node))
                     .max()
                     .unwrap_or(0)
             })
@@ -164,6 +168,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             Arc<T>,
             usize,
             String,
+            WorkerNodes,
         ) -> thread::JoinHandle<()>,
     ) -> Vec<thread::JoinHandle<()>> {
         self.shared_state.barrier_count.store(0, Ordering::Release);
@@ -171,10 +176,10 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             .cleanup_done
             .store(false, Ordering::Release);
 
-        for index in 0..self.shared_state.nodes.len() {
-            let node = self.shared_state.nodes[index].lock().unwrap();
-            if node.subscribers_request_execution() && node.able_to_run() {
-                drop(node);
+        for (index, node) in self.nodes.iter_borrowed_enumerated() {
+            let ready = node.subscribers_request_execution() && node.able_to_run();
+            drop(node);
+            if ready {
                 self.shared_state.enqueue_state.trigger_node(index);
             }
         }
@@ -203,6 +208,9 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                     false => None,
                 };
                 let thread_name = format!("cfw_pool_{pool_idx}_t_{thread_idx}");
+                // Each worker gets its own vec of shared node handles; nodes
+                // are only ever accessed through these per-thread clones.
+                let worker_nodes = self.nodes.clone_shared();
                 handles.push(spawn_worker(
                     pool,
                     shared,
@@ -210,6 +218,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                     ts,
                     worker_index,
                     thread_name,
+                    worker_nodes,
                 ));
                 worker_index += 1;
             }
@@ -221,7 +230,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     pub fn start_threads(&mut self) {
         let time_source = self.time_source.clone();
         self.worker_threads =
-            self.start_threads_with(move |pool, shared, init, _ts, worker_index, name| {
+            self.start_threads_with(move |pool, shared, init, _ts, worker_index, name, nodes| {
                 let ts = time_source.clone();
                 thread::Builder::new()
                     .name(name)
@@ -231,6 +240,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                         run_executor_thread(
                             pool.as_ref(),
                             shared.as_ref(),
+                            &nodes,
                             logger,
                             ts.as_ref(),
                             worker_index,
@@ -239,25 +249,40 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                     .expect("spawn worker thread")
             });
 
-        self.spawn_periodic_thread_with(|shared_state, exec_times, time_source| {
-            periodic_trigger_thread(shared_state, exec_times, time_source);
+        self.spawn_periodic_thread_with(|shared_state, nodes, exec_times, time_source| {
+            periodic_trigger_thread(shared_state, nodes, exec_times, time_source);
         });
     }
 
     fn spawn_periodic_thread_with<F>(&mut self, mut body: F)
     where
-        F: FnMut(&SharedThreadPoolState, &mut VecDeque<TimeTriggeredNode>, &T) + Send + 'static,
+        F: FnMut(
+                &SharedThreadPoolState,
+                &[Arc<RefCell<CallbackNode>>],
+                &mut VecDeque<TimeTriggeredNode>,
+                &T,
+            ) + Send
+            + 'static,
     {
         let shared_state = self.shared_state.clone();
         let time_source = self.time_source.clone();
+        let nodes = self.nodes.clone_shared();
         self.periodic_thread = Some(
             thread::Builder::new()
                 .name(String::from("cfw_periodic"))
                 .spawn(move || {
                     let now = time_source.now();
                     let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
-                    for (index, node) in shared_state.nodes.iter().enumerate() {
-                        if let Some(t) = node.lock().unwrap().next_requested_execution_time(now) {
+                    for (index, node) in nodes.iter().enumerate() {
+                        // A worker may already be running a node right after
+                        // spawn; treat it as "due now" rather than panic on a
+                        // busy RefCell. The fire path re-reads the real next
+                        // time once the node is free.
+                        let next_time = match node.try_borrow() {
+                            Ok(guard) => guard.next_requested_execution_time(now),
+                            Err(_) => Some(now),
+                        };
+                        if let Some(t) = next_time {
                             exec_times.push_back(TimeTriggeredNode {
                                 index,
                                 requested_exec_time: t,
@@ -265,7 +290,12 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                         }
                     }
                     while shared_state.should_run.load(Ordering::Relaxed) {
-                        body(shared_state.as_ref(), &mut exec_times, time_source.as_ref());
+                        body(
+                            shared_state.as_ref(),
+                            &nodes,
+                            &mut exec_times,
+                            time_source.as_ref(),
+                        );
                     }
                 })
                 .expect("spawn periodic thread"),
@@ -314,7 +344,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             // The executor is shutting down in an error state; caller gets Err.
         } else {
             // All workers are parked at the barrier with publishers alive.
-            self.cleanup_buffers();
+            self.nodes.cleanup_subscribers();
         }
 
         // Release workers from the barrier
@@ -343,26 +373,20 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             Err(panicked_indices)
         }
     }
-
-    fn cleanup_buffers(&mut self) {
-        for arc_node in self.shared_state.nodes.iter() {
-            let node = arc_node.lock().unwrap();
-            node.callback().for_each_subscriber(&mut |s| {
-                s.cleanup_buffers();
-            });
-        }
-    }
 }
 
 fn process_work_item(
     index: usize,
+    nodes: &[Arc<RefCell<CallbackNode>>],
     shared_state: &SharedThreadPoolState,
     logger: Option<&mut WorkerLogger>,
     now: FrameworkTime,
 ) {
     shared_state.enqueue_state.node_enqueued[index].store(false, Ordering::Release);
 
-    let mut node_guard = shared_state.nodes[index].lock().unwrap();
+    // Only this worker runs the node at a given time (the executor's
+    // single-threaded-access invariant), so the borrow is uncontended.
+    let mut node_guard = nodes[index].borrow_mut();
     let ctx = Context::new(now);
 
     match logger {
@@ -441,10 +465,17 @@ fn process_work_item(
 fn worker_loop_core<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
+    nodes: &[Arc<RefCell<CallbackNode>>],
     mut logger: Option<WorkerLogger>,
     time_source: &T,
     worker_index: usize,
-    mut process: impl FnMut(usize, &SharedThreadPoolState, Option<&mut WorkerLogger>, FrameworkTime),
+    mut process: impl FnMut(
+        usize,
+        &[Arc<RefCell<CallbackNode>>],
+        &SharedThreadPoolState,
+        Option<&mut WorkerLogger>,
+        FrameworkTime,
+    ),
 ) {
     let _alive = shared_state.worker_liveness[worker_index].lock().unwrap();
 
@@ -459,7 +490,13 @@ fn worker_loop_core<T: TimeSource>(
             break;
         }
 
-        process(index, shared_state, logger.as_mut(), time_source.now());
+        process(
+            index,
+            nodes,
+            shared_state,
+            logger.as_mut(),
+            time_source.now(),
+        );
     }
 
     // Flush remaining entries into the channel BEFORE reaching the barrier,
@@ -486,6 +523,7 @@ fn worker_loop_core<T: TimeSource>(
 fn run_executor_thread<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
+    nodes: &[Arc<RefCell<CallbackNode>>],
     logger: Option<WorkerLogger>,
     time_source: &T,
     worker_index: usize,
@@ -493,6 +531,7 @@ fn run_executor_thread<T: TimeSource>(
     worker_loop_core(
         pool_state,
         shared_state,
+        nodes,
         logger,
         time_source,
         worker_index,
@@ -504,6 +543,7 @@ fn run_executor_thread<T: TimeSource>(
 fn no_alloc_worker_loop<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
+    nodes: &[Arc<RefCell<CallbackNode>>],
     logger: Option<WorkerLogger>,
     time_source: &T,
     worker_index: usize,
@@ -511,11 +551,14 @@ fn no_alloc_worker_loop<T: TimeSource>(
     worker_loop_core(
         pool_state,
         shared_state,
+        nodes,
         logger,
         time_source,
         worker_index,
-        |index, shared_state, logger, now| {
-            assert_no_alloc::assert_no_alloc(|| process_work_item(index, shared_state, logger, now))
+        |index, nodes, shared_state, logger, now| {
+            assert_no_alloc::assert_no_alloc(|| {
+                process_work_item(index, nodes, shared_state, logger, now)
+            })
         },
     );
 }
@@ -548,7 +591,7 @@ impl LiveExecutor<WallClock> {
     fn start_threads_no_alloc(&mut self) {
         let time_source = self.time_source.clone();
         self.worker_threads =
-            self.start_threads_with(move |pool, shared, init, _ts, worker_index, name| {
+            self.start_threads_with(move |pool, shared, init, _ts, worker_index, name, nodes| {
                 let pool = pool.clone();
                 let shared = shared.clone();
                 let ts = time_source.clone();
@@ -559,6 +602,7 @@ impl LiveExecutor<WallClock> {
                         no_alloc_worker_loop(
                             pool.as_ref(),
                             shared.as_ref(),
+                            &nodes,
                             logger,
                             ts.as_ref(),
                             worker_index,
@@ -567,9 +611,9 @@ impl LiveExecutor<WallClock> {
                     .expect("spawn worker thread")
             });
 
-        self.spawn_periodic_thread_with(|shared_state, exec_times, time_source| {
+        self.spawn_periodic_thread_with(|shared_state, nodes, exec_times, time_source| {
             assert_no_alloc::assert_no_alloc(|| {
-                periodic_trigger_thread(shared_state, exec_times, time_source);
+                periodic_trigger_thread(shared_state, nodes, exec_times, time_source);
             });
         });
     }

@@ -50,7 +50,7 @@ fn main() {
     );
 
     let stop_signal_cell = Arc::new(std::sync::OnceLock::new());
-    let (built, replay_cfg) = build_replay_graph(
+    let (mut built, replay_cfg) = build_replay_graph(
         &args.log_path,
         args.speed,
         denylist,
@@ -64,8 +64,8 @@ fn main() {
     }
 
     let mut executor = LiveReplayExecutor::new_with_execution_log(
-        built.graph.pools,
-        built.graph.execution_log_publishers,
+        std::mem::take(&mut built.graph.pools),
+        std::mem::take(&mut built.graph.execution_log_publishers),
         Duration::from_millis(500),
         replay_cfg,
     );

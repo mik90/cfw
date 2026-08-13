@@ -1,9 +1,9 @@
+use task::callback_storage::CallbackStorage;
 use task::executor::ThreadPoolConfig;
 
 use crate::node_executor::{NodeExecutionRequest, NodeExecutionResponse, node_executor_thread};
 use crate::{
-    CallbackNode, CallbackNodeIndex, FrameworkTime, PoolIndex, SimulationConfig, TimeTriggeredNode,
-    VirtualPool,
+    CallbackNodeIndex, FrameworkTime, PoolIndex, SimulationConfig, TimeTriggeredNode, VirtualPool,
 };
 
 #[derive(Debug)]
@@ -17,18 +17,20 @@ pub enum StepError {
     /// The step loop thread panicked.
     StepThreadPanicked,
 }
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::num::Saturating;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 pub struct SimulationState {
     /// Storage of all callback nodes. A node's index into this vec is used to index into other Vecs.
-    /// Each node is wrapped in a Mutex so the parallel node executors can lock individual
-    /// nodes without unsafe disjoint-index tricks.
-    nodes: Vec<Arc<Mutex<CallbackNode>>>,
+    /// Each node is wrapped in a `RefCell` so the parallel node executors can borrow individual
+    /// nodes without unsafe disjoint-index tricks. The framework invariant — no two node executor
+    /// threads run the same node concurrently — makes `borrow_mut` uncontended.
+    nodes: CallbackStorage,
 
     /// Threads that execute callback nodes in parallel.
     node_executor_threads: Vec<thread::JoinHandle<()>>,
@@ -70,7 +72,7 @@ pub struct SimulationState {
 impl SimulationState {
     /// Create a single virtual pool with `num_virtual_threads` for all callback nodes,
     /// starting at simulation time zero
-    pub fn new(num_virtual_threads: usize, nodes: Vec<CallbackNode>) -> Self {
+    pub fn new(num_virtual_threads: usize, nodes: impl Into<CallbackStorage>) -> Self {
         Self::new_with(SimulationConfig {
             start_time: FrameworkTime::from_nanoseconds(0),
             pools: vec![ThreadPoolConfig::new(num_virtual_threads, nodes)],
@@ -81,7 +83,7 @@ impl SimulationState {
     /// Create an new state from a [`SimulationConfig`], supporting multiple virtual
     /// pools and a configurable start time.
     pub fn new_with(config: SimulationConfig) -> SimulationState {
-        let mut all_nodes: Vec<Arc<Mutex<CallbackNode>>> = vec![];
+        let mut all_nodes: Vec<Arc<RefCell<task::callback::CallbackNode>>> = vec![];
         let mut node_to_pool: Vec<usize> = Vec::new();
         let mut virtual_pools: Vec<VirtualPool> = Vec::new();
 
@@ -90,9 +92,9 @@ impl SimulationState {
                 virtual_thread_count: pool.thread_count,
                 num_threads_occupied: 0,
             });
-            for node in pool.nodes {
+            for node in pool.nodes.into_nodes() {
                 node_to_pool.push(pool_idx);
-                all_nodes.push(Arc::new(Mutex::new(node)));
+                all_nodes.push(node);
             }
         }
 
@@ -105,7 +107,7 @@ impl SimulationState {
         ) = mpsc::channel();
 
         let mut state = SimulationState {
-            nodes: all_nodes,
+            nodes: CallbackStorage::from_shared(all_nodes),
             node_executor_threads: Vec::with_capacity(config.node_executor_thread_count),
             node_exec_request_senders: Vec::with_capacity(config.node_executor_thread_count),
             node_exec_response_receiver: exec_response_recv,
@@ -126,7 +128,7 @@ impl SimulationState {
             ) = mpsc::channel();
             state.node_exec_request_senders.push(request_sender);
 
-            let cloned_nodes = state.nodes.clone();
+            let cloned_nodes = state.nodes.clone_shared();
 
             let response_sender_clone = exec_response_sender.clone();
             state.node_executor_threads.push(thread::spawn(move || {
@@ -139,13 +141,8 @@ impl SimulationState {
 
     pub fn start(&mut self) {
         // Set up periodic execution
-        for (index, node) in self.nodes.iter().enumerate() {
-            if node
-                .lock()
-                .unwrap()
-                .next_requested_execution_time(self.time)
-                .is_some()
-            {
+        for (index, node) in self.nodes.iter_borrowed_enumerated() {
+            if node.next_requested_execution_time(self.time).is_some() {
                 self.periodic_nodes.push_back(TimeTriggeredNode {
                     index,
                     // Periodic nodes will run on startup, and then their requested times will be honored
@@ -165,8 +162,7 @@ impl SimulationState {
     fn allocate_nodes_to_threads(&mut self) -> Vec<CallbackNodeIndex> {
         let mut candidates: Vec<CallbackNodeIndex> = vec![];
 
-        for index in 0..self.nodes.len() {
-            let node = self.nodes[index].lock().unwrap();
+        for (index, node) in self.nodes.iter_borrowed_enumerated() {
             // A trigger fired and every required input has a value — the node
             // can actually run. Without the required-input check, a node with
             // a required non-trigger input would run while that input is
@@ -214,7 +210,7 @@ impl SimulationState {
         // Only drain subscribers for nodes that actually got a thread, so that nodes
         // blocked by pool pressure keep their trigger data for the next step.
         for &index in &runnable_nodes {
-            self.nodes[index].lock().unwrap().drain_subscribers();
+            self.nodes[index].borrow_mut().drain_subscribers();
         }
 
         let time = self.time;
@@ -251,7 +247,7 @@ impl SimulationState {
         }
 
         for &index in &runnable_nodes {
-            self.nodes[index].lock().unwrap().flush_publishers(time);
+            self.nodes[index].borrow_mut().flush_publishers(time);
         }
 
         // Update periodic node next-run times from their no-longer-busy instant
@@ -259,8 +255,7 @@ impl SimulationState {
             if runnable_nodes.contains(&periodic.index) {
                 let no_longer_busy = self.node_busy_until[periodic.index];
                 if let Some(next_time) = self.nodes[periodic.index]
-                    .lock()
-                    .unwrap()
+                    .borrow()
                     .next_requested_execution_time(no_longer_busy)
                 {
                     periodic.requested_exec_time = next_time;
@@ -338,14 +333,7 @@ impl SimulationState {
     }
 
     pub fn cleanup(&mut self) {
-        for node in self.nodes.iter() {
-            node.lock()
-                .unwrap()
-                .callback()
-                .for_each_subscriber(&mut |s| {
-                    s.cleanup_buffers();
-                });
-        }
+        self.nodes.cleanup_subscribers();
     }
 }
 

@@ -61,10 +61,11 @@ In order of priority
   - arena configuration may be different per backing pub/sub system
   - the reason we'd do this instead of introducing another callback that publishes on a given channel is that another callback means we have another queue whose capacity we have to manage
   - blocking pub/sub is fine here since people can opt into it, if they want async pub/sub they can have a separate callback to do the work
-- [ ] provide task storage abstraction
+- [x] provide task storage abstraction
   - cleanup subscriber buffers before publishers
   - allow for indexing with some strong types
-  - but will this be portable across all use-cases?
+  - shared-vec indexing over `Arc<RefCell<CallbackNode>>`: the storage is owned
+    by one coordinating thread and hands worker threads their own clones
 - [x] unit test executor (in `testing`)
   - allows for testing whole tasks in unit test, based on sim executor
 - [x] dump connections in graphviz or some other diagram tool

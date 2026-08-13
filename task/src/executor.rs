@@ -1,19 +1,21 @@
 use std::sync::Arc;
 
-use crate::callback::CallbackNode;
+use crate::callback_storage::CallbackStorage;
 use crate::time::FrameworkTime;
 
 #[derive(Debug)]
 pub struct ThreadPoolConfig {
     pub thread_count: usize,
-    pub nodes: Vec<CallbackNode>,
+    pub nodes: CallbackStorage,
 }
 
 impl ThreadPoolConfig {
-    pub fn new(virtual_thread_count: usize, nodes: Vec<CallbackNode>) -> Self {
+    /// Wrap either plain built nodes (`Vec<CallbackNode>`) or an existing
+    /// [`CallbackStorage`] into a pool config.
+    pub fn new(virtual_thread_count: usize, nodes: impl Into<CallbackStorage>) -> Self {
         ThreadPoolConfig {
             thread_count: virtual_thread_count,
-            nodes,
+            nodes: nodes.into(),
         }
     }
 }

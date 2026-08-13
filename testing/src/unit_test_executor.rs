@@ -6,6 +6,7 @@ use std::sync::Arc;
 use simulation_executor::SimulationConfig;
 use simulation_executor::state::{SimulationState, StepError};
 use task::callback::{CallbackNode, CallbackViews, connect_callback_nodes};
+use task::callback_storage::CallbackStorage;
 use task::executor::ThreadPoolConfig;
 use task::generic_publisher::GenericPublisher;
 use task::pub_sub::CallbackNodeName;
@@ -25,11 +26,8 @@ pub struct UnitTestExecutor {
 
 impl UnitTestExecutor {
     /// Create simple callback node tester
-    pub fn new(nodes: Vec<CallbackNode>) -> Self {
-        let pools = vec![ThreadPoolConfig {
-            thread_count: 1,
-            nodes,
-        }];
+    pub fn new(nodes: impl Into<CallbackStorage>) -> Self {
+        let pools = vec![ThreadPoolConfig::new(1, nodes)];
         Self::new_with(UnitTestExecutorConfig {
             start_time: FrameworkTime::from_nanoseconds(0),
             pools,
@@ -241,10 +239,7 @@ impl UnitTestExecutorBuilder {
     pub fn try_build(mut self) -> Result<UnitTestExecutor, Box<dyn Error>> {
         connect_callback_nodes(&mut self.nodes)?;
 
-        let pools = vec![ThreadPoolConfig {
-            thread_count: 1,
-            nodes: self.nodes,
-        }];
+        let pools = vec![ThreadPoolConfig::new(1, self.nodes)];
         let executor = UnitTestExecutor::new_with_time_source(
             UnitTestExecutorConfig {
                 start_time: self.start_time,
@@ -285,8 +280,9 @@ mod tests {
     #[test]
     fn step_time_before_after() {
         let (nodes_under_test, task_info) = build_fizz_buzz_callback_nodes();
-        let publisher_runtime =
-            nodes_under_test[task_info.integer_publisher_index].execution_duration();
+        let publisher_runtime = nodes_under_test[task_info.integer_publisher_index]
+            .borrow()
+            .execution_duration();
 
         let mut expected_time = FrameworkTime::from_nanoseconds(0);
 
@@ -315,11 +311,15 @@ mod tests {
     #[test]
     fn step_all_callbacks() {
         let (nodes_under_test, task_info) = build_fizz_buzz_callback_nodes();
-        let publisher_runtime =
-            nodes_under_test[task_info.integer_publisher_index].execution_duration();
-        let fizz_buzz_runtime = nodes_under_test[task_info.fizz_buzz_index].execution_duration();
-        let string_store_runtime =
-            nodes_under_test[task_info.string_store_index].execution_duration();
+        let publisher_runtime = nodes_under_test[task_info.integer_publisher_index]
+            .borrow()
+            .execution_duration();
+        let fizz_buzz_runtime = nodes_under_test[task_info.fizz_buzz_index]
+            .borrow()
+            .execution_duration();
+        let string_store_runtime = nodes_under_test[task_info.string_store_index]
+            .borrow()
+            .execution_duration();
 
         let mut expected_time = FrameworkTime::from_nanoseconds(0);
 

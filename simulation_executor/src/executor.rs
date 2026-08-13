@@ -5,7 +5,7 @@ use std::num::Saturating;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use task::callback::CallbackNode;
+use task::callback_storage::CallbackStorage;
 use task::executor::{Executor, ExecutorStopSignal, ThreadPoolConfig};
 use task::time::FrameworkTime;
 
@@ -52,7 +52,7 @@ pub struct SimulationExecutor {
 impl SimulationExecutor {
     /// Create a single virtual pool with `num_virtual_threads` for all callback nodes,
     /// starting at simulation time zero
-    pub fn new(num_virtual_threads: usize, nodes: Vec<CallbackNode>) -> Self {
+    pub fn new(num_virtual_threads: usize, nodes: impl Into<CallbackStorage>) -> Self {
         Self::new_with(SimulationConfig {
             // We can't create an instant from a fixed value, so any 'now' will be arbitrary
             start_time: FrameworkTime::from_wall_clock(),
@@ -230,7 +230,7 @@ mod tests {
     /// only became ready again at t=1ms.
     #[test]
     fn test_no_starvation() {
-        let nodes = (0..3).map(|_| build_no_op_callback_node()).collect();
+        let nodes: Vec<_> = (0..3).map(|_| build_no_op_callback_node()).collect();
 
         let exec = SimulationExecutor::new(1, nodes); // 1 virtual thread, 3 callback nodes
         let mut state = exec.state.lock().unwrap();

@@ -113,9 +113,23 @@ impl BuiltTaskGraph {
     pub fn print(&self) {
         for (i, pool) in self.pools.iter().enumerate() {
             println!("Pool {i} ({} threads):", pool.thread_count);
-            for node in &pool.nodes {
+            for node in pool.nodes.iter_borrowed() {
                 println!("  {node}");
             }
+        }
+    }
+}
+
+impl Drop for BuiltTaskGraph {
+    fn drop(&mut self) {
+        // Subscriber buffers hold ArenaPtrs into arenas owned by the nodes'
+        // publishers and by `execution_log_publishers` (declared after
+        // `pools`, so they outlive this). Clear every subscriber buffer before
+        // any of those arenas drop; without this, a subscriber queue's drop
+        // glue would dereference freed arena slots. Idempotent with each
+        // storage's own Drop.
+        for pool in &self.pools {
+            pool.nodes.cleanup_subscribers();
         }
     }
 }
@@ -171,37 +185,41 @@ impl Default for TaskGraphBuilder {
     }
 }
 
-fn find_dangling_subscribers(nodes: &[&CallbackNode]) -> Vec<ChannelName> {
-    let mut channel_to_subscriber_count = HashMap::<&str, usize>::new();
+fn find_dangling_subscribers(pools: &[ThreadPoolConfig]) -> Vec<ChannelName> {
+    let mut channel_to_subscriber_count = HashMap::<ChannelName, usize>::new();
 
-    for node in nodes {
-        node.callback().for_each_subscriber(&mut |s| {
-            let channel = s.config().channel_name.as_str();
-            *channel_to_subscriber_count.entry(channel).or_default() += 1;
-        });
+    for pool in pools {
+        for node in pool.nodes.iter_borrowed() {
+            node.callback().for_each_subscriber(&mut |s| {
+                let channel = s.config().channel_name.clone();
+                *channel_to_subscriber_count.entry(channel).or_default() += 1;
+            });
+        }
     }
 
     channel_to_subscriber_count
         .into_iter()
         .filter(|(_, count)| *count == 0)
-        .map(|(channel, _)| channel.to_owned())
+        .map(|(channel, _)| channel)
         .collect()
 }
 
-fn find_dangling_publishers(nodes: &[&CallbackNode]) -> Vec<ChannelName> {
-    let mut channel_to_publisher_count = HashMap::<&str, usize>::new();
+fn find_dangling_publishers(pools: &[ThreadPoolConfig]) -> Vec<ChannelName> {
+    let mut channel_to_publisher_count = HashMap::<ChannelName, usize>::new();
 
-    for node in nodes {
-        node.callback().for_each_publisher(&mut |p| {
-            let channel = p.config().channel_name.as_str();
-            *channel_to_publisher_count.entry(channel).or_default() += 1;
-        });
+    for pool in pools {
+        for node in pool.nodes.iter_borrowed() {
+            node.callback().for_each_publisher(&mut |p| {
+                let channel = p.config().channel_name.clone();
+                *channel_to_publisher_count.entry(channel).or_default() += 1;
+            });
+        }
     }
 
     channel_to_publisher_count
         .into_iter()
         .filter(|(_, count)| *count == 0)
-        .map(|(channel, _)| channel.to_owned())
+        .map(|(channel, _)| channel)
         .collect()
 }
 
@@ -380,10 +398,9 @@ impl TaskGraphBuilder {
         if !self.debug_info {
             return None;
         }
-        let all_nodes: Vec<&CallbackNode> = pools.iter().flat_map(|p| p.nodes.iter()).collect();
         Some(GraphDebugInfo {
-            dangling_subscribers: find_dangling_subscribers(&all_nodes),
-            dangling_publishers: find_dangling_publishers(&all_nodes),
+            dangling_subscribers: find_dangling_subscribers(pools),
+            dangling_publishers: find_dangling_publishers(pools),
         })
     }
 }
@@ -534,7 +551,7 @@ mod test {
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].thread_count, 1);
         assert_eq!(built.pools[0].nodes.len(), 1);
-        assert_eq!(built.pools[0].nodes[0].name(), "single");
+        assert_eq!(built.pools[0].nodes[0].borrow().name(), "single");
     }
 
     #[test]
@@ -566,8 +583,8 @@ mod test {
         let built = result.unwrap();
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].nodes.len(), 2);
-        assert_eq!(built.pools[0].nodes[0].name(), "first");
-        assert_eq!(built.pools[0].nodes[1].name(), "extra_1");
+        assert_eq!(built.pools[0].nodes[0].borrow().name(), "first");
+        assert_eq!(built.pools[0].nodes[1].borrow().name(), "extra_1");
     }
 
     #[test]
@@ -673,7 +690,7 @@ mod test {
         let built = result.unwrap();
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].nodes.len(), 1);
-        assert_eq!(built.pools[0].nodes[0].name(), "debug");
+        assert_eq!(built.pools[0].nodes[0].borrow().name(), "debug");
         assert!(built.debug_info.is_some());
     }
 

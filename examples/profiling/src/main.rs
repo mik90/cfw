@@ -167,7 +167,7 @@ fn main() {
         .build()
         .expect("build collector"),
     );
-    let graph = TaskGraphBuilder::new()
+    let mut graph = TaskGraphBuilder::new()
         .add_pool(args.threads, move |p| {
             callbacks.into_iter().fold(p, |p, cb| p.add_callback(cb))
         })
@@ -181,8 +181,8 @@ fn main() {
     }
 
     let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
-        graph.pools,
-        graph.execution_log_publishers,
+        std::mem::take(&mut graph.pools),
+        std::mem::take(&mut graph.execution_log_publishers),
         Duration::from_millis(500),
     );
     executor.start_threads();

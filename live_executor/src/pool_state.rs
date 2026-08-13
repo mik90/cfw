@@ -2,7 +2,7 @@ use crossbeam::channel::{Receiver, Sender};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use task::callback::CallbackNode;
+use task::callback_storage::CallbackStorage;
 use task::executor::CallbackNodeEnqueuer;
 use task::time::FrameworkTime;
 
@@ -46,7 +46,6 @@ pub(crate) struct SharedThreadPoolState {
     pub(crate) enqueue_state: Arc<EnqueueState>,
     pub(crate) periodic_mutex: Mutex<()>,
     pub(crate) periodic_cond_var: Condvar,
-    pub(crate) nodes: Vec<Arc<Mutex<CallbackNode>>>,
     pub(crate) should_run: AtomicBool,
     pub(crate) worker_count: usize,
     pub(crate) worker_liveness: Vec<Mutex<()>>,
@@ -56,12 +55,18 @@ pub(crate) struct SharedThreadPoolState {
     pub(crate) shutdown_cv: Condvar,
 }
 
-impl fmt::Display for SharedThreadPoolState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl SharedThreadPoolState {
+    /// Dump the executor's state for diagnostics. The node storage is passed
+    /// in because it is owned by the executor's main thread, not by this
+    /// shared state (worker threads only hold `clone_shared()` clones).
+    pub(crate) fn fmt_nodes(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        nodes: &CallbackStorage,
+    ) -> fmt::Result {
         writeln!(f, "Should run: {}", self.should_run.load(Ordering::Relaxed))?;
         writeln!(f, "All callback nodes:")?;
-        for (index, arc_node) in self.nodes.iter().enumerate() {
-            let node = arc_node.lock().unwrap();
+        for (index, node) in nodes.iter_borrowed_enumerated() {
             writeln!(f, "\t ----------------------------------")?;
             writeln!(
                 f,

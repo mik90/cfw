@@ -1,7 +1,7 @@
-use crate::{CallbackNode, CallbackNodeIndex, Context, FrameworkTime};
+use crate::{CallbackNodeIndex, Context, FrameworkTime};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use task::callback_storage::WorkerNodes;
 
 pub(crate) struct NodeExecutionRequest {
     /// Index of callback node to execute
@@ -24,7 +24,7 @@ pub(crate) struct NodeExecutionResponse {
 pub(crate) fn node_executor_thread(
     work_receiver: Receiver<NodeExecutionRequest>,
     response_sender: Sender<NodeExecutionResponse>,
-    nodes: Vec<Arc<Mutex<CallbackNode>>>,
+    nodes: WorkerNodes,
 ) {
     loop {
         let work_request = match work_receiver.recv() {
@@ -37,12 +37,20 @@ pub(crate) fn node_executor_thread(
         }
 
         let ctx = Context::new(work_request.current_time);
-        let node = &mut nodes[work_request.index].lock().unwrap();
-        let _ = node.run(&ctx);
+        // The step thread schedules nodes so that no two node-executor threads
+        // run the same index concurrently, so this borrow is uncontended. The
+        // guard is dropped before the response is sent: the step thread
+        // proceeds to flush publishers as soon as it receives the response,
+        // so the node must be free by then.
+        let execution_duration = {
+            let mut node = nodes[work_request.index].borrow_mut();
+            let _ = node.run(&ctx);
+            node.execution_duration()
+        };
 
         let response = NodeExecutionResponse {
             index: work_request.index,
-            execution_duration: node.execution_duration(),
+            execution_duration,
         };
         // If the receiver is gone the step thread has exited; nothing left to do.
         if response_sender.send(response).is_err() {

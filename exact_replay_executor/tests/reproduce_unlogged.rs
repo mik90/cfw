@@ -551,7 +551,7 @@ fn replays_a_live_run_with_unlogged_intermediates() {
         .with_unlogged_channels([SOURCE_CHANNEL]),
     );
 
-    let graph = task::task_graph_builder::TaskGraphBuilder::new()
+    let mut graph = task::task_graph_builder::TaskGraphBuilder::new()
         .add_pool(1, |p| {
             p.add_callback_builder(producer_builder(TARGET as u64, producer_done.clone()))
                 .add_callback_builder(doubler_builder(doubler_received.clone()))
@@ -567,8 +567,8 @@ fn replays_a_live_run_with_unlogged_intermediates() {
         .expect("build live graph");
 
     let mut exec = live_executor::LiveExecutor::new_multi_pool_with_execution_log(
-        graph.pools,
-        graph.execution_log_publishers,
+        std::mem::take(&mut graph.pools),
+        std::mem::take(&mut graph.execution_log_publishers),
         Duration::from_millis(50),
     );
     stop_signal_cell.set(exec.stop_signal()).ok();

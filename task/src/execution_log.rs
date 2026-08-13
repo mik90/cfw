@@ -300,8 +300,10 @@ pub fn connect(
     use crate::callback::CallbackViews;
 
     for pool in pools.iter_mut() {
-        for node in pool.nodes.iter_mut() {
+        for mut node in pool.nodes.iter_borrowed_mut() {
             let node_name = node.name().to_string();
+            // Build time: the pools are not shared with any worker thread yet,
+            // so the mutable borrow is uncontended.
             for subscriber in node.callback_mut().collect_subscribers_mut() {
                 if subscriber.config().channel_name != EXECUTION_LOG_CHANNEL {
                     continue;

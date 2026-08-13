@@ -3,7 +3,6 @@ pub mod executor;
 pub mod log_simulation;
 mod node_executor;
 pub mod state;
-use task::callback::CallbackNode;
 use task::context::Context;
 use task::executor::ThreadPoolConfig;
 use task::time::FrameworkTime;

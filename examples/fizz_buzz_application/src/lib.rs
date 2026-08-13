@@ -118,7 +118,7 @@ pub fn build_exact_replay_graph(
     // graph's publishers/subscribers (plus the execution-log channel), so the
     // built graph's registry carries the serializers/deserializers the exact
     // replay executor needs for output capture and input hydration.
-    let graph = app_graph_builder()
+    let mut graph = app_graph_builder()
         .build()
         .map_err(|e| -> BuildError { e.to_string().into() })?;
 
@@ -129,8 +129,8 @@ pub fn build_exact_replay_graph(
     )?);
 
     Ok(ExactReplayGraph {
-        pools: graph.pools,
-        registry: graph.channel_registry,
+        pools: std::mem::take(&mut graph.pools),
+        registry: std::mem::take(&mut graph.channel_registry),
         log_reader,
     })
 }

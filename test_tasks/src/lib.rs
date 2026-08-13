@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use task::callback::{Callback, CallbackNode, PortMut, Run};
 use task::callback_builder::CallbackBuilder;
+use task::callback_storage::CallbackStorage;
 use task::context::Context;
 use task::executor::ExecutorStopSignal;
 use task::generic_publisher::GenericPublisher;
@@ -27,7 +28,7 @@ impl FizzBuzzTaskInfo {
     }
 }
 
-pub fn build_fizz_buzz_callback_nodes() -> (Vec<CallbackNode>, FizzBuzzTaskInfo) {
+pub fn build_fizz_buzz_callback_nodes() -> (CallbackStorage, FizzBuzzTaskInfo) {
     let string_store = StringCollector::make_string_store();
     let stop_signal = Arc::new(OnceLock::new());
 

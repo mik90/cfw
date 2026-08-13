@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use task::callback::CallbackNode;
+use task::callback_storage::CallbackStorage;
 use task::channel_registry::ChannelRegistry;
 use task::time::FrameworkTime;
 
@@ -30,7 +30,7 @@ use crate::log_reader::ReplayLog;
 /// [`ReplayExecution`]: crate::log_reader::ReplayExecution
 pub(crate) fn validate_descriptor(
     replay_log: &ReplayLog,
-    nodes: &[CallbackNode],
+    nodes: &CallbackStorage,
     registry: &ChannelRegistry,
 ) -> Result<(), ReplayError> {
     use task::callback::CallbackViews;
@@ -60,7 +60,9 @@ pub(crate) fn validate_descriptor(
                 node_count: nodes.len(),
             });
         }
-        let node = &nodes[node_idx];
+        // Build time / validation runs on the main thread before the replay
+        // thread starts, so the borrow is uncontended.
+        let node = nodes[node_idx].borrow();
         let node_name = node.name().to_owned();
 
         let active_subs = active_received.get(&node_idx);
@@ -179,14 +181,14 @@ pub(crate) fn validate_descriptor(
 /// infrastructure node (`LogTask`); anything else indicates a graph mismatch.
 pub(crate) fn validate_descriptor_less_executions(
     descriptor_less: &[(usize, FrameworkTime)],
-    nodes: &[CallbackNode],
+    nodes: &CallbackStorage,
 ) -> Result<(), ReplayError> {
     for (node_idx, _time) in descriptor_less {
         if *node_idx >= nodes.len() {
             // Appended infrastructure nodes are not part of the replay graph.
             continue;
         }
-        let node_name = nodes[*node_idx].name().to_owned();
+        let node_name = nodes[*node_idx].borrow().name().to_owned();
         if !node_name.starts_with("LogTask") {
             return Err(ReplayError::DescriptorlessApplicationNode {
                 index: *node_idx,
@@ -202,7 +204,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    use task::callback::{Callback, PortMut, Run};
+    use task::callback::{Callback, CallbackNode, PortMut, Run};
     use task::context::Context;
     use task::execution_log::ExecutionLogDescriptor;
     use task::generic_publisher::GenericPublisher;
@@ -315,7 +317,7 @@ mod tests {
         let desc = make_descriptor();
         let log = make_replay_log(desc, vec![make_execution(0, vec![0], vec![0])]);
         let node = make_passthrough_node("Test");
-        let result = validate_descriptor(&log, &[node], &registry);
+        let result = validate_descriptor(&log, &CallbackStorage::from_nodes(vec![node]), &registry);
         assert!(result.is_ok(), "valid descriptor should pass: {:?}", result);
     }
 
@@ -328,7 +330,7 @@ mod tests {
         let desc = make_descriptor();
         let log = make_replay_log(desc, Vec::new());
         let node = make_passthrough_node("Lazy");
-        let result = validate_descriptor(&log, &[node], &registry);
+        let result = validate_descriptor(&log, &CallbackStorage::from_nodes(vec![node]), &registry);
         assert!(
             result.is_ok(),
             "descriptor-only ports may remain unregistered: {:?}",
@@ -346,7 +348,7 @@ mod tests {
         let desc = make_descriptor();
         let log = make_replay_log(desc, vec![make_execution(0, vec![0], vec![])]);
         let node = make_passthrough_node("LazyPub");
-        let result = validate_descriptor(&log, &[node], &registry);
+        let result = validate_descriptor(&log, &CallbackStorage::from_nodes(vec![node]), &registry);
         assert!(
             result.is_ok(),
             "descriptor-only publisher may remain unregistered: {:?}",
@@ -364,7 +366,7 @@ mod tests {
         let desc = make_descriptor();
         let log = make_replay_log(desc, vec![make_execution(0, vec![], vec![0])]);
         let node = make_passthrough_node("LazySub");
-        let result = validate_descriptor(&log, &[node], &registry);
+        let result = validate_descriptor(&log, &CallbackStorage::from_nodes(vec![node]), &registry);
         assert!(
             result.is_ok(),
             "descriptor-only subscriber may remain unregistered: {:?}",
@@ -381,7 +383,7 @@ mod tests {
         let desc = make_descriptor();
         let log = make_replay_log(desc, vec![make_execution(0, vec![0], vec![])]);
         let node = make_passthrough_node("Test");
-        let result = validate_descriptor(&log, &[node], &registry);
+        let result = validate_descriptor(&log, &CallbackStorage::from_nodes(vec![node]), &registry);
         assert!(
             result.is_err(),
             "actively replayed unregistered channel should be rejected: {:?}",
@@ -402,7 +404,7 @@ mod tests {
         let desc = make_descriptor();
         let log = make_replay_log(desc, vec![make_execution(0, vec![], vec![0])]);
         let node = make_passthrough_node("Test");
-        let result = validate_descriptor(&log, &[node], &registry);
+        let result = validate_descriptor(&log, &CallbackStorage::from_nodes(vec![node]), &registry);
         assert!(
             result.is_err(),
             "actively replayed unregistered publisher should be rejected: {:?}",
@@ -428,7 +430,7 @@ mod tests {
             HashMap::from([(0usize, "wrong_input".to_string())]);
         let log = make_replay_log(desc, Vec::new());
         let node = make_passthrough_node("Mismatch");
-        let result = validate_descriptor(&log, &[node], &registry);
+        let result = validate_descriptor(&log, &CallbackStorage::from_nodes(vec![node]), &registry);
         assert!(
             result.is_err(),
             "descriptor channel mismatch must be eager: {:?}",
@@ -462,7 +464,8 @@ mod tests {
             ),
         ];
         let desc_less = vec![(1usize, FrameworkTime::from_nanoseconds(100))];
-        let result = validate_descriptor_less_executions(&desc_less, &nodes);
+        let result =
+            validate_descriptor_less_executions(&desc_less, &CallbackStorage::from_nodes(nodes));
         assert!(result.is_ok());
     }
 
@@ -470,7 +473,8 @@ mod tests {
     fn descriptor_less_application_node_rejected() {
         let nodes = vec![make_passthrough_node("App")];
         let desc_less = vec![(0usize, FrameworkTime::from_nanoseconds(100))];
-        let result = validate_descriptor_less_executions(&desc_less, &nodes);
+        let result =
+            validate_descriptor_less_executions(&desc_less, &CallbackStorage::from_nodes(nodes));
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -489,7 +493,8 @@ mod tests {
             (3usize, FrameworkTime::from_nanoseconds(100)),
             (7usize, FrameworkTime::from_nanoseconds(200)),
         ];
-        let result = validate_descriptor_less_executions(&desc_less, &nodes);
+        let result =
+            validate_descriptor_less_executions(&desc_less, &CallbackStorage::from_nodes(nodes));
         assert!(result.is_ok());
     }
 }

@@ -1,5 +1,6 @@
 pub mod callback;
 pub mod callback_builder;
+pub mod callback_storage;
 pub mod channel_registry;
 pub mod context;
 pub mod execution_log;
@@ -26,6 +27,7 @@ pub mod time;
 
 // TODO re-export more utils
 pub use callback_builder::{CallbackBuildError, CallbackBuilder};
+pub use callback_storage::{CallbackNodeId, CallbackStorage, WorkerNodes};
 pub use channel_registry::ChannelRegistry;
 pub use context::Context;
 pub use input::{InputSpan, OptionalInput, RequiredInput};

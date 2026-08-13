@@ -165,7 +165,7 @@ fn run_live(log_path: PathBuf, print: bool) -> Result<(), Box<dyn std::error::Er
         },
     ));
 
-    let graph = task_graph_builder::TaskGraphBuilder::new()
+    let mut graph = task_graph_builder::TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback_builder(MyTask {}.callback_builder()))
         .with_execution_log_level(ExecutionLogLevel::Whole)
         .add_build_step(logging_build_step)
@@ -178,8 +178,8 @@ fn run_live(log_path: PathBuf, print: bool) -> Result<(), Box<dyn std::error::Er
     }
 
     let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
-        graph.pools,
-        graph.execution_log_publishers,
+        std::mem::take(&mut graph.pools),
+        std::mem::take(&mut graph.execution_log_publishers),
         Duration::from_millis(500),
     );
     executor.start_threads();

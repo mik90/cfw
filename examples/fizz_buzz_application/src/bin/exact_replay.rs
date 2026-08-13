@@ -27,7 +27,7 @@ struct CliArgs {
 fn print_nodes(pools: &[task::executor::ThreadPoolConfig]) {
     let mut index = 0;
     for pool in pools {
-        for node in &pool.nodes {
+        for node in pool.nodes.iter_borrowed() {
             println!("node[{index}] '{}'", node.name());
             node.callback().for_each_subscriber(&mut |s| {
                 println!("\t subscriber -> {}", s.config().channel_name);
