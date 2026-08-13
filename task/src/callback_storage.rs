@@ -129,7 +129,10 @@ impl CallbackStorage {
     /// (see [`CallbackStorage`]) makes it sound, and the `Send` markers on
     /// [`CallbackStorage`] and [`WorkerNodes`] are what let the handles cross
     /// thread boundaries.
-    #[allow(clippy::arc_with_non_send_sync)]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "Callback nodes are not actually support to be used across multiple threads, the executors are responsible for honoring this invariant."
+    )]
     fn shared_node(node: CallbackNode) -> Arc<RefCell<CallbackNode>> {
         Arc::new(RefCell::new(node))
     }

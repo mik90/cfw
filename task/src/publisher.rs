@@ -59,7 +59,6 @@ impl<T> LoanedValue<T> {
     }
 }
 
-#[allow(dead_code)]
 struct SubscriberBuffer<T> {
     buffer: WriteBufferHandle<Message<T>>,
     subscriber_config: SubscriberConfig,

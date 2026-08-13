@@ -21,7 +21,6 @@ impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
     }
 }
 
-#[allow(dead_code)]
 pub struct PublishFailureCallback(Arc<Mutex<dyn FnMut(SendError)>>);
 
 impl PublishFailureCallback {

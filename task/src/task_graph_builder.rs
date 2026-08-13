@@ -290,9 +290,9 @@ impl TaskGraphBuilder {
     }
 
     pub fn build(mut self) -> Result<BuiltTaskGraph, TaskGraphBuildError> {
-        // Destructure so `self.pools` isn't partially moved by the loop below
+        // Move `self.pools` out before the loop so it can't be partially moved
         // (which would block borrowing `self.channel_registry` later).
-        let pools_builders = std::mem::take(&mut self.pools);
+        let pools_builders = self.pools;
         let pool_thread_counts: Vec<usize> =
             pools_builders.iter().map(|p| p.thread_count).collect();
         let mut all_nodes: Vec<CallbackNode> = Vec::new();
@@ -354,7 +354,7 @@ impl TaskGraphBuilder {
             }
             connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
             let pools = vec![ThreadPoolConfig::new(1, all_nodes)];
-            let debug_info = self.compute_debug_info(&pools);
+            let debug_info = Self::compute_debug_info(self.debug_info, &pools);
             return Ok(BuiltTaskGraph {
                 pools,
                 execution_log_publishers: vec![],
@@ -382,7 +382,7 @@ impl TaskGraphBuilder {
         execution_log::connect(&mut pools, &mut execution_log_publishers)
             .map_err(TaskGraphBuildError::ExecutionLogError)?;
 
-        let debug_info = self.compute_debug_info(&pools);
+        let debug_info = Self::compute_debug_info(self.debug_info, &pools);
 
         Ok(BuiltTaskGraph {
             pools,
@@ -394,8 +394,8 @@ impl TaskGraphBuilder {
 
     /// Compute dangling-channel diagnostics when `with_debug_info(true)` was
     /// requested, otherwise `None`.
-    fn compute_debug_info(&self, pools: &[ThreadPoolConfig]) -> Option<GraphDebugInfo> {
-        if !self.debug_info {
+    fn compute_debug_info(debug_info: bool, pools: &[ThreadPoolConfig]) -> Option<GraphDebugInfo> {
+        if !debug_info {
             return None;
         }
         Some(GraphDebugInfo {

@@ -90,7 +90,10 @@ impl ReplayNodeState {
 /// `store` holds payloads reproduced from unlogged channels (producers store
 /// their captured output, consumers pull it back out). `report` accumulates
 /// the accuracy report; it is locked once for the whole execution.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "it's worth cleaning this up, but not right now"
+)]
 pub(crate) fn replay_execution(
     node: &mut CallbackNode,
     state: &mut ReplayNodeState,
@@ -356,7 +359,10 @@ fn bind_capture_subscribers(
 /// `source_messages` supplies the ordinary-log payloads used to build a
 /// [`ForwardedMessageContext`] for forwarded channels. `store` supplies
 /// reproduced payloads for unlogged channels.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "replay plumbing needs node, state, execution, registry, source messages, store, report, policy, and errors in one call"
+)]
 fn hydrate_subscribers(
     node: &mut CallbackNode,
     state: &mut ReplayNodeState,
