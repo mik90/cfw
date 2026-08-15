@@ -4,7 +4,7 @@
 
 A testbed for how _I_ would like a robotics task framework to work.
 
-This is very much a work in progress, it'll be barely tested, undocumented, and, sloppy for a while (forever?).
+This is very much a work in progress, and I'll be changing things frequently since it's more of a test bed although things should still generally work.
 
 The goal is to make an integration-agnostic framework that can plug into a bunch of different ecosystems while providing
 - a featureful user-facing API for pub/sub that allows the framework to manage when a callback should run
@@ -86,6 +86,14 @@ In order of priority
     - we could write mapping of intern ID to values to disk at build time
     - mainly relevant for publishing channel names at runtime
 
+## Testing
+
+Run tests including linting and miri
+
+```bash
+./run_test.sh
+```
+
 ## Debugging tips
 
 To view proc macro output of the unit test in test.rs
@@ -93,10 +101,4 @@ To view proc macro output of the unit test in test.rs
 ```bash
 cargo expand --test test > ~/Downloads/temp.rs
 code ~/Downloads/temp.rs
-```
-
-Run tests including linting and miri
-
-```bash
-./run_test.sh
 ```
