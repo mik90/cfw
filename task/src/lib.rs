@@ -27,7 +27,7 @@ pub mod time;
 
 // TODO re-export more utils
 pub use callback_builder::{CallbackBuildError, CallbackBuilder};
-pub use callback_storage::{CallbackNodeId, CallbackStorage, WorkerNodes};
+pub use callback_storage::{CallbackNodeId, CallbackStorage, SharedCallbackNode, WorkerNodes};
 pub use channel_registry::ChannelRegistry;
 pub use context::Context;
 pub use input::{InputSpan, OptionalInput, RequiredInput};

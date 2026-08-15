@@ -300,26 +300,29 @@ pub fn connect(
     use crate::callback::CallbackViews;
 
     for pool in pools.iter_mut() {
-        for mut node in pool.nodes.iter_borrowed_mut() {
-            let node_name = node.name().to_string();
-            // Build time: the pools are not shared with any worker thread yet,
-            // so the mutable borrow is uncontended.
-            for subscriber in node.callback_mut().collect_subscribers_mut() {
-                if subscriber.config().channel_name != EXECUTION_LOG_CHANNEL {
-                    continue;
-                }
-                for log_pub in log_pubs.iter_mut() {
-                    match log_pub.connect_to_subscriber(subscriber) {
-                        Ok(()) => {}
-                        Err(ConnectionTypeMismatch {}) => {
-                            return Err(ExecutionLogConnectError {
-                                channel_name: EXECUTION_LOG_CHANNEL.into(),
-                                subscriber_node: node_name,
-                            });
+        for node in pool.nodes.iter_shared() {
+            node.with_exclusive(|node| {
+                let node_name = node.name().to_string();
+                // Build time: the pools are not shared with any worker thread
+                // yet, so exclusive access cannot conflict.
+                for subscriber in node.callback_mut().collect_subscribers_mut() {
+                    if subscriber.config().channel_name != EXECUTION_LOG_CHANNEL {
+                        continue;
+                    }
+                    for log_pub in log_pubs.iter_mut() {
+                        match log_pub.connect_to_subscriber(subscriber) {
+                            Ok(()) => {}
+                            Err(ConnectionTypeMismatch {}) => {
+                                return Err(ExecutionLogConnectError {
+                                    channel_name: EXECUTION_LOG_CHANNEL.into(),
+                                    subscriber_node: node_name.clone(),
+                                });
+                            }
                         }
                     }
                 }
-            }
+                Ok(())
+            })?;
         }
     }
 

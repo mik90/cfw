@@ -184,20 +184,21 @@ impl Executor for ExactReplayExecutor {
                 }
 
                 let mut errors = Vec::new();
-                // The replay loop is single-threaded, so a mutable borrow of a
+                // The replay loop is single-threaded, so exclusive access to a
                 // node is uncontended for the duration of its execution.
-                let mut node = nodes[node_idx].borrow_mut();
-                replay_execution(
-                    &mut node,
-                    &mut node_states[node_idx],
-                    execution,
-                    &registry,
-                    &source_messages,
-                    &store,
-                    &report,
-                    divergence_policy,
-                    &mut errors,
-                );
+                nodes[node_idx].with_exclusive(|node| {
+                    replay_execution(
+                        node,
+                        &mut node_states[node_idx],
+                        execution,
+                        &registry,
+                        &source_messages,
+                        &store,
+                        &report,
+                        divergence_policy,
+                        &mut errors,
+                    );
+                });
 
                 // Advance consumed count after each execution.
                 consumed_count.fetch_add(1, Ordering::Release);

@@ -1,7 +1,6 @@
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use task::callback::CallbackNode;
+use task::callback_storage::SharedCallbackNode;
 use task::executor::TimeSource;
 use task::time::FrameworkTime;
 
@@ -9,7 +8,7 @@ use crate::pool_state::{SharedThreadPoolState, TimeTriggeredNode};
 
 pub(crate) fn periodic_trigger_thread<T: TimeSource>(
     shared_state: &SharedThreadPoolState,
-    nodes: &[Arc<RefCell<CallbackNode>>],
+    nodes: &[Arc<SharedCallbackNode>],
     exec_times: &mut VecDeque<TimeTriggeredNode>,
     time_source: &T,
 ) {
@@ -43,26 +42,27 @@ pub(crate) fn periodic_trigger_thread<T: TimeSource>(
     let now = time_source.now();
 
     if now >= time_triggered_node.requested_exec_time {
-        // Read the next requested time BEFORE triggering so the borrow cannot
-        // race with a worker that picks the node up. If a worker is already
-        // running the node, wait briefly and re-evaluate on the next loop
-        // iteration — the node is already executing, so there is nothing to
-        // trigger, and its (still-past-due) entry will be re-fired once free.
-        // The guard is dropped before `trigger_node` so a worker can borrow
-        // the node the moment it's enqueued.
-        let next_exec_time = {
-            let Ok(node_guard) = nodes[time_triggered_node.index].try_borrow() else {
-                let guard = shared_state.periodic_mutex.lock().unwrap();
-                let _ = shared_state
-                    .periodic_cond_var
-                    .wait_timeout(guard, std::time::Duration::from_micros(100))
-                    .unwrap();
-                return;
-            };
-            node_guard
-                .next_requested_execution_time(now)
-                .unwrap_or(FrameworkTime::MAX)
-        };
+        // If a worker is currently running the node, wait briefly and
+        // re-evaluate on the next loop iteration — the node is already
+        // executing, so there is nothing to trigger, and its (still-past-due)
+        // entry will be re-fired once free.
+        if nodes[time_triggered_node.index].is_running() {
+            let guard = shared_state.periodic_mutex.lock().unwrap();
+            let _ = shared_state
+                .periodic_cond_var
+                .wait_timeout(guard, std::time::Duration::from_micros(100))
+                .unwrap();
+            return;
+        }
+
+        // Snapshot the next requested execution time from the node's atomic —
+        // reading node internals cross-thread is unnecessary and unsafe. The
+        // snapshot is refreshed by the worker after each run via `execute()`,
+        // so it may be computed relative to the last execution's `now`; that
+        // slight staleness is acceptable for advisory scheduling.
+        let next_exec_time = nodes[time_triggered_node.index]
+            .next_exec_time()
+            .unwrap_or(FrameworkTime::MAX);
 
         for node in exec_times.iter_mut() {
             if node.index == time_triggered_node.index {

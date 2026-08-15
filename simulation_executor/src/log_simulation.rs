@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use logging::sorted_log_stream::{ReplaySinkMap, SortedLogStreamReader, build_replay_sinks};
@@ -12,14 +12,12 @@ use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
 use task::pub_sub::ChannelName;
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
-use task::time::FrameworkTime;
-
-const INVALID_NS: i64 = i64::MIN;
+use task::time::{AtomicFrameworkTime, FrameworkTime};
 
 pub struct LogSimulationTask {
     reader: SortedLogStreamReader,
     sinks: ReplaySinkMap,
-    next_time_ns: Arc<AtomicI64>,
+    next_time_ns: Arc<AtomicFrameworkTime>,
     stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
 }
 
@@ -32,11 +30,11 @@ impl Callback for LogSimulationTask {
 
         match next_time {
             Some(t) => {
-                self.next_time_ns
-                    .store(t.to_nanoseconds(), Ordering::Relaxed);
+                self.next_time_ns.store(t, Ordering::Relaxed);
             }
             None => {
-                self.next_time_ns.store(INVALID_NS, Ordering::Relaxed);
+                self.next_time_ns
+                    .store(FrameworkTime::INVALID, Ordering::Relaxed);
                 if let Some(signal) = self.stop_signal.get() {
                     signal.request_stop();
                 }
@@ -65,7 +63,7 @@ impl Callback for LogSimulationTask {
 
 pub struct LogSimulationBuildStep {
     reader: Arc<Mutex<Option<SortedLogStreamReader>>>,
-    next_time_ns: Arc<AtomicI64>,
+    next_time_ns: Arc<AtomicFrameworkTime>,
     denylist: HashSet<ChannelName>,
     stop_signal_cell: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
     first_time: FrameworkTime,
@@ -90,7 +88,7 @@ impl LogSimulationBuildStep {
         let first_time = log_reader
             .peek_time()
             .unwrap_or(FrameworkTime::from_nanoseconds(0));
-        let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
+        let next_time_ns = Arc::new(AtomicFrameworkTime::new(first_time));
 
         Ok(LogSimulationBuildStep {
             reader: Arc::new(Mutex::new(Some(log_reader))),
@@ -147,12 +145,8 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
         let mut node = CallbackNode::new_named(Box::new(log_task), "LogSimulationTask".into());
         node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
         node.set_execution_time_callback(Box::new(move |_now| {
-            let ns = next_time_ns.load(Ordering::Relaxed);
-            if ns == INVALID_NS {
-                None
-            } else {
-                Some(FrameworkTime::from_nanoseconds(ns))
-            }
+            let t = next_time_ns.load(Ordering::Relaxed);
+            (t != FrameworkTime::INVALID).then_some(t)
         }));
 
         Ok(vec![node])
@@ -232,7 +226,7 @@ mod tests {
 
         let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
-        let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
+        let next_time_ns = Arc::new(AtomicFrameworkTime::new(first_time));
 
         let build_step = LogSimulationBuildStep {
             reader: Arc::new(Mutex::new(Some(reader))),
@@ -324,7 +318,7 @@ mod tests {
         let stop_signal_cell = Arc::new(OnceLock::new());
         let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
-        let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
+        let next_time_ns = Arc::new(AtomicFrameworkTime::new(first_time));
 
         let build_step = LogSimulationBuildStep {
             reader: Arc::new(Mutex::new(Some(reader))),
@@ -367,7 +361,7 @@ mod tests {
         let stop_signal_cell = Arc::new(OnceLock::new());
         let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
         let first_time = reader.peek_time().unwrap();
-        let next_time_ns = Arc::new(AtomicI64::new(first_time.to_nanoseconds()));
+        let next_time_ns = Arc::new(AtomicFrameworkTime::new(first_time));
 
         let mut denylist = HashSet::new();
         denylist.insert("integer".to_string());

@@ -1,8 +1,9 @@
 use crossbeam::channel::{Receiver, Sender};
 use std::fmt;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use task::callback_storage::CallbackStorage;
+use task::callback_storage::{CallbackStorage, SharedCallbackNode};
 use task::executor::CallbackNodeEnqueuer;
 use task::time::FrameworkTime;
 
@@ -18,21 +19,32 @@ pub(crate) struct PoolState {
     pub(crate) work_rx: Receiver<usize>,
 }
 
+/// Work-queue bookkeeping shared between trigger sources and worker threads.
+///
+/// Deduplication ("a node's index is in its pool's channel at most once")
+/// lives in each node's atomic run state (see [`SharedCallbackNode::trigger`]
+/// ), not in a side-table: a node is only sent to the channel on the
+/// `Idle → Enqueued` transition, and a trigger during a run is remembered as
+/// `RunningTriggered` and re-enqueued by the worker when it releases the node.
 pub(crate) struct EnqueueState {
     pub(crate) pools: Vec<Arc<PoolState>>,
     pub(crate) node_to_pool: Vec<usize>,
-    pub(crate) node_enqueued: Vec<AtomicBool>,
+    pub(crate) nodes: Vec<Arc<SharedCallbackNode>>,
 }
 
 impl EnqueueState {
     pub(crate) fn trigger_node(&self, index: usize) {
-        if self.node_enqueued[index]
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
+        if self.nodes[index].trigger() {
             let pool = &self.pools[self.node_to_pool[index]];
             let _ = pool.work_tx.send(index);
         }
+    }
+
+    /// Re-send a node index after its worker released it with a pending
+    /// re-run. The node is already `Enqueued` — this only feeds the channel.
+    pub(crate) fn resend_node(&self, index: usize) {
+        let pool = &self.pools[self.node_to_pool[index]];
+        let _ = pool.work_tx.send(index);
     }
 }
 
@@ -66,33 +78,40 @@ impl SharedThreadPoolState {
     ) -> fmt::Result {
         writeln!(f, "Should run: {}", self.should_run.load(Ordering::Relaxed))?;
         writeln!(f, "All callback nodes:")?;
-        for (index, node) in nodes.iter_borrowed_enumerated() {
-            writeln!(f, "\t ----------------------------------")?;
-            writeln!(
-                f,
-                "\t Index:{}, Name: {}, Pool: {}",
-                index,
-                node.name(),
-                self.enqueue_state.node_to_pool[index]
-            )?;
-            writeln!(f, "\t Able to run: {}", node.able_to_run())?;
-            writeln!(
-                f,
-                "\t Subscribers request execution: {}",
-                node.subscribers_request_execution()
-            )?;
-            writeln!(f, "\t Subscribers")?;
-            node.callback().for_each_subscriber(&mut |s| {
-                let _ = writeln!(f, "\t\t Channel: {}", s.config().channel_name);
-                let queue_info = s.queue_info();
+        for (index, node) in nodes.iter_shared().enumerate() {
+            let Some(details) = node.try_with_exclusive(|node| {
+                let mut out = String::new();
+                let _ = writeln!(out, "\t ----------------------------------");
                 let _ = writeln!(
-                    f,
-                    "\t\t Reader queue size: {}, writer_queue size: {}",
-                    queue_info.reader_size, queue_info.writer_size
+                    out,
+                    "\t Index:{}, Name: {}, Pool: {}",
+                    index,
+                    node.name(),
+                    self.enqueue_state.node_to_pool[index]
                 );
-            });
+                let _ = writeln!(out, "\t Able to run: {}", node.able_to_run());
+                let _ = writeln!(
+                    out,
+                    "\t Subscribers request execution: {}",
+                    node.subscribers_request_execution()
+                );
+                let _ = writeln!(out, "\t Subscribers");
+                node.callback().for_each_subscriber(&mut |s| {
+                    let _ = writeln!(out, "\t\t Channel: {}", s.config().channel_name);
+                    let queue_info = s.queue_info();
+                    let _ = writeln!(
+                        out,
+                        "\t\t Reader queue size: {}, writer_queue size: {}",
+                        queue_info.reader_size, queue_info.writer_size
+                    );
+                });
+                let _ = writeln!(out, "\t ----------------------------------");
+                out
+            }) else {
+                continue;
+            };
+            write!(f, "{details}")?;
         }
-        writeln!(f, "\t ----------------------------------")?;
         Ok(())
     }
 }

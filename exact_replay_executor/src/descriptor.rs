@@ -61,108 +61,111 @@ pub(crate) fn validate_descriptor(
             });
         }
         // Build time / validation runs on the main thread before the replay
-        // thread starts, so the borrow is uncontended.
-        let node = nodes[node_idx].borrow();
-        let node_name = node.name().to_owned();
+        // thread starts, so exclusive access cannot conflict.
+        nodes[node_idx].with_exclusive(|node| {
+            let node_name = node.name().to_owned();
 
-        let active_subs = active_received.get(&node_idx);
-        let active_pubs = active_published.get(&node_idx);
+            let active_subs = active_received.get(&node_idx);
+            let active_pubs = active_published.get(&node_idx);
 
-        // Check subscriber ordinals and channel registrations.
-        let subs = node.callback().collect_subscribers();
-        for (&ordinal, desc_ch) in &cd.subscriber_index_to_channel_name {
-            if ordinal >= subs.len() {
-                return Err(ReplayError::InvalidSubscriberOrdinal {
-                    node: node_name.clone(),
-                    ordinal: ordinal as u16,
-                    subscriber_count: subs.len(),
-                });
-            }
-            let actual_ch = &subs[ordinal].config().channel_name;
-            if desc_ch != actual_ch {
-                return Err(ReplayError::OutputMismatch {
-                    node: node_name.clone(),
-                    channel: desc_ch.clone(),
-                    details: format!(
-                        "descriptor subscriber ordinal {ordinal} channel '{desc_ch}' \
-                         does not match node channel '{actual_ch}'"
-                    ),
-                });
-            }
-            // Only actively replayed subscriber channels MUST be registered.
-            let is_active = active_subs
-                .map(|set| set.contains(&(ordinal as u16)))
-                .unwrap_or(false);
-            if is_active {
-                let type_id = registry.channel_type(desc_ch).ok_or_else(|| {
-                    ReplayError::UnregisteredChannel {
-                        channel: desc_ch.clone(),
+            // Check subscriber ordinals and channel registrations.
+            let subs = node.callback().collect_subscribers();
+            for (&ordinal, desc_ch) in &cd.subscriber_index_to_channel_name {
+                if ordinal >= subs.len() {
+                    return Err(ReplayError::InvalidSubscriberOrdinal {
                         node: node_name.clone(),
+                        ordinal: ordinal as u16,
+                        subscriber_count: subs.len(),
+                    });
+                }
+                let actual_ch = &subs[ordinal].config().channel_name;
+                if desc_ch != actual_ch {
+                    return Err(ReplayError::OutputMismatch {
+                        node: node_name.clone(),
+                        channel: desc_ch.clone(),
+                        details: format!(
+                            "descriptor subscriber ordinal {ordinal} channel '{desc_ch}' \
+                             does not match node channel '{actual_ch}'"
+                        ),
+                    });
+                }
+                // Only actively replayed subscriber channels MUST be registered.
+                let is_active = active_subs
+                    .map(|set| set.contains(&(ordinal as u16)))
+                    .unwrap_or(false);
+                if is_active {
+                    let type_id = registry.channel_type(desc_ch).ok_or_else(|| {
+                        ReplayError::UnregisteredChannel {
+                            channel: desc_ch.clone(),
+                            node: node_name.clone(),
+                        }
+                    })?;
+                    // Forwarded channels resolve their deserializer from the
+                    // forwarded-deserializer map; plain channels use the regular one.
+                    let has_deserializer = if registry.forwarded_channel_info(desc_ch).is_some() {
+                        registry.forwarded_deserializer_for(type_id).is_some()
+                    } else {
+                        registry.deserializer_for(type_id).is_some()
+                    };
+                    if !has_deserializer {
+                        return Err(ReplayError::UnregisteredDeserializer {
+                            channel: desc_ch.clone(),
+                            node: node_name.clone(),
+                        });
                     }
-                })?;
-                // Forwarded channels resolve their deserializer from the
-                // forwarded-deserializer map; plain channels use the regular one.
-                let has_deserializer = if registry.forwarded_channel_info(desc_ch).is_some() {
-                    registry.forwarded_deserializer_for(type_id).is_some()
-                } else {
-                    registry.deserializer_for(type_id).is_some()
-                };
-                if !has_deserializer {
-                    return Err(ReplayError::UnregisteredDeserializer {
-                        channel: desc_ch.clone(),
-                        node: node_name.clone(),
-                    });
-                }
-                if registry.channel_publisher_factory(type_id).is_none() {
-                    return Err(ReplayError::UnregisteredDeserializer {
-                        channel: desc_ch.clone(),
-                        node: node_name.clone(),
-                    });
-                }
-            }
-        }
-
-        // Check publisher ordinals and channel registrations.
-        let pubs = node.callback().collect_publishers();
-        for (&ordinal, desc_ch) in &cd.publisher_index_to_channel_name {
-            if ordinal >= pubs.len() {
-                return Err(ReplayError::InvalidPublisherOrdinal {
-                    node: node_name.clone(),
-                    ordinal: ordinal as u16,
-                    publisher_count: pubs.len(),
-                });
-            }
-            let actual_ch = &pubs[ordinal].config().channel_name;
-            if desc_ch != actual_ch {
-                return Err(ReplayError::OutputMismatch {
-                    node: node_name.clone(),
-                    channel: desc_ch.clone(),
-                    details: format!(
-                        "descriptor publisher ordinal {ordinal} channel '{desc_ch}' \
-                         does not match node channel '{actual_ch}'"
-                    ),
-                });
-            }
-            // Only actively replayed publisher channels MUST be registered
-            // with a serializer (needed for output capture).
-            let is_active = active_pubs
-                .map(|set| set.contains(&(ordinal as u16)))
-                .unwrap_or(false);
-            if is_active {
-                let type_id = registry.channel_type(desc_ch).ok_or_else(|| {
-                    ReplayError::UnregisteredChannel {
-                        channel: desc_ch.clone(),
-                        node: node_name.clone(),
+                    if registry.channel_publisher_factory(type_id).is_none() {
+                        return Err(ReplayError::UnregisteredDeserializer {
+                            channel: desc_ch.clone(),
+                            node: node_name.clone(),
+                        });
                     }
-                })?;
-                if registry.serializer_for(type_id).is_none() {
-                    return Err(ReplayError::UnregisteredOutputCapture {
-                        channel: desc_ch.clone(),
-                        node: node_name.clone(),
-                    });
                 }
             }
-        }
+
+            // Check publisher ordinals and channel registrations.
+            let pubs = node.callback().collect_publishers();
+            for (&ordinal, desc_ch) in &cd.publisher_index_to_channel_name {
+                if ordinal >= pubs.len() {
+                    return Err(ReplayError::InvalidPublisherOrdinal {
+                        node: node_name.clone(),
+                        ordinal: ordinal as u16,
+                        publisher_count: pubs.len(),
+                    });
+                }
+                let actual_ch = &pubs[ordinal].config().channel_name;
+                if desc_ch != actual_ch {
+                    return Err(ReplayError::OutputMismatch {
+                        node: node_name.clone(),
+                        channel: desc_ch.clone(),
+                        details: format!(
+                            "descriptor publisher ordinal {ordinal} channel '{desc_ch}' \
+                             does not match node channel '{actual_ch}'"
+                        ),
+                    });
+                }
+                // Only actively replayed publisher channels MUST be registered
+                // with a serializer (needed for output capture).
+                let is_active = active_pubs
+                    .map(|set| set.contains(&(ordinal as u16)))
+                    .unwrap_or(false);
+                if is_active {
+                    let type_id = registry.channel_type(desc_ch).ok_or_else(|| {
+                        ReplayError::UnregisteredChannel {
+                            channel: desc_ch.clone(),
+                            node: node_name.clone(),
+                        }
+                    })?;
+                    if registry.serializer_for(type_id).is_none() {
+                        return Err(ReplayError::UnregisteredOutputCapture {
+                            channel: desc_ch.clone(),
+                            node: node_name.clone(),
+                        });
+                    }
+                }
+            }
+
+            Ok(())
+        })?;
     }
 
     Ok(())
@@ -188,7 +191,7 @@ pub(crate) fn validate_descriptor_less_executions(
             // Appended infrastructure nodes are not part of the replay graph.
             continue;
         }
-        let node_name = nodes[*node_idx].borrow().name().to_owned();
+        let node_name = nodes[*node_idx].with_exclusive(|n| n.name().to_owned());
         if !node_name.starts_with("LogTask") {
             return Err(ReplayError::DescriptorlessApplicationNode {
                 index: *node_idx,

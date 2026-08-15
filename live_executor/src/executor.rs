@@ -1,12 +1,11 @@
 use crossbeam::channel;
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 use task::callback::CallbackNode;
-use task::callback_storage::{CallbackStorage, WorkerNodes};
+use task::callback_storage::{CallbackStorage, SharedCallbackNode, WorkerNodes};
 use task::context::Context;
 use task::execution_log::{self, ExecutionLogLevel, ExecutionLogMessage};
 use task::executor::{
@@ -39,7 +38,7 @@ pub struct LiveExecutor<T: TimeSource = WallClock> {
 
 impl<T: TimeSource + 'static> LiveExecutor<T> {
     fn new_multi_pool_core(pools: Vec<ThreadPoolConfig>, time_source: T) -> Self {
-        let mut all_arc_nodes: Vec<Arc<RefCell<CallbackNode>>> = Vec::new();
+        let mut all_shared_nodes: Vec<Arc<SharedCallbackNode>> = Vec::new();
         let mut node_to_pool: Vec<usize> = Vec::new();
         let mut pool_states: Vec<Arc<PoolState>> = Vec::new();
 
@@ -55,17 +54,16 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
 
             for node in pool.nodes.into_nodes() {
                 node_to_pool.push(pool_idx);
-                all_arc_nodes.push(node);
+                all_shared_nodes.push(node);
             }
         }
 
         let worker_count: usize = pool_states.iter().map(|p| p.thread_count).sum();
 
-        let num_nodes = all_arc_nodes.len();
         let enqueue_state = Arc::new(EnqueueState {
             pools: pool_states,
             node_to_pool,
-            node_enqueued: (0..num_nodes).map(|_| AtomicBool::new(false)).collect(),
+            nodes: all_shared_nodes.clone(),
         });
         let shared_state = Arc::new(SharedThreadPoolState {
             enqueue_state: enqueue_state.clone(),
@@ -80,11 +78,22 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             shutdown_cv: Condvar::new(),
         });
 
-        let nodes = CallbackStorage::from_shared(all_arc_nodes);
+        let nodes = CallbackStorage::from_shared(all_shared_nodes);
 
-        let enqueuer = enqueue_state as Arc<dyn CallbackNodeEnqueuer>;
-        for (index, node) in nodes.iter_borrowed_enumerated() {
-            node.register_with_executor(index, enqueuer.clone());
+        let enqueuer: Arc<dyn CallbackNodeEnqueuer> = enqueue_state.clone();
+        let now = time_source.now();
+        for (index, node) in nodes.iter_shared().enumerate() {
+            // Worker-style execution instead of `with_exclusive`: registering
+            // can synchronously enqueue a node whose inputs are already
+            // ready (e.g. no required inputs), which flips the run state to
+            // "triggered while running" — handled here by sending the index
+            // to its pool, exactly like a worker releasing a re-run.
+            let (_, reenqueue) = node.execute(now, |node| {
+                node.register_with_executor(index, enqueuer.clone())
+            });
+            if reenqueue {
+                enqueue_state.resend_node(index);
+            }
         }
 
         LiveExecutor {
@@ -120,8 +129,10 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             .iter()
             .map(|pool| {
                 pool.nodes
-                    .iter_borrowed()
-                    .map(|node| execution_log::worst_case_received_count(&node))
+                    .iter_shared()
+                    .filter_map(|node| {
+                        node.try_with_exclusive(|n| execution_log::worst_case_received_count(n))
+                    })
                     .max()
                     .unwrap_or(0)
             })
@@ -176,9 +187,14 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             .cleanup_done
             .store(false, Ordering::Release);
 
-        for (index, node) in self.nodes.iter_borrowed_enumerated() {
-            let ready = node.subscribers_request_execution() && node.able_to_run();
-            drop(node);
+        let now = self.time_source.now();
+        for (index, node) in self.nodes.iter_shared().enumerate() {
+            // Worker-style execute: seeds the periodic-scheduling snapshot
+            // (so the periodic thread can plan purely from atomics) while
+            // checking whether the node already has everything it needs.
+            let (ready, _) = node.execute(now, |node| {
+                node.subscribers_request_execution() && node.able_to_run()
+            });
             if ready {
                 self.shared_state.enqueue_state.trigger_node(index);
             }
@@ -258,7 +274,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     where
         F: FnMut(
                 &SharedThreadPoolState,
-                &[Arc<RefCell<CallbackNode>>],
+                &[Arc<SharedCallbackNode>],
                 &mut VecDeque<TimeTriggeredNode>,
                 &T,
             ) + Send
@@ -266,23 +282,19 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     {
         let shared_state = self.shared_state.clone();
         let time_source = self.time_source.clone();
-        let nodes = self.nodes.clone_shared();
+        let worker_nodes = self.nodes.clone_shared();
+        let nodes: Vec<Arc<SharedCallbackNode>> = worker_nodes.iter().cloned().collect();
         self.periodic_thread = Some(
             thread::Builder::new()
                 .name(String::from("cfw_periodic"))
                 .spawn(move || {
-                    let now = time_source.now();
                     let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
+                    // Plan purely from the snapshots seeded by the executor
+                    // before spawning: the periodic thread never reads node
+                    // internals. (A node already running at startup has a
+                    // snapshot from its seeding too.)
                     for (index, node) in nodes.iter().enumerate() {
-                        // A worker may already be running a node right after
-                        // spawn; treat it as "due now" rather than panic on a
-                        // busy RefCell. The fire path re-reads the real next
-                        // time once the node is free.
-                        let next_time = match node.try_borrow() {
-                            Ok(guard) => guard.next_requested_execution_time(now),
-                            Err(_) => Some(now),
-                        };
-                        if let Some(t) = next_time {
+                        if let Some(t) = node.next_exec_time() {
                             exec_times.push_back(TimeTriggeredNode {
                                 index,
                                 requested_exec_time: t,
@@ -377,101 +389,110 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
 
 fn process_work_item(
     index: usize,
-    nodes: &[Arc<RefCell<CallbackNode>>],
+    nodes: &[Arc<SharedCallbackNode>],
     shared_state: &SharedThreadPoolState,
     logger: Option<&mut WorkerLogger>,
     now: FrameworkTime,
 ) {
-    shared_state.enqueue_state.node_enqueued[index].store(false, Ordering::Release);
-
-    // Only this worker runs the node at a given time (the executor's
-    // single-threaded-access invariant), so the borrow is uncontended.
-    let mut node_guard = nodes[index].borrow_mut();
     let ctx = Context::new(now);
 
-    match logger {
-        Some(logger) => {
-            if !logger.has_data() {
-                // Just track drop and continue
-                node_guard.drain_subscribers();
-                let _ = node_guard.run(&ctx);
-                node_guard.flush_publishers(ctx.now);
-                return;
-            }
-
-            match node_guard.execution_log_level() {
-                ExecutionLogLevel::Off => {
+    // Worker-style execution: claim the node, run the work, refresh the
+    // periodic snapshot while still holding it, then release. `execute`
+    // releases the node before returning, so the re-send below can only ever
+    // run once the node is free (and, if a trigger arrived mid-run, already
+    // back in `Enqueued`).
+    let (_, reenqueue) = nodes[index].execute(now, |node_guard| {
+        match logger {
+            Some(logger) => {
+                if !logger.has_data() {
+                    // Just track drop and continue
                     node_guard.drain_subscribers();
                     let _ = node_guard.run(&ctx);
                     node_guard.flush_publishers(ctx.now);
+                    return;
                 }
-                ExecutionLogLevel::Duration => {
-                    node_guard.drain_subscribers();
-                    let start = task::time::FrameworkTime::from_wall_clock();
-                    let _ = node_guard.run(&ctx);
-                    let end = task::time::FrameworkTime::from_wall_clock();
-                    let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
-                    logger.record_duration_only(index as u32, ctx.now, duration);
+                match node_guard.execution_log_level() {
+                    ExecutionLogLevel::Off => {
+                        node_guard.drain_subscribers();
+                        let _ = node_guard.run(&ctx);
+                        node_guard.flush_publishers(ctx.now);
+                    }
+                    ExecutionLogLevel::Duration => {
+                        node_guard.drain_subscribers();
+                        let start = task::time::FrameworkTime::from_wall_clock();
+                        let _ = node_guard.run(&ctx);
+                        let end = task::time::FrameworkTime::from_wall_clock();
+                        let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
-                    node_guard.flush_publishers(ctx.now);
+                        logger.record_duration_only(index as u32, ctx.now, duration);
 
-                    logger.maybe_flush_period(ctx.now);
-                }
-                ExecutionLogLevel::Whole => {
-                    node_guard.drain_subscribers();
-                    logger.recv_scratch_clear();
-                    let mut ordinal = 0u16;
-                    node_guard.callback().for_each_subscriber(&mut |sub| {
-                        let ordinal_val = ordinal;
-                        ordinal += 1;
-                        sub.for_each_queued_input(&mut |header, _payload| {
-                            logger.recv_push(task::execution_log::LoggedMessage {
-                                ordinal: ordinal_val,
-                                direction: task::execution_log::Direction::Received,
+                        node_guard.flush_publishers(ctx.now);
+
+                        logger.maybe_flush_period(ctx.now);
+                    }
+                    ExecutionLogLevel::Whole => {
+                        node_guard.drain_subscribers();
+                        logger.recv_scratch_clear();
+                        let mut ordinal = 0u16;
+                        node_guard.callback().for_each_subscriber(&mut |sub| {
+                            let ordinal_val = ordinal;
+                            ordinal += 1;
+                            sub.for_each_queued_input(&mut |header, _payload| {
+                                logger.recv_push(task::execution_log::LoggedMessage {
+                                    ordinal: ordinal_val,
+                                    direction: task::execution_log::Direction::Received,
+                                    header: *header,
+                                });
+                            });
+                        });
+                        let start = task::time::FrameworkTime::from_wall_clock();
+                        let _ = node_guard.run(&ctx);
+                        let end = task::time::FrameworkTime::from_wall_clock();
+                        let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
+
+                        logger.begin_execution(index as u32, ctx.now, duration);
+
+                        logger.drain_recv_into_current();
+
+                        node_guard.flush_publishers_logged(ctx.now, &mut |ordinal, header| {
+                            logger.append(task::execution_log::LoggedMessage {
+                                ordinal: ordinal as u16,
+                                direction: task::execution_log::Direction::Published,
                                 header: *header,
                             });
                         });
-                    });
-                    let start = task::time::FrameworkTime::from_wall_clock();
-                    let _ = node_guard.run(&ctx);
-                    let end = task::time::FrameworkTime::from_wall_clock();
-                    let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
-                    logger.begin_execution(index as u32, ctx.now, duration);
-
-                    logger.drain_recv_into_current();
-
-                    node_guard.flush_publishers_logged(ctx.now, &mut |ordinal, header| {
-                        logger.append(task::execution_log::LoggedMessage {
-                            ordinal: ordinal as u16,
-                            direction: task::execution_log::Direction::Published,
-                            header: *header,
-                        });
-                    });
-
-                    logger.maybe_flush_period(ctx.now);
+                        logger.maybe_flush_period(ctx.now);
+                    }
                 }
             }
+            None => {
+                node_guard.drain_subscribers();
+                let _ = node_guard.run(&ctx);
+                node_guard.flush_publishers(ctx.now);
+            }
         }
-        None => {
-            node_guard.drain_subscribers();
-            let _ = node_guard.run(&ctx);
-            node_guard.flush_publishers(ctx.now);
-        }
+    });
+
+    // `execute` already released the node; only now that it is free (and, on
+    // a mid-run trigger, already `Enqueued`) feed the index back to the pool's
+    // channel so a free worker can claim it immediately.
+    if reenqueue {
+        shared_state.enqueue_state.resend_node(index);
     }
 }
 
 fn worker_loop_core<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
-    nodes: &[Arc<RefCell<CallbackNode>>],
+    nodes: &[Arc<SharedCallbackNode>],
     mut logger: Option<WorkerLogger>,
     time_source: &T,
     worker_index: usize,
     mut process: impl FnMut(
         usize,
-        &[Arc<RefCell<CallbackNode>>],
+        &[Arc<SharedCallbackNode>],
         &SharedThreadPoolState,
         Option<&mut WorkerLogger>,
         FrameworkTime,
@@ -523,7 +544,7 @@ fn worker_loop_core<T: TimeSource>(
 fn run_executor_thread<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
-    nodes: &[Arc<RefCell<CallbackNode>>],
+    nodes: &[Arc<SharedCallbackNode>],
     logger: Option<WorkerLogger>,
     time_source: &T,
     worker_index: usize,
@@ -543,7 +564,7 @@ fn run_executor_thread<T: TimeSource>(
 fn no_alloc_worker_loop<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
-    nodes: &[Arc<RefCell<CallbackNode>>],
+    nodes: &[Arc<SharedCallbackNode>],
     logger: Option<WorkerLogger>,
     time_source: &T,
     worker_index: usize,
@@ -735,6 +756,51 @@ mod tests {
 
     impl Callback for NoAllocSubscriber {
         fn run(&mut self, _ctx: &Context) -> Run {
+            let _input = RequiredInput::<u64>::new(&self.subscriber);
+            let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
+            if count >= self.target_count
+                && let Some(signal) = self.stop_signal.get()
+            {
+                signal.request_stop();
+            }
+            Run::new(1)
+        }
+
+        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+            f(&self.subscriber);
+        }
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+            f(&mut self.subscriber);
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+            f(PortMut::Subscriber(&mut self.subscriber));
+        }
+    }
+
+    /// A subscriber whose `run` deliberately spins so a mid-run re-trigger from
+    /// a fast publisher has a wide window to land while the node is running.
+    struct SpinningSubscriber {
+        subscriber: Subscriber<u64>,
+        messages_received: Arc<AtomicUsize>,
+        stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+        target_count: usize,
+        spin: time::Duration,
+    }
+
+    impl Callback for SpinningSubscriber {
+        fn run(&mut self, _ctx: &Context) -> Run {
+            // Widen the window during which a concurrent publisher trigger
+            // must be handled as a deferred re-run rather than a re-borrow.
+            sleep(self.spin);
             let _input = RequiredInput::<u64>::new(&self.subscriber);
             let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
             if count >= self.target_count
@@ -1052,6 +1118,75 @@ mod tests {
         connect_callback_nodes(&mut nodes).expect("failed to connect callback nodes");
 
         let mut exec = LiveExecutor::new(1, nodes);
+
+        stop_signal_cell.set(exec.stop_signal()).ok();
+        exec.start_threads();
+
+        let deadline = time::Instant::now() + time::Duration::from_secs(DEADLINE_SECS);
+        while exec.is_running() && time::Instant::now() < deadline {
+            sleep(time::Duration::from_millis(10));
+        }
+        assert!(
+            !exec.is_running(),
+            "Executor did not reach {TARGET_COUNT} messages within {DEADLINE_SECS} seconds (stuck at {})",
+            messages_received.load(Ordering::SeqCst)
+        );
+
+        let stop_result = exec.stop_threads();
+        assert!(stop_result.is_ok());
+
+        assert!(messages_received.load(Ordering::SeqCst) >= TARGET_COUNT);
+    }
+
+    #[test]
+    fn test_trigger_while_running_race_is_serialized() {
+        const TARGET_COUNT: usize = 100;
+
+        #[cfg(not(miri))]
+        const DEADLINE_SECS: u64 = 10;
+        #[cfg(miri)]
+        const DEADLINE_SECS: u64 = 120;
+
+        let messages_received = Arc::new(AtomicUsize::new(0));
+        let stop_signal_cell = Arc::new(OnceLock::new());
+
+        let publisher_node = CallbackBuilder::new(
+            "RacePublisher".into(),
+            Box::new(NoAllocPublisher {
+                publisher: Publisher::<u64>::new(OutputKind::Default.into()),
+                value: 0,
+            }),
+        )
+        .with_publisher_channels(&["race_ch"])
+        .with_next_execution_time_callback(|now| Some(now + time::Duration::from_millis(1)))
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let subscriber_node = CallbackBuilder::new(
+            "RaceSubscriber".into(),
+            Box::new(SpinningSubscriber {
+                subscriber: Subscriber::<u64>::new(InputKind::Required.into()),
+                messages_received: messages_received.clone(),
+                stop_signal: stop_signal_cell.clone(),
+                target_count: TARGET_COUNT,
+                spin: time::Duration::from_millis(1),
+            }),
+        )
+        .with_subscriber_channels(&["race_ch"])
+        .with_execution_duration_callback(|| time::Duration::from_millis(1))
+        .build()
+        .unwrap();
+
+        let mut nodes = vec![publisher_node, subscriber_node];
+        connect_callback_nodes(&mut nodes).expect("failed to connect callback nodes");
+
+        // TWO worker threads: the publisher re-triggers the subscriber every
+        // ~1ms while the subscriber's run spins ~1ms, so a trigger constantly
+        // lands mid-run. Before the atomic run-state machine this could send a
+        // second worker to double-borrow the node across threads (undefined
+        // behavior); it must now serialize and still make progress.
+        let mut exec = LiveExecutor::new_multi_pool(vec![ThreadPoolConfig::new(2, nodes)]);
 
         stop_signal_cell.set(exec.stop_signal()).ok();
         exec.start_threads();

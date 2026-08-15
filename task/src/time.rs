@@ -1,5 +1,6 @@
 use std::{
     ops::{Add, AddAssign},
+    sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
 
@@ -38,7 +39,7 @@ impl FrameworkTime {
         }
     }
 
-    pub fn to_nanoseconds(self) -> i64 {
+    pub const fn to_nanoseconds(self) -> i64 {
         self.nanoseconds
     }
 
@@ -76,7 +77,82 @@ impl std::fmt::Display for FrameworkTime {
     }
 }
 
+/// Atomic variant of [`FrameworkTime`], for sharing a single time value
+/// across threads (e.g. a task publishing its next wakeup time to a
+/// scheduling thread).
+///
+/// Convention: [`FrameworkTime::INVALID`] is the "no time" sentinel —
+/// `load` returns it when unset, and `store(INVALID)` clears the value.
+#[derive(Debug, Default)]
+pub struct AtomicFrameworkTime(AtomicI64);
+
+impl AtomicFrameworkTime {
+    pub const fn new(time: FrameworkTime) -> Self {
+        AtomicFrameworkTime(AtomicI64::new(time.to_nanoseconds()))
+    }
+
+    pub const fn from_nanoseconds(nanoseconds: i64) -> Self {
+        AtomicFrameworkTime(AtomicI64::new(nanoseconds))
+    }
+
+    pub fn load(&self, ordering: Ordering) -> FrameworkTime {
+        FrameworkTime::from_nanoseconds(self.0.load(ordering))
+    }
+
+    pub fn store(&self, time: FrameworkTime, ordering: Ordering) {
+        self.0.store(time.to_nanoseconds(), ordering);
+    }
+
+    pub fn swap(&self, time: FrameworkTime, ordering: Ordering) -> FrameworkTime {
+        FrameworkTime::from_nanoseconds(self.0.swap(time.to_nanoseconds(), ordering))
+    }
+}
+
+impl From<FrameworkTime> for AtomicFrameworkTime {
+    fn from(time: FrameworkTime) -> Self {
+        AtomicFrameworkTime::new(time)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     // TODO test all the add/substract/etc
+
+    #[test]
+    fn atomic_framework_time_round_trips() {
+        let t = AtomicFrameworkTime::new(FrameworkTime::from_nanoseconds(1234));
+        assert_eq!(
+            t.load(Ordering::Relaxed),
+            FrameworkTime::from_nanoseconds(1234)
+        );
+
+        t.store(FrameworkTime::from_nanoseconds(5678), Ordering::Release);
+        assert_eq!(
+            t.load(Ordering::Acquire),
+            FrameworkTime::from_nanoseconds(5678)
+        );
+
+        assert_eq!(
+            t.swap(FrameworkTime::INVALID, Ordering::AcqRel),
+            FrameworkTime::from_nanoseconds(5678)
+        );
+        assert_eq!(t.load(Ordering::Relaxed), FrameworkTime::INVALID);
+    }
+
+    #[test]
+    fn atomic_framework_time_from_conversion() {
+        let t: AtomicFrameworkTime = FrameworkTime::from_nanoseconds(-42).into();
+        assert_eq!(
+            t.load(Ordering::Relaxed),
+            FrameworkTime::from_nanoseconds(-42)
+        );
+        assert_eq!(
+            t.load(Ordering::Relaxed).to_nanoseconds(),
+            AtomicFrameworkTime::from_nanoseconds(-42)
+                .load(Ordering::Relaxed)
+                .to_nanoseconds()
+        );
+    }
 }

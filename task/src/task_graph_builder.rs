@@ -113,8 +113,10 @@ impl BuiltTaskGraph {
     pub fn print(&self) {
         for (i, pool) in self.pools.iter().enumerate() {
             println!("Pool {i} ({} threads):", pool.thread_count);
-            for node in pool.nodes.iter_borrowed() {
-                println!("  {node}");
+            for node in pool.nodes.iter_shared() {
+                // Build time / quiescent: the graph is not shared with any
+                // worker thread yet, so exclusive access cannot conflict.
+                node.with_exclusive(|node| println!("  {node}"));
             }
         }
     }
@@ -189,10 +191,12 @@ fn find_dangling_subscribers(pools: &[ThreadPoolConfig]) -> Vec<ChannelName> {
     let mut channel_to_subscriber_count = HashMap::<ChannelName, usize>::new();
 
     for pool in pools {
-        for node in pool.nodes.iter_borrowed() {
-            node.callback().for_each_subscriber(&mut |s| {
-                let channel = s.config().channel_name.clone();
-                *channel_to_subscriber_count.entry(channel).or_default() += 1;
+        for node in pool.nodes.iter_shared() {
+            node.with_exclusive(|node| {
+                node.callback().for_each_subscriber(&mut |s| {
+                    let channel = s.config().channel_name.clone();
+                    *channel_to_subscriber_count.entry(channel).or_default() += 1;
+                });
             });
         }
     }
@@ -208,10 +212,12 @@ fn find_dangling_publishers(pools: &[ThreadPoolConfig]) -> Vec<ChannelName> {
     let mut channel_to_publisher_count = HashMap::<ChannelName, usize>::new();
 
     for pool in pools {
-        for node in pool.nodes.iter_borrowed() {
-            node.callback().for_each_publisher(&mut |p| {
-                let channel = p.config().channel_name.clone();
-                *channel_to_publisher_count.entry(channel).or_default() += 1;
+        for node in pool.nodes.iter_shared() {
+            node.with_exclusive(|node| {
+                node.callback().for_each_publisher(&mut |p| {
+                    let channel = p.config().channel_name.clone();
+                    *channel_to_publisher_count.entry(channel).or_default() += 1;
+                });
             });
         }
     }
@@ -551,7 +557,10 @@ mod test {
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].thread_count, 1);
         assert_eq!(built.pools[0].nodes.len(), 1);
-        assert_eq!(built.pools[0].nodes[0].borrow().name(), "single");
+        assert_eq!(
+            built.pools[0].nodes[0].with_exclusive(|n| n.name().to_owned()),
+            "single"
+        );
     }
 
     #[test]
@@ -583,8 +592,14 @@ mod test {
         let built = result.unwrap();
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].nodes.len(), 2);
-        assert_eq!(built.pools[0].nodes[0].borrow().name(), "first");
-        assert_eq!(built.pools[0].nodes[1].borrow().name(), "extra_1");
+        assert_eq!(
+            built.pools[0].nodes[0].with_exclusive(|n| n.name().to_owned()),
+            "first"
+        );
+        assert_eq!(
+            built.pools[0].nodes[1].with_exclusive(|n| n.name().to_owned()),
+            "extra_1"
+        );
     }
 
     #[test]
@@ -690,7 +705,10 @@ mod test {
         let built = result.unwrap();
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].nodes.len(), 1);
-        assert_eq!(built.pools[0].nodes[0].borrow().name(), "debug");
+        assert_eq!(
+            built.pools[0].nodes[0].with_exclusive(|n| n.name().to_owned()),
+            "debug"
+        );
         assert!(built.debug_info.is_some());
     }
 

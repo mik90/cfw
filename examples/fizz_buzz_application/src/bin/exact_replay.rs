@@ -27,13 +27,16 @@ struct CliArgs {
 fn print_nodes(pools: &[task::executor::ThreadPoolConfig]) {
     let mut index = 0;
     for pool in pools {
-        for node in pool.nodes.iter_borrowed() {
-            println!("node[{index}] '{}'", node.name());
-            node.callback().for_each_subscriber(&mut |s| {
-                println!("\t subscriber -> {}", s.config().channel_name);
-            });
-            node.callback().for_each_publisher(&mut |p| {
-                println!("\t publisher  -> {}", p.config().channel_name);
+        for node in pool.nodes.iter_shared() {
+            // Build time: the graph is not running yet.
+            node.with_exclusive(|node| {
+                println!("node[{index}] '{}'", node.name());
+                node.callback().for_each_subscriber(&mut |s| {
+                    println!("\t subscriber -> {}", s.config().channel_name);
+                });
+                node.callback().for_each_publisher(&mut |p| {
+                    println!("\t publisher  -> {}", p.config().channel_name);
+                });
             });
             index += 1;
         }

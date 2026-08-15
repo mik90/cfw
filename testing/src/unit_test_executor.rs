@@ -281,8 +281,7 @@ mod tests {
     fn step_time_before_after() {
         let (nodes_under_test, task_info) = build_fizz_buzz_callback_nodes();
         let publisher_runtime = nodes_under_test[task_info.integer_publisher_index]
-            .borrow()
-            .execution_duration();
+            .with_exclusive(|n| n.execution_duration());
 
         let mut expected_time = FrameworkTime::from_nanoseconds(0);
 
@@ -312,14 +311,11 @@ mod tests {
     fn step_all_callbacks() {
         let (nodes_under_test, task_info) = build_fizz_buzz_callback_nodes();
         let publisher_runtime = nodes_under_test[task_info.integer_publisher_index]
-            .borrow()
-            .execution_duration();
-        let fizz_buzz_runtime = nodes_under_test[task_info.fizz_buzz_index]
-            .borrow()
-            .execution_duration();
+            .with_exclusive(|n| n.execution_duration());
+        let fizz_buzz_runtime =
+            nodes_under_test[task_info.fizz_buzz_index].with_exclusive(|n| n.execution_duration());
         let string_store_runtime = nodes_under_test[task_info.string_store_index]
-            .borrow()
-            .execution_duration();
+            .with_exclusive(|n| n.execution_duration());
 
         let mut expected_time = FrameworkTime::from_nanoseconds(0);
 

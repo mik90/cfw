@@ -250,7 +250,10 @@ fn non_loggable_channel_silently_skipped() {
         1,
         "no LogTask should be added when nothing is loggable"
     );
-    assert_eq!(graph.pools[0].nodes[0].borrow().name(), "OpaqueProducer");
+    assert_eq!(
+        graph.pools[0].nodes[0].with_exclusive(|n| n.name().to_owned()),
+        "OpaqueProducer"
+    );
 }
 
 #[test]
@@ -333,7 +336,10 @@ fn diagnostics_task_picks_up_logtask_errors() {
 
     // Should have 3 nodes: producer, diagnostics, LogTask[0].
     assert_eq!(graph.pools[0].nodes.len(), 3);
-    assert_eq!(graph.pools[0].nodes[2].borrow().name(), log_task_name(0));
+    assert_eq!(
+        graph.pools[0].nodes[2].with_exclusive(|n| n.name().to_owned()),
+        log_task_name(0)
+    );
 
     let mut executor = UnitTestExecutor::new(graph.pools.remove(0).nodes);
     for _ in 0..6 {
@@ -376,26 +382,28 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
 
     // 4 producers + 2 log tasks.
     assert_eq!(graph.pools[0].nodes.len(), 6);
-    assert_eq!(graph.pools[0].nodes[4].borrow().name(), log_task_name(0));
-    assert_eq!(graph.pools[0].nodes[5].borrow().name(), log_task_name(1));
+    assert_eq!(
+        graph.pools[0].nodes[4].with_exclusive(|n| n.name().to_owned()),
+        log_task_name(0)
+    );
+    assert_eq!(
+        graph.pools[0].nodes[5].with_exclusive(|n| n.name().to_owned()),
+        log_task_name(1)
+    );
 
     // Each log task exposes its own diagnostics channel.
     assert_eq!(
-        graph.pools[0].nodes[4]
-            .borrow()
-            .callback()
-            .collect_publishers()[0]
+        graph.pools[0].nodes[4].with_exclusive(|n| n.callback().collect_publishers()[0]
             .config()
-            .channel_name,
+            .channel_name
+            .clone()),
         log_task_diagnostics_channel(0)
     );
     assert_eq!(
-        graph.pools[0].nodes[5]
-            .borrow()
-            .callback()
-            .collect_publishers()[0]
+        graph.pools[0].nodes[5].with_exclusive(|n| n.callback().collect_publishers()[0]
             .config()
-            .channel_name,
+            .channel_name
+            .clone()),
         log_task_diagnostics_channel(1)
     );
 
@@ -455,8 +463,14 @@ fn num_tasks_clamped_to_channel_count() {
         3,
         "two loggable channels → two LogTask nodes"
     );
-    assert_eq!(graph.pools[0].nodes[1].borrow().name(), log_task_name(0));
-    assert_eq!(graph.pools[0].nodes[2].borrow().name(), log_task_name(1));
+    assert_eq!(
+        graph.pools[0].nodes[1].with_exclusive(|n| n.name().to_owned()),
+        log_task_name(0)
+    );
+    assert_eq!(
+        graph.pools[0].nodes[2].with_exclusive(|n| n.name().to_owned()),
+        log_task_name(1)
+    );
 }
 
 #[test]
@@ -494,15 +508,13 @@ fn diagnostics_task_subscribes_to_every_log_task() {
     // 2 producers + diagnostics + 2 log tasks.
     assert_eq!(graph.pools[0].nodes.len(), 5);
 
-    let subscribed_channels: Vec<String> = {
-        let diag_node = graph.pools[0].nodes[2].borrow();
-        diag_node
-            .callback()
+    let subscribed_channels: Vec<String> = graph.pools[0].nodes[2].with_exclusive(|n| {
+        n.callback()
             .collect_subscribers()
             .iter()
             .map(|s| s.config().channel_name.to_owned())
             .collect()
-    };
+    });
     assert_eq!(
         subscribed_channels,
         vec![

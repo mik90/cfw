@@ -38,15 +38,16 @@ pub(crate) fn node_executor_thread(
 
         let ctx = Context::new(work_request.current_time);
         // The step thread schedules nodes so that no two node-executor threads
-        // run the same index concurrently, so this borrow is uncontended. The
-        // guard is dropped before the response is sent: the step thread
-        // proceeds to flush publishers as soon as it receives the response,
-        // so the node must be free by then.
-        let execution_duration = {
-            let mut node = nodes[work_request.index].borrow_mut();
+        // run the same index concurrently, and the simulation never enqueues
+        // nodes (its scheduler dispatches work directly), so each node is
+        // Idle here and `with_exclusive`'s quiescent acquire always succeeds.
+        // The node is released before the response is sent: the step thread
+        // proceeds to flush publishers as soon as it receives the response, so
+        // the node must be free by then.
+        let execution_duration = nodes[work_request.index].with_exclusive(|node| {
             let _ = node.run(&ctx);
             node.execution_duration()
-        };
+        });
 
         let response = NodeExecutionResponse {
             index: work_request.index,
