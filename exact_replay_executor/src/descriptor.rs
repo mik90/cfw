@@ -62,7 +62,7 @@ pub(crate) fn validate_descriptor(
         }
         // Build time / validation runs on the main thread before the replay
         // thread starts, so exclusive access cannot conflict.
-        nodes[node_idx].with_exclusive(|node| {
+        nodes[node_idx].access(|node| {
             let node_name = node.name().to_owned();
 
             let active_subs = active_received.get(&node_idx);
@@ -191,7 +191,7 @@ pub(crate) fn validate_descriptor_less_executions(
             // Appended infrastructure nodes are not part of the replay graph.
             continue;
         }
-        let node_name = nodes[*node_idx].with_exclusive(|n| n.name().to_owned());
+        let node_name = nodes[*node_idx].access(|n| n.name().to_owned());
         if !node_name.starts_with("LogTask") {
             return Err(ReplayError::DescriptorlessApplicationNode {
                 index: *node_idx,

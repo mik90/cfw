@@ -79,7 +79,7 @@ impl SharedThreadPoolState {
         writeln!(f, "Should run: {}", self.should_run.load(Ordering::Relaxed))?;
         writeln!(f, "All callback nodes:")?;
         for (index, node) in nodes.iter_shared().enumerate() {
-            let Some(details) = node.try_with_exclusive(|node| {
+            let Some(details) = node.try_access(|node| {
                 let mut out = String::new();
                 let _ = writeln!(out, "\t ----------------------------------");
                 let _ = writeln!(

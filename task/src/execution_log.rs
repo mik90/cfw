@@ -301,7 +301,7 @@ pub fn connect(
 
     for pool in pools.iter_mut() {
         for node in pool.nodes.iter_shared() {
-            node.with_exclusive(|node| {
+            node.access(|node| {
                 let node_name = node.name().to_string();
                 // Build time: the pools are not shared with any worker thread
                 // yet, so exclusive access cannot conflict.

@@ -40,11 +40,11 @@ pub(crate) fn node_executor_thread(
         // The step thread schedules nodes so that no two node-executor threads
         // run the same index concurrently, and the simulation never enqueues
         // nodes (its scheduler dispatches work directly), so each node is
-        // Idle here and `with_exclusive`'s quiescent acquire always succeeds.
+        // idle here and the strict-idle acquire always succeeds.
         // The node is released before the response is sent: the step thread
         // proceeds to flush publishers as soon as it receives the response, so
         // the node must be free by then.
-        let execution_duration = nodes[work_request.index].with_exclusive(|node| {
+        let execution_duration = nodes[work_request.index].access(|node| {
             let _ = node.run(&ctx);
             node.execution_duration()
         });

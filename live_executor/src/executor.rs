@@ -83,7 +83,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         let enqueuer: Arc<dyn CallbackNodeEnqueuer> = enqueue_state.clone();
         let now = time_source.now();
         for (index, node) in nodes.iter_shared().enumerate() {
-            // Worker-style execution instead of `with_exclusive`: registering
+            // Worker-style execution instead of `access`: registering
             // can synchronously enqueue a node whose inputs are already
             // ready (e.g. no required inputs), which flips the run state to
             // "triggered while running" — handled here by sending the index
@@ -131,7 +131,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                 pool.nodes
                     .iter_shared()
                     .filter_map(|node| {
-                        node.try_with_exclusive(|n| execution_log::worst_case_received_count(n))
+                        node.try_access(|n| execution_log::worst_case_received_count(n))
                     })
                     .max()
                     .unwrap_or(0)

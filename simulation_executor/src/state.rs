@@ -146,7 +146,7 @@ impl SimulationState {
             // Quiescent at startup (no work has been dispatched yet), but
             // prefer try_ to skip a node that is somehow already running.
             let is_periodic = node
-                .try_with_exclusive(|n| n.next_requested_execution_time(self.time).is_some())
+                .try_access(|n| n.next_requested_execution_time(self.time).is_some())
                 .unwrap_or(false);
             if is_periodic {
                 self.periodic_nodes.push_back(TimeTriggeredNode {
@@ -174,7 +174,7 @@ impl SimulationState {
             // a required non-trigger input would run while that input is
             // still empty.
             let ready = node
-                .try_with_exclusive(|n| {
+                .try_access(|n| {
                     n.subscribers_request_execution()
                         && n.required_inputs_ready()
                         && self.time >= self.node_busy_until[index]
@@ -220,7 +220,7 @@ impl SimulationState {
         // Only drain subscribers for nodes that actually got a thread, so that nodes
         // blocked by pool pressure keep their trigger data for the next step.
         for &index in &runnable_nodes {
-            self.nodes[index].with_exclusive(|n| n.drain_subscribers());
+            self.nodes[index].access(|n| n.drain_subscribers());
         }
 
         let time = self.time;
@@ -257,7 +257,7 @@ impl SimulationState {
         }
 
         for &index in &runnable_nodes {
-            self.nodes[index].with_exclusive(|n| n.flush_publishers(time));
+            self.nodes[index].access(|n| n.flush_publishers(time));
         }
 
         // Update periodic node next-run times from their no-longer-busy instant
@@ -265,7 +265,7 @@ impl SimulationState {
             if runnable_nodes.contains(&periodic.index) {
                 let no_longer_busy = self.node_busy_until[periodic.index];
                 if let Some(next_time) = self.nodes[periodic.index]
-                    .with_exclusive(|n| n.next_requested_execution_time(no_longer_busy))
+                    .access(|n| n.next_requested_execution_time(no_longer_busy))
                 {
                     periodic.requested_exec_time = next_time;
                 }

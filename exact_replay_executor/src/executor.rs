@@ -186,7 +186,7 @@ impl Executor for ExactReplayExecutor {
                 let mut errors = Vec::new();
                 // The replay loop is single-threaded, so exclusive access to a
                 // node is uncontended for the duration of its execution.
-                nodes[node_idx].with_exclusive(|node| {
+                nodes[node_idx].access(|node| {
                     replay_execution(
                         node,
                         &mut node_states[node_idx],

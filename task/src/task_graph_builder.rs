@@ -114,9 +114,9 @@ impl BuiltTaskGraph {
         for (i, pool) in self.pools.iter().enumerate() {
             println!("Pool {i} ({} threads):", pool.thread_count);
             for node in pool.nodes.iter_shared() {
-                // Build time / quiescent: the graph is not shared with any
-                // worker thread yet, so exclusive access cannot conflict.
-                node.with_exclusive(|node| println!("  {node}"));
+                // Build time: the graph is not shared with any worker thread
+                // yet, so access cannot conflict.
+                node.access(|node| println!("  {node}"));
             }
         }
     }
@@ -192,7 +192,7 @@ fn find_dangling_subscribers(pools: &[ThreadPoolConfig]) -> Vec<ChannelName> {
 
     for pool in pools {
         for node in pool.nodes.iter_shared() {
-            node.with_exclusive(|node| {
+            node.access(|node| {
                 node.callback().for_each_subscriber(&mut |s| {
                     let channel = s.config().channel_name.clone();
                     *channel_to_subscriber_count.entry(channel).or_default() += 1;
@@ -213,7 +213,7 @@ fn find_dangling_publishers(pools: &[ThreadPoolConfig]) -> Vec<ChannelName> {
 
     for pool in pools {
         for node in pool.nodes.iter_shared() {
-            node.with_exclusive(|node| {
+            node.access(|node| {
                 node.callback().for_each_publisher(&mut |p| {
                     let channel = p.config().channel_name.clone();
                     *channel_to_publisher_count.entry(channel).or_default() += 1;
@@ -558,7 +558,7 @@ mod test {
         assert_eq!(built.pools[0].thread_count, 1);
         assert_eq!(built.pools[0].nodes.len(), 1);
         assert_eq!(
-            built.pools[0].nodes[0].with_exclusive(|n| n.name().to_owned()),
+            built.pools[0].nodes[0].access(|n| n.name().to_owned()),
             "single"
         );
     }
@@ -593,11 +593,11 @@ mod test {
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].nodes.len(), 2);
         assert_eq!(
-            built.pools[0].nodes[0].with_exclusive(|n| n.name().to_owned()),
+            built.pools[0].nodes[0].access(|n| n.name().to_owned()),
             "first"
         );
         assert_eq!(
-            built.pools[0].nodes[1].with_exclusive(|n| n.name().to_owned()),
+            built.pools[0].nodes[1].access(|n| n.name().to_owned()),
             "extra_1"
         );
     }
@@ -706,7 +706,7 @@ mod test {
         assert_eq!(built.pools.len(), 1);
         assert_eq!(built.pools[0].nodes.len(), 1);
         assert_eq!(
-            built.pools[0].nodes[0].with_exclusive(|n| n.name().to_owned()),
+            built.pools[0].nodes[0].access(|n| n.name().to_owned()),
             "debug"
         );
         assert!(built.debug_info.is_some());

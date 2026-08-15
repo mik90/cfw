@@ -29,7 +29,7 @@ fn print_nodes(pools: &[task::executor::ThreadPoolConfig]) {
     for pool in pools {
         for node in pool.nodes.iter_shared() {
             // Build time: the graph is not running yet.
-            node.with_exclusive(|node| {
+            node.access(|node| {
                 println!("node[{index}] '{}'", node.name());
                 node.callback().for_each_subscriber(&mut |s| {
                     println!("\t subscriber -> {}", s.config().channel_name);
