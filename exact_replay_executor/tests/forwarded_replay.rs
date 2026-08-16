@@ -470,9 +470,11 @@ fn replays_a_live_forwarding_run() {
     let producer_done = Arc::new(AtomicUsize::new(0));
 
     let logging_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
-        logging::log_task::LogTaskConfiguration {
+        logging::LogTaskConfiguration {
             output_path: log_path.clone(),
-            period: Duration::from_millis(10),
+            strategy: logging::LoggingStrategy::Continuous {
+                period: Duration::from_millis(10),
+            },
             num_tasks: 1,
         },
     ));

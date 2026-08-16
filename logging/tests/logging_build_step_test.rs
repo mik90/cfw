@@ -190,7 +190,9 @@ fn writes_loggable_channel_to_jsonl() {
         .add_pool(1, |p| p.add_callback(producer))
         .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
             output_path: out.clone(),
-            period: Duration::from_nanos(1),
+            strategy: logging::LoggingStrategy::Continuous {
+                period: Duration::from_nanos(1),
+            },
             num_tasks: 1,
         })))
         .build()
@@ -237,7 +239,9 @@ fn non_loggable_channel_silently_skipped() {
         .add_build_step(Box::new(
             LoggingBuildStep::new(LogTaskConfiguration {
                 output_path: temp_path("non_loggable"),
-                period: Duration::from_nanos(1),
+                strategy: logging::LoggingStrategy::Continuous {
+                    period: Duration::from_nanos(1),
+                },
                 num_tasks: 1,
             })
             .with_unlogged_channels([task::execution_log::EXECUTION_LOG_CHANNEL]),
@@ -272,7 +276,9 @@ fn denylisted_channel_silently_skipped() {
         .add_build_step(Box::new(
             LoggingBuildStep::new(LogTaskConfiguration {
                 output_path: out.clone(),
-                period: Duration::from_nanos(1),
+                strategy: logging::LoggingStrategy::Continuous {
+                    period: Duration::from_nanos(1),
+                },
                 num_tasks: 1,
             })
             .with_unlogged_channels([
@@ -328,7 +334,9 @@ fn diagnostics_task_picks_up_logtask_errors() {
         .add_pool(1, |p| p.add_callback(producer).add_callback(diag))
         .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
             output_path: out,
-            period: Duration::from_nanos(1),
+            strategy: logging::LoggingStrategy::Continuous {
+                period: Duration::from_nanos(1),
+            },
             num_tasks: 1,
         })))
         .build()
@@ -374,7 +382,9 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
         })
         .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
             output_path: out.clone(),
-            period: Duration::from_nanos(1),
+            strategy: logging::LoggingStrategy::Continuous {
+                period: Duration::from_nanos(1),
+            },
             num_tasks: 2,
         })))
         .build()
@@ -452,7 +462,9 @@ fn num_tasks_clamped_to_channel_count() {
         .add_pool(1, |p| p.add_callback(producer))
         .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
             output_path: temp_path("clamped"),
-            period: Duration::from_nanos(1),
+            strategy: logging::LoggingStrategy::Continuous {
+                period: Duration::from_nanos(1),
+            },
             num_tasks: 10,
         })))
         .build()
@@ -499,7 +511,9 @@ fn diagnostics_task_subscribes_to_every_log_task() {
         })
         .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
             output_path: out,
-            period: Duration::from_nanos(1),
+            strategy: logging::LoggingStrategy::Continuous {
+                period: Duration::from_nanos(1),
+            },
             num_tasks: 2,
         })))
         .build()

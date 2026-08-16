@@ -543,9 +543,11 @@ fn replays_a_live_run_with_unlogged_intermediates() {
     let producer_done = Arc::new(AtomicUsize::new(0));
 
     let logging_step = Box::new(
-        logging::log_build_step::LoggingBuildStep::new(logging::log_task::LogTaskConfiguration {
+        logging::log_build_step::LoggingBuildStep::new(logging::LogTaskConfiguration {
             output_path: log_path.clone(),
-            period: Duration::from_millis(10),
+            strategy: logging::LoggingStrategy::Continuous {
+                period: Duration::from_millis(10),
+            },
             num_tasks: 1,
         })
         .with_unlogged_channels([SOURCE_CHANNEL]),

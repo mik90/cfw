@@ -34,6 +34,7 @@
 use clap::{Parser, Subcommand};
 use facet::Facet;
 use live_executor::LiveExecutor;
+use logging::log_build_step::LoggingStrategy;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -160,7 +161,9 @@ fn run_live(log_path: PathBuf, print: bool) -> Result<(), Box<dyn std::error::Er
     let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
         logging::LogTaskConfiguration {
             output_path: log_path,
-            period: Duration::from_millis(1000),
+            strategy: LoggingStrategy::Continuous {
+                period: Duration::from_millis(1000),
+            },
             num_tasks: 1,
         },
     ));

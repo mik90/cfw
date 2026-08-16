@@ -1,8 +1,12 @@
 use std::collections::HashSet;
 
+use std::path::PathBuf;
+use std::time::Duration;
 use task::callback::CallbackNode;
 use task::channel_registry::ChannelRegistry;
-use task::execution_log::{self, EXECUTION_LOG_CHANNEL, ExecutionLogMessage};
+use task::execution_log::{
+    self, EXECUTION_LOG_CHANNEL, ExecutionLogDescriptor, ExecutionLogMessage,
+};
 use task::generic_subscriber::GenericSubscriber;
 use task::pub_sub::ChannelName;
 use task::subscriber::{Subscriber, SubscriberConfig};
@@ -10,8 +14,7 @@ use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 
 use crate::log_file::SharedLogFileWriter;
 use crate::log_task::{
-    ChannelLogger, LogTask, LogTaskConfiguration, log_task_diagnostics_channel, log_task_name,
-    open_writer,
+    ChannelLogger, ContinuousLogTask, log_task_diagnostics_channel, log_task_name, open_writer,
 };
 
 /// Default queue depth for log-task subscribers. Logging is meant to keep up
@@ -24,6 +27,27 @@ const DEFAULT_LOG_QUEUE_CAPACITY: usize = 10;
 /// channel logger i).
 #[derive(Default)]
 struct Shard(Vec<ChannelLogger>, Vec<Box<dyn GenericSubscriber>>);
+
+pub enum LoggingStrategy {
+    /// Log all data during execution
+    Continuous { period: Duration },
+    ///Only log when an event notification is recieved
+    Event,
+}
+
+/// Where to write the log file, how often to run the logger, and how many
+/// `LogTask` nodes to spread the loggable channels across. Each task runs as
+/// an independent callback node, so an executor thread pool with more than
+/// one thread logs channels in parallel. All tasks share a single log file
+/// via a `SharedLogFileWriter`.
+pub struct LogTaskConfiguration {
+    pub output_path: PathBuf,
+
+    pub strategy: LoggingStrategy,
+    /// Desired number of `LogTask` nodes. Clamped to at least 1 and at most
+    /// the number of loggable channels.
+    pub num_tasks: usize,
+}
 
 /// Adds `LogTask`s to the task graph. The build step walks every existing
 /// `CallbackNode`'s publishers, asks `registry` for a matching serializer by
@@ -62,6 +86,32 @@ impl LoggingBuildStep {
         self.unlogged_channels
             .extend(channels.into_iter().map(Into::into));
         self
+    }
+
+    fn build_continuous_logger_node(
+        shard_index: usize,
+        shard_loggers: Vec<ChannelLogger>,
+        shard_subscribers: Vec<Box<dyn GenericSubscriber>>,
+        shared_writer: &SharedLogFileWriter,
+        execution_log_descriptor: ExecutionLogDescriptor,
+        log_period: Duration,
+    ) -> CallbackNode {
+        let log_task = ContinuousLogTask::new(
+            Box::new(shared_writer.clone()),
+            log_task_diagnostics_channel(shard_index),
+            shard_loggers,
+            shard_subscribers,
+            Some(execution_log_descriptor.clone()),
+        );
+
+        let mut log_node = CallbackNode::new_named(Box::new(log_task), log_task_name(shard_index));
+        // The simulation executor queries every running node's duration — give
+        // LogTask a no-op so it doesn't panic. Logging should be invisible to
+        // scheduling, so we occupy zero sim-time.
+        log_node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
+        log_node.set_execution_time_callback(Box::new(move |now| Some(now + log_period)));
+
+        log_node
     }
 }
 
@@ -173,24 +223,24 @@ impl TaskGraphBuildStep for LoggingBuildStep {
 
         let mut log_nodes = Vec::with_capacity(num_tasks);
 
-        for (index, Shard(shard_loggers, shard_subscribers)) in shards.into_iter().enumerate() {
-            let log_task = LogTask::new(
-                Box::new(shared_writer.clone()),
-                log_task_diagnostics_channel(index),
-                shard_loggers,
-                shard_subscribers,
-                Some(execution_log_descriptor.clone()),
-            );
-
-            let mut log_node = CallbackNode::new_named(Box::new(log_task), log_task_name(index));
-            // The simulation executor queries every running node's duration — give
-            // LogTask a no-op so it doesn't panic. Logging should be invisible to
-            // scheduling, so we occupy zero sim-time.
-            log_node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
-            let period = self.config.period;
-            log_node.set_execution_time_callback(Box::new(move |now| Some(now + period)));
-
-            log_nodes.push(log_node);
+        for (shard_index, Shard(shard_loggers, shard_subscribers)) in shards.into_iter().enumerate()
+        {
+            match self.config.strategy {
+                LoggingStrategy::Continuous { period } => {
+                    let log_node = LoggingBuildStep::build_continuous_logger_node(
+                        shard_index,
+                        shard_loggers,
+                        shard_subscribers,
+                        &shared_writer,
+                        execution_log_descriptor.clone(),
+                        period,
+                    );
+                    log_nodes.push(log_node);
+                }
+                LoggingStrategy::Event => {
+                    todo!("not implemented yet")
+                }
+            }
         }
 
         Ok(log_nodes)

@@ -1,5 +1,6 @@
+use logging::LoggingStrategy;
 use std::sync::{Arc, OnceLock};
-
+use std::time::Duration;
 use task::channel_registry::ChannelRegistry;
 use task::execution_log::ExecutionLogLevel;
 use task::executor::{ExecutorStopSignal, ThreadPoolConfig};
@@ -39,7 +40,9 @@ pub fn build_live_graph_with(
 ) -> Result<BuiltGraph, BuildError> {
     let config = logging::LogTaskConfiguration {
         output_path: log_path.to_path_buf(),
-        period: std::time::Duration::from_millis(1000),
+        strategy: LoggingStrategy::Continuous {
+            period: Duration::from_millis(1000),
+        },
         num_tasks: 1,
     };
 

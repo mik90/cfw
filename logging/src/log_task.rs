@@ -7,9 +7,8 @@
 // remains unaware of the logger task; downstream subscribers (e.g. a
 // `LogDiagnosticsTask`) decide what to do.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use task::callback::{Callback, PortMut, Run};
 use task::context::Context;
@@ -169,20 +168,7 @@ impl ErrorBuffer {
     }
 }
 
-/// Where to write the log file, how often to run the logger, and how many
-/// `LogTask` nodes to spread the loggable channels across. Each task runs as
-/// an independent callback node, so an executor thread pool with more than
-/// one thread logs channels in parallel. All tasks share a single log file
-/// via a `SharedLogFileWriter`.
-pub struct LogTaskConfiguration {
-    pub output_path: PathBuf,
-    pub period: Duration,
-    /// Desired number of `LogTask` nodes. Clamped to at least 1 and at most
-    /// the number of loggable channels.
-    pub num_tasks: usize,
-}
-
-pub struct LogTask {
+pub struct ContinuousLogTask {
     writer: Box<dyn LogFileWriter>,
     diagnostics_channel: ChannelName,
     channel_loggers: Vec<ChannelLogger>,
@@ -192,7 +178,7 @@ pub struct LogTask {
     execution_log_descriptor: Option<execution_log::ExecutionLogDescriptor>,
 }
 
-impl std::fmt::Debug for LogTask {
+impl std::fmt::Debug for ContinuousLogTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LogTask")
             .field("diagnostics_channel", &self.diagnostics_channel)
@@ -201,7 +187,7 @@ impl std::fmt::Debug for LogTask {
     }
 }
 
-impl LogTask {
+impl ContinuousLogTask {
     /// Construct a `LogTask` writing to `writer` and publishing diagnostics on
     /// `diagnostics_channel`. The writer is typically a
     /// `SharedLogFileWriter` clone shared with the other log tasks.
@@ -216,7 +202,7 @@ impl LogTask {
             capacity: 1,
             channel_name: diagnostics_channel.clone(),
         });
-        LogTask {
+        ContinuousLogTask {
             writer,
             diagnostics_channel,
             channel_loggers,
@@ -268,7 +254,7 @@ pub(crate) fn open_writer(_path: &Path) -> Box<dyn LogFileWriter> {
     panic!("LogTask::new requires the 'serde' feature for the default JSON writer");
 }
 
-impl Callback for LogTask {
+impl Callback for ContinuousLogTask {
     fn run(&mut self, ctx: &Context) -> Run {
         // Write execution log descriptor as artifact on first run
         if let Some(descriptor) = self.execution_log_descriptor.take() {
@@ -341,7 +327,7 @@ impl Callback for LogTask {
 
 // Drop flushes the writer but discards errors — by now the diagnostics
 // publisher is gone, so there's no one to tell.
-impl Drop for LogTask {
+impl Drop for ContinuousLogTask {
     fn drop(&mut self) {
         let _ = self.flush();
     }
