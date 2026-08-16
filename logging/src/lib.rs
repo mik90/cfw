@@ -7,12 +7,18 @@ pub mod log_file_json;
 pub mod log_task;
 #[cfg(feature = "serde")]
 pub mod sorted_log_stream;
+#[cfg(test)]
+pub mod testing;
 
 pub use log_build_step::{LogTaskConfiguration, LoggingBuildStep, LoggingStrategy};
 pub use log_diagnostics_task::{DiagnosticsMode, LogDiagnosticsTask};
+#[cfg(test)]
+pub use testing::InMemoryWriter;
+
 pub use log_file::{
     BoxedLogError, LogEntry, LogEntryIter, LogFileReader, LogFileWriter, SharedLogFileWriter,
 };
+
 pub use log_task::{LogError, log_task_diagnostics_channel, log_task_name};
 #[cfg(feature = "serde")]
 pub use sorted_log_stream::{

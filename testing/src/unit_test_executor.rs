@@ -108,6 +108,11 @@ impl UnitTestExecutorBuilder {
         }
     }
 
+    pub fn add_node(mut self, node: CallbackNode) -> Self {
+        self.nodes.push(node);
+        self
+    }
+
     /// Find all publishers on the given channel
     fn find_publishers_mut(
         &mut self,

@@ -19,7 +19,7 @@ use task::generic_subscriber::GenericSubscriber;
 use task::output::Output;
 use task::publisher::{Publisher, PublisherConfig};
 use task::task_graph_builder::TaskGraphBuilder;
-use testing::unit_test_executor::UnitTestExecutor;
+use testing::UnitTestExecutor;
 
 use logging::log_file::LogFileReader;
 use logging::log_file_json::JsonLogFileReader;
