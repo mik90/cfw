@@ -16,7 +16,6 @@ serde = ["dep:serde", "dep:serde_json", "task/serde"]
 [dev-dependencies]
 task = { path = "../task", features = ["testing"] }
 testing = { path = "../testing" }
-simulation_executor = { path = "../simulation_executor" }
 
 [lints]
 workspace = true
