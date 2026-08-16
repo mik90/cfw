@@ -71,7 +71,7 @@ pub struct ChannelLogger {
 }
 
 impl ChannelLogger {
-    pub(crate) fn new(
+    pub fn new(
         channel_name: task::pub_sub::ChannelName,
         serialize: task::channel_registry::SerializerFn,
     ) -> Self {
@@ -194,7 +194,7 @@ impl ContinuousLogTask {
     /// Construct a `LogTask` writing to `writer` and publishing diagnostics on
     /// `diagnostics_channel`. The writer is typically a
     /// `SharedLogFileWriter` clone shared with the other log tasks.
-    pub(crate) fn new(
+    pub fn new(
         writer: Box<dyn LogFileWriter>,
         diagnostics_channel: ChannelName,
         channel_loggers: Vec<ChannelLogger>,
@@ -340,14 +340,8 @@ pub const EVENT_CHANNEL: ChannelNameStr = "log_event";
 
 #[derive(Debug)]
 #[cfg(feature = "serde")]
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct Event {}
-
-impl Default for Event {
-    fn default() -> Self {
-        Event {}
-    }
-}
 
 pub struct EventLogTask {
     writer: Box<dyn LogFileWriter>,
@@ -370,7 +364,7 @@ impl std::fmt::Debug for EventLogTask {
 }
 
 impl EventLogTask {
-    pub(crate) fn new(
+    pub fn new(
         writer: Box<dyn LogFileWriter>,
         diagnostics_channel: ChannelName,
         channel_loggers: Vec<ChannelLogger>,
@@ -495,57 +489,5 @@ impl Callback for EventLogTask {
 impl Drop for EventLogTask {
     fn drop(&mut self) {
         let _ = self.flush();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{any::Any, time::Duration};
-
-    use super::*;
-
-    use crate::InMemoryWriter;
-    use task::{CallbackBuilder, ChannelRegistry};
-    use testing::UnitTestExecutorBuilder;
-
-    const LOG_DIAGNOSTIC_CHANNEL_NAME: &str = "log_diagnostics";
-
-    #[test]
-    fn test_event_logging() {
-        let mut executor_builder = UnitTestExecutorBuilder::new(vec![]);
-        let mut event_publisher = executor_builder.add_test_publisher::<Event>(EVENT_CHANNEL);
-
-        let channel_name = "my_channel".to_owned();
-        let mut test_u32_publisher = executor_builder.add_test_publisher::<u32>(&channel_name);
-
-        // TODO: There must be a cleaner way to construct this
-        let mut registry = ChannelRegistry::new();
-        registry.register_channel::<u32>(channel_name.clone());
-        let channel_logger = ChannelLogger::new(
-            channel_name.clone(),
-            registry
-                .serializer_for(registry.channel_type(&channel_name).unwrap())
-                .unwrap(),
-        );
-
-        let writer = Box::new(InMemoryWriter::new());
-        let logged_data = writer.logged_data();
-        let mut u32_subscriber = executor_builder.add_test_subscriber::<u32>(&channel_name);
-
-        let event_logging_task = EventLogTask::new(
-            writer,
-            LOG_DIAGNOSTIC_CHANNEL_NAME.into(),
-            vec![channel_logger],
-            vec![Box::new(u32_subscriber)],
-            None,
-        );
-
-        let event_log_node =
-            CallbackBuilder::new("EventLogTask".into(), Box::new(event_logging_task))
-                .with_execution_duration_callback(|| Duration::from_millis(10))
-                .build()
-                .unwrap();
-
-        let executor = executor_builder.add_node(event_log_node).build();
     }
 }

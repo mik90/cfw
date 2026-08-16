@@ -12,10 +12,10 @@ serde_json = { workspace = true, optional = true }
 [features]
 default = ["serde"]
 serde = ["dep:serde", "dep:serde_json", "task/serde"]
-
-[dev-dependencies]
-task = { path = "../task", features = ["testing"] }
-testing = { path = "../testing" }
+# Test-only utilities (e.g. `InMemoryWriter`) for external test crates like
+# `logging_test`. Kept behind a feature so they stay out of the public API
+# for normal consumers.
+testing = []
 
 [lints]
 workspace = true

@@ -7,12 +7,12 @@ pub mod log_file_json;
 pub mod log_task;
 #[cfg(feature = "serde")]
 pub mod sorted_log_stream;
-#[cfg(test)]
+#[cfg(feature = "testing")]
 pub mod testing;
 
 pub use log_build_step::{LogTaskConfiguration, LoggingBuildStep, LoggingStrategy};
 pub use log_diagnostics_task::{DiagnosticsMode, LogDiagnosticsTask};
-#[cfg(test)]
+#[cfg(feature = "testing")]
 pub use testing::InMemoryWriter;
 
 pub use log_file::{

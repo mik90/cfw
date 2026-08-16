@@ -26,7 +26,7 @@ if [ "$MIRI" -eq 1 ]; then
   # Pass a nextest filter to override, e.g. `./run_test.sh --miri -E 'test(x)'`.
   if [ "${#ARGS[@]}" -eq 0 ]; then
     cargo +nightly miri nextest run --all-features \
-      -p exact_replay_executor -p task -p logging -p test_tasks
+      -p exact_replay_executor -p task -p logging -p logging_test -p test_tasks
   else
     cargo +nightly miri nextest run --all-features "${ARGS[@]}"
   fi

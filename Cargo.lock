@@ -653,6 +653,15 @@ dependencies = [
  "serde_json",
  "task",
  "task_macros",
+]
+
+[[package]]
+name = "logging_test"
+version = "0.1.0"
+dependencies = [
+ "logging",
+ "serde_json",
+ "task",
  "testing",
 ]
 

@@ -22,9 +22,39 @@ pub struct LoggedData {
     artifacts: Vec<InMemoryArtifact>,
 }
 
+impl LoggedData {
+    pub fn messages(&self) -> &[InMemoryMessage] {
+        &self.messages
+    }
+
+    pub fn artifacts(&self) -> &[InMemoryArtifact] {
+        &self.artifacts
+    }
+}
+
+impl InMemoryMessage {
+    pub fn channel(&self) -> &ChannelName {
+        &self.channel
+    }
+
+    pub fn header(&self) -> &MessageHeader {
+        &self.header
+    }
+
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+}
+
 #[derive(Debug)]
 pub struct InMemoryWriter {
     data: Arc<Mutex<LoggedData>>,
+}
+
+impl Default for InMemoryWriter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryWriter {
@@ -52,7 +82,7 @@ impl LogFileWriter for InMemoryWriter {
             .messages
             .push(InMemoryMessage {
                 channel: channel_name.into(),
-                header: header.clone(),
+                header: *header,
                 body: body.into(),
             });
         Ok(())
