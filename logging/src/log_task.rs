@@ -10,6 +10,8 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use task::callback::{Callback, PortMut, Run};
 use task::context::Context;
 use task::execution_log::{self, EXECUTION_LOG_DESCRIPTOR_ARTIFACT};
@@ -17,9 +19,10 @@ use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
 use task::loggable::Loggable;
 use task::output::Output;
-use task::pub_sub::{CallbackNodeName, ChannelName};
+use task::pub_sub::{CallbackNodeName, ChannelName, ChannelNameStr};
 use task::publisher::{Publisher, PublisherConfig};
 use task::time::FrameworkTime;
+use task::{Subscriber, SubscriberConfig};
 
 use crate::log_file::{BoxedLogError, LogFileWriter};
 
@@ -180,7 +183,7 @@ pub struct ContinuousLogTask {
 
 impl std::fmt::Debug for ContinuousLogTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LogTask")
+        f.debug_struct(stringify!(ContinuousLogTask))
             .field("diagnostics_channel", &self.diagnostics_channel)
             .field("channel_loggers_count", &self.channel_loggers.len())
             .finish_non_exhaustive()
@@ -328,6 +331,162 @@ impl Callback for ContinuousLogTask {
 // Drop flushes the writer but discards errors — by now the diagnostics
 // publisher is gone, so there's no one to tell.
 impl Drop for ContinuousLogTask {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
+pub const EVENT_CHANNEL: ChannelNameStr = "log_event";
+
+#[derive(Debug)]
+#[cfg(feature = "serde")]
+#[derive(Serialize, Deserialize)]
+pub struct Event {}
+
+pub struct EventLogTask {
+    writer: Box<dyn LogFileWriter>,
+    diagnostics_channel: ChannelName,
+    channel_loggers: Vec<ChannelLogger>,
+    subscribers_to_log: Vec<Box<dyn GenericSubscriber>>,
+    event_subscriber: Subscriber<Event>,
+    diagnostics_publisher: Publisher<LogError>,
+    error_buffer: ErrorBuffer,
+    execution_log_descriptor: Option<execution_log::ExecutionLogDescriptor>,
+}
+
+impl std::fmt::Debug for EventLogTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(EventLogTask))
+            .field("diagnostics_channel", &self.diagnostics_channel)
+            .field("channel_loggers_count", &self.channel_loggers.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl EventLogTask {
+    pub(crate) fn new(
+        writer: Box<dyn LogFileWriter>,
+        diagnostics_channel: ChannelName,
+        channel_loggers: Vec<ChannelLogger>,
+        subscribers_to_log: Vec<Box<dyn GenericSubscriber>>,
+        execution_log_descriptor: Option<execution_log::ExecutionLogDescriptor>,
+    ) -> Self {
+        let diagnostics_publisher = Publisher::<LogError>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: diagnostics_channel.clone(),
+        });
+        let event_subscriber = Subscriber::<Event>::new(SubscriberConfig {
+            capacity: 1,
+            channel_name: EVENT_CHANNEL.into(),
+            is_optional: false,
+            is_trigger: true,
+            keep_across_runs: false,
+        });
+        EventLogTask {
+            writer,
+            diagnostics_channel,
+            channel_loggers,
+            subscribers_to_log,
+            event_subscriber,
+            diagnostics_publisher,
+            error_buffer: ErrorBuffer::default(),
+            execution_log_descriptor,
+        }
+    }
+
+    /// Package `e` into a `LogError` and append to the per-run buffer.
+    fn record_error(
+        &self,
+        channel: task::pub_sub::ChannelName,
+        e: BoxedLogError,
+        at: FrameworkTime,
+    ) {
+        self.error_buffer.push(channel, e.to_string(), at);
+    }
+
+    fn flush(&mut self) -> Result<(), BoxedLogError> {
+        self.writer.flush()
+    }
+}
+
+impl Callback for EventLogTask {
+    fn run(&mut self, ctx: &Context) -> Run {
+        // Write execution log descriptor as artifact on first run
+        if let Some(descriptor) = self.execution_log_descriptor.take() {
+            let mut scratch = Vec::new();
+            if let Err(e) = Loggable::serialize(&descriptor, &mut scratch) {
+                self.record_error(
+                    EXECUTION_LOG_DESCRIPTOR_ARTIFACT.to_owned(),
+                    e.into(),
+                    ctx.now,
+                );
+            } else {
+                if let Err(e) = self
+                    .writer
+                    .as_mut()
+                    .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &scratch)
+                {
+                    self.record_error(EXECUTION_LOG_DESCRIPTOR_ARTIFACT.to_owned(), e, ctx.now);
+                }
+            }
+        }
+
+        let mut channel_loggers = std::mem::take(&mut self.channel_loggers);
+        let mut subscribers = std::mem::take(&mut self.subscribers_to_log);
+        for (sub, logger) in subscribers.iter_mut().zip(channel_loggers.iter_mut()) {
+            if let Err(e) = logger.drain_and_log(sub.as_mut(), self.writer.as_mut()) {
+                self.record_error(logger.channel_name.clone(), e, ctx.now);
+            }
+        }
+        self.channel_loggers = channel_loggers;
+        self.subscribers_to_log = subscribers;
+
+        if let Err(e) = self.flush() {
+            self.record_error("<writer>".to_string(), e, ctx.now);
+        }
+
+        if !self.error_buffer.is_empty() {
+            for err in self.error_buffer.drain() {
+                let mut output = Output::<LogError>::new_default(&mut self.diagnostics_publisher);
+                *output = err;
+                output.send();
+            }
+        }
+
+        Run::new(1)
+    }
+
+    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+        for s in &self.subscribers_to_log {
+            f(s.as_ref());
+        }
+        f(&self.event_subscriber);
+    }
+    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
+        f(&self.diagnostics_publisher);
+    }
+    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
+        for s in self.subscribers_to_log.iter_mut() {
+            f(s.as_mut());
+        }
+        f(&mut self.event_subscriber);
+    }
+    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
+        f(&mut self.diagnostics_publisher);
+    }
+    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+        for s in self.subscribers_to_log.iter_mut() {
+            f(PortMut::Subscriber(s.as_mut()));
+        }
+        f(PortMut::Subscriber(&mut self.event_subscriber));
+
+        f(PortMut::Publisher(&mut self.diagnostics_publisher));
+    }
+}
+
+// Drop flushes the writer but discards errors — by now the diagnostics
+// publisher is gone, so there's no one to tell.
+impl Drop for EventLogTask {
     fn drop(&mut self) {
         let _ = self.flush();
     }

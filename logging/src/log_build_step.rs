@@ -14,7 +14,8 @@ use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 
 use crate::log_file::SharedLogFileWriter;
 use crate::log_task::{
-    ChannelLogger, ContinuousLogTask, log_task_diagnostics_channel, log_task_name, open_writer,
+    ChannelLogger, ContinuousLogTask, EventLogTask, log_task_diagnostics_channel, log_task_name,
+    open_writer,
 };
 
 /// Default queue depth for log-task subscribers. Logging is meant to keep up
@@ -110,6 +111,30 @@ impl LoggingBuildStep {
         // scheduling, so we occupy zero sim-time.
         log_node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
         log_node.set_execution_time_callback(Box::new(move |now| Some(now + log_period)));
+
+        log_node
+    }
+
+    fn build_event_logger_node(
+        shard_index: usize,
+        shard_loggers: Vec<ChannelLogger>,
+        shard_subscribers: Vec<Box<dyn GenericSubscriber>>,
+        shared_writer: &SharedLogFileWriter,
+        execution_log_descriptor: ExecutionLogDescriptor,
+    ) -> CallbackNode {
+        let log_task = EventLogTask::new(
+            Box::new(shared_writer.clone()),
+            log_task_diagnostics_channel(shard_index),
+            shard_loggers,
+            shard_subscribers,
+            Some(execution_log_descriptor.clone()),
+        );
+
+        let mut log_node = CallbackNode::new_named(Box::new(log_task), log_task_name(shard_index));
+        // The simulation executor queries every running node's duration — give
+        // LogTask a no-op so it doesn't panic. Logging should be invisible to
+        // scheduling, so we occupy zero sim-time.
+        log_node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
 
         log_node
     }
@@ -238,7 +263,14 @@ impl TaskGraphBuildStep for LoggingBuildStep {
                     log_nodes.push(log_node);
                 }
                 LoggingStrategy::Event => {
-                    todo!("not implemented yet")
+                    let log_node = LoggingBuildStep::build_event_logger_node(
+                        shard_index,
+                        shard_loggers,
+                        shard_subscribers,
+                        &shared_writer,
+                        execution_log_descriptor.clone(),
+                    );
+                    log_nodes.push(log_node);
                 }
             }
         }
