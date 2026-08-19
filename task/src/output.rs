@@ -60,27 +60,7 @@ impl<'a, T> Output<'a, T> {
             .value_mut()
             .message
     }
-}
 
-impl<'a, T: Default + 'static> Output<'a, T> {
-    pub fn new_default(publisher: &'a mut Publisher<T>) -> Self {
-        let loaned_value_idx = publisher
-            .loan_default()
-            .expect("We expect loans to always be available");
-        Output {
-            publisher,
-            loaned_value_idx,
-            on_publish_failure: PublishFailureCallback::panic(),
-        }
-    }
-
-    pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> Output<'_, T> {
-        let typed_publisher = publisher.as_any().downcast_mut::<Publisher<T>>();
-        Output::new_default(typed_publisher.expect("Expected proc macro to use the correct types"))
-    }
-}
-
-impl<'a, T> Output<'a, T> {
     pub fn send(self) {
         self.publisher
             .loaned_value_at_mut(self.loaned_value_idx)
@@ -99,6 +79,24 @@ impl<'a, T> Output<'a, T> {
             loaned_value_idx,
             on_publish_failure: PublishFailureCallback::panic(),
         }
+    }
+}
+
+impl<'a, T: Default + 'static> Output<'a, T> {
+    pub fn new_default(publisher: &'a mut Publisher<T>) -> Self {
+        let loaned_value_idx = publisher
+            .loan_default()
+            .expect("We expect loans to always be available");
+        Output {
+            publisher,
+            loaned_value_idx,
+            on_publish_failure: PublishFailureCallback::panic(),
+        }
+    }
+
+    pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> Output<'_, T> {
+        let typed_publisher = publisher.as_any().downcast_mut::<Publisher<T>>();
+        Output::new_default(typed_publisher.expect("Expected proc macro to use the correct types"))
     }
 }
 
