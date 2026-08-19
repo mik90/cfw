@@ -43,4 +43,22 @@ mod tests {
         assert_eq!(pubs.len(), 1);
         assert_eq!(pubs[0].config().channel_name, "out");
     }
+
+    /*
+    TOOD: We should be able to
+    - build tasks that have lifetimes
+    - prevent inputs from behind held across calls to run()
+
+    struct TaskWithLifetime<'a> {
+        held_string: Option<&'a String>,
+    }
+    #[task_callback]
+    impl<'a> TaskWithLifetime<'a> {
+        fn run(&'a mut self, #[channel("foo")] string: RequiredInput<String>) {}
+
+        fn callback_builder(self) -> CallbackBuilder {
+            self.builder()
+                .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
+        }
+    } */
 }

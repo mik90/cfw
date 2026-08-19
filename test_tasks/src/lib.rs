@@ -78,8 +78,7 @@ impl IncrementingIntegerPublisher {
             .with_periodic_execution(std::time::Duration::from_millis(500))
             .with_execution_duration_callback(|| std::time::Duration::from_millis(1))
     }
-}
-impl IncrementingIntegerPublisher {
+
     pub fn build_callback_node() -> CallbackNode {
         IncrementingIntegerPublisher { value: 0 }
             .callback_builder()
@@ -117,8 +116,7 @@ impl FizzBuzzCalculator {
         self.builder()
             .with_execution_duration_callback(|| std::time::Duration::from_millis(5))
     }
-}
-impl FizzBuzzCalculator {
+
     pub fn build_callback_node() -> CallbackNode {
         FizzBuzzCalculator {}.callback_builder().build().unwrap()
     }
@@ -149,8 +147,7 @@ impl StringCollector {
         self.builder()
             .with_execution_duration_callback(|| std::time::Duration::from_millis(2))
     }
-}
-impl StringCollector {
+
     pub fn make_string_store() -> Arc<Mutex<Vec<String>>> {
         Arc::new(Mutex::new(vec![]))
     }

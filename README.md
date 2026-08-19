@@ -14,6 +14,8 @@ The goal is to make an integration-agnostic framework that can plug into a bunch
 
 If you want a Rust task framework with actual integrations and meaningful support, you should use https://github.com/copper-project/copper-rs.
 
+This is a mix of human code and LLM-generated code depending on how much I wanted to build something out myself.
+
 ## TODO 
 
 In order of priority
@@ -72,7 +74,6 @@ In order of priority
   - just dumped via Display
 - [x] flesh out callback construction and how we want to handle configuration
 - [ ] do some better testing to ensure that users can't hold onto reference of messages in the pub/sub system
-- [ ] see if I should use pins in the arenas to avoid moving MaybeUninit, the current setup may suffice
 - [x] add tests to make sure we aren't dynamically allocating after everything is connected
   - live executor has some no_alloc tests
 - [x] inputs should just store ref or optional ref of type instead of entire subscriber
