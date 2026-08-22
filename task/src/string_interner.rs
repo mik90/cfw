@@ -43,7 +43,8 @@ impl StringInterner {
         }
         // SAFETY: Strings are kept alive by our invariants when used internally
         let name = unsafe { self.alloc(name) };
-        // IDs are just the entry in the map
+        // IDs are just the entry in the map. u32 max strings would be a _huge_ amount,
+        // so u32 is fine.
         let id = InternId::new(self.string_to_hash.len() as u32);
         self.string_to_hash.insert(name, id);
         self.interned_strings.push(name);
