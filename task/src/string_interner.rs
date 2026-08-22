@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::mem;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
+use std::sync::{Arc, RwLock};
 
 /// Allows for interning strings such as channel names and callback names
 /// Copied from https://matklad.github.io/2020/03/22/fast-simple-rust-interner.html
