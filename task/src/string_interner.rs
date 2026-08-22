@@ -28,6 +28,7 @@ impl StringInterner {
         if let Some(&id) = self.string_to_hash.get(name) {
             return id;
         }
+        // SAFETY: Strings are kept alive by our invariants when used internally
         let name = unsafe { self.alloc(name) };
         let id = self.string_to_hash.len() as u32;
         self.string_to_hash.insert(name, id);
