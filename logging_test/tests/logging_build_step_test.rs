@@ -2,7 +2,7 @@
 //!
 //! Flows exercised:
 //!  - producer callback → auto-registered channel → ChannelRegistry → LogTask
-//!    subscriber → JSONL log file (round trip via `JsonLogFileReader`)
+//!    subscriber → in-memory log (round trip via `InMemoryWriter`)
 //!  - build-step silently skips channels whose types aren't loggable
 //!  - `with_unlogged_channels` denylists loggable channels
 //!  - `LogDiagnosticsTask` subscribes to one diagnostics channel per `LogTask`
@@ -21,8 +21,6 @@ use task::publisher::{Publisher, PublisherConfig};
 use task::task_graph_builder::TaskGraphBuilder;
 use testing::UnitTestExecutor;
 
-use logging::log_file::LogFileReader;
-use logging::log_file_json::JsonLogFileReader;
 use logging::{
     DiagnosticsMode, LogDiagnosticsTask, LogTaskConfiguration, LoggingBuildStep,
     log_task_diagnostics_channel, log_task_name,
@@ -164,37 +162,27 @@ fn build_non_loggable_producer(name: &str) -> task::callback::CallbackNode {
         .expect("non-loggable producer builds")
 }
 
-fn temp_path(suffix: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "cfw_logging_test_{}_{}.jsonl",
-        std::process::id(),
-        suffix
-    ));
-    // Start each run with a fresh file
-    let _ = std::fs::remove_file(&p);
-    p
-}
-
 // ───────────────────────────── Tests ─────────────────────────────────────
 
 #[test]
-#[cfg_attr(not(miri), ignore = "TODO Need to handle execution log descriptor")]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn writes_loggable_channel_to_jsonl() {
-    let out = temp_path("writes_loggable");
+    let writer = logging::InMemoryWriter::new();
+    let logged_data = writer.logged_data();
 
     let producer = build_producer("Counter", 3);
 
     let mut graph = TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback(producer))
-        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
-            output_path: out.clone(),
-            strategy: logging::LoggingStrategy::Continuous {
-                period: Duration::from_nanos(1),
-            },
-            num_tasks: 1,
-        })))
+        .add_build_step(Box::new(
+            LoggingBuildStep::new(LogTaskConfiguration {
+                output_path: PathBuf::new(),
+                strategy: logging::LoggingStrategy::Continuous {
+                    period: Duration::from_nanos(1),
+                },
+                num_tasks: 1,
+            })
+            .with_writer(Box::new(writer)),
+        ))
         .build()
         .expect("graph builds");
 
@@ -207,26 +195,21 @@ fn writes_loggable_channel_to_jsonl() {
     // LogTask flushed in Drop; force it by dropping the executor
     drop(executor);
 
-    let reader =
-        JsonLogFileReader::from_reader(std::io::BufReader::new(std::fs::File::open(&out).unwrap()))
-            .unwrap();
-    let entries: Vec<_> = reader.iter().collect();
-
+    let logged = logged_data.lock().unwrap();
+    let messages = logged.messages();
     assert_eq!(
-        entries.len(),
+        messages.len(),
         3,
-        "all 3 published messages should be logged; file at {}",
-        out.display()
+        "all 3 published messages should be logged"
     );
-    for entry in &entries {
-        assert_eq!(entry.channel_name, "values");
-        let v: u64 = serde_json::from_slice(entry.serialized_body).unwrap();
+    for message in messages {
+        assert_eq!(message.channel(), "values");
+        let v: u64 = serde_json::from_slice(message.body()).unwrap();
         assert!(v < 3, "got unexpected value {v}");
     }
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn non_loggable_channel_silently_skipped() {
     // The producer's payload type doesn't implement Loggable, and the
     // framework's execution-log channel is denylisted, so there are no
@@ -234,17 +217,20 @@ fn non_loggable_channel_silently_skipped() {
     // still succeeds.
     let producer = build_non_loggable_producer("OpaqueProducer");
 
+    let writer = logging::InMemoryWriter::new();
+
     let graph = TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback(producer))
         .add_build_step(Box::new(
             LoggingBuildStep::new(LogTaskConfiguration {
-                output_path: temp_path("non_loggable"),
+                output_path: PathBuf::new(),
                 strategy: logging::LoggingStrategy::Continuous {
                     period: Duration::from_nanos(1),
                 },
                 num_tasks: 1,
             })
-            .with_unlogged_channels([task::execution_log::EXECUTION_LOG_CHANNEL]),
+            .with_unlogged_channels([task::execution_log::EXECUTION_LOG_CHANNEL])
+            .with_writer(Box::new(writer)),
         ))
         .build()
         .expect("graph builds");
@@ -261,12 +247,12 @@ fn non_loggable_channel_silently_skipped() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn denylisted_channel_silently_skipped() {
     // `values` is loggable and logged; `secret` is loggable but denylisted,
     // so it must not appear in the log. The execution-log channel is also
     // denylisted to keep this test focused on the two producer channels.
-    let out = temp_path("denylisted");
+    let writer = logging::InMemoryWriter::new();
+    let logged_data = writer.logged_data();
 
     let mut graph = TaskGraphBuilder::new()
         .add_pool(1, |p| {
@@ -275,7 +261,7 @@ fn denylisted_channel_silently_skipped() {
         })
         .add_build_step(Box::new(
             LoggingBuildStep::new(LogTaskConfiguration {
-                output_path: out.clone(),
+                output_path: PathBuf::new(),
                 strategy: logging::LoggingStrategy::Continuous {
                     period: Duration::from_nanos(1),
                 },
@@ -284,7 +270,8 @@ fn denylisted_channel_silently_skipped() {
             .with_unlogged_channels([
                 "secret".to_owned(),
                 task::execution_log::EXECUTION_LOG_CHANNEL.into(),
-            ]),
+            ])
+            .with_writer(Box::new(writer)),
         ))
         .build()
         .expect("graph builds");
@@ -295,28 +282,26 @@ fn denylisted_channel_silently_skipped() {
     }
     drop(executor);
 
-    let reader =
-        JsonLogFileReader::from_reader(std::io::BufReader::new(std::fs::File::open(&out).unwrap()))
-            .unwrap();
-    let entries: Vec<_> = reader.iter().collect();
+    let logged = logged_data.lock().unwrap();
+    let messages = logged.messages();
     assert!(
-        !entries.is_empty(),
+        !messages.is_empty(),
         "logged channels should produce entries"
     );
-    for entry in &entries {
+    for message in messages {
         assert_eq!(
-            entry.channel_name, "values",
+            message.channel(),
+            "values",
             "denylisted 'secret' channel must not be logged"
         );
     }
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn diagnostics_task_picks_up_logtask_errors() {
     // Smoke test for the wiring: a `LogDiagnosticsTask` subscribes to the
     // `LogTask[0]_diagnostics` channel; the build flow completes; no panic.
-    let out = temp_path("diagnostics");
+    let writer = logging::InMemoryWriter::new();
 
     let producer = build_producer("Counter", 1);
     let diag = CallbackBuilder::new(
@@ -332,13 +317,16 @@ fn diagnostics_task_picks_up_logtask_errors() {
 
     let mut graph = TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback(producer).add_callback(diag))
-        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
-            output_path: out,
-            strategy: logging::LoggingStrategy::Continuous {
-                period: Duration::from_nanos(1),
-            },
-            num_tasks: 1,
-        })))
+        .add_build_step(Box::new(
+            LoggingBuildStep::new(LogTaskConfiguration {
+                output_path: PathBuf::new(),
+                strategy: logging::LoggingStrategy::Continuous {
+                    period: Duration::from_nanos(1),
+                },
+                num_tasks: 1,
+            })
+            .with_writer(Box::new(writer)),
+        ))
         .build()
         .expect("graph builds");
 
@@ -358,13 +346,12 @@ fn diagnostics_task_picks_up_logtask_errors() {
 }
 
 #[test]
-#[cfg_attr(not(miri), ignore = "TODO Need to handle execution log descriptor")]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
     // Four channels on four producers, logged by two LogTasks. Both tasks
     // write to the same file; every channel's messages must appear exactly
     // once (no channel logged by two tasks, none dropped).
-    let out = temp_path("split_shared_file");
+    let writer = logging::InMemoryWriter::new();
+    let logged_data = writer.logged_data();
 
     let channels = ["ch0", "ch1", "ch2", "ch3"];
     const MESSAGES_PER_CHANNEL: u64 = 3;
@@ -380,13 +367,16 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
             }
             p
         })
-        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
-            output_path: out.clone(),
-            strategy: logging::LoggingStrategy::Continuous {
-                period: Duration::from_nanos(1),
-            },
-            num_tasks: 2,
-        })))
+        .add_build_step(Box::new(
+            LoggingBuildStep::new(LogTaskConfiguration {
+                output_path: PathBuf::new(),
+                strategy: logging::LoggingStrategy::Continuous {
+                    period: Duration::from_nanos(1),
+                },
+                num_tasks: 2,
+            })
+            .with_writer(Box::new(writer)),
+        ))
         .build()
         .expect("graph builds");
 
@@ -423,16 +413,13 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
     }
     drop(executor);
 
-    let reader =
-        JsonLogFileReader::from_reader(std::io::BufReader::new(std::fs::File::open(&out).unwrap()))
-            .unwrap();
-
+    let logged = logged_data.lock().unwrap();
     let mut per_channel_counts = std::collections::HashMap::new();
-    for entry in reader.iter() {
+    for message in logged.messages() {
         *per_channel_counts
-            .entry(entry.channel_name.to_owned())
+            .entry(message.channel().to_owned())
             .or_insert(0) += 1;
-        let v: u64 = serde_json::from_slice(entry.serialized_body).unwrap();
+        let v: u64 = serde_json::from_slice(message.body()).unwrap();
         assert!(v < MESSAGES_PER_CHANNEL, "got unexpected value {v}");
     }
 
@@ -451,22 +438,26 @@ fn splits_channels_across_multiple_log_tasks_sharing_one_file() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn num_tasks_clamped_to_channel_count() {
     // Requesting more log tasks than there are loggable channels must not
     // produce empty LogTask nodes. One producer channel plus the framework's
     // execution-log channel = two loggers, so num_tasks clamps to two.
     let producer = build_producer("Counter", 1);
 
+    let writer = logging::InMemoryWriter::new();
+
     let graph = TaskGraphBuilder::new()
         .add_pool(1, |p| p.add_callback(producer))
-        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
-            output_path: temp_path("clamped"),
-            strategy: logging::LoggingStrategy::Continuous {
-                period: Duration::from_nanos(1),
-            },
-            num_tasks: 10,
-        })))
+        .add_build_step(Box::new(
+            LoggingBuildStep::new(LogTaskConfiguration {
+                output_path: PathBuf::new(),
+                strategy: logging::LoggingStrategy::Continuous {
+                    period: Duration::from_nanos(1),
+                },
+                num_tasks: 10,
+            })
+            .with_writer(Box::new(writer)),
+        ))
         .build()
         .expect("graph builds");
 
@@ -486,11 +477,10 @@ fn num_tasks_clamped_to_channel_count() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri doesn't support adding/removing files")]
 fn diagnostics_task_subscribes_to_every_log_task() {
     // With two log tasks, the diagnostics task must build one subscriber per
     // per-task diagnostics channel.
-    let out = temp_path("multi_diagnostics");
+    let writer = logging::InMemoryWriter::new();
 
     let diag = CallbackBuilder::new(
         "Diagnostics".into(),
@@ -509,13 +499,16 @@ fn diagnostics_task_subscribes_to_every_log_task() {
                 .add_callback(build_producer_on("ProducerB", "ch_b", 1))
                 .add_callback(diag)
         })
-        .add_build_step(Box::new(LoggingBuildStep::new(LogTaskConfiguration {
-            output_path: out,
-            strategy: logging::LoggingStrategy::Continuous {
-                period: Duration::from_nanos(1),
-            },
-            num_tasks: 2,
-        })))
+        .add_build_step(Box::new(
+            LoggingBuildStep::new(LogTaskConfiguration {
+                output_path: PathBuf::new(),
+                strategy: logging::LoggingStrategy::Continuous {
+                    period: Duration::from_nanos(1),
+                },
+                num_tasks: 2,
+            })
+            .with_writer(Box::new(writer)),
+        ))
         .build()
         .expect("graph builds");
 

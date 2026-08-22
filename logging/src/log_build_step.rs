@@ -12,7 +12,7 @@ use task::pub_sub::ChannelName;
 use task::subscriber::{Subscriber, SubscriberConfig};
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 
-use crate::log_file::SharedLogFileWriter;
+use crate::log_file::{LogFileWriter, SharedLogFileWriter};
 use crate::log_task::{
     ChannelLogger, ContinuousLogTask, EventLogTask, log_task_diagnostics_channel, log_task_name,
     open_writer,
@@ -42,6 +42,7 @@ pub enum LoggingStrategy {
 /// one thread logs channels in parallel. All tasks share a single log file
 /// via a `SharedLogFileWriter`.
 pub struct LogTaskConfiguration {
+    /// Where to write the log file. Ignored when a custom writer is injected
     pub output_path: PathBuf,
 
     pub strategy: LoggingStrategy,
@@ -68,6 +69,7 @@ pub struct LoggingBuildStep {
     /// keep intermediates out of the ordinary log (exact replay then
     /// reproduces them by re-running the producing node).
     unlogged_channels: HashSet<ChannelName>,
+    writer: Option<SharedLogFileWriter>,
 }
 
 impl LoggingBuildStep {
@@ -75,6 +77,7 @@ impl LoggingBuildStep {
         LoggingBuildStep {
             config,
             unlogged_channels: HashSet::new(),
+            writer: None,
         }
     }
 
@@ -86,6 +89,14 @@ impl LoggingBuildStep {
     ) -> Self {
         self.unlogged_channels
             .extend(channels.into_iter().map(Into::into));
+        self
+    }
+
+    /// Inject a custom writer (e.g. `InMemoryWriter` in tests) shared by all
+    /// log tasks instead of opening `LogTaskConfiguration::output_path`. The
+    /// output path is ignored when a writer is set.
+    pub fn with_writer(mut self, writer: Box<dyn LogFileWriter>) -> Self {
+        self.writer = Some(SharedLogFileWriter::new(writer));
         self
     }
 
@@ -242,9 +253,14 @@ impl TaskGraphBuildStep for LoggingBuildStep {
         }
 
         // All log tasks share a single log file. The writer is created once
-        // here and cloned per task — `open_writer` panics if the file can't
-        // be created, so a bad path fails the build rather than the first run.
-        let shared_writer = SharedLogFileWriter::new(open_writer(&self.config.output_path));
+        // here and cloned per task — a custom writer injected via
+        // `with_writer` is used as-is, otherwise `open_writer` panics if the
+        // file can't be created, so a bad path fails the build rather than
+        // the first run.
+        let shared_writer = match &self.writer {
+            Some(writer) => writer.clone(),
+            None => SharedLogFileWriter::new(open_writer(&self.config.output_path)),
+        };
 
         let mut log_nodes = Vec::with_capacity(num_tasks);
 
