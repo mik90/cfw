@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::mem;
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 /// Allows for interning strings such as channel names and callback names
 /// Copied from https://matklad.github.io/2020/03/22/fast-simple-rust-interner.html
@@ -14,18 +15,6 @@ pub struct StringInterner {
     overflow_storage: Vec<String>,
 }
 
-/// Strong-type for accessing interned strings
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct InternId {
-    id: u32,
-}
-
-impl InternId {
-    fn new(id: u32) -> InternId {
-        InternId { id }
-    }
-}
-
 impl StringInterner {
     pub fn with_capacity(char_capacity: usize) -> StringInterner {
         let cap = char_capacity.next_power_of_two();
@@ -37,12 +26,12 @@ impl StringInterner {
         }
     }
 
-    pub fn intern(&mut self, name: &str) -> InternId {
-        if let Some(&intern_id) = self.string_to_hash.get(name) {
+    pub fn intern(&mut self, value: &str) -> InternId {
+        if let Some(&intern_id) = self.string_to_hash.get(value) {
             return intern_id;
         }
         // SAFETY: Strings are kept alive by our invariants when used internally
-        let name = unsafe { self.alloc(name) };
+        let name = unsafe { self.alloc(value) };
         // IDs are just the entry in the map. u32 max strings would be a _huge_ amount,
         // so u32 is fine.
         let id = InternId::new(self.string_to_hash.len() as u32);
@@ -79,6 +68,43 @@ impl StringInterner {
 
         // SAFETY: We ensure that all interned strings stay alive in our main/overflow buffers
         unsafe { &*(interned as *const str) }
+    }
+}
+
+/// Strong-type for accessing interned strings
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct InternId {
+    id: u32,
+}
+
+impl InternId {
+    fn new(id: u32) -> InternId {
+        InternId { id }
+    }
+}
+
+pub struct SharedStringInterner {
+    interner: Arc<RwLock<StringInterner>>,
+}
+
+impl SharedStringInterner {
+    pub fn with_capacity(char_capacity: usize) -> SharedStringInterner {
+        SharedStringInterner {
+            interner: Arc::new(RwLock::new(StringInterner::with_capacity(char_capacity))),
+        }
+    }
+
+    pub fn intern(&self, value: &str) -> InternId {
+        self.interner
+            .write()
+            .expect("Interner RwLock is poisioned")
+            .intern(value)
+    }
+
+    pub fn lookup(&self, intern_id: InternId, f: impl FnOnce(&str)) {
+        let interner_guard = self.interner.read().expect("Interner RwLock is poisioned");
+        let value = interner_guard.lookup(intern_id);
+        f(value);
     }
 }
 
