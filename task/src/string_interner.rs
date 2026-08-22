@@ -5,34 +5,48 @@ use std::mem;
 /// Copied from https://matklad.github.io/2020/03/22/fast-simple-rust-interner.html
 pub struct StringInterner {
     /// 'static is used to fake interior references
-    string_to_hash: HashMap<&'static str, u32>,
+    string_to_hash: HashMap<&'static str, InternId>,
+    /// References to interned strings
+    interned_strings: Vec<&'static str>,
+    /// Other containers point to this buffer
+    contiguous_storage: String,
+    /// Old storage containeres that weren't big enough
+    overflow_storage: Vec<String>,
+}
 
-    vec: Vec<&'static str>,
+/// Strong-type for accessing interned strings
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct InternId {
+    id: u32,
+}
 
-    buf: String,
-    full: Vec<String>,
+impl InternId {
+    fn new(id: u32) -> InternId {
+        InternId { id }
+    }
 }
 
 impl StringInterner {
-    pub fn with_capacity(cap: usize) -> StringInterner {
-        let cap = cap.next_power_of_two();
+    pub fn with_capacity(char_capacity: usize) -> StringInterner {
+        let cap = char_capacity.next_power_of_two();
         StringInterner {
             string_to_hash: HashMap::default(),
-            vec: Vec::new(),
-            buf: String::with_capacity(cap),
-            full: Vec::new(),
+            interned_strings: Vec::new(),
+            contiguous_storage: String::with_capacity(cap),
+            overflow_storage: Vec::new(),
         }
     }
 
-    pub fn intern(&mut self, name: &str) -> u32 {
-        if let Some(&id) = self.string_to_hash.get(name) {
-            return id;
+    pub fn intern(&mut self, name: &str) -> InternId {
+        if let Some(&intern_id) = self.string_to_hash.get(name) {
+            return intern_id;
         }
         // SAFETY: Strings are kept alive by our invariants when used internally
         let name = unsafe { self.alloc(name) };
-        let id = self.string_to_hash.len() as u32;
+        // IDs are just the entry in the map
+        let id = InternId::new(self.string_to_hash.len() as u32);
         self.string_to_hash.insert(name, id);
-        self.vec.push(name);
+        self.interned_strings.push(name);
 
         debug_assert!(self.lookup(id) == name);
         debug_assert!(self.intern(name) == id);
@@ -40,29 +54,72 @@ impl StringInterner {
         id
     }
 
-    pub fn lookup(&self, id: u32) -> &str {
-        self.vec[id as usize]
+    pub fn lookup(&self, intern_id: InternId) -> &str {
+        self.interned_strings[intern_id.id as usize]
     }
 
     unsafe fn alloc(&mut self, name: &str) -> &'static str {
-        let cap = self.buf.capacity();
-        if cap < self.buf.len() + name.len() {
+        let cap = self.contiguous_storage.capacity();
+        if cap < self.contiguous_storage.len() + name.len() {
+            // Not enough space for this new string
             let new_cap = (cap.max(name.len()) + 1).next_power_of_two();
             let new_buf = String::with_capacity(new_cap);
-            let old_buf = mem::replace(&mut self.buf, new_buf);
-            self.full.push(old_buf);
+            // Replace our current storage with the new buf
+            let old_buf = mem::replace(&mut self.contiguous_storage, new_buf);
+            // Add our old storage to the overflow
+            self.overflow_storage.push(old_buf);
         }
 
         let interned = {
-            let start = self.buf.len();
-            self.buf.push_str(name);
-            &self.buf[start..]
+            let start = self.contiguous_storage.len();
+            self.contiguous_storage.push_str(name);
+            &self.contiguous_storage[start..]
         };
 
-        // SAFETY: We ensure that all interned strings stay alive
+        // SAFETY: We ensure that all interned strings stay alive in our main/overflow buffers
         unsafe { &*(interned as *const str) }
     }
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use crate::string_interner::StringInterner;
+
+    #[test]
+    fn test_intern() {
+        let mut interner = StringInterner::with_capacity(10);
+        let interned_hello = interner.intern("hello");
+
+        let lookup_result = interner.lookup(interned_hello);
+
+        assert_eq!(lookup_result, "hello");
+    }
+
+    #[test]
+    fn test_over_capacity() {
+        let hello_string = "hello";
+        let mut interner = StringInterner::with_capacity(hello_string.len());
+        let interned_hello = interner.intern(hello_string);
+        assert_eq!(interner.overflow_storage.len(), 0);
+        let interned_world = interner.intern("world");
+        assert_eq!(interner.overflow_storage.len(), 1);
+
+        let lookup_hello = interner.lookup(interned_hello);
+        assert_eq!(lookup_hello, "hello");
+        let lookup_world = interner.lookup(interned_world);
+        assert_eq!(lookup_world, "world");
+    }
+
+    #[test]
+    fn test_many_interns() {
+        let mut interner = StringInterner::with_capacity(100);
+        let mut intern_ids = vec![];
+        for i in 0..100 {
+            intern_ids.push(interner.intern(&i.to_string()));
+        }
+
+        for (i, intern_id) in intern_ids.iter().enumerate() {
+            assert_eq!(interner.lookup(*intern_id), i.to_string());
+        }
+    }
+}
