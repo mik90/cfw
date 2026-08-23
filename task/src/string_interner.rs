@@ -46,6 +46,7 @@ impl<MarkerType> Hash for InternId<MarkerType> {
 }
 
 /// Bidirectional map for looking up data given ID, or ID given data
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StringInterner<InternType> {
     id_to_data: HashMap<InternId<InternType>, String>,
