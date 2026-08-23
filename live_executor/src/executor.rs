@@ -9,7 +9,8 @@ use task::callback_storage::{CallbackStorage, SharedCallbackNode, WorkerNodes};
 use task::context::Context;
 use task::execution_log::{self, ExecutionLogLevel, ExecutionLogMessage};
 use task::executor::{
-    CallbackNodeEnqueuer, Executor, ExecutorStopSignal, ThreadPoolConfig, TimeSource, WallClock,
+    CallbackNodeEnqueuer, Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig,
+    TimeSource, WallClock,
 };
 use task::publisher::Publisher;
 use task::time::FrameworkTime;
@@ -37,12 +38,12 @@ pub struct LiveExecutor<T: TimeSource = WallClock> {
 }
 
 impl<T: TimeSource + 'static> LiveExecutor<T> {
-    fn new_multi_pool_core(pools: Vec<ThreadPoolConfig>, time_source: T) -> Self {
+    fn new_multi_pool_core(params: ExecutorParams, time_source: T) -> Self {
         let mut all_shared_nodes: Vec<Arc<SharedCallbackNode>> = Vec::new();
         let mut node_to_pool: Vec<usize> = Vec::new();
         let mut pool_states: Vec<Arc<PoolState>> = Vec::new();
 
-        for (pool_idx, pool) in pools.into_iter().enumerate() {
+        for (pool_idx, pool) in params.pools.into_iter().enumerate() {
             let capacity = pool.nodes.len() + pool.thread_count;
             let (work_tx, work_rx) = channel::bounded(capacity.max(1));
 
@@ -76,6 +77,8 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             cleanup_done: AtomicBool::new(false),
             shutdown_mutex: Mutex::new(()),
             shutdown_cv: Condvar::new(),
+            channel_interner: params.channel_interner,
+            callback_interner: params.callback_interner,
         });
 
         let nodes = CallbackStorage::from_shared(all_shared_nodes);
@@ -108,12 +111,12 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         }
     }
 
-    pub fn new_multi_pool_with_time(pools: Vec<ThreadPoolConfig>, time_source: T) -> Self {
-        Self::new_multi_pool_core(pools, time_source)
+    pub fn new_multi_pool_with_time(params: ExecutorParams, time_source: T) -> Self {
+        Self::new_multi_pool_core(params, time_source)
     }
 
     pub fn new_multi_pool_with_execution_log_and_time(
-        pools: Vec<ThreadPoolConfig>,
+        params: ExecutorParams,
         log_publishers: Vec<Publisher<ExecutionLogMessage>>,
         flush_period: Duration,
         time_source: T,
@@ -121,11 +124,12 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         if !log_publishers.is_empty() {
             debug_assert_eq!(
                 log_publishers.len(),
-                pools.iter().map(|p| p.thread_count).sum::<usize>(),
+                params.pools.iter().map(|p| p.thread_count).sum::<usize>(),
                 "execution-log publisher count must equal the total worker thread count"
             );
         }
-        let per_pool_scratch_cap: Vec<usize> = pools
+        let per_pool_scratch_cap: Vec<usize> = params
+            .pools
             .iter()
             .map(|pool| {
                 pool.nodes
@@ -138,7 +142,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             })
             .collect();
 
-        let mut exec = Self::new_multi_pool_core(pools, time_source);
+        let mut exec = Self::new_multi_pool_core(params, time_source);
         exec.log_publishers = log_publishers;
         exec.per_pool_scratch_cap = per_pool_scratch_cap;
         exec.flush_period = flush_period;
@@ -148,20 +152,21 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
 
 impl LiveExecutor<WallClock> {
     pub fn new(num_threads: usize, nodes: Vec<CallbackNode>) -> Self {
-        Self::new_multi_pool(vec![ThreadPoolConfig::new(num_threads, nodes)])
+        let pools = vec![ThreadPoolConfig::new(num_threads, nodes)];
+        Self::new_multi_pool(ExecutorParams::new(pools))
     }
 
-    pub fn new_multi_pool(pools: Vec<ThreadPoolConfig>) -> Self {
-        Self::new_multi_pool_core(pools, WallClock)
+    pub fn new_multi_pool(params: ExecutorParams) -> Self {
+        Self::new_multi_pool_core(params, WallClock)
     }
 
     pub fn new_multi_pool_with_execution_log(
-        pools: Vec<ThreadPoolConfig>,
+        params: ExecutorParams,
         log_publishers: Vec<Publisher<ExecutionLogMessage>>,
         flush_period: Duration,
     ) -> Self {
         Self::new_multi_pool_with_execution_log_and_time(
-            pools,
+            params,
             log_publishers,
             flush_period,
             WallClock,
@@ -394,7 +399,11 @@ fn process_work_item(
     logger: Option<&mut WorkerLogger>,
     now: FrameworkTime,
 ) {
-    let ctx = Context::new(now);
+    let ctx = Context::new(
+        now,
+        &shared_state.channel_interner,
+        &shared_state.callback_interner,
+    );
 
     // Worker-style execution: claim the node, run the work, refresh the
     // periodic snapshot while still holding it, then release. `execute`
@@ -659,7 +668,7 @@ mod tests {
         callback_builder::CallbackBuilder,
         context::Context,
         execution_log::ExecutionLogLevel,
-        executor::{Executor, ExecutorStopSignal, ThreadPoolConfig},
+        executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig},
         generic_publisher::GenericPublisher,
         generic_subscriber::GenericSubscriber,
         input::{OptionalInput, RequiredInput},
@@ -904,7 +913,7 @@ mod tests {
             .expect("failed to connect execution-log publishers");
 
         let exec = LiveExecutor::new_multi_pool_with_execution_log(
-            pools,
+            ExecutorParams::new(pools),
             log_pubs,
             time::Duration::from_millis(1),
         );
@@ -980,10 +989,10 @@ mod tests {
         let pool1 = vec![all_nodes.remove(0)];
         let pool2 = all_nodes;
 
-        let mut exec = LiveExecutor::new_multi_pool(vec![
+        let mut exec = LiveExecutor::new_multi_pool(ExecutorParams::new(vec![
             ThreadPoolConfig::new(1, pool1),
             ThreadPoolConfig::new(1, pool2),
-        ]);
+        ]));
 
         stop_signal_cell.set(exec.stop_signal()).ok();
         exec.start_threads();
@@ -1186,7 +1195,8 @@ mod tests {
         // lands mid-run. Before the atomic run-state machine this could send a
         // second worker to double-borrow the node across threads (undefined
         // behavior); it must now serialize and still make progress.
-        let mut exec = LiveExecutor::new_multi_pool(vec![ThreadPoolConfig::new(2, nodes)]);
+        let pools = vec![ThreadPoolConfig::new(2, nodes)];
+        let mut exec = LiveExecutor::new_multi_pool(ExecutorParams::new(pools));
 
         stop_signal_cell.set(exec.stop_signal()).ok();
         exec.start_threads();
@@ -1476,7 +1486,7 @@ mod tests {
             .expect("failed to connect execution-log publishers");
 
         let mut exec = LiveExecutor::new_multi_pool_with_execution_log(
-            pools,
+            ExecutorParams::new(pools),
             log_pubs,
             time::Duration::from_millis(1),
         );

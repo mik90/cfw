@@ -6,8 +6,9 @@ use crate::{
     callback_builder::CallbackBuilder,
     execution_log::{self, ExecutionLogLevel},
     executor::ThreadPoolConfig,
-    pub_sub::{CallbackNodeName, ChannelName},
+    pub_sub::{CallbackNameTag, CallbackNodeName, ChannelName, ChannelNameTag},
     publisher::Publisher,
+    string_interner::StringInterner,
 };
 
 pub type TaskGraphBuildStepError = Box<dyn std::error::Error>;
@@ -71,6 +72,10 @@ pub struct BuiltTaskGraph {
     /// graph's publishers/subscribers (plus the framework's execution-log
     /// channel). Replay executors consume this to deserialize logged messages.
     pub channel_registry: ChannelRegistry,
+    /// All channel names found at end of graph build
+    pub channel_interner: StringInterner<ChannelNameTag>,
+    /// All callback names found at end of graph build
+    pub callback_interner: StringInterner<CallbackNameTag>,
     /// Dangling-channel diagnostics, present when built with
     /// [`TaskGraphBuilder::with_debug_info`].
     pub debug_info: Option<GraphDebugInfo>,
@@ -346,6 +351,8 @@ impl TaskGraphBuilder {
                 pools: vec![],
                 execution_log_publishers: vec![],
                 channel_registry: self.channel_registry,
+                channel_interner: Default::default(),
+                callback_interner: Default::default(),
                 debug_info: None,
             });
         }
@@ -361,10 +368,13 @@ impl TaskGraphBuilder {
             connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
             let pools = vec![ThreadPoolConfig::new(1, all_nodes)];
             let debug_info = Self::compute_debug_info(self.debug_info, &pools);
+            let (channel_interner, callback_interner) = Self::build_name_interners(&pools);
             return Ok(BuiltTaskGraph {
                 pools,
-                execution_log_publishers: vec![],
+                execution_log_publishers: vec![], // TODO: shouldn't this be populated with one publisher?
                 channel_registry: self.channel_registry,
+                channel_interner,
+                callback_interner,
                 debug_info,
             });
         }
@@ -390,10 +400,13 @@ impl TaskGraphBuilder {
 
         let debug_info = Self::compute_debug_info(self.debug_info, &pools);
 
+        let (channel_interner, callback_interner) = Self::build_name_interners(&pools);
         Ok(BuiltTaskGraph {
             pools,
             execution_log_publishers,
             channel_registry: self.channel_registry,
+            channel_interner,
+            callback_interner,
             debug_info,
         })
     }
@@ -408,6 +421,30 @@ impl TaskGraphBuilder {
             dangling_subscribers: find_dangling_subscribers(pools),
             dangling_publishers: find_dangling_publishers(pools),
         })
+    }
+
+    fn build_name_interners(
+        pools: &[ThreadPoolConfig],
+    ) -> (
+        StringInterner<ChannelNameTag>,
+        StringInterner<CallbackNameTag>,
+    ) {
+        let mut channel_interner = StringInterner::<ChannelNameTag>::default();
+        let mut callback_interner = StringInterner::<CallbackNameTag>::default();
+        for pool in pools.iter() {
+            for shared_node in pool.nodes.iter_shared() {
+                shared_node.access(|node| {
+                    callback_interner.intern(node.name());
+                    node.callback().for_each_subscriber(&mut |subscriber| {
+                        channel_interner.intern(&subscriber.config().channel_name);
+                    });
+                    node.callback().for_each_publisher(&mut |publisher| {
+                        channel_interner.intern(&publisher.config().channel_name);
+                    });
+                });
+            }
+        }
+        (channel_interner, callback_interner)
     }
 }
 

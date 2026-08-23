@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use crate::callback_storage::CallbackStorage;
+use crate::pub_sub::{CallbackNameTag, ChannelNameTag};
+use crate::string_interner::StringInterner;
 use crate::time::FrameworkTime;
 
 #[derive(Debug)]
@@ -16,6 +18,39 @@ impl ThreadPoolConfig {
         ThreadPoolConfig {
             thread_count: virtual_thread_count,
             nodes: nodes.into(),
+        }
+    }
+}
+
+/// Parameters to set up any executor
+#[derive(Debug)]
+pub struct ExecutorParams {
+    pub pools: Vec<ThreadPoolConfig>,
+    pub channel_interner: StringInterner<ChannelNameTag>,
+    pub callback_interner: StringInterner<CallbackNameTag>,
+}
+
+impl ExecutorParams {
+    pub fn new(pools: Vec<ThreadPoolConfig>) -> Self {
+        let mut channel_interner = StringInterner::<ChannelNameTag>::default();
+        let mut callback_interner = StringInterner::<CallbackNameTag>::default();
+        for pool in pools.iter() {
+            for shared_node in pool.nodes.iter_shared() {
+                shared_node.access(|node| {
+                    callback_interner.intern(node.name());
+                    node.callback().for_each_subscriber(&mut |subscriber| {
+                        channel_interner.intern(&subscriber.config().channel_name);
+                    });
+                    node.callback().for_each_publisher(&mut |publisher| {
+                        channel_interner.intern(&publisher.config().channel_name);
+                    });
+                });
+            }
+        }
+        ExecutorParams {
+            pools,
+            channel_interner,
+            callback_interner,
         }
     }
 }

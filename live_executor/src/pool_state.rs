@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use task::callback_storage::{CallbackStorage, SharedCallbackNode};
 use task::executor::CallbackNodeEnqueuer;
+use task::pub_sub::{CallbackNameTag, ChannelNameTag};
+use task::string_interner::StringInterner;
 use task::time::FrameworkTime;
 
 #[derive(Clone, Copy)]
@@ -65,6 +67,10 @@ pub(crate) struct SharedThreadPoolState {
     pub(crate) cleanup_done: AtomicBool,
     pub(crate) shutdown_mutex: Mutex<()>,
     pub(crate) shutdown_cv: Condvar,
+    /// Interned callback names for use by tasks
+    pub(crate) callback_interner: StringInterner<CallbackNameTag>,
+    /// Interned channel names for use by tasks
+    pub(crate) channel_interner: StringInterner<ChannelNameTag>,
 }
 
 impl SharedThreadPoolState {

@@ -54,10 +54,10 @@ pub struct StringInterner<InternType> {
 }
 
 impl<InternType> StringInterner<InternType> {
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn new() -> Self {
         StringInterner {
-            id_to_data: HashMap::with_capacity(capacity),
-            data_to_id: HashMap::with_capacity(capacity),
+            id_to_data: HashMap::default(),
+            data_to_id: HashMap::default(),
         }
     }
 
@@ -94,6 +94,12 @@ impl<InternType> StringInterner<InternType> {
     }
 }
 
+impl<InternType> Default for StringInterner<InternType> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::string_interner::StringInterner;
@@ -104,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_intern() {
-        let mut interner = TestInterner::with_capacity(10);
+        let mut interner = TestInterner::new();
         let interned_hello = interner.intern("hello");
         let interned_world = interner.intern("world");
         interner.shrink_to_fit();
