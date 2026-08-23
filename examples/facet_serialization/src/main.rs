@@ -235,7 +235,7 @@ mod tests {
     /// facet-serialized payload through the framework's JSONL writer, read it
     /// back, and deserialize it with facet. Miri can't add/remove files.
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(miri, ignore = "Miri doesn't support file I/O")]
     fn facet_payload_round_trips_through_log_file() {
         let path = std::env::temp_dir().join(format!(
             "cfw_facet_roundtrip_{}_{}.ndjson",

@@ -131,7 +131,10 @@ mod tests {
 
     #[test]
     fn test_sustained_periodic_trigger() {
+        #[cfg(not(miri))]
         const TARGET_RUNS: usize = 50;
+        #[cfg(miri)]
+        const TARGET_RUNS: usize = 5;
 
         #[cfg(not(miri))]
         const DEADLINE_SECS: u64 = 10;

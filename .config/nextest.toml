@@ -1,9 +1,10 @@
 # Nextest repository configuration.
 #
 # The `default-miri` profile is auto-activated by `cargo miri nextest run`
-# (it fires when MIRI_SYSROOT is set, which `cargo miri` exports). It's our
-# "slow test" filter: thread-heavy tests that take minutes under Miri are
-# excluded from the default miri run. Pass `--ignore-default-filter` to run
-# everything anyway.
+# (it fires when MIRI_SYSROOT is set, which `cargo miri` exports). It excludes
+# the slow, file-backed replay integration binaries; pass
+# `--ignore-default-filter` to run everything anyway. Tests that hang are
+# terminated after three minutes.
 [profile.default-miri]
-default-filter = 'not binary(forwarded_replay) and not binary(exact_replay_integration) and not binary(reproduce_unlogged) and not test(executor::tests)'
+default-filter = 'not binary(forwarded_replay) and not binary(exact_replay_integration) and not binary(reproduce_unlogged)'
+slow-timeout = { period = "60s", terminate-after = 3 }

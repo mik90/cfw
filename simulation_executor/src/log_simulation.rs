@@ -187,6 +187,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_log_simulation_schedules_by_log_time() {
         let stopped = Arc::new(AtomicBool::new(false));
 
@@ -292,6 +296,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_log_simulation_drylists_execution_log() {
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("integer".into());
@@ -342,6 +350,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_log_simulation_denylisted_channels_skipped() {
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("integer".into());

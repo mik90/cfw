@@ -598,7 +598,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns many threads and iterates 25k times; too slow under Miri"
+    )]
     fn state_machine_concurrent_hammer_does_not_panic() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};

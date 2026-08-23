@@ -584,6 +584,10 @@ mod tests {
     /// the graph is classified as [`PayloadSource::Reproduce`] so replay can
     /// recover it by re-running the producer.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "serde_json log parsing is prohibitively slow under Miri"
+    )]
     fn unlogged_producible_channel_is_reproduced() {
         let mut desc = ExecutionLogDescriptor::new(&[]);
         // Node 0 publishes "source" (unlogged), node 1 subscribes to it.
@@ -690,6 +694,10 @@ mod tests {
     /// Verify deterministic FIFO payload matching when two execution-log
     /// entries reference the same channel and timestamp.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "serde_json log parsing is prohibitively slow under Miri"
+    )]
     fn deterministic_payload_matching() {
         use task::execution_log::Direction;
         use task::execution_log::LoggedMessage;

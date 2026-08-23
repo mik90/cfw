@@ -566,6 +566,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_sorted_input_yields_in_order() {
         let data = write_log(&[(100, "a", b"x"), (200, "b", b"y"), (300, "c", b"z")]);
         let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
@@ -588,6 +592,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_unsorted_input_yields_sorted() {
         let data = write_log(&[(300, "c", b"z"), (100, "a", b"x"), (200, "b", b"y")]);
         let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 2).unwrap();
@@ -609,6 +617,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_channel_names() {
         let data = write_log(&[(100, "a", b"x"), (200, "b", b"y"), (300, "a", b"z")]);
         let reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
@@ -618,6 +630,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_read_until_semantics() {
         let data = write_log(&[(1000, "x", b"1"), (3000, "x", b"2"), (5000, "x", b"3")]);
         let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
@@ -652,6 +668,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_empty_log() {
         let data = Vec::new();
         let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
@@ -664,6 +684,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_peek_time_consistency() {
         let data = write_log(&[(10, "a", b"v1"), (20, "a", b"v2")]);
         let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
@@ -683,6 +707,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_build_replay_sinks_basic() {
         let data = write_log(&[(100, "integer", &42u64.to_le_bytes())]);
         let reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
@@ -696,6 +724,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_build_replay_sinks_denylist() {
         let data = write_log(&[(100, "integer", &42u64.to_le_bytes())]);
         let reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();

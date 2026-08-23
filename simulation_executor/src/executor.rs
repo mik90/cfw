@@ -218,8 +218,13 @@ mod tests {
 
     #[test]
     fn test_determinism() {
-        let history_first = run_fizz_buzz_for_n_steps(50, 2);
-        let history_second = run_fizz_buzz_for_n_steps(50, 2);
+        #[cfg(not(miri))]
+        const STEP_COUNT: usize = 50;
+        #[cfg(miri)]
+        const STEP_COUNT: usize = 10;
+
+        let history_first = run_fizz_buzz_for_n_steps(STEP_COUNT, 2);
+        let history_second = run_fizz_buzz_for_n_steps(STEP_COUNT, 2);
         assert_eq!(history_first, history_second);
     }
 

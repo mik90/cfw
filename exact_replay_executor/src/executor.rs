@@ -649,6 +649,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sleeps 50ms of wall-clock time to let the background replay thread finish before stop(); too slow to be reliable under Miri"
+    )]
     fn test_consumed_count_works() {
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("input".into());

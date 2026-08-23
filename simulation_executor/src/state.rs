@@ -640,7 +640,11 @@ mod tests {
 
         let mut state = SimulationState::new(1, nodes);
         state.start();
-        for _ in 0..20 {
+        #[cfg(not(miri))]
+        const STEP_COUNT: usize = 20;
+        #[cfg(miri)]
+        const STEP_COUNT: usize = 10;
+        for _ in 0..STEP_COUNT {
             state.step().unwrap();
         }
 

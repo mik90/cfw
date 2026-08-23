@@ -174,6 +174,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_replay_task_publishes_u64_driven_by_time() {
         let stopped = Arc::new(AtomicBool::new(false));
 
@@ -342,6 +346,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
+    )]
     fn test_drylised_channels_skipped() {
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("integer".into());
