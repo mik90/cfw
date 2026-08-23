@@ -1,5 +1,4 @@
 use std::sync::Weak;
-use std::sync::atomic::Ordering;
 use task::executor::ExecutorStopSignal;
 
 use crate::pool_state::SharedThreadPoolState;
@@ -11,7 +10,6 @@ impl ExecutorStopSignal for StopSignal {
         let Some(state) = self.0.upgrade() else {
             return;
         };
-        state.should_run.store(false, Ordering::Relaxed);
-        state.periodic_cond_var.notify_all();
+        state.request_stop();
     }
 }

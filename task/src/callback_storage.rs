@@ -8,23 +8,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use crate::callback::CallbackNode;
 use crate::time::{AtomicFrameworkTime, FrameworkTime};
 
-/// Strong index into a [`CallbackStorage`]. Wrap raw `usize` node indices in
-/// this type so "this is a node index" is visible at the type level instead of
-/// being an anonymous `usize` threading through the executor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallbackNodeId(pub usize);
-
-impl From<usize> for CallbackNodeId {
-    fn from(value: usize) -> Self {
-        CallbackNodeId(value)
-    }
-}
-
-impl From<CallbackNodeId> for usize {
-    fn from(value: CallbackNodeId) -> Self {
-        value.0
-    }
-}
+use crate::scheduling::CallbackNodeId;
 
 /// The scheduling state of a [`SharedCallbackNode`], enforced atomically:
 ///
@@ -91,9 +75,23 @@ pub struct SharedCallbackNode {
     node: UnsafeCell<CallbackNode>,
 }
 
+struct RunningRelease<'a> {
+    node: &'a SharedCallbackNode,
+    active: bool,
+}
+
+impl Drop for RunningRelease<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.node.run_state.store(IDLE, Ordering::Release);
+        }
+    }
+}
+
 /// SAFETY: the `UnsafeCell` interior is only accessed by the thread that won
 /// the `run_state` CAS into `Running`, so `&mut` access is never shared
-/// across threads. `CallbackNode` is itself `Send + Sync`.
+/// across threads. `CallbackNode` is `Send`; this wrapper supplies synchronized
+/// shared access.
 unsafe impl Sync for SharedCallbackNode {}
 
 impl SharedCallbackNode {
@@ -141,7 +139,7 @@ impl SharedCallbackNode {
     /// Claim the node for execution (`Enqueued → Running`, or
     /// `Idle → Running` for direct runs). Panics if the node is already
     /// running — a scheduling protocol violation.
-    pub fn acquire_running(&self) {
+    fn acquire_running(&self) {
         loop {
             let prev = self.run_state.compare_exchange(
                 ENQUEUED,
@@ -171,7 +169,7 @@ impl SharedCallbackNode {
     /// Release the node after a run. Returns `true` if a trigger arrived
     /// mid-run — the caller must send the node's index back to its pool's
     /// work channel.
-    pub fn release_running(&self) -> bool {
+    fn release_running(&self) -> bool {
         loop {
             let prev = self.run_state.compare_exchange(
                 RUNNING_TRIGGERED,
@@ -222,7 +220,7 @@ impl SharedCallbackNode {
 
     /// Recompute and store the next-execution-time snapshot. Only valid while
     /// the caller holds the node.
-    pub fn refresh_next_exec_time(&self, now: FrameworkTime) {
+    fn refresh_next_exec_time(&self, now: FrameworkTime) {
         // SAFETY: the caller holds the node (it is `Running`).
         let next = unsafe { (*self.node.get()).next_requested_execution_time(now) };
         self.set_next_exec_time(next);
@@ -238,11 +236,16 @@ impl SharedCallbackNode {
         f: impl FnOnce(&mut CallbackNode) -> R,
     ) -> (R, bool) {
         self.acquire_running();
+        let mut release = RunningRelease {
+            node: self,
+            active: true,
+        };
         // SAFETY: acquire_running succeeded on this thread; the reference
         // cannot outlive this call.
         let result = f(unsafe { self.node_mut_unchecked() });
         self.refresh_next_exec_time(now);
         let reenqueue = self.release_running();
+        release.active = false;
         (result, reenqueue)
     }
 
@@ -266,10 +269,18 @@ impl SharedCallbackNode {
                 "callback node is not idle ({state:?}); cannot access a running or enqueued node"
             );
         }
+        let mut release = RunningRelease {
+            node: self,
+            active: true,
+        };
         // SAFETY: try_claim_idle succeeded on this thread; the reference
         // cannot outlive this call.
         let result = f(unsafe { self.node_mut_unchecked() });
         let reenqueue = self.release_running();
+        release.active = false;
+        if reenqueue {
+            self.run_state.store(IDLE, Ordering::Release);
+        }
         assert!(
             !reenqueue,
             "callback node triggered during access; protocol violation"
@@ -283,15 +294,35 @@ impl SharedCallbackNode {
         if !self.try_claim_idle() {
             return None;
         }
+        let mut release = RunningRelease {
+            node: self,
+            active: true,
+        };
         // SAFETY: try_claim_idle succeeded on this thread; the reference
         // cannot outlive this call.
         let result = f(unsafe { self.node_mut_unchecked() });
         let reenqueue = self.release_running();
+        release.active = false;
+        if reenqueue {
+            self.run_state.store(IDLE, Ordering::Release);
+        }
         assert!(
             !reenqueue,
             "callback node triggered during access; protocol violation"
         );
         Some(result)
+    }
+
+    /// # Safety
+    /// No thread may access this node while cleanup runs. The caller must have
+    /// exclusive access to the callback interior for the duration of the call.
+    pub unsafe fn cleanup_subscribers_when_quiescent(&self) {
+        // SAFETY: callers guarantee no worker or scheduler can access nodes.
+        unsafe {
+            (*self.node.get())
+                .callback()
+                .for_each_subscriber(&mut |s| s.cleanup_buffers())
+        };
     }
 
     /// SAFETY: the caller must hold the node (`run_state` is `Running` on
@@ -390,6 +421,10 @@ impl CallbackStorage {
         self.nodes.iter()
     }
 
+    pub fn as_shared_slice(&self) -> &[Arc<SharedCallbackNode>] {
+        &self.nodes
+    }
+
     pub fn get(&self, id: CallbackNodeId) -> Option<&Arc<SharedCallbackNode>> {
         self.nodes.get(id.0)
     }
@@ -434,10 +469,20 @@ impl CallbackStorage {
     pub fn cleanup_subscribers(&self) {
         for node in self.iter_shared() {
             node.try_access(|n| {
-                n.callback().for_each_subscriber(&mut |s| {
-                    s.cleanup_buffers();
-                });
+                n.callback()
+                    .for_each_subscriber(&mut |s| s.cleanup_buffers());
             });
+        }
+    }
+
+    /// # Safety
+    /// No worker or scheduler may access any node while cleanup runs. The
+    /// caller must have exclusive access to every callback interior for the
+    /// duration of the call.
+    pub unsafe fn cleanup_subscribers_when_quiescent(&self) {
+        for node in self.iter_shared() {
+            // SAFETY: upheld by this method's caller for every node.
+            unsafe { node.cleanup_subscribers_when_quiescent() };
         }
     }
 }
@@ -595,6 +640,49 @@ mod tests {
         let node = make_node();
         assert!(node.trigger());
         node.access(|_| ());
+    }
+
+    #[test]
+    fn panic_paths_reset_running_state() {
+        let node = make_node();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                node.execute(FrameworkTime::from_nanoseconds(0), |_| panic!("execute"));
+            }))
+            .is_err()
+        );
+        assert!(!node.is_running());
+        assert!(node.trigger());
+
+        let node = make_node();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                node.execute(FrameworkTime::from_nanoseconds(0), |_| {
+                    node.trigger();
+                    panic!("execute triggered");
+                });
+            }))
+            .is_err()
+        );
+        assert!(node.trigger());
+
+        let node = make_node();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                node.access(|_| panic!("access"));
+            }))
+            .is_err()
+        );
+        assert!(node.trigger());
+
+        let node = make_node();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                node.try_access(|_| panic!("try access"));
+            }))
+            .is_err()
+        );
+        assert!(node.trigger());
     }
 
     #[test]

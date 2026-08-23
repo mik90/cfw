@@ -69,6 +69,13 @@ impl<T> Subscriber<T> {
     }
 
     pub fn drain_writer_to_reader(&self) {
+        // Clear an event bit before taking the writer snapshot. A concurrent
+        // publication then observes a new transition and schedules a rerun.
+        if let Some(SubscriberReadiness::Gating(readiness, index)) = &self.readiness_state
+            && self.config.is_trigger
+        {
+            readiness.clear_bit(*index);
+        }
         self.buffers.drain_writer_to_reader();
         // A trigger input's bit means "new event pending": the imminent
         // run consumes it, so clear — re-firing requires new data.
@@ -77,7 +84,7 @@ impl<T> Subscriber<T> {
         // runnable whenever a trigger fires; clear only once empty.
         // Optional-trigger subscribers own no bit — nothing to clear.
         if let Some(SubscriberReadiness::Gating(readiness, index)) = &self.readiness_state
-            && (self.config.is_trigger || self.buffers.read_buffer().is_empty())
+            && (!self.config.is_trigger && self.buffers.read_buffer().is_empty())
         {
             readiness.clear_bit(*index);
         }
@@ -98,7 +105,7 @@ impl<T> Subscriber<T> {
     }
 }
 
-impl<T: 'static> GenericSubscriber for Subscriber<T> {
+impl<T: Send + Sync + 'static> GenericSubscriber for Subscriber<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -173,7 +180,7 @@ impl<T> ForwardableSubscriber<T> {
     }
 }
 
-impl<T: 'static> GenericSubscriber for ForwardableSubscriber<T> {
+impl<T: Send + Sync + 'static> GenericSubscriber for ForwardableSubscriber<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }

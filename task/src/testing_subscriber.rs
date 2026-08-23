@@ -49,7 +49,7 @@ pub struct TestSubscriber<T> {
     subscriber: Subscriber<T>,
 }
 
-impl<T> TestSubscriber<T> {
+impl<T: Send + Sync + 'static> TestSubscriber<T> {
     /// Creates a `TestSubscriber` with the default queue depth
     /// ([`DEFAULT_TEST_SUBSCRIBER_CAPACITY`]).
     pub fn new(channel_name: ChannelName) -> Self {
@@ -117,7 +117,7 @@ impl<T: 'static + Clone> TestSubscriber<T> {
     }
 }
 
-impl<T: 'static> GenericSubscriber for TestSubscriber<T> {
+impl<T: Send + Sync + 'static> GenericSubscriber for TestSubscriber<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         // Expose the inner `Subscriber<T>` rather than `self`: this is what lets
         // `Publisher<T>::connect_to_subscriber` recognize and wire up a `TestSubscriber`

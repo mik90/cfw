@@ -23,9 +23,5 @@ if [ "$MIRI" -eq 1 ]; then
   # Runs the miri test suite; slow tests are excluded by the `default-miri`
   # profile in .config/nextest.toml. Pass a nextest filter to override, e.g.
   # `./run_test.sh -E 'test(x)'`.
-  # The live executor's enqueue state holds a reference cycle (nodes hold an
-  # `Arc` back to the enqueue state), which leaks; fixing it is deferred, so
-  # leak detection is disabled under miri.
-  export MIRIFLAGS="-Zmiri-ignore-leaks"
   cargo +nightly miri nextest run --all-features "${ARGS[@]}"
 fi

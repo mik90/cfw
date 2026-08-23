@@ -5,6 +5,7 @@ pub use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::message::{Message, MessageHeader};
 use crate::pub_sub::ChannelName;
+use crate::scheduling::{NoopReadyNodeSink, ReadyNodeSink};
 use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
 use crate::time::FrameworkTime;
 use base::arena::{Arena, ArenaPtr, ArenaReaderPtr};
@@ -79,7 +80,7 @@ pub struct Publisher<T> {
     forwarded_channels: Vec<ChannelName>,
 }
 
-impl<T: 'static> GenericPublisher for Publisher<T> {
+impl<T: 'static + Send + Sync> GenericPublisher for Publisher<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -96,16 +97,17 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
         self.forwarded_channels.as_slice()
     }
 
-    fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
-        self.flush_loaned_values_with(timestamp, &mut |_header| {});
+    fn flush_loaned_values(&mut self, timestamp: FrameworkTime, sink: &mut dyn ReadyNodeSink) {
+        self.flush_loaned_values_with(timestamp, sink, &mut |_header| {});
     }
 
     fn flush_loaned_values_logged(
         &mut self,
         timestamp: FrameworkTime,
+        sink: &mut dyn ReadyNodeSink,
         hook: &mut dyn FnMut(&MessageHeader),
     ) {
-        self.flush_loaned_values_with(timestamp, hook);
+        self.flush_loaned_values_with(timestamp, sink, hook);
     }
 
     fn allocate_arena(&mut self) {
@@ -159,13 +161,18 @@ impl<T: 'static> GenericPublisher for Publisher<T> {
     }
 }
 
-impl<T> Publisher<T> {
+impl<T: Send + Sync + 'static> Publisher<T> {
+    pub fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
+        let mut sink = NoopReadyNodeSink;
+        self.flush_loaned_values_with(timestamp, &mut sink, &mut |_header| {});
+    }
     /// Shared flush implementation: stamp each sent loan with `timestamp`,
     /// fan it out to subscriber write buffers, and invoke `hook` with each
     /// published header. Used by both the plain and logged flush paths.
     fn flush_loaned_values_with(
         &mut self,
         timestamp: FrameworkTime,
+        sink: &mut dyn ReadyNodeSink,
         hook: &mut dyn FnMut(&MessageHeader),
     ) {
         for loaned_value in self.loaned_values.drain(..) {
@@ -194,10 +201,14 @@ impl<T> Publisher<T> {
                     // inputs are ready).
                     match &subscriber_buffer.readiness {
                         Some(SubscriberReadiness::Gating(readiness, bit_index)) => {
-                            readiness.set_bit(*bit_index);
+                            if let Some(node) = readiness.gating_input_arrived(*bit_index) {
+                                sink.schedule(node);
+                            }
                         }
                         Some(SubscriberReadiness::OptionalTrigger(readiness)) => {
-                            readiness.enqueue_if_ready();
+                            if let Some(node) = readiness.optional_trigger_arrived() {
+                                sink.schedule(node);
+                            }
                         }
                         None => {}
                     }
@@ -314,7 +325,7 @@ impl<T> Publisher<T> {
     // Loans cannot be held across runs
 }
 
-impl<T: 'static> Publisher<T> {
+impl<T: Send + Sync + 'static> Publisher<T> {
     pub fn add_typed_subscriber(&mut self, typed_subscriber: &mut Subscriber<T>) {
         let buffer_guard = typed_subscriber.write_guard();
         let config = typed_subscriber.config().clone();
@@ -358,7 +369,7 @@ impl<T: 'static> Publisher<T> {
     }
 }
 
-impl<T: Default> Publisher<T> {
+impl<T: Default + Send + Sync + 'static> Publisher<T> {
     pub fn loan_default(&mut self) -> Result<usize, LoanError> {
         self.loan_with(|slot| {
             slot.write(T::default());
@@ -366,7 +377,9 @@ impl<T: Default> Publisher<T> {
     }
 }
 
-impl<T: Default + 'static, F: 'static> Publisher<ForwardedMessage<T, F>> {
+impl<T: Default + Send + Sync + 'static, F: Send + Sync + 'static>
+    Publisher<ForwardedMessage<T, F>>
+{
     pub fn loan_forwarded(
         &mut self,
         forwarded_ptr: ArenaReaderPtr<Message<F>>,
@@ -381,7 +394,7 @@ pub struct ForwardingPublisher<T, F> {
     pub(crate) inner: Publisher<ForwardedMessage<T, F>>,
 }
 
-impl<T: Default + 'static, F: 'static> ForwardingPublisher<T, F> {
+impl<T: Default + Send + Sync + 'static, F: Send + Sync + 'static> ForwardingPublisher<T, F> {
     pub fn new(config: PublisherConfig, forwarded_channels: Vec<ChannelName>) -> Self {
         Self {
             inner: Publisher::new_with_forwards(config, forwarded_channels),
@@ -401,7 +414,7 @@ impl<T: Default + 'static, F: 'static> ForwardingPublisher<T, F> {
     }
 
     pub fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
-        GenericPublisher::flush_loaned_values(&mut self.inner, timestamp);
+        self.inner.flush_loaned_values(timestamp);
     }
 
     pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> &mut Self {
@@ -412,7 +425,9 @@ impl<T: Default + 'static, F: 'static> ForwardingPublisher<T, F> {
     }
 }
 
-impl<T: Default + 'static, F: 'static> GenericPublisher for ForwardingPublisher<T, F> {
+impl<T: Default + Send + Sync + 'static, F: Send + Sync + 'static> GenericPublisher
+    for ForwardingPublisher<T, F>
+{
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -429,16 +444,17 @@ impl<T: Default + 'static, F: 'static> GenericPublisher for ForwardingPublisher<
         GenericPublisher::forwarded_channels(&self.inner)
     }
 
-    fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
-        GenericPublisher::flush_loaned_values(&mut self.inner, timestamp);
+    fn flush_loaned_values(&mut self, timestamp: FrameworkTime, sink: &mut dyn ReadyNodeSink) {
+        GenericPublisher::flush_loaned_values(&mut self.inner, timestamp, sink);
     }
 
     fn flush_loaned_values_logged(
         &mut self,
         timestamp: FrameworkTime,
+        sink: &mut dyn ReadyNodeSink,
         hook: &mut dyn FnMut(&MessageHeader),
     ) {
-        self.inner.flush_loaned_values_with(timestamp, hook);
+        self.inner.flush_loaned_values_with(timestamp, sink, hook);
     }
 
     fn allocate_arena(&mut self) {

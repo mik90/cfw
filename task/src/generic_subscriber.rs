@@ -8,7 +8,7 @@ pub struct QueueInfo {
     pub writer_size: usize,
 }
 
-pub trait GenericSubscriber {
+pub trait GenericSubscriber: Send {
     fn as_any(&mut self) -> &mut dyn std::any::Any;
 
     fn config(&self) -> &SubscriberConfig;

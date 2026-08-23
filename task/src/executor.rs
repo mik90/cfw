@@ -24,18 +24,20 @@ impl ThreadPoolConfig {
 /// Parameters to set up any executor
 #[derive(Debug)]
 pub struct ExecutorParams {
-    pub pools: Vec<ThreadPoolConfig>,
-    pub channel_interner: StringInterner<ChannelNameTag>,
-    pub callback_interner: StringInterner<CallbackNameTag>,
+    pools: Vec<ThreadPoolConfig>,
+    channel_interner: StringInterner<ChannelNameTag>,
+    callback_interner: StringInterner<CallbackNameTag>,
 }
 
 impl ExecutorParams {
     pub fn new(pools: Vec<ThreadPoolConfig>) -> Self {
         let mut channel_interner = StringInterner::<ChannelNameTag>::default();
         let mut callback_interner = StringInterner::<CallbackNameTag>::default();
+        let mut node_id = 0;
         for pool in pools.iter() {
             for shared_node in pool.nodes.iter_shared() {
                 shared_node.access(|node| {
+                    node.bind_id(crate::scheduling::CallbackNodeId(node_id));
                     callback_interner.intern(node.name());
                     node.callback().for_each_subscriber(&mut |subscriber| {
                         channel_interner.intern(&subscriber.config().channel_name);
@@ -44,6 +46,7 @@ impl ExecutorParams {
                         channel_interner.intern(&publisher.config().channel_name);
                     });
                 });
+                node_id += 1;
             }
         }
         ExecutorParams {
@@ -52,12 +55,20 @@ impl ExecutorParams {
             callback_interner,
         }
     }
-}
 
-/// Allows a publisher to enqueue a callback node onto an executor without holding a lock
-/// on the full executor state. Implementors must be Send + Sync.
-pub trait CallbackNodeEnqueuer: Send + Sync {
-    fn enqueue_node(&self, node_index: usize);
+    pub fn pools(&self) -> &[ThreadPoolConfig] {
+        &self.pools
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<ThreadPoolConfig>,
+        StringInterner<ChannelNameTag>,
+        StringInterner<CallbackNameTag>,
+    ) {
+        (self.pools, self.channel_interner, self.callback_interner)
+    }
 }
 
 /// A non-blocking handle for signaling an executor to stop.

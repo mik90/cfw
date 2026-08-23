@@ -57,7 +57,7 @@ fn main() {
         build_exact_replay_graph(&args.log_path).expect("Could not build exact replay graph");
 
     if args.print {
-        print_nodes(&graph.executor_params.pools);
+        print_nodes(graph.executor_params.pools());
         return;
     }
 

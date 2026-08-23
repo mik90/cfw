@@ -1,7 +1,9 @@
+use crate::pool_state::LiveReadyNodeSink;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use task::callback_storage::SharedCallbackNode;
 use task::executor::TimeSource;
+use task::scheduling::{CallbackNodeId, ReadyNodeSink};
 use task::time::FrameworkTime;
 
 use crate::pool_state::{SharedThreadPoolState, TimeTriggeredNode};
@@ -23,7 +25,16 @@ pub(crate) fn periodic_trigger_thread<T: TimeSource>(
         Some(t) => t,
         None => {
             let guard = shared_state.periodic_mutex.lock().unwrap();
-            drop(shared_state.periodic_cond_var.wait(guard));
+            drop(
+                shared_state
+                    .periodic_cond_var
+                    .wait_while(guard, |_| {
+                        shared_state
+                            .should_run
+                            .load(std::sync::atomic::Ordering::Acquire)
+                    })
+                    .unwrap(),
+            );
             return;
         }
     };
@@ -35,7 +46,11 @@ pub(crate) fn periodic_trigger_thread<T: TimeSource>(
         let guard = shared_state.periodic_mutex.lock().unwrap();
         let _ = shared_state
             .periodic_cond_var
-            .wait_timeout(guard, duration)
+            .wait_timeout_while(guard, duration, |_| {
+                shared_state
+                    .should_run
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
             .unwrap();
     }
 
@@ -70,9 +85,11 @@ pub(crate) fn periodic_trigger_thread<T: TimeSource>(
             }
         }
 
-        shared_state
-            .enqueue_state
-            .trigger_node(time_triggered_node.index);
+        let mut sink = LiveReadyNodeSink {
+            nodes,
+            router: &shared_state.work_router,
+        };
+        sink.schedule(CallbackNodeId(time_triggered_node.index));
     }
 }
 

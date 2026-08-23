@@ -47,7 +47,7 @@ pub struct ForwardableRequiredInput<'a, T> {
     input: RequiredInput<'a, T>,
 }
 
-impl<'a, T: 'static> ForwardableRequiredInput<'a, T> {
+impl<'a, T: Send + Sync + 'static> ForwardableRequiredInput<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = RequiredInput::new(&forwardable_subscriber.subscriber);
         Self { input }
@@ -65,7 +65,7 @@ impl<'a, T: 'static> ForwardableRequiredInput<'a, T> {
         self.input.value()
     }
 
-    pub fn forward<'b, UserData: Default + 'static>(
+    pub fn forward<'b, UserData: Default + Send + Sync + 'static>(
         mut self,
         output: &'b mut ForwardingOutput<UserData, T>,
     ) -> ForwardedOutput<'b, UserData, T> {
@@ -79,7 +79,7 @@ impl<'a, T: 'static> ForwardableRequiredInput<'a, T> {
     }
 }
 
-impl<'a, T: 'static> Deref for ForwardableRequiredInput<'a, T> {
+impl<'a, T: Send + Sync + 'static> Deref for ForwardableRequiredInput<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -117,7 +117,7 @@ pub struct ForwardableOptionalInput<'a, T> {
     input: OptionalInput<'a, T>,
 }
 
-impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
+impl<'a, T: Send + Sync + 'static> ForwardableOptionalInput<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = OptionalInput::new(&forwardable_subscriber.subscriber);
         Self { input }
@@ -131,7 +131,7 @@ impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
         ForwardableOptionalInput::new(typed)
     }
 
-    pub fn forward<'b, UserData: Default + 'static>(
+    pub fn forward<'b, UserData: Default + Send + Sync + 'static>(
         mut self,
         output: &'b mut ForwardingOutput<UserData, T>,
     ) -> Option<ForwardedOutput<'b, UserData, T>> {
@@ -185,7 +185,7 @@ pub struct ForwardableInputSpan<'a, T> {
     input: InputSpan<'a, T>,
 }
 
-impl<'a, T: 'static> ForwardableInputSpan<'a, T> {
+impl<'a, T: Send + Sync + 'static> ForwardableInputSpan<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = InputSpan::new(&forwardable_subscriber.subscriber);
         Self { input }
@@ -199,7 +199,7 @@ impl<'a, T: 'static> ForwardableInputSpan<'a, T> {
         ForwardableInputSpan::new(typed)
     }
 
-    pub fn drain_forwards<'b, UserData: Default + 'static>(
+    pub fn drain_forwards<'b, UserData: Default + Send + Sync + 'static>(
         &mut self,
         output: &'b mut ForwardingOutput<UserData, T>,
     ) -> ForwardedOutputSpan<'b, UserData, T> {

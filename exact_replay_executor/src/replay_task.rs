@@ -201,7 +201,8 @@ impl<'a> ReplayWorker<'a> {
         }
 
         // ── Flush publishers (stamps headers, writes to capture subscribers) ─
-        node.flush_publishers(execution.execution_time);
+        let mut sink = task::scheduling::NoopReadyNodeSink;
+        node.flush_publishers(execution.execution_time, &mut sink);
 
         // ── Drain ALL capture subscribers and compare outputs ──────────────
         for (ordinal, capture) in state.capture_subscribers.iter_mut() {
@@ -576,7 +577,8 @@ fn hydrate_subscribers(
                 }
             })?;
             writer(publisher.as_mut(), value);
-            publisher.flush_loaned_values(header.published_at);
+            let mut sink = task::scheduling::NoopReadyNodeSink;
+            publisher.flush_loaned_values(header.published_at, &mut sink);
         }
     }
 

@@ -3,8 +3,8 @@ use std::time::Duration;
 use task::execution_log::{
     ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
 };
-use task::generic_publisher::GenericPublisher;
 use task::publisher::Publisher;
+use task::scheduling::ReadyNodeSink;
 use task::time::FrameworkTime;
 
 pub(crate) struct WorkerLogger {
@@ -76,6 +76,7 @@ impl WorkerLogger {
         node_index: u32,
         time: FrameworkTime,
         duration: Duration,
+        sink: &mut dyn ReadyNodeSink,
     ) {
         // Finalize any partially-filled entry left by the previous execution
         // so each [`ExecutionLogEntry`] describes exactly one execution. The
@@ -83,7 +84,7 @@ impl WorkerLogger {
         // and attributes every message in an entry to that execution; without
         // this roll, consecutive executions would share one entry and their
         // messages would be misattributed.
-        self.roll_to_fresh_entry();
+        self.roll_to_fresh_entry(sink);
         self.cur_node = node_index;
         self.cur_time = time;
         self.cur_duration = duration;
@@ -91,13 +92,13 @@ impl WorkerLogger {
 
     /// Move to a fresh, unused entry slot so the current execution's messages
     /// start a new entry. No-op when the current entry is already empty.
-    fn roll_to_fresh_entry(&mut self) {
+    fn roll_to_fresh_entry(&mut self, sink: &mut dyn ReadyNodeSink) {
         if self.next_msg == 0 {
             return;
         }
         self.next_entry += 1;
         self.next_msg = 0;
-        if self.next_entry == ENTRIES_PER_MESSAGE && !self.flush_current(self.cur_time) {
+        if self.next_entry == ENTRIES_PER_MESSAGE && !self.flush_current(self.cur_time, sink) {
             // No loan available; `append` counts the drop. On success
             // `flush_current` already resets both cursors.
             self.next_entry = 0;
@@ -113,8 +114,9 @@ impl WorkerLogger {
         node_index: u32,
         time: FrameworkTime,
         duration: Duration,
+        sink: &mut dyn ReadyNodeSink,
     ) {
-        self.roll_to_fresh_entry();
+        self.roll_to_fresh_entry(sink);
         let Some(loan) = self.current_loan else {
             self.dropped += 1;
             return;
@@ -128,7 +130,7 @@ impl WorkerLogger {
         self.next_entry += 1;
         self.next_msg = 0;
         if self.next_entry == ENTRIES_PER_MESSAGE {
-            if !self.flush_current(time) {
+            if !self.flush_current(time, sink) {
                 self.dropped += 1;
             }
             self.next_entry = 0;
@@ -136,7 +138,7 @@ impl WorkerLogger {
         }
     }
 
-    pub(crate) fn append(&mut self, msg: LoggedMessage) {
+    pub(crate) fn append(&mut self, msg: LoggedMessage, sink: &mut dyn ReadyNodeSink) {
         let Some(loan) = self.current_loan else {
             self.dropped += 1;
             return;
@@ -146,7 +148,7 @@ impl WorkerLogger {
             self.next_entry += 1;
             self.next_msg = 0;
             if self.next_entry == ENTRIES_PER_MESSAGE {
-                if !self.flush_current(self.cur_time) {
+                if !self.flush_current(self.cur_time, sink) {
                     self.dropped += 1;
                     self.next_entry = 0;
                     self.next_msg = 0;
@@ -168,16 +170,16 @@ impl WorkerLogger {
         self.next_msg += 1;
     }
 
-    pub(crate) fn drain_recv_into_current(&mut self) {
+    pub(crate) fn drain_recv_into_current(&mut self, sink: &mut dyn ReadyNodeSink) {
         let len = self.recv_scratch_len;
         for i in 0..len {
             let msg = self.recv_scratch[i];
-            self.append(msg);
+            self.append(msg, sink);
         }
         self.recv_scratch_len = 0;
     }
 
-    pub(crate) fn maybe_flush_period(&mut self, now: FrameworkTime) {
+    pub(crate) fn maybe_flush_period(&mut self, now: FrameworkTime, sink: &mut dyn ReadyNodeSink) {
         let due = now
             .checked_duration_since(self.last_flush)
             .map(|d| d >= self.flush_period)
@@ -186,11 +188,11 @@ impl WorkerLogger {
             return;
         }
         if self.next_entry > 0 || self.next_msg > 0 {
-            self.flush_current(now);
+            self.flush_current(now, sink);
         }
     }
 
-    fn flush_current(&mut self, at: FrameworkTime) -> bool {
+    fn flush_current(&mut self, at: FrameworkTime, sink: &mut dyn ReadyNodeSink) -> bool {
         let Some(loan) = self.current_loan else {
             return false;
         };
@@ -204,7 +206,11 @@ impl WorkerLogger {
         self.last_flush = at;
 
         self.publisher.mark_loan_sent(loan);
-        self.publisher.flush_loaned_values(at);
+        task::generic_publisher::GenericPublisher::flush_loaned_values(
+            &mut self.publisher,
+            at,
+            sink,
+        );
 
         self.current_loan = self.publisher.loan_default().ok();
         self.next_entry = 0;
@@ -212,9 +218,9 @@ impl WorkerLogger {
         self.current_loan.is_some()
     }
 
-    pub(crate) fn flush_remaining(&mut self, at: FrameworkTime) {
+    pub(crate) fn flush_remaining(&mut self, at: FrameworkTime, sink: &mut dyn ReadyNodeSink) {
         if self.next_entry > 0 || self.next_msg > 0 {
-            self.flush_current(at);
+            self.flush_current(at, sink);
         }
     }
 }

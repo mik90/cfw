@@ -278,7 +278,7 @@ impl ChannelRegistry {
     /// [`ForwardedMessage<T, F>`]: crate::forwarded_message::ForwardedMessage
     #[cfg(feature = "serde")]
     pub fn register_forwarded_channel<
-        T: serde::Serialize + serde::de::DeserializeOwned + 'static,
+        T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
         F: Clone + Send + Sync + 'static,
     >(
         &mut self,

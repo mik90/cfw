@@ -3,8 +3,8 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use task::callback_storage::{CallbackStorage, SharedCallbackNode};
-use task::executor::CallbackNodeEnqueuer;
+use task::callback_storage::CallbackStorage;
+use task::scheduling::{CallbackNodeId, ReadyNodeSink};
 use task::string_interner::{CallbackNameTag, ChannelNameTag, StringInterner};
 use task::time::FrameworkTime;
 
@@ -27,41 +27,39 @@ pub(crate) struct PoolState {
 /// ), not in a side-table: a node is only sent to the channel on the
 /// `Idle → Enqueued` transition, and a trigger during a run is remembered as
 /// `RunningTriggered` and re-enqueued by the worker when it releases the node.
-pub(crate) struct EnqueueState {
+pub(crate) struct WorkRouter {
     pub(crate) pools: Vec<Arc<PoolState>>,
     pub(crate) node_to_pool: Vec<usize>,
-    pub(crate) nodes: Vec<Arc<SharedCallbackNode>>,
 }
 
-impl EnqueueState {
-    pub(crate) fn trigger_node(&self, index: usize) {
-        if self.nodes[index].trigger() {
-            let pool = &self.pools[self.node_to_pool[index]];
-            let _ = pool.work_tx.send(index);
+impl WorkRouter {
+    /// Send an already-enqueued node ID to its assigned pool. This serves both
+    /// the initial `Idle → Enqueued` transition and worker re-enqueues.
+    pub(crate) fn send_enqueued(&self, node: CallbackNodeId) {
+        let pool = &self.pools[self.node_to_pool[node.0]];
+        let _ = pool.work_tx.send(node.0);
+    }
+}
+
+pub(crate) struct LiveReadyNodeSink<'a> {
+    pub(crate) nodes: &'a [Arc<task::callback_storage::SharedCallbackNode>],
+    pub(crate) router: &'a WorkRouter,
+}
+
+impl ReadyNodeSink for LiveReadyNodeSink<'_> {
+    fn schedule(&mut self, node: CallbackNodeId) {
+        if self.nodes[node.0].trigger() {
+            self.router.send_enqueued(node);
         }
-    }
-
-    /// Re-send a node index after its worker released it with a pending
-    /// re-run. The node is already `Enqueued` — this only feeds the channel.
-    pub(crate) fn resend_node(&self, index: usize) {
-        let pool = &self.pools[self.node_to_pool[index]];
-        let _ = pool.work_tx.send(index);
-    }
-}
-
-impl CallbackNodeEnqueuer for EnqueueState {
-    fn enqueue_node(&self, node_index: usize) {
-        self.trigger_node(node_index);
     }
 }
 
 pub(crate) struct SharedThreadPoolState {
-    pub(crate) enqueue_state: Arc<EnqueueState>,
+    pub(crate) work_router: Arc<WorkRouter>,
     pub(crate) periodic_mutex: Mutex<()>,
     pub(crate) periodic_cond_var: Condvar,
     pub(crate) should_run: AtomicBool,
     pub(crate) worker_count: usize,
-    pub(crate) worker_liveness: Vec<Mutex<()>>,
     pub(crate) barrier_count: AtomicUsize,
     pub(crate) cleanup_done: AtomicBool,
     pub(crate) shutdown_mutex: Mutex<()>,
@@ -73,6 +71,14 @@ pub(crate) struct SharedThreadPoolState {
 }
 
 impl SharedThreadPoolState {
+    pub(crate) fn request_stop(&self) {
+        let _guard = self
+            .periodic_mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.should_run.store(false, Ordering::Release);
+        self.periodic_cond_var.notify_all();
+    }
     /// Dump the executor's state for diagnostics. The node storage is passed
     /// in because it is owned by the executor's main thread, not by this
     /// shared state (worker threads only hold `clone_shared()` clones).
@@ -92,7 +98,7 @@ impl SharedThreadPoolState {
                     "\t Index:{}, Name: {}, Pool: {}",
                     index,
                     node.name(),
-                    self.enqueue_state.node_to_pool[index]
+                    self.work_router.node_to_pool[index]
                 );
                 let _ = writeln!(out, "\t Able to run: {}", node.able_to_run());
                 let _ = writeln!(

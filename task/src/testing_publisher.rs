@@ -20,7 +20,7 @@ pub struct TestPublisher<T> {
     executor_time_source: Arc<TimeSource>,
 }
 
-impl<T> TestPublisher<T> {
+impl<T: Send + Sync + Default + 'static> TestPublisher<T> {
     pub fn new(channel_name: ChannelName, capacity: usize, time_source: Arc<TimeSource>) -> Self {
         TestPublisher {
             publisher: Publisher::new(PublisherConfig {
@@ -32,7 +32,7 @@ impl<T> TestPublisher<T> {
     }
 }
 
-impl<T: 'static> GenericPublisher for TestPublisher<T> {
+impl<T: Send + Sync + Default + 'static> GenericPublisher for TestPublisher<T> {
     fn as_any(&mut self) -> &mut dyn Any {
         self
     }
@@ -49,8 +49,12 @@ impl<T: 'static> GenericPublisher for TestPublisher<T> {
         self.publisher.forwarded_channels()
     }
 
-    fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
-        self.publisher.flush_loaned_values(timestamp);
+    fn flush_loaned_values(
+        &mut self,
+        timestamp: FrameworkTime,
+        sink: &mut dyn crate::scheduling::ReadyNodeSink,
+    ) {
+        GenericPublisher::flush_loaned_values(&mut self.publisher, timestamp, sink);
     }
 
     fn allocate_arena(&mut self) {
@@ -80,7 +84,7 @@ impl<T: 'static> GenericPublisher for TestPublisher<T> {
     }
 }
 
-impl<T: Default + 'static> TestPublisher<T> {
+impl<T: Default + Send + Sync + 'static> TestPublisher<T> {
     /// Sends a message, immediately flushing loaned values
     pub fn send(&mut self, message: T) {
         let mut output = Output::new_default(&mut self.publisher);
@@ -96,7 +100,7 @@ impl<T: Default + 'static> TestPublisher<T> {
     }
 }
 
-impl<T: Default + 'static + Clone> TestPublisher<T> {
+impl<T: Default + Send + Sync + 'static + Clone> TestPublisher<T> {
     /// Sends a message, immediately flushing loaned values
     /// Avoids putting a large type on the heap.
     pub fn send_copied(&mut self, message: &T) {

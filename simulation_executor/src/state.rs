@@ -87,11 +87,17 @@ impl SimulationState {
     /// Create an new state from a [`SimulationConfig`], supporting multiple virtual
     /// pools and a configurable start time.
     pub fn new_with(config: SimulationConfig) -> SimulationState {
+        let SimulationConfig {
+            start_time,
+            executor_params,
+            node_executor_thread_count,
+        } = config;
+        let (pools, channel_interner, callback_interner) = executor_params.into_parts();
         let mut all_nodes: Vec<Arc<SharedCallbackNode>> = vec![];
         let mut node_to_pool: Vec<usize> = Vec::new();
         let mut virtual_pools: Vec<VirtualPool> = Vec::new();
 
-        for (pool_idx, pool) in config.executor_params.pools.into_iter().enumerate() {
+        for (pool_idx, pool) in pools.into_iter().enumerate() {
             virtual_pools.push(VirtualPool {
                 virtual_thread_count: pool.thread_count,
                 num_threads_occupied: 0,
@@ -112,19 +118,19 @@ impl SimulationState {
 
         let mut state = SimulationState {
             nodes: CallbackStorage::from_shared(all_nodes),
-            node_executor_threads: Vec::with_capacity(config.node_executor_thread_count),
-            node_exec_request_senders: Vec::with_capacity(config.node_executor_thread_count),
+            node_executor_threads: Vec::with_capacity(node_executor_thread_count),
+            node_exec_request_senders: Vec::with_capacity(node_executor_thread_count),
             node_exec_response_receiver: exec_response_recv,
             virtual_pools,
             node_to_pool,
             periodic_nodes: VecDeque::new(),
-            node_busy_until: vec![config.start_time; num_nodes],
+            node_busy_until: vec![start_time; num_nodes],
             node_thread_occupied: vec![false; num_nodes],
             node_ready_since: vec![None; num_nodes],
-            time: config.start_time,
+            time: start_time,
             step_count: Saturating(0),
         };
-        for _ in 0..config.node_executor_thread_count {
+        for _ in 0..node_executor_thread_count {
             // Each thread has its own request receiver; the state owns the matching sender
             let (request_sender, request_recv): (
                 Sender<NodeExecutionRequest>,
@@ -135,8 +141,8 @@ impl SimulationState {
             let cloned_nodes = state.nodes.clone_shared();
 
             let response_sender_clone = exec_response_sender.clone();
-            let channel_name_interner_clone = config.executor_params.channel_interner.clone();
-            let callback_name_interner_clone = config.executor_params.callback_interner.clone();
+            let channel_name_interner_clone = channel_interner.clone();
+            let callback_name_interner_clone = callback_interner.clone();
             state.node_executor_threads.push(thread::spawn(move || {
                 node_executor_thread(
                     request_recv,
@@ -268,7 +274,10 @@ impl SimulationState {
         }
 
         for &index in &runnable_nodes {
-            self.nodes[index].access(|n| n.flush_publishers(time));
+            self.nodes[index].access(|n| {
+                let mut sink = task::scheduling::NoopReadyNodeSink;
+                n.flush_publishers(time, &mut sink)
+            });
         }
 
         // Update periodic node next-run times from their no-longer-busy instant

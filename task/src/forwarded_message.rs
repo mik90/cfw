@@ -28,6 +28,19 @@ pub struct ForwardedMessage<UserData, ForwardedData> {
     forwarded_message: ForwardedMessagePtr<Message<ForwardedData>>,
 }
 
+/// Forwarded payloads are immutable after publication; the arena reference
+/// counts keep the pointed-to message alive while it is shared.
+// SAFETY: shared access only dereferences immutable forwarded payloads.
+unsafe impl<UserData: Sync, ForwardedData: Send + Sync> Sync
+    for ForwardedMessage<UserData, ForwardedData>
+{
+}
+// SAFETY: moving transfers ownership of the immutable arena reader reference.
+unsafe impl<UserData: Send, ForwardedData: Send + Sync> Send
+    for ForwardedMessage<UserData, ForwardedData>
+{
+}
+
 impl<UserData, ForwardedData> ForwardedMessage<UserData, ForwardedData> {
     /// Build a forwarded message that owns its forwarded payload (as opposed
     /// to borrowing it from an arena). Primarily relevant for deserialization

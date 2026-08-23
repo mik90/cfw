@@ -15,6 +15,7 @@ pub mod output;
 pub mod pub_sub;
 pub mod pub_sub_factory;
 pub mod publisher;
+pub mod scheduling;
 pub mod string_interner;
 pub mod subscriber;
 pub mod task_graph_builder;
@@ -28,13 +29,14 @@ pub mod time;
 
 // TODO re-export more utils
 pub use callback_builder::{CallbackBuildError, CallbackBuilder};
-pub use callback_storage::{CallbackNodeId, CallbackStorage, SharedCallbackNode, WorkerNodes};
+pub use callback_storage::{CallbackStorage, SharedCallbackNode, WorkerNodes};
 pub use channel_registry::ChannelRegistry;
 pub use context::Context;
 pub use input::{InputSpan, OptionalInput, RequiredInput};
 pub use loggable::{DeserializeError, Loggable, SerializeError};
 pub use output::{Output, OutputSpan};
 pub use publisher::{Publisher, PublisherConfig};
+pub use scheduling::{CallbackNodeId, NoopReadyNodeSink, ReadyNodeSink};
 pub use subscriber::{Subscriber, SubscriberConfig};
 pub use task_graph_builder::{
     BuiltTaskGraph, GraphDebugInfo, TaskGraphBuildError, TaskGraphBuildStepError, TaskGraphBuilder,

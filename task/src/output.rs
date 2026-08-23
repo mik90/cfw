@@ -11,7 +11,7 @@ pub struct ForwardingOutput<'a, T, F> {
     pub(crate) publisher: &'a mut ForwardingPublisher<T, F>,
 }
 
-impl<'a, T: Default + 'static, F: 'static> ForwardingOutput<'a, T, F> {
+impl<'a, T: Default + Send + Sync + 'static, F: Send + Sync + 'static> ForwardingOutput<'a, T, F> {
     pub fn new(publisher: &'a mut ForwardingPublisher<T, F>) -> Self {
         Self { publisher }
     }
@@ -44,7 +44,7 @@ pub struct Output<'a, T> {
     pub on_publish_failure: PublishFailureCallback,
 }
 
-impl<'a, T> Output<'a, T> {
+impl<'a, T: Send + Sync + 'static> Output<'a, T> {
     pub fn value(&self) -> &T {
         &self
             .publisher
@@ -82,7 +82,7 @@ impl<'a, T> Output<'a, T> {
     }
 }
 
-impl<'a, T: Default + 'static> Output<'a, T> {
+impl<'a, T: Default + Send + Sync + 'static> Output<'a, T> {
     pub fn new_default(publisher: &'a mut Publisher<T>) -> Self {
         let loaned_value_idx = publisher
             .loan_default()
@@ -100,7 +100,7 @@ impl<'a, T: Default + 'static> Output<'a, T> {
     }
 }
 
-impl<T: 'static> Deref for Output<'_, T> {
+impl<T: Send + Sync + 'static> Deref for Output<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -108,7 +108,7 @@ impl<T: 'static> Deref for Output<'_, T> {
     }
 }
 
-impl<T: 'static> DerefMut for Output<'_, T> {
+impl<T: Send + Sync + 'static> DerefMut for Output<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         self.value_mut()
     }
@@ -120,7 +120,7 @@ pub struct OutputSpan<'a, T> {
     publisher: &'a mut Publisher<T>,
 }
 
-impl<'a, T> OutputSpan<'a, T> {
+impl<'a, T: Send + Sync + 'static> OutputSpan<'a, T> {
     pub fn outputs(&self) -> impl Iterator<Item = &T> {
         self.publisher
             .loaned_values_at(self.loaned_value_idx_start, self.loaned_value_idx_end)
@@ -158,7 +158,7 @@ impl<'a, T> OutputSpan<'a, T> {
     }
 }
 
-impl<'a, T: Default + 'static> OutputSpan<'a, T> {
+impl<'a, T: Default + Send + Sync + 'static> OutputSpan<'a, T> {
     pub fn new(publisher: &'a mut Publisher<T>) -> Self {
         for _ in 0..publisher.config().capacity {
             publisher.loan_default().unwrap();
@@ -180,7 +180,7 @@ pub struct ForwardedOutput<'a, T, F> {
     inner: Output<'a, ForwardedMessage<T, F>>,
 }
 
-impl<'a, T: 'static, F: 'static> ForwardedOutput<'a, T, F> {
+impl<'a, T: Send + Sync + 'static, F: Send + Sync + 'static> ForwardedOutput<'a, T, F> {
     pub fn value(&self) -> &T {
         &self.inner.value().message
     }
@@ -190,7 +190,7 @@ impl<'a, T: 'static, F: 'static> ForwardedOutput<'a, T, F> {
     }
 }
 
-impl<'a, T: Default + 'static, F: 'static> ForwardedOutput<'a, T, F> {
+impl<'a, T: Default + Send + Sync + 'static, F: Send + Sync + 'static> ForwardedOutput<'a, T, F> {
     pub(crate) fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptr: ArenaReaderPtr<Message<F>>,
@@ -213,7 +213,7 @@ impl<'a, T: Default + 'static, F: 'static> ForwardedOutput<'a, T, F> {
     }
 }
 
-impl<T: 'static, F: 'static> Deref for ForwardedOutput<'_, T, F> {
+impl<T: Send + Sync + 'static, F: Send + Sync + 'static> Deref for ForwardedOutput<'_, T, F> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -221,7 +221,7 @@ impl<T: 'static, F: 'static> Deref for ForwardedOutput<'_, T, F> {
     }
 }
 
-impl<T: 'static, F: 'static> DerefMut for ForwardedOutput<'_, T, F> {
+impl<T: Send + Sync + 'static, F: Send + Sync + 'static> DerefMut for ForwardedOutput<'_, T, F> {
     fn deref_mut(&mut self) -> &mut T {
         self.value_mut()
     }
@@ -231,7 +231,9 @@ pub struct ForwardedOutputSpan<'a, T, F> {
     inner: OutputSpan<'a, ForwardedMessage<T, F>>,
 }
 
-impl<'a, T: Default + 'static, F: 'static> ForwardedOutputSpan<'a, T, F> {
+impl<'a, T: Default + Send + Sync + 'static, F: Send + Sync + 'static>
+    ForwardedOutputSpan<'a, T, F>
+{
     pub(crate) fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptrs: impl IntoIterator<Item = ArenaReaderPtr<Message<F>>>,

@@ -1,10 +1,10 @@
 use crate::execution_log::ExecutionLogLevel;
-use crate::executor::CallbackNodeEnqueuer;
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
 use crate::message::MessageHeader;
 use crate::pub_sub::{CallbackNodeName, ChannelName};
 use crate::publisher::PublisherConfig;
+use crate::scheduling::{CallbackNodeId, ReadyNodeSink};
 use crate::subscriber::SubscriberConfig;
 use crate::time::FrameworkTime;
 use std::collections::HashMap;
@@ -88,7 +88,7 @@ pub enum PortMut<'a> {
 
 // ── New Callback trait ──
 
-pub trait Callback {
+pub trait Callback: Send {
     fn run(&mut self, ctx: &crate::context::Context) -> Run;
 
     fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber));
@@ -101,18 +101,19 @@ pub trait Callback {
         self.for_each_subscriber(&mut |s| s.drain_writer_to_reader());
     }
 
-    fn flush_publishers(&mut self, timestamp: FrameworkTime) {
-        self.for_each_publisher_mut(&mut |p| p.flush_loaned_values(timestamp));
+    fn flush_publishers(&mut self, timestamp: FrameworkTime, sink: &mut dyn ReadyNodeSink) {
+        self.for_each_publisher_mut(&mut |p| p.flush_loaned_values(timestamp, sink));
     }
 
     fn flush_publishers_logged(
         &mut self,
         timestamp: FrameworkTime,
+        sink: &mut dyn ReadyNodeSink,
         hook: &mut dyn FnMut(usize, &MessageHeader),
     ) {
         let mut ordinal = 0;
         self.for_each_publisher_mut(&mut |p| {
-            p.flush_loaned_values_logged(timestamp, &mut |h| hook(ordinal, h));
+            p.flush_loaned_values_logged(timestamp, sink, &mut |h| hook(ordinal, h));
             ordinal += 1;
         });
     }
@@ -286,7 +287,7 @@ pub fn connect_callback_nodes(callbacks: &mut [CallbackNode]) -> Result<(), Mism
     Ok(())
 }
 
-// ── Readiness (unchanged) ──
+// ── Readiness ──
 
 /// Tracks readiness of the gating (required / non-optional) subscribers in a
 /// CallbackNode via an atomic bitmask. Each gating subscriber's bit is 0 (not
@@ -297,31 +298,25 @@ pub fn connect_callback_nodes(callbacks: &mut [CallbackNode]) -> Result<(), Mism
 /// means "has a value" and stays set while its read buffer retains one.
 pub struct CallbackNodeReadiness {
     bitmask: AtomicUsize,
-    node_index: OnceLock<usize>,
-    enqueuer: OnceLock<Arc<dyn CallbackNodeEnqueuer>>,
+    node_id: OnceLock<CallbackNodeId>,
 }
 
 impl CallbackNodeReadiness {
     fn new(initial_bitmask: usize) -> Arc<Self> {
         Arc::new(CallbackNodeReadiness {
             bitmask: AtomicUsize::new(initial_bitmask),
-            node_index: OnceLock::new(),
-            enqueuer: OnceLock::new(),
+            node_id: OnceLock::new(),
         })
     }
 
-    /// Set bit `index`, then enqueue the callback node if this was the transition to usize::MAX.
-    /// Only enqueues when the bitmask was not already MAX before this call.
-    pub fn set_bit(&self, index: usize) {
+    /// Set bit `index` and return the node ID when this makes every required
+    /// input ready. Repeated arrivals while fully ready return `None`.
+    pub fn gating_input_arrived(&self, index: usize) -> Option<CallbackNodeId> {
         let bit = 1usize << index;
         let prev = self.bitmask.fetch_or(bit, Ordering::AcqRel);
-        if prev != usize::MAX
-            && prev | bit == usize::MAX
-            && let (Some(enqueuer), Some(&node_index)) =
-                (self.enqueuer.get(), self.node_index.get())
-        {
-            enqueuer.enqueue_node(node_index);
-        }
+        (prev != usize::MAX && prev | bit == usize::MAX)
+            .then(|| self.node_id.get().copied())
+            .flatten()
     }
 
     /// Clear bit `index` (called when the callback node drains write→read for this subscriber).
@@ -330,24 +325,23 @@ impl CallbackNodeReadiness {
         self.bitmask.fetch_and(mask, Ordering::AcqRel);
     }
 
-    /// Register the executor enqueuer and node index. If the bitmask is already MAX
-    /// (e.g., startup with pre-loaded data), immediately enqueue.
-    pub fn register(&self, node_index: usize, enqueuer: Arc<dyn CallbackNodeEnqueuer>) {
-        let _ = self.node_index.set(node_index);
-        let _ = self.enqueuer.set(enqueuer);
-        self.enqueue_if_ready();
+    pub(crate) fn bind_id(&self, node_id: CallbackNodeId) {
+        self.node_id
+            .set(node_id)
+            .expect("callback node ID bound more than once");
     }
 
-    /// Enqueue the node if every required input currently has a value
-    /// (bitmask == usize::MAX). Called when an optional+trigger subscriber
-    /// receives data: the data is a trigger, but the node may only run once
-    /// its required inputs are ready. The executor dedups duplicate enqueues.
-    pub fn enqueue_if_ready(&self) {
-        if self.bitmask.load(Ordering::Acquire) == usize::MAX
-            && let (Some(enqueuer), Some(&idx)) = (self.enqueuer.get(), self.node_index.get())
-        {
-            enqueuer.enqueue_node(idx);
-        }
+    /// Return the node ID if every required input currently has a value.
+    /// Called when an optional trigger receives data; the sink and executor
+    /// handle scheduling and deduplication.
+    pub fn optional_trigger_arrived(&self) -> Option<CallbackNodeId> {
+        (self.bitmask.load(Ordering::Acquire) == usize::MAX)
+            .then(|| self.node_id.get().copied())
+            .flatten()
+    }
+
+    pub fn required_inputs_ready(&self) -> bool {
+        self.bitmask.load(Ordering::Acquire) == usize::MAX
     }
 }
 
@@ -355,11 +349,11 @@ impl CallbackNodeReadiness {
 #[derive(Clone)]
 pub enum SubscriberReadiness {
     /// Gating (required / non-optional) input: owns the bit at the given
-    /// index. Data arrival sets the bit; the node enqueues when all gating
-    /// bits are set.
+    /// index. Data arrival sets the bit; the node becomes ready when all
+    /// gating bits are set.
     Gating(Arc<CallbackNodeReadiness>, usize),
     /// Optional trigger input: owns no bit (it never gates). Data arrival
-    /// enqueues the node if all required inputs are ready.
+    /// makes the node schedulable if all required inputs are ready.
     OptionalTrigger(Arc<CallbackNodeReadiness>),
 }
 
@@ -397,8 +391,8 @@ fn compute_bitmask(gating_count: usize) -> usize {
 
 pub struct CallbackNode {
     callback: Box<dyn Callback>,
-    next_execution_time_callback: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>,
-    execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
+    next_execution_time_callback: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime> + Send>,
+    execution_duration_callback: Option<Box<dyn Fn() -> Duration + Send>>,
     name: CallbackNodeName,
     readiness: Arc<CallbackNodeReadiness>,
     log_level: ExecutionLogLevel,
@@ -427,11 +421,6 @@ impl std::fmt::Display for CallbackNode {
         write!(f, "  outputs: {:?}", outputs)
     }
 }
-
-/// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
-unsafe impl Sync for CallbackNode {}
-/// SAFETY: Callbacks may run on any thread, users cannot make thread assumptions
-unsafe impl Send for CallbackNode {}
 
 impl CallbackNode {
     pub fn new_named(callback: Box<dyn Callback>, name: CallbackNodeName) -> Self {
@@ -479,7 +468,7 @@ impl CallbackNode {
         &self.name
     }
 
-    pub fn set_execution_duration_callback(&mut self, cb: Box<dyn Fn() -> Duration>) {
+    pub fn set_execution_duration_callback(&mut self, cb: Box<dyn Fn() -> Duration + Send>) {
         self.execution_duration_callback = Some(cb);
     }
 
@@ -492,7 +481,7 @@ impl CallbackNode {
 
     pub fn set_execution_time_callback(
         &mut self,
-        cb: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>,
+        cb: Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime> + Send>,
     ) {
         self.next_execution_time_callback = cb;
     }
@@ -506,16 +495,17 @@ impl CallbackNode {
     pub fn drain_subscribers(&mut self) {
         self.callback.drain_subscribers();
     }
-    pub fn flush_publishers(&mut self, ts: FrameworkTime) {
-        self.callback.flush_publishers(ts);
+    pub fn flush_publishers(&mut self, ts: FrameworkTime, sink: &mut dyn ReadyNodeSink) {
+        self.callback.flush_publishers(ts, sink);
     }
 
     pub fn flush_publishers_logged(
         &mut self,
         ts: FrameworkTime,
+        sink: &mut dyn ReadyNodeSink,
         hook: &mut dyn FnMut(usize, &MessageHeader),
     ) {
-        self.callback.flush_publishers_logged(ts, hook);
+        self.callback.flush_publishers_logged(ts, sink, hook);
     }
 
     pub fn execution_log_level(&self) -> ExecutionLogLevel {
@@ -532,18 +522,14 @@ impl CallbackNode {
         self.callback.subscribers_request_execution()
     }
     pub fn required_inputs_ready(&self) -> bool {
-        self.callback.required_inputs_ready()
+        self.readiness.required_inputs_ready()
     }
     pub fn able_to_run(&self) -> bool {
         self.callback.able_to_run()
     }
 
-    pub fn register_with_executor(
-        &self,
-        node_index: usize,
-        enqueuer: Arc<dyn CallbackNodeEnqueuer>,
-    ) {
-        self.readiness.register(node_index, enqueuer);
+    pub(crate) fn bind_id(&self, node_id: CallbackNodeId) {
+        self.readiness.bind_id(node_id);
     }
 }
 
@@ -566,7 +552,6 @@ mod test {
     use crate::callback::PortMut;
     use crate::string_interner::{CallbackNameInterner, ChannelNameInterner};
     use crate::subscriber::Subscriber;
-    use std::sync::atomic::AtomicUsize;
 
     fn make_subscriber(is_trigger: bool, is_optional: bool) -> Box<dyn GenericSubscriber> {
         Box::new(Subscriber::<u64>::new(SubscriberConfig {
@@ -643,9 +628,9 @@ mod test {
         fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
     }
 
-    struct CountingEnqueuer(Arc<AtomicUsize>);
-    impl CallbackNodeEnqueuer for CountingEnqueuer {
-        fn enqueue_node(&self, _node_index: usize) {
+    struct CountingReadyNodeSink(Arc<AtomicUsize>);
+    impl ReadyNodeSink for CountingReadyNodeSink {
+        fn schedule(&mut self, _node: CallbackNodeId) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -653,29 +638,34 @@ mod test {
     #[test]
     fn test_two_trigger_subscribers_both_must_be_set() {
         let enqueue_count = Arc::new(AtomicUsize::new(0));
-        let enqueuer =
-            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+        let mut sink = CountingReadyNodeSink(enqueue_count.clone());
         let initial = compute_bitmask(2);
         let readiness = CallbackNodeReadiness::new(initial);
-        readiness.register(0, enqueuer);
+        readiness.bind_id(CallbackNodeId(0));
 
-        readiness.set_bit(0);
+        if let Some(id) = readiness.gating_input_arrived(0) {
+            sink.schedule(id);
+        }
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             0,
-            "should not enqueue after only one subscriber is ready"
+            "should not schedule after only one subscriber is ready"
         );
-        readiness.set_bit(1);
+        if let Some(id) = readiness.gating_input_arrived(1) {
+            sink.schedule(id);
+        }
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             1,
-            "should enqueue once both subscribers are ready"
+            "should schedule once both subscribers are ready"
         );
-        readiness.set_bit(0);
+        if let Some(id) = readiness.gating_input_arrived(0) {
+            sink.schedule(id);
+        }
         assert_eq!(
             enqueue_count.load(Ordering::Relaxed),
             1,
-            "should not enqueue again when bit is already set"
+            "should not schedule again when bit is already set"
         );
     }
 
@@ -760,11 +750,12 @@ mod test {
             &callback_interner,
         );
         nodes[0].run(&ctx);
-        nodes[0].flush_publishers(ctx.now);
+        let mut sink = crate::scheduling::NoopReadyNodeSink;
+        nodes[0].flush_publishers(ctx.now, &mut sink);
         nodes[0].drain_subscribers();
 
         nodes[0].run(&ctx);
-        nodes[0].flush_publishers(ctx.now);
+        nodes[0].flush_publishers(ctx.now, &mut sink);
 
         let collected = nodes[0].callback().collect_subscribers();
         assert_eq!(
@@ -789,6 +780,29 @@ mod test {
     }
 
     #[test]
+    fn readiness_transitions_return_bound_node_id() {
+        let readiness = CallbackNodeReadiness::new(compute_bitmask(2));
+        assert_eq!(readiness.gating_input_arrived(0), None);
+        assert_eq!(readiness.gating_input_arrived(1), None);
+
+        readiness.bind_id(CallbackNodeId(7));
+        readiness.clear_bit(0);
+        assert_eq!(readiness.gating_input_arrived(0), Some(CallbackNodeId(7)));
+        assert_eq!(readiness.gating_input_arrived(0), None);
+        assert_eq!(
+            readiness.optional_trigger_arrived(),
+            Some(CallbackNodeId(7))
+        );
+    }
+
+    #[test]
+    fn unbound_readiness_does_not_schedule() {
+        let readiness = CallbackNodeReadiness::new(compute_bitmask(1));
+        assert_eq!(readiness.gating_input_arrived(0), None);
+        assert_eq!(readiness.optional_trigger_arrived(), None);
+    }
+
+    #[test]
     #[should_panic(expected = "required (non-optional) subscribers")]
     fn test_more_than_bitwidth_gating_subscribers_panics() {
         compute_bitmask(65);
@@ -796,9 +810,8 @@ mod test {
 
     #[test]
     fn test_optional_subscriber_drain_does_not_block_retriggering() {
-        let enqueue_count = Arc::new(AtomicUsize::new(0));
-        let enqueuer =
-            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+        let schedule_count = Arc::new(AtomicUsize::new(0));
+        let mut sink = CountingReadyNodeSink(schedule_count.clone());
 
         let callback = VecPorts {
             subs: vec![
@@ -821,7 +834,7 @@ mod test {
         };
 
         let mut node = CallbackNode::new_named(Box::new(callback), "mixed".into());
-        node.register_with_executor(0, enqueuer);
+        node.bind_id(CallbackNodeId(0));
 
         let collected = node.callback().collect_subscribers();
         let (Some(SubscriberReadiness::Gating(readiness, bit_index)), None) = (
@@ -831,16 +844,20 @@ mod test {
             panic!("unexpected readiness states");
         };
 
-        readiness.set_bit(bit_index);
+        if let Some(id) = readiness.gating_input_arrived(bit_index) {
+            sink.schedule(id);
+        }
         assert_eq!(
-            enqueue_count.load(Ordering::Relaxed),
+            schedule_count.load(Ordering::Relaxed),
             1,
-            "first data arrival should enqueue the node"
+            "first data arrival should schedule the node"
         );
         node.drain_subscribers();
-        readiness.set_bit(bit_index);
+        if let Some(id) = readiness.gating_input_arrived(bit_index) {
+            sink.schedule(id);
+        }
         assert_eq!(
-            enqueue_count.load(Ordering::Relaxed),
+            schedule_count.load(Ordering::Relaxed),
             2,
             "node must re-trigger after optional subscriber drains"
         );
@@ -852,9 +869,8 @@ mod test {
         use crate::publisher::{Publisher, PublisherConfig};
         use crate::time::FrameworkTime;
 
-        let enqueue_count = Arc::new(AtomicUsize::new(0));
-        let enqueuer =
-            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+        let schedule_count = Arc::new(AtomicUsize::new(0));
+        let mut sink = CountingReadyNodeSink(schedule_count.clone());
 
         let mut trigger_pub = Publisher::<u64>::new(PublisherConfig {
             capacity: 1,
@@ -886,7 +902,7 @@ mod test {
         };
 
         let mut node = CallbackNode::new_named(Box::new(callback), "gated".into());
-        node.register_with_executor(0, enqueuer);
+        node.bind_id(CallbackNodeId(0));
 
         {
             let (mut subs, _) = node.callback_mut().collect_ports_mut();
@@ -903,9 +919,9 @@ mod test {
             *out = 1;
             out.send();
         }
-        trigger_pub.flush_loaned_values(time);
+        GenericPublisher::flush_loaned_values(&mut trigger_pub, time, &mut sink);
         assert_eq!(
-            enqueue_count.load(Ordering::Relaxed),
+            schedule_count.load(Ordering::Relaxed),
             0,
             "trigger alone must not run the node"
         );
@@ -915,9 +931,9 @@ mod test {
             *out = 10;
             out.send();
         }
-        gate_pub.flush_loaned_values(time);
+        GenericPublisher::flush_loaned_values(&mut gate_pub, time, &mut sink);
         assert_eq!(
-            enqueue_count.load(Ordering::Relaxed),
+            schedule_count.load(Ordering::Relaxed),
             1,
             "gate value arriving after the trigger must run the node"
         );
@@ -929,9 +945,9 @@ mod test {
             *out = 2;
             out.send();
         }
-        trigger_pub.flush_loaned_values(time);
+        GenericPublisher::flush_loaned_values(&mut trigger_pub, time, &mut sink);
         assert_eq!(
-            enqueue_count.load(Ordering::Relaxed),
+            schedule_count.load(Ordering::Relaxed),
             2,
             "new trigger data must re-run the node while the gate retains its value"
         );
@@ -943,9 +959,9 @@ mod test {
             *out = 11;
             out.send();
         }
-        gate_pub.flush_loaned_values(time);
+        GenericPublisher::flush_loaned_values(&mut gate_pub, time, &mut sink);
         assert_eq!(
-            enqueue_count.load(Ordering::Relaxed),
+            schedule_count.load(Ordering::Relaxed),
             2,
             "gate data alone must not trigger the node"
         );
@@ -957,9 +973,8 @@ mod test {
         use crate::publisher::{Publisher, PublisherConfig};
         use crate::time::FrameworkTime;
 
-        let enqueue_count = Arc::new(AtomicUsize::new(0));
-        let enqueuer =
-            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+        let schedule_count = Arc::new(AtomicUsize::new(0));
+        let mut sink = CountingReadyNodeSink(schedule_count.clone());
 
         let mut publisher = Publisher::<u64>::new(PublisherConfig {
             capacity: 2,
@@ -978,9 +993,7 @@ mod test {
         };
 
         let mut node = CallbackNode::new_named(Box::new(callback), "optional_triggered".into());
-        node.register_with_executor(0, enqueuer);
-        enqueue_count.store(0, Ordering::Relaxed);
-
+        node.bind_id(CallbackNodeId(0));
         {
             let (mut subs, _) = node.callback_mut().collect_ports_mut();
             publisher.connect_to_subscriber(&mut *subs[0]).unwrap();
@@ -994,11 +1007,11 @@ mod test {
                 *out = i;
                 out.send();
             }
-            publisher.flush_loaned_values(time);
+            GenericPublisher::flush_loaned_values(&mut publisher, time, &mut sink);
             assert_eq!(
-                enqueue_count.load(Ordering::Relaxed) as u64,
+                schedule_count.load(Ordering::Relaxed) as u64,
                 i + 1,
-                "every optional-trigger arrival must enqueue the node"
+                "every optional-trigger arrival must schedule the node"
             );
             node.drain_subscribers();
         }
@@ -1010,9 +1023,8 @@ mod test {
         use crate::publisher::{Publisher, PublisherConfig};
         use crate::time::FrameworkTime;
 
-        let enqueue_count = Arc::new(AtomicUsize::new(0));
-        let enqueuer =
-            Arc::new(CountingEnqueuer(enqueue_count.clone())) as Arc<dyn CallbackNodeEnqueuer>;
+        let schedule_count = Arc::new(AtomicUsize::new(0));
+        let mut sink = CountingReadyNodeSink(schedule_count.clone());
 
         let mut gate_pub = Publisher::<u64>::new(PublisherConfig {
             capacity: 1,
@@ -1044,7 +1056,7 @@ mod test {
         };
 
         let mut node = CallbackNode::new_named(Box::new(callback), "gated_optional_trigger".into());
-        node.register_with_executor(0, enqueuer);
+        node.bind_id(CallbackNodeId(0));
 
         {
             let (mut subs, _) = node.callback_mut().collect_ports_mut();
@@ -1061,9 +1073,9 @@ mod test {
             *out = 1;
             out.send();
         }
-        opt_pub.flush_loaned_values(time);
+        GenericPublisher::flush_loaned_values(&mut opt_pub, time, &mut sink);
         assert_eq!(
-            enqueue_count.load(Ordering::Relaxed),
+            schedule_count.load(Ordering::Relaxed),
             0,
             "optional trigger must not fire while a required input is empty"
         );
@@ -1073,8 +1085,8 @@ mod test {
             *out = 10;
             out.send();
         }
-        gate_pub.flush_loaned_values(time);
-        assert_eq!(enqueue_count.load(Ordering::Relaxed), 1);
+        GenericPublisher::flush_loaned_values(&mut gate_pub, time, &mut sink);
+        assert_eq!(schedule_count.load(Ordering::Relaxed), 1);
 
         node.drain_subscribers();
 
@@ -1083,9 +1095,9 @@ mod test {
             *out = 2;
             out.send();
         }
-        opt_pub.flush_loaned_values(time);
+        GenericPublisher::flush_loaned_values(&mut opt_pub, time, &mut sink);
         assert_eq!(
-            enqueue_count.load(Ordering::Relaxed),
+            schedule_count.load(Ordering::Relaxed),
             2,
             "optional trigger must fire once the gate retains a value"
         );

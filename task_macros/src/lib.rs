@@ -523,9 +523,9 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 for_each_pub_stmts.push(parse_quote!(f(&self.ports.#fname);));
                 for_each_pub_mut_stmts.push(parse_quote!(f(&mut self.ports.#fname);));
                 port_mut_stmts.push(parse_quote!(f(PortMut::Publisher(&mut self.ports.#fname));));
-                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.ports.#fname, timestamp);));
+                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.ports.#fname, timestamp, sink);));
                 flush_logged_stmts.push(parse_quote!(
-                    GenericPublisher::flush_loaned_values_logged(&mut self.ports.#fname, timestamp, &mut |h| hook(ordinal, h));
+                    GenericPublisher::flush_loaned_values_logged(&mut self.ports.#fname, timestamp, sink, &mut |h| hook(ordinal, h));
                 ));
                 flush_logged_stmts.push(parse_quote!(ordinal += 1;));
                 register_stmts.push(parse_quote!(
@@ -557,9 +557,9 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 for_each_pub_stmts.push(parse_quote!(f(&self.ports.#fname);));
                 for_each_pub_mut_stmts.push(parse_quote!(f(&mut self.ports.#fname);));
                 port_mut_stmts.push(parse_quote!(f(PortMut::Publisher(&mut self.ports.#fname));));
-                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.ports.#fname, timestamp);));
+                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.ports.#fname, timestamp, sink);));
                 flush_logged_stmts.push(parse_quote!(
-                    GenericPublisher::flush_loaned_values_logged(&mut self.ports.#fname, timestamp, &mut |h| hook(ordinal, h));
+                    GenericPublisher::flush_loaned_values_logged(&mut self.ports.#fname, timestamp, sink, &mut |h| hook(ordinal, h));
                 ));
                 flush_logged_stmts.push(parse_quote!(ordinal += 1;));
                 register_stmts.push(parse_quote!(
@@ -677,10 +677,10 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 fn drain_subscribers(&self) {
                     #(#drain_stmts)*
                 }
-                fn flush_publishers(&mut self, timestamp: task::time::FrameworkTime) {
+                fn flush_publishers(&mut self, timestamp: task::time::FrameworkTime, sink: &mut dyn task::scheduling::ReadyNodeSink) {
                     #(#flush_stmts)*
                 }
-                fn flush_publishers_logged(&mut self, timestamp: task::time::FrameworkTime, hook: &mut dyn FnMut(usize, &task::message::MessageHeader)) #flush_logged_body
+                fn flush_publishers_logged(&mut self, timestamp: task::time::FrameworkTime, sink: &mut dyn task::scheduling::ReadyNodeSink, hook: &mut dyn FnMut(usize, &task::message::MessageHeader)) #flush_logged_body
                 fn subscribers_request_execution(&self) -> bool #sub_exec_body
                 fn able_to_run(&self) -> bool #able_body
                 fn required_inputs_ready(&self) -> bool #input_ready_body

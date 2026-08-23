@@ -4,13 +4,14 @@ use crate::generic_subscriber::GenericSubscriber;
 use crate::message::MessageHeader;
 use crate::pub_sub::ChannelName;
 use crate::publisher::PublisherConfig;
+use crate::scheduling::ReadyNodeSink;
 use crate::subscriber::SubscriberConfig;
 use crate::time::FrameworkTime;
 
 #[derive(Debug)]
 pub struct ConnectionTypeMismatch {}
 
-pub trait GenericPublisher {
+pub trait GenericPublisher: Send {
     fn as_any(&mut self) -> &mut dyn Any;
 
     fn config(&self) -> &PublisherConfig;
@@ -33,7 +34,7 @@ pub trait GenericPublisher {
     /// pointing at the forwarding publisher's arena.
     fn forwarded_channels(&self) -> &[ChannelName];
 
-    fn flush_loaned_values(&mut self, timestamp: FrameworkTime);
+    fn flush_loaned_values(&mut self, timestamp: FrameworkTime, sink: &mut dyn ReadyNodeSink);
 
     /// Flush sent loans, stamping each with `timestamp`, and invoke `hook` with
     /// each published message's header as it is committed. Lets an executor
@@ -45,9 +46,10 @@ pub trait GenericPublisher {
     fn flush_loaned_values_logged(
         &mut self,
         timestamp: FrameworkTime,
+        sink: &mut dyn ReadyNodeSink,
         _hook: &mut dyn FnMut(&MessageHeader),
     ) {
-        self.flush_loaned_values(timestamp);
+        self.flush_loaned_values(timestamp, sink);
     }
 
     fn allocate_arena(&mut self);

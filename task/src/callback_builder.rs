@@ -8,8 +8,9 @@ use std::time::Duration;
 pub struct CallbackBuilder {
     generic_callback: Box<dyn Callback>,
 
-    next_execution_time_callback: Option<Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime>>>,
-    execution_duration_callback: Option<Box<dyn Fn() -> Duration>>,
+    next_execution_time_callback:
+        Option<Box<dyn Fn(FrameworkTime) -> Option<FrameworkTime> + Send>>,
+    execution_duration_callback: Option<Box<dyn Fn() -> Duration + Send>>,
 
     log_level: ExecutionLogLevel,
 
@@ -128,7 +129,7 @@ impl CallbackBuilder {
 
     pub fn with_execution_duration_callback(
         mut self,
-        callback: impl Fn() -> Duration + 'static,
+        callback: impl Fn() -> Duration + Send + 'static,
     ) -> CallbackBuilder {
         self.execution_duration_callback = Some(Box::new(callback));
         self
@@ -136,7 +137,7 @@ impl CallbackBuilder {
 
     pub fn with_next_execution_time_callback(
         mut self,
-        callback: impl Fn(FrameworkTime) -> Option<FrameworkTime> + 'static,
+        callback: impl Fn(FrameworkTime) -> Option<FrameworkTime> + Send + 'static,
     ) -> CallbackBuilder {
         self.next_execution_time_callback = Some(Box::new(callback));
         self

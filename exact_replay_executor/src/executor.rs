@@ -8,7 +8,7 @@ use std::thread;
 
 use task::callback_storage::CallbackStorage;
 use task::channel_registry::ChannelRegistry;
-use task::executor::{Executor, ExecutorParams, ExecutorStopSignal};
+use task::executor::{Executor, ExecutorStopSignal};
 use task::message::MessageHeader;
 use task::string_interner::{CallbackNameInterner, ChannelNameInterner};
 
@@ -72,11 +72,7 @@ impl ExactReplayExecutor {
         // Split the executor params: pools are flattened into the global node
         // order used by the execution-log descriptor indices, while the
         // interners are retained and forwarded to callbacks via `Context`.
-        let ExecutorParams {
-            pools,
-            channel_interner,
-            callback_interner,
-        } = config.executor_params;
+        let (pools, channel_interner, callback_interner) = config.executor_params.into_parts();
         let nodes = CallbackStorage::from_shared(
             pools
                 .into_iter()

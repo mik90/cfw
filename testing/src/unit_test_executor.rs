@@ -158,7 +158,7 @@ impl UnitTestExecutorBuilder {
     /// Connects a `TestPublisher<T>` directly to the named subscriber on the callback node at
     /// `node_index`, feeding it input in isolation. Since a test publisher feeds exactly
     /// one subscriber, its arena can be allocated immediately.
-    pub fn add_test_publisher<T: Default + 'static>(
+    pub fn add_test_publisher<T: Default + Send + Sync + 'static>(
         &mut self,
         channel_name: &str,
     ) -> TestPublisher<T> {
@@ -197,7 +197,7 @@ impl UnitTestExecutorBuilder {
     /// Connects a `TestSubscriber<T>` to `channel_name`, capturing its output in isolation, with the default queue depth
     /// ([`DEFAULT_TEST_SUBSCRIBER_CAPACITY`]). Use [`Self::add_test_subscriber_with_capacity`]
     /// if a test pushes through more messages than that comfortably holds.
-    pub fn add_test_subscriber<T: 'static + Clone>(
+    pub fn add_test_subscriber<T: Send + Sync + 'static + Clone>(
         &mut self,
         channel_name: &str,
     ) -> TestSubscriber<T> {
@@ -205,7 +205,7 @@ impl UnitTestExecutorBuilder {
     }
 
     /// Like [`Self::add_test_subscriber`], but with a caller-chosen queue depth.
-    pub fn add_test_subscriber_with_capacity<T: 'static + Clone>(
+    pub fn add_test_subscriber_with_capacity<T: Send + Sync + 'static + Clone>(
         &mut self,
         channel_name: &str,
         capacity: usize,

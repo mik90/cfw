@@ -9,15 +9,17 @@ use task::callback_storage::{CallbackStorage, SharedCallbackNode, WorkerNodes};
 use task::context::Context;
 use task::execution_log::{self, ExecutionLogLevel, ExecutionLogMessage};
 use task::executor::{
-    CallbackNodeEnqueuer, Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig,
-    TimeSource, WallClock,
+    Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig, TimeSource, WallClock,
 };
 use task::publisher::Publisher;
+use task::scheduling::{CallbackNodeId, NoopReadyNodeSink, ReadyNodeSink};
 use task::time::FrameworkTime;
 
 use crate::error::LiveExecutorError;
 use crate::periodic::periodic_trigger_thread;
-use crate::pool_state::{EnqueueState, PoolState, SharedThreadPoolState, TimeTriggeredNode};
+use crate::pool_state::{
+    LiveReadyNodeSink, PoolState, SharedThreadPoolState, TimeTriggeredNode, WorkRouter,
+};
 use crate::stop_signal::StopSignal;
 use crate::worker_logger::{WorkerLogger, WorkerLoggerInit};
 
@@ -39,11 +41,12 @@ pub struct LiveExecutor<T: TimeSource = WallClock> {
 
 impl<T: TimeSource + 'static> LiveExecutor<T> {
     fn new_multi_pool_core(params: ExecutorParams, time_source: T) -> Self {
+        let (pools, channel_interner, callback_interner) = params.into_parts();
         let mut all_shared_nodes: Vec<Arc<SharedCallbackNode>> = Vec::new();
         let mut node_to_pool: Vec<usize> = Vec::new();
         let mut pool_states: Vec<Arc<PoolState>> = Vec::new();
 
-        for (pool_idx, pool) in params.pools.into_iter().enumerate() {
+        for (pool_idx, pool) in pools.into_iter().enumerate() {
             let capacity = pool.nodes.len() + pool.thread_count;
             let (work_tx, work_rx) = channel::bounded(capacity.max(1));
 
@@ -61,43 +64,25 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
 
         let worker_count: usize = pool_states.iter().map(|p| p.thread_count).sum();
 
-        let enqueue_state = Arc::new(EnqueueState {
+        let work_router = Arc::new(WorkRouter {
             pools: pool_states,
             node_to_pool,
-            nodes: all_shared_nodes.clone(),
         });
         let shared_state = Arc::new(SharedThreadPoolState {
-            enqueue_state: enqueue_state.clone(),
+            work_router: work_router.clone(),
             periodic_mutex: Mutex::new(()),
             periodic_cond_var: Condvar::new(),
             should_run: true.into(),
             worker_count,
-            worker_liveness: (0..worker_count).map(|_| Mutex::new(())).collect(),
             barrier_count: AtomicUsize::new(0),
             cleanup_done: AtomicBool::new(false),
             shutdown_mutex: Mutex::new(()),
             shutdown_cv: Condvar::new(),
-            channel_interner: params.channel_interner,
-            callback_interner: params.callback_interner,
+            channel_interner,
+            callback_interner,
         });
 
         let nodes = CallbackStorage::from_shared(all_shared_nodes);
-
-        let enqueuer: Arc<dyn CallbackNodeEnqueuer> = enqueue_state.clone();
-        let now = time_source.now();
-        for (index, node) in nodes.iter_shared().enumerate() {
-            // Worker-style execution instead of `access`: registering
-            // can synchronously enqueue a node whose inputs are already
-            // ready (e.g. no required inputs), which flips the run state to
-            // "triggered while running" — handled here by sending the index
-            // to its pool, exactly like a worker releasing a re-run.
-            let (_, reenqueue) = node.execute(now, |node| {
-                node.register_with_executor(index, enqueuer.clone())
-            });
-            if reenqueue {
-                enqueue_state.resend_node(index);
-            }
-        }
 
         LiveExecutor {
             worker_threads: Vec::new(),
@@ -124,12 +109,12 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         if !log_publishers.is_empty() {
             debug_assert_eq!(
                 log_publishers.len(),
-                params.pools.iter().map(|p| p.thread_count).sum::<usize>(),
+                params.pools().iter().map(|p| p.thread_count).sum::<usize>(),
                 "execution-log publisher count must equal the total worker thread count"
             );
         }
         let per_pool_scratch_cap: Vec<usize> = params
-            .pools
+            .pools()
             .iter()
             .map(|pool| {
                 pool.nodes
@@ -182,7 +167,6 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             Arc<SharedThreadPoolState>,
             Option<WorkerLoggerInit>,
             Arc<T>,
-            usize,
             String,
             WorkerNodes,
         ) -> thread::JoinHandle<()>,
@@ -194,23 +178,26 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
 
         let now = self.time_source.now();
         for (index, node) in self.nodes.iter_shared().enumerate() {
-            // Worker-style execute: seeds the periodic-scheduling snapshot
-            // (so the periodic thread can plan purely from atomics) while
-            // checking whether the node already has everything it needs.
-            let (ready, _) = node.execute(now, |node| {
-                node.subscribers_request_execution() && node.able_to_run()
+            let (next, schedule) = node.access(|node| {
+                let next = node.next_requested_execution_time(now);
+                let schedule = next.is_some()
+                    || (node.subscribers_request_execution() && node.required_inputs_ready());
+                (next, schedule)
             });
-            if ready {
-                self.shared_state.enqueue_state.trigger_node(index);
+            node.set_next_exec_time(next);
+            if schedule {
+                let mut sink = LiveReadyNodeSink {
+                    nodes: self.nodes.as_shared_slice(),
+                    router: &self.shared_state.work_router,
+                };
+                sink.schedule(CallbackNodeId(index));
             }
         }
 
         let has_log_publishers = !self.log_publishers.is_empty();
         let mut log_publisher_drainer = self.log_publishers.drain(..);
         let mut handles = Vec::new();
-        let mut worker_index = 0;
-
-        for (pool_idx, pool_arc) in self.shared_state.enqueue_state.pools.iter().enumerate() {
+        for (pool_idx, pool_arc) in self.shared_state.work_router.pools.iter().enumerate() {
             for thread_idx in 0..pool_arc.thread_count {
                 let pool = pool_arc.clone();
                 let shared = self.shared_state.clone();
@@ -237,11 +224,9 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                     shared,
                     init,
                     ts,
-                    worker_index,
                     thread_name,
                     worker_nodes,
                 ));
-                worker_index += 1;
             }
         }
 
@@ -251,20 +236,18 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     pub fn start_threads(&mut self) {
         let time_source = self.time_source.clone();
         self.worker_threads =
-            self.start_threads_with(move |pool, shared, init, _ts, worker_index, name, nodes| {
+            self.start_threads_with(move |pool, shared, init, _ts, name, nodes| {
                 let ts = time_source.clone();
                 thread::Builder::new()
                     .name(name)
                     .spawn(move || {
                         println!("Starting thread");
-                        let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
                         run_executor_thread(
                             pool.as_ref(),
                             shared.as_ref(),
                             &nodes,
-                            logger,
+                            init,
                             ts.as_ref(),
-                            worker_index,
                         )
                     })
                     .expect("spawn worker thread")
@@ -293,26 +276,32 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             thread::Builder::new()
                 .name(String::from("cfw_periodic"))
                 .spawn(move || {
-                    let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
-                    // Plan purely from the snapshots seeded by the executor
-                    // before spawning: the periodic thread never reads node
-                    // internals. (A node already running at startup has a
-                    // snapshot from its seeding too.)
-                    for (index, node) in nodes.iter().enumerate() {
-                        if let Some(t) = node.next_exec_time() {
-                            exec_times.push_back(TimeTriggeredNode {
-                                index,
-                                requested_exec_time: t,
-                            });
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
+                        // Plan purely from the snapshots seeded by the executor
+                        // before spawning: the periodic thread never reads node
+                        // internals. (A node already running at startup has a
+                        // snapshot from its seeding too.)
+                        for (index, node) in nodes.iter().enumerate() {
+                            if let Some(t) = node.next_exec_time() {
+                                exec_times.push_back(TimeTriggeredNode {
+                                    index,
+                                    requested_exec_time: t,
+                                });
+                            }
                         }
-                    }
-                    while shared_state.should_run.load(Ordering::Relaxed) {
-                        body(
-                            shared_state.as_ref(),
-                            &nodes,
-                            &mut exec_times,
-                            time_source.as_ref(),
-                        );
+                        while shared_state.should_run.load(Ordering::Acquire) {
+                            body(
+                                shared_state.as_ref(),
+                                &nodes,
+                                &mut exec_times,
+                                time_source.as_ref(),
+                            );
+                        }
+                    }));
+                    if let Err(payload) = result {
+                        shared_state.request_stop();
+                        std::panic::resume_unwind(payload);
                     }
                 })
                 .expect("spawn periodic thread"),
@@ -320,49 +309,36 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     }
 
     pub fn stop_threads(&mut self) -> Result<(), Vec<usize>> {
-        self.shared_state.should_run.store(false, Ordering::Relaxed);
+        self.shared_state.request_stop();
 
-        for pool in self.shared_state.enqueue_state.pools.iter() {
+        for pool in self.shared_state.work_router.pools.iter() {
             for _ in 0..pool.thread_count {
                 let _ = pool.work_tx.try_send(SHUTDOWN_SENTINEL);
             }
         }
 
-        self.shared_state.periodic_cond_var.notify_all();
-
-        // Wait for every worker to finish — either at the barrier (clean) or
-        // fully exited (panicked — `is_finished` true, no barrier entry).
+        // Every worker, including one that caught a callback panic, parks at
+        // this barrier while retaining its logger arena.
         {
             use std::sync::atomic::Ordering as O;
             let guard = self.shared_state.shutdown_mutex.lock().unwrap();
             // drop: discard the MutexGuard from wait_while immediately, releasing
             // shutdown_mutex. _ = ... would trigger let_underscore_lock.
             drop(self.shared_state.shutdown_cv.wait_while(guard, |_| {
-                let at_barrier = self.shared_state.barrier_count.load(O::Acquire);
-                let finished = self
-                    .worker_threads
-                    .iter()
-                    .filter(|h| h.is_finished())
-                    .count();
-                at_barrier + finished < self.shared_state.worker_count
+                self.shared_state.barrier_count.load(O::Acquire) < self.shared_state.worker_count
             }));
         }
 
-        // Check if any worker panicked via mutex poisoning.
-        let any_panicked = self
-            .shared_state
-            .worker_liveness
-            .iter()
-            .any(|m| m.is_poisoned());
+        // Stop the scheduler before touching callback storage. It can otherwise
+        // enqueue a node while teardown is clearing subscriber buffers.
+        let periodic_panicked = self
+            .periodic_thread
+            .take()
+            .is_some_and(|handle| handle.join().is_err());
 
-        if any_panicked {
-            // A panicked worker freed its publisher's arena during unwind.
-            // Skip cleanup_buffers to avoid use-after-free.
-            // The executor is shutting down in an error state; caller gets Err.
-        } else {
-            // All workers are parked at the barrier with publishers alive.
-            self.nodes.cleanup_subscribers();
-        }
+        // SAFETY: every worker is parked at the cleanup barrier and the
+        // periodic scheduler was joined above.
+        unsafe { self.nodes.cleanup_subscribers_when_quiescent() };
 
         // Release workers from the barrier
         self.shared_state
@@ -378,10 +354,10 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                 Err(_) => panicked_indices.push(i),
             }
         }
-
-        // Join periodic thread
-        if let Some(handle) = self.periodic_thread.take() {
-            let _ = handle.join();
+        if periodic_panicked {
+            // The scheduler follows the workers in the executor's thread
+            // index space used by LiveExecutorError.
+            panicked_indices.push(self.shared_state.worker_count);
         }
 
         if panicked_indices.is_empty() {
@@ -411,13 +387,17 @@ fn process_work_item(
     // run once the node is free (and, if a trigger arrived mid-run, already
     // back in `Enqueued`).
     let (_, reenqueue) = nodes[index].execute(now, |node_guard| {
+        let mut sink = LiveReadyNodeSink {
+            nodes,
+            router: &shared_state.work_router,
+        };
         match logger {
             Some(logger) => {
                 if !logger.has_data() {
                     // Just track drop and continue
                     node_guard.drain_subscribers();
                     let _ = node_guard.run(&ctx);
-                    node_guard.flush_publishers(ctx.now);
+                    node_guard.flush_publishers(ctx.now, &mut sink);
                     return;
                 }
 
@@ -425,7 +405,7 @@ fn process_work_item(
                     ExecutionLogLevel::Off => {
                         node_guard.drain_subscribers();
                         let _ = node_guard.run(&ctx);
-                        node_guard.flush_publishers(ctx.now);
+                        node_guard.flush_publishers(ctx.now, &mut sink);
                     }
                     ExecutionLogLevel::Duration => {
                         node_guard.drain_subscribers();
@@ -434,11 +414,11 @@ fn process_work_item(
                         let end = task::time::FrameworkTime::from_wall_clock();
                         let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
-                        logger.record_duration_only(index as u32, ctx.now, duration);
+                        logger.record_duration_only(index as u32, ctx.now, duration, &mut sink);
 
-                        node_guard.flush_publishers(ctx.now);
+                        node_guard.flush_publishers(ctx.now, &mut sink);
 
-                        logger.maybe_flush_period(ctx.now);
+                        logger.maybe_flush_period(ctx.now, &mut sink);
                     }
                     ExecutionLogLevel::Whole => {
                         node_guard.drain_subscribers();
@@ -460,26 +440,37 @@ fn process_work_item(
                         let end = task::time::FrameworkTime::from_wall_clock();
                         let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
-                        logger.begin_execution(index as u32, ctx.now, duration);
+                        logger.begin_execution(index as u32, ctx.now, duration, &mut sink);
 
-                        logger.drain_recv_into_current();
+                        logger.drain_recv_into_current(&mut sink);
 
-                        node_guard.flush_publishers_logged(ctx.now, &mut |ordinal, header| {
-                            logger.append(task::execution_log::LoggedMessage {
-                                ordinal: ordinal as u16,
-                                direction: task::execution_log::Direction::Published,
-                                header: *header,
-                            });
-                        });
+                        let mut logger_sink = LiveReadyNodeSink {
+                            nodes,
+                            router: &shared_state.work_router,
+                        };
+                        node_guard.flush_publishers_logged(
+                            ctx.now,
+                            &mut sink,
+                            &mut |ordinal, header| {
+                                logger.append(
+                                    task::execution_log::LoggedMessage {
+                                        ordinal: ordinal as u16,
+                                        direction: task::execution_log::Direction::Published,
+                                        header: *header,
+                                    },
+                                    &mut logger_sink,
+                                );
+                            },
+                        );
 
-                        logger.maybe_flush_period(ctx.now);
+                        logger.maybe_flush_period(ctx.now, &mut sink);
                     }
                 }
             }
             None => {
                 node_guard.drain_subscribers();
                 let _ = node_guard.run(&ctx);
-                node_guard.flush_publishers(ctx.now);
+                node_guard.flush_publishers(ctx.now, &mut sink);
             }
         }
     });
@@ -488,7 +479,9 @@ fn process_work_item(
     // a mid-run trigger, already `Enqueued`) feed the index back to the pool's
     // channel so a free worker can claim it immediately.
     if reenqueue {
-        shared_state.enqueue_state.resend_node(index);
+        shared_state
+            .work_router
+            .send_enqueued(CallbackNodeId(index));
     }
 }
 
@@ -496,9 +489,8 @@ fn worker_loop_core<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
     nodes: &[Arc<SharedCallbackNode>],
-    mut logger: Option<WorkerLogger>,
+    init: Option<WorkerLoggerInit>,
     time_source: &T,
-    worker_index: usize,
     mut process: impl FnMut(
         usize,
         &[Arc<SharedCallbackNode>],
@@ -507,9 +499,22 @@ fn worker_loop_core<T: TimeSource>(
         FrameworkTime,
     ),
 ) {
-    let _alive = shared_state.worker_liveness[worker_index].lock().unwrap();
+    let mut panic_payload = None;
+    let mut logger_init = init;
+    let mut logger = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        logger_init.as_ref()?;
+        let now = time_source.now();
+        logger_init.take().map(|init| WorkerLogger::new(init, now))
+    })) {
+        Ok(logger) => logger,
+        Err(payload) => {
+            shared_state.request_stop();
+            panic_payload = Some(payload);
+            None
+        }
+    };
 
-    loop {
+    while panic_payload.is_none() {
         let index = match pool_state.work_rx.recv() {
             Ok(SHUTDOWN_SENTINEL) => break,
             Ok(idx) => idx,
@@ -520,19 +525,35 @@ fn worker_loop_core<T: TimeSource>(
             break;
         }
 
-        process(
-            index,
-            nodes,
-            shared_state,
-            logger.as_mut(),
-            time_source.now(),
-        );
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            process(
+                index,
+                nodes,
+                shared_state,
+                logger.as_mut(),
+                time_source.now(),
+            );
+        })) {
+            Ok(()) => {}
+            Err(payload) => {
+                shared_state.request_stop();
+                panic_payload = Some(payload);
+                break;
+            }
+        }
     }
 
-    // Flush remaining entries into the channel BEFORE reaching the barrier,
-    // so they're captured by the main thread's cleanup_buffers.
-    if let Some(logger) = logger.as_mut() {
-        logger.flush_remaining(time_source.now());
+    // Commit residual logger loans before cleanup, but do not schedule
+    // consumer callbacks while the executor is quiescing.
+    if panic_payload.is_none()
+        && let Some(logger) = logger.as_mut()
+        && let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut sink = NoopReadyNodeSink;
+            logger.flush_remaining(time_source.now(), &mut sink);
+        }))
+    {
+        shared_state.request_stop();
+        panic_payload = Some(payload);
     }
 
     // Update the predicate while holding the same mutex used by the waiter.
@@ -548,23 +569,25 @@ fn worker_loop_core<T: TimeSource>(
     drop(shared_state.shutdown_cv.wait_while(guard, |_| {
         !shared_state.cleanup_done.load(Ordering::Acquire)
     }));
+
+    if let Some(payload) = panic_payload {
+        std::panic::resume_unwind(payload);
+    }
 }
 
 fn run_executor_thread<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
     nodes: &[Arc<SharedCallbackNode>],
-    logger: Option<WorkerLogger>,
+    init: Option<WorkerLoggerInit>,
     time_source: &T,
-    worker_index: usize,
 ) {
     worker_loop_core(
         pool_state,
         shared_state,
         nodes,
-        logger,
+        init,
         time_source,
-        worker_index,
         process_work_item,
     );
 }
@@ -574,17 +597,15 @@ fn no_alloc_worker_loop<T: TimeSource>(
     pool_state: &PoolState,
     shared_state: &SharedThreadPoolState,
     nodes: &[Arc<SharedCallbackNode>],
-    logger: Option<WorkerLogger>,
+    init: Option<WorkerLoggerInit>,
     time_source: &T,
-    worker_index: usize,
 ) {
     worker_loop_core(
         pool_state,
         shared_state,
         nodes,
-        logger,
+        init,
         time_source,
-        worker_index,
         |index, nodes, shared_state, logger, now| {
             assert_no_alloc::assert_no_alloc(|| {
                 process_work_item(index, nodes, shared_state, logger, now)
@@ -621,21 +642,19 @@ impl LiveExecutor<WallClock> {
     fn start_threads_no_alloc(&mut self) {
         let time_source = self.time_source.clone();
         self.worker_threads =
-            self.start_threads_with(move |pool, shared, init, _ts, worker_index, name, nodes| {
+            self.start_threads_with(move |pool, shared, init, _ts, name, nodes| {
                 let pool = pool.clone();
                 let shared = shared.clone();
                 let ts = time_source.clone();
                 thread::Builder::new()
                     .name(name)
                     .spawn(move || {
-                        let logger = init.map(|i| WorkerLogger::new(i, ts.now()));
                         no_alloc_worker_loop(
                             pool.as_ref(),
                             shared.as_ref(),
                             &nodes,
-                            logger,
+                            init,
                             ts.as_ref(),
-                            worker_index,
                         )
                     })
                     .expect("spawn worker thread")
@@ -668,7 +687,7 @@ mod tests {
         callback_builder::CallbackBuilder,
         context::Context,
         execution_log::ExecutionLogLevel,
-        executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig},
+        executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig, TimeSource},
         generic_publisher::GenericPublisher,
         generic_subscriber::GenericSubscriber,
         input::{OptionalInput, RequiredInput},
@@ -1526,5 +1545,269 @@ mod tests {
             counter.load(Ordering::Relaxed) > 0,
             "counter never drained a log message"
         );
+    }
+
+    struct LifecycleProbe {
+        runs: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for LifecycleProbe {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Callback for LifecycleProbe {
+        fn run(&mut self, _ctx: &Context) -> Run {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            Run::new(1)
+        }
+        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+    }
+
+    struct PanickingCallback;
+
+    impl Callback for PanickingCallback {
+        fn run(&mut self, _ctx: &Context) -> Run {
+            panic!("intentional worker panic");
+        }
+        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+    }
+
+    struct PanicOnThread(&'static str);
+
+    impl TimeSource for PanicOnThread {
+        fn now(&self) -> task::time::FrameworkTime {
+            if std::thread::current()
+                .name()
+                .is_some_and(|name| name.starts_with(self.0))
+            {
+                panic!("intentional time-source panic");
+            }
+            task::time::FrameworkTime::from_nanoseconds(0)
+        }
+    }
+
+    #[test]
+    fn unstarted_executor_drops_callback() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let node = CallbackNode::new_named(
+            Box::new(LifecycleProbe {
+                runs: Arc::new(AtomicUsize::new(0)),
+                drops: drops.clone(),
+            }),
+            "drop_probe".into(),
+        );
+        drop(LiveExecutor::new(1, vec![node]));
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cleanly_stopped_executor_drops_callback() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let node = CallbackNode::new_named(
+            Box::new(LifecycleProbe {
+                runs: Arc::new(AtomicUsize::new(0)),
+                drops: drops.clone(),
+            }),
+            "drop_probe".into(),
+        );
+        let mut executor = LiveExecutor::new(1, vec![node]);
+        executor.start_threads();
+        executor.stop_threads().expect("clean stop");
+        drop(executor);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn event_only_node_does_not_run_at_startup() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let node = CallbackNode::new_named(
+            Box::new(LifecycleProbe {
+                runs: runs.clone(),
+                drops: Arc::new(AtomicUsize::new(0)),
+            }),
+            "event_only".into(),
+        );
+        let mut executor = LiveExecutor::new(1, vec![node]);
+        executor.start_threads();
+        std::thread::sleep(time::Duration::from_millis(10));
+        executor.stop_threads().expect("clean stop");
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn periodic_node_runs_at_startup() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let schedule_checks = Arc::new(AtomicUsize::new(0));
+        let mut node = CallbackNode::new_named(
+            Box::new(LifecycleProbe {
+                runs: runs.clone(),
+                drops: Arc::new(AtomicUsize::new(0)),
+            }),
+            "periodic".into(),
+        );
+        let schedule_checks_for_callback = schedule_checks.clone();
+        node.set_execution_time_callback(Box::new(move |now| {
+            schedule_checks_for_callback.fetch_add(1, Ordering::SeqCst);
+            Some(now + time::Duration::from_secs(60))
+        }));
+        let mut executor = LiveExecutor::new(1, vec![node]);
+        executor.start_threads();
+        let deadline = std::time::Instant::now() + time::Duration::from_secs(1);
+        while runs.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(time::Duration::from_millis(1));
+        }
+        executor.stop_threads().expect("clean stop");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            schedule_checks.load(Ordering::SeqCst),
+            2,
+            "startup should query once, followed by one refresh after the run"
+        );
+    }
+
+    #[test]
+    fn worker_panic_keeps_logger_arena_alive_until_cleanup() {
+        let logged_runs = Arc::new(AtomicUsize::new(0));
+        let mut logged_node = CallbackNode::new_named(
+            Box::new(LifecycleProbe {
+                runs: logged_runs.clone(),
+                drops: Arc::new(AtomicUsize::new(0)),
+            }),
+            "logged".into(),
+        );
+        logged_node
+            .set_execution_time_callback(Box::new(|now| Some(now + time::Duration::from_secs(60))));
+        logged_node.set_execution_duration_callback(Box::new(|| time::Duration::ZERO));
+        logged_node.set_execution_log_level(ExecutionLogLevel::Duration);
+
+        let collected = Arc::new(AtomicUsize::new(0));
+        let mut collector_node = CallbackNode::new_named(
+            Box::new(ExecutionLogCounter {
+                subscriber: Subscriber::<task::execution_log::ExecutionLogMessage>::new(
+                    SubscriberConfig {
+                        is_optional: true,
+                        capacity: 1,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+                    },
+                ),
+                count: collected.clone(),
+            }),
+            "log_collector".into(),
+        );
+        collector_node.set_execution_log_level(ExecutionLogLevel::Off);
+
+        let mut panic_node =
+            CallbackNode::new_named(Box::new(PanickingCallback), "panicking".into());
+        panic_node
+            .set_execution_time_callback(Box::new(|now| Some(now + time::Duration::from_secs(60))));
+        panic_node.set_execution_log_level(ExecutionLogLevel::Off);
+
+        // The logged node is queued first. Its zero-period logger flush leaves
+        // an ArenaPtr in the collector before the next queued node panics.
+        let mut pools = vec![ThreadPoolConfig::new(
+            1,
+            vec![logged_node, collector_node, panic_node],
+        )];
+        let mut log_publishers = task::execution_log::log_publishers(&pools);
+        task::execution_log::connect(&mut pools, &mut log_publishers)
+            .expect("connect execution log");
+        let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
+            ExecutorParams::new(pools),
+            log_publishers,
+            time::Duration::ZERO,
+        );
+
+        executor.start_threads();
+        let deadline = std::time::Instant::now() + time::Duration::from_secs(5);
+        while executor.is_running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(time::Duration::from_millis(1));
+        }
+        assert!(!executor.is_running(), "worker panic did not stop executor");
+        assert_eq!(logged_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(collected.load(Ordering::SeqCst), 0);
+        assert_eq!(executor.stop_threads(), Err(vec![0]));
+        drop(executor);
+    }
+
+    #[test]
+    fn logger_initialization_panic_reaches_cleanup_barrier() {
+        let node = CallbackNode::new_named(
+            Box::new(LifecycleProbe {
+                runs: Arc::new(AtomicUsize::new(0)),
+                drops: Arc::new(AtomicUsize::new(0)),
+            }),
+            "event_only".into(),
+        );
+        let mut pools = vec![ThreadPoolConfig::new(1, vec![node])];
+        let mut log_publishers = task::execution_log::log_publishers(&pools);
+        task::execution_log::connect(&mut pools, &mut log_publishers)
+            .expect("connect execution log");
+        let mut executor = LiveExecutor::new_multi_pool_with_execution_log_and_time(
+            ExecutorParams::new(pools),
+            log_publishers,
+            time::Duration::from_secs(1),
+            PanicOnThread("cfw_pool_"),
+        );
+
+        executor.start_threads();
+        let deadline = std::time::Instant::now() + time::Duration::from_secs(5);
+        while executor.is_running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(time::Duration::from_millis(1));
+        }
+        assert!(!executor.is_running());
+        assert_eq!(executor.stop_threads(), Err(vec![0]));
+    }
+
+    #[test]
+    fn periodic_thread_panic_stops_executor_and_is_reported() {
+        let node = CallbackNode::new_named(
+            Box::new(LifecycleProbe {
+                runs: Arc::new(AtomicUsize::new(0)),
+                drops: Arc::new(AtomicUsize::new(0)),
+            }),
+            "event_only".into(),
+        );
+        let pools = vec![ThreadPoolConfig::new(1, vec![node])];
+        let mut executor = LiveExecutor::new_multi_pool_with_time(
+            ExecutorParams::new(pools),
+            PanicOnThread("cfw_periodic"),
+        );
+
+        executor.start_threads();
+        let deadline = std::time::Instant::now() + time::Duration::from_secs(5);
+        while executor.is_running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(time::Duration::from_millis(1));
+        }
+        assert!(!executor.is_running());
+        assert_eq!(executor.stop_threads(), Err(vec![1]));
     }
 }
