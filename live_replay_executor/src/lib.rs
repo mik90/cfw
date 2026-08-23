@@ -8,7 +8,7 @@ use std::time::Duration;
 use live_executor::LiveExecutor;
 use task::execution_log::ExecutionLogMessage;
 use task::executor::ThreadPoolConfig;
-use task::executor::{Executor, ExecutorStopSignal, TimeSource};
+use task::executor::{Executor, ExecutorParams, ExecutorStopSignal, TimeSource};
 use task::publisher::Publisher;
 use task::time::FrameworkTime;
 
@@ -92,7 +92,7 @@ impl LiveReplayExecutor {
             config.first_log_time,
             config.paused.clone(),
         );
-        let inner = LiveExecutor::new_multi_pool_with_time(pools, time_source);
+        let inner = LiveExecutor::new_multi_pool_with_time(ExecutorParams::new(pools), time_source);
         LiveReplayExecutor {
             inner,
             paused: config.paused.clone(),
@@ -111,7 +111,7 @@ impl LiveReplayExecutor {
             config.paused.clone(),
         );
         let inner = LiveExecutor::new_multi_pool_with_execution_log_and_time(
-            pools,
+            ExecutorParams::new(pools),
             log_publishers,
             flush_period,
             time_source,

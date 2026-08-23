@@ -154,6 +154,7 @@ mod tests {
     use task::executor::ExecutorStopSignal;
     use task::input::OptionalInput;
     use task::publisher::Publisher;
+    use task::string_interner::{CallbackNameInterner, ChannelNameInterner};
     use task::subscriber::{Subscriber, SubscriberConfig};
     use task::time::FrameworkTime;
 
@@ -238,9 +239,12 @@ mod tests {
             pub_ref.allocate_arena();
         }
 
+        let channel_interner = ChannelNameInterner::default();
+        let callback_interner = CallbackNameInterner::default();
+
         // Time 500: nothing due yet
         let t500 = FrameworkTime::from_nanoseconds(500);
-        node.run(&Context::new(t500));
+        node.run(&Context::new(t500, &channel_interner, &callback_interner));
         node.flush_publishers(t500);
         sub.drain_writer_to_reader();
         {
@@ -250,7 +254,7 @@ mod tests {
 
         // Time 1000: first entry should publish
         let t1000 = FrameworkTime::from_nanoseconds(1_000);
-        node.run(&Context::new(t1000));
+        node.run(&Context::new(t1000, &channel_interner, &callback_interner));
         node.flush_publishers(t1000);
         sub.drain_writer_to_reader();
         {
@@ -262,7 +266,7 @@ mod tests {
 
         // Time 2000: cursor behind second entry — nothing new
         let t2000 = FrameworkTime::from_nanoseconds(2_000);
-        node.run(&Context::new(t2000));
+        node.run(&Context::new(t2000, &channel_interner, &callback_interner));
         node.flush_publishers(t2000);
         sub.drain_writer_to_reader();
         {
@@ -272,7 +276,7 @@ mod tests {
 
         // Time 3000: second entry should publish, then stop
         let t3000 = FrameworkTime::from_nanoseconds(3_000);
-        node.run(&Context::new(t3000));
+        node.run(&Context::new(t3000, &channel_interner, &callback_interner));
         node.flush_publishers(t3000);
         sub.drain_writer_to_reader();
         {
