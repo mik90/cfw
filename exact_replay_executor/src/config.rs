@@ -2,7 +2,7 @@
 
 use logging::log_file::LogFileReader;
 use task::channel_registry::ChannelRegistry;
-use task::executor::ThreadPoolConfig;
+use task::executor::{ExecutorParams, ThreadPoolConfig};
 
 use crate::replay_task::DivergencePolicy;
 
@@ -17,11 +17,8 @@ pub(crate) const DEFAULT_DIVERGENCE_POLICY: DivergencePolicy = DivergencePolicy:
 /// |---|---|
 /// | `divergence_policy` | [`DivergencePolicy::Strict`] |
 pub struct ExactReplayConfig {
-    /// The thread pools to replay. The callback nodes must be fresh copies of
-    /// the original ones (not already wired into a live executor), arranged in
-    /// the same global order the original graph used so node indices match the
-    /// execution-log descriptor.
-    pub pools: Vec<ThreadPoolConfig>,
+    /// General executor parameters.
+    pub executor_params: ExecutorParams,
     /// Channel registry containing serializers, deserializers, and publisher
     /// factories for every channel referenced in the log. Output serialization
     /// is performed by the logging crate using the registry's serializers.
@@ -41,7 +38,7 @@ impl ExactReplayConfig {
         log_reader: Box<dyn LogFileReader>,
     ) -> Self {
         ExactReplayConfig {
-            pools,
+            executor_params: ExecutorParams::new(pools),
             registry,
             log_reader,
             divergence_policy: DEFAULT_DIVERGENCE_POLICY,

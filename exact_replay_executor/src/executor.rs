@@ -68,6 +68,7 @@ impl ExactReplayExecutor {
         // descriptor indices.
         let nodes = CallbackStorage::from_shared(
             config
+                .executor_params
                 .pools
                 .into_iter()
                 .flat_map(|pool| pool.nodes.into_nodes())
