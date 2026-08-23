@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use task::callback_storage::CallbackStorage;
-use task::executor::{Executor, ExecutorStopSignal, ThreadPoolConfig};
+use task::executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig};
 use task::time::FrameworkTime;
 
 #[derive(Debug)]
@@ -56,7 +56,10 @@ impl SimulationExecutor {
         Self::new_with(SimulationConfig {
             // We can't create an instant from a fixed value, so any 'now' will be arbitrary
             start_time: FrameworkTime::from_wall_clock(),
-            pools: vec![ThreadPoolConfig::new(num_virtual_threads, nodes)],
+            executor_params: ExecutorParams::new(vec![ThreadPoolConfig::new(
+                num_virtual_threads,
+                nodes,
+            )]),
             node_executor_thread_count: 1,
         })
     }

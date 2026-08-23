@@ -4,7 +4,7 @@ pub mod log_simulation;
 mod node_executor;
 pub mod state;
 use task::context::Context;
-use task::executor::ThreadPoolConfig;
+use task::executor::ExecutorParams;
 use task::time::FrameworkTime;
 
 #[derive(Clone, Copy)]
@@ -28,7 +28,7 @@ type CallbackNodeIndex = usize;
 
 pub struct SimulationConfig {
     pub start_time: FrameworkTime,
-    pub pools: Vec<ThreadPoolConfig>,
+    pub executor_params: ExecutorParams,
     /// Number of real OS threads used to execute callback nodes in parallel within a step.
     /// Independent of any virtual thread pool sizes.
     pub node_executor_thread_count: usize,

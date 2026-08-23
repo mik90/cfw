@@ -2,6 +2,7 @@ use crate::{CallbackNodeIndex, Context, FrameworkTime};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use task::callback_storage::WorkerNodes;
+use task::string_interner::{CallbackNameInterner, ChannelNameInterner};
 
 pub(crate) struct NodeExecutionRequest {
     /// Index of callback node to execute
@@ -25,6 +26,8 @@ pub(crate) fn node_executor_thread(
     work_receiver: Receiver<NodeExecutionRequest>,
     response_sender: Sender<NodeExecutionResponse>,
     nodes: WorkerNodes,
+    channel_name_interner: ChannelNameInterner,
+    callback_name_interner: CallbackNameInterner,
 ) {
     loop {
         let work_request = match work_receiver.recv() {
@@ -36,7 +39,11 @@ pub(crate) fn node_executor_thread(
             return;
         }
 
-        let ctx = Context::new(work_request.current_time);
+        let ctx = Context::new(
+            work_request.current_time,
+            &channel_name_interner,
+            &callback_name_interner,
+        );
         // The step thread schedules nodes so that no two node-executor threads
         // run the same index concurrently, and the simulation never enqueues
         // nodes (its scheduler dispatches work directly), so each node is

@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
+// TODO define tags in here
+pub type CallbackNameInterner = StringInterner<crate::pub_sub::CallbackNameTag>;
+pub type ChannelNameInterner = StringInterner<crate::pub_sub::ChannelNameTag>;
+
 /// Strong-type for accessing interned channel names or task names
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

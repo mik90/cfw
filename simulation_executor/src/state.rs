@@ -1,5 +1,5 @@
 use task::callback_storage::{CallbackStorage, SharedCallbackNode};
-use task::executor::ThreadPoolConfig;
+use task::executor::{ExecutorParams, ThreadPoolConfig};
 
 use crate::node_executor::{NodeExecutionRequest, NodeExecutionResponse, node_executor_thread};
 use crate::{
@@ -76,7 +76,10 @@ impl SimulationState {
     pub fn new(num_virtual_threads: usize, nodes: impl Into<CallbackStorage>) -> Self {
         Self::new_with(SimulationConfig {
             start_time: FrameworkTime::from_nanoseconds(0),
-            pools: vec![ThreadPoolConfig::new(num_virtual_threads, nodes)],
+            executor_params: ExecutorParams::new(vec![ThreadPoolConfig::new(
+                num_virtual_threads,
+                nodes,
+            )]),
             node_executor_thread_count: 1,
         })
     }
@@ -88,7 +91,7 @@ impl SimulationState {
         let mut node_to_pool: Vec<usize> = Vec::new();
         let mut virtual_pools: Vec<VirtualPool> = Vec::new();
 
-        for (pool_idx, pool) in config.pools.into_iter().enumerate() {
+        for (pool_idx, pool) in config.executor_params.pools.into_iter().enumerate() {
             virtual_pools.push(VirtualPool {
                 virtual_thread_count: pool.thread_count,
                 num_threads_occupied: 0,
@@ -132,8 +135,16 @@ impl SimulationState {
             let cloned_nodes = state.nodes.clone_shared();
 
             let response_sender_clone = exec_response_sender.clone();
+            let channel_name_interner_clone = config.executor_params.channel_interner.clone();
+            let callback_name_interner_clone = config.executor_params.callback_interner.clone();
             state.node_executor_threads.push(thread::spawn(move || {
-                node_executor_thread(request_recv, response_sender_clone, cloned_nodes);
+                node_executor_thread(
+                    request_recv,
+                    response_sender_clone,
+                    cloned_nodes,
+                    channel_name_interner_clone,
+                    callback_name_interner_clone,
+                );
             }));
         }
 
