@@ -1334,10 +1334,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri flags a stacked-borrows violation: ArenaPtrs into the execution-log publisher's arena are invalidated by a Unique retag (worker_logger.rs) and then dereferenced"
-    )]
     fn test_execution_log_recording() {
         #[cfg(not(miri))]
         const TARGET: usize = 20;

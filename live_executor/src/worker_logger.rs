@@ -30,11 +30,9 @@ pub(crate) struct WorkerLoggerInit {
 
 impl WorkerLogger {
     pub(crate) fn new(init: WorkerLoggerInit, now: FrameworkTime) -> Self {
-        let mut publisher = init.publisher;
-        let current_loan = publisher.loan_default().ok();
         WorkerLogger {
-            current_loan,
-            publisher,
+            current_loan: None,
+            publisher: init.publisher,
             flush_period: init.flush_period,
             last_flush: now,
             cur_node: 0,
