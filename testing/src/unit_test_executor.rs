@@ -7,7 +7,7 @@ use simulation_executor::SimulationConfig;
 use simulation_executor::state::{SimulationState, StepError};
 use task::callback::{CallbackNode, CallbackViews, connect_callback_nodes};
 use task::callback_storage::CallbackStorage;
-use task::executor::ThreadPoolConfig;
+use task::executor::{ExecutorParams, ThreadPoolConfig};
 use task::generic_publisher::GenericPublisher;
 use task::pub_sub::CallbackNodeName;
 use task::subscriber::GenericSubscriber;
@@ -48,7 +48,7 @@ impl UnitTestExecutor {
         let mut task_test = Self {
             simulation_state: SimulationState::new_with(SimulationConfig {
                 start_time: config.start_time,
-                pools: config.pools,
+                executor_params: ExecutorParams::new(config.pools),
                 node_executor_thread_count: config.node_executor_thread_count,
             }),
             time_source: time_source.unwrap_or_else(|| Arc::new(TimeSource::new(start_time))),

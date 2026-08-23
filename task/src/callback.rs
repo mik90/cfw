@@ -564,6 +564,7 @@ impl Drop for CallbackNode {
 mod test {
     use super::*;
     use crate::callback::PortMut;
+    use crate::string_interner::{CallbackNameInterner, ChannelNameInterner};
     use crate::subscriber::Subscriber;
     use std::sync::atomic::AtomicUsize;
 
@@ -750,9 +751,14 @@ mod test {
         )];
         connect_callback_nodes(&mut nodes).expect("loopback connection should succeed");
 
-        let ctx = Context {
-            now: FrameworkTime::from_nanoseconds(1),
-        };
+        let channel_interner = ChannelNameInterner::default();
+        let callback_interner = CallbackNameInterner::default();
+
+        let ctx = Context::new(
+            FrameworkTime::from_nanoseconds(1),
+            &channel_interner,
+            &callback_interner,
+        );
         nodes[0].run(&ctx);
         nodes[0].flush_publishers(ctx.now);
         nodes[0].drain_subscribers();
