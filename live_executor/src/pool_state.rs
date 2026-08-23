@@ -5,8 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use task::callback_storage::{CallbackStorage, SharedCallbackNode};
 use task::executor::CallbackNodeEnqueuer;
-use task::pub_sub::{CallbackNameTag, ChannelNameTag};
-use task::string_interner::StringInterner;
+use task::string_interner::{CallbackNameTag, ChannelNameTag, StringInterner};
 use task::time::FrameworkTime;
 
 #[derive(Clone, Copy)]

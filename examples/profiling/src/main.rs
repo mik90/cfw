@@ -10,6 +10,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use task::callback::CallbackNode;
 use task::callback_builder::CallbackBuilder;
 use task::execution_log::ExecutionLogLevel;
+use task::executor::ExecutorParams;
 use task::input::RequiredInput;
 use task::output::Output;
 use task::task_graph_builder::TaskGraphBuilder;
@@ -181,7 +182,7 @@ fn main() {
     }
 
     let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
-        std::mem::take(&mut graph.pools),
+        ExecutorParams::new(std::mem::take(&mut graph.pools)),
         std::mem::take(&mut graph.execution_log_publishers),
         Duration::from_millis(500),
     );

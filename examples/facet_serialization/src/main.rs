@@ -40,6 +40,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use task::execution_log::ExecutionLogLevel;
+use task::executor::ExecutorParams;
 use task::loggable::Loggable;
 use task::{CallbackBuilder, Output, task_graph_builder};
 use task_macros::task_callback;
@@ -181,7 +182,7 @@ fn run_live(log_path: PathBuf, print: bool) -> Result<(), Box<dyn std::error::Er
     }
 
     let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
-        std::mem::take(&mut graph.pools),
+        ExecutorParams::new(std::mem::take(&mut graph.pools)),
         std::mem::take(&mut graph.execution_log_publishers),
         Duration::from_millis(500),
     );

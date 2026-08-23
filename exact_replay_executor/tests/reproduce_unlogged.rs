@@ -20,7 +20,7 @@ use task::execution_log::{
     Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
     ExecutionLogEntry, ExecutionLogLevel, ExecutionLogMessage, LoggedMessage,
 };
-use task::executor::{Executor, ExecutorStopSignal, ThreadPoolConfig};
+use task::executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig};
 use task::input::InputSpan;
 use task::loggable::Loggable;
 use task::message::MessageHeader;
@@ -368,7 +368,7 @@ fn replay_chain(
     registry.register_channel::<String>(OUTPUT_CHANNEL.into());
 
     let config = exact_replay_executor::ExactReplayConfig::new(
-        vec![ThreadPoolConfig::new(1, nodes)],
+        ExecutorParams::new(vec![ThreadPoolConfig::new(1, nodes)]),
         registry,
         Box::new(reader),
     );
@@ -498,10 +498,10 @@ fn unreproducible_source_channel_fails_construction() {
     registry.register_channel::<u64>("external".into());
 
     let config = exact_replay_executor::ExactReplayConfig::new(
-        vec![ThreadPoolConfig::new(
+        ExecutorParams::new(vec![ThreadPoolConfig::new(
             1,
             vec![external_consumer_node("external")],
-        )],
+        )]),
         registry,
         Box::new(reader),
     );
@@ -569,7 +569,7 @@ fn replays_a_live_run_with_unlogged_intermediates() {
         .expect("build live graph");
 
     let mut exec = live_executor::LiveExecutor::new_multi_pool_with_execution_log(
-        std::mem::take(&mut graph.pools),
+        ExecutorParams::new(std::mem::take(&mut graph.pools)),
         std::mem::take(&mut graph.execution_log_publishers),
         Duration::from_millis(50),
     );
@@ -647,7 +647,7 @@ fn replays_a_live_run_with_unlogged_intermediates() {
     replay_registry.register_channel::<String>(OUTPUT_CHANNEL.into());
 
     let config = exact_replay_executor::ExactReplayConfig::new(
-        vec![ThreadPoolConfig::new(1, nodes)],
+        ExecutorParams::new(vec![ThreadPoolConfig::new(1, nodes)]),
         replay_registry,
         Box::new(reader),
     );

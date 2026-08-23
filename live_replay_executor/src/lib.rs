@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use live_executor::LiveExecutor;
 use task::execution_log::ExecutionLogMessage;
-use task::executor::ThreadPoolConfig;
 use task::executor::{Executor, ExecutorParams, ExecutorStopSignal, TimeSource};
 use task::publisher::Publisher;
 use task::time::FrameworkTime;
@@ -86,13 +85,13 @@ pub struct LiveReplayExecutor {
 }
 
 impl LiveReplayExecutor {
-    pub fn new(pools: Vec<ThreadPoolConfig>, config: LiveReplayConfig) -> Self {
+    pub fn new(params: ExecutorParams, config: LiveReplayConfig) -> Self {
         let time_source = ReplayTimeSource::new(
             config.replay_speed,
             config.first_log_time,
             config.paused.clone(),
         );
-        let inner = LiveExecutor::new_multi_pool_with_time(ExecutorParams::new(pools), time_source);
+        let inner = LiveExecutor::new_multi_pool_with_time(params, time_source);
         LiveReplayExecutor {
             inner,
             paused: config.paused.clone(),
@@ -100,7 +99,7 @@ impl LiveReplayExecutor {
     }
 
     pub fn new_with_execution_log(
-        pools: Vec<ThreadPoolConfig>,
+        params: ExecutorParams,
         log_publishers: Vec<Publisher<ExecutionLogMessage>>,
         flush_period: Duration,
         config: LiveReplayConfig,
@@ -111,7 +110,7 @@ impl LiveReplayExecutor {
             config.paused.clone(),
         );
         let inner = LiveExecutor::new_multi_pool_with_execution_log_and_time(
-            ExecutorParams::new(pools),
+            params,
             log_publishers,
             flush_period,
             time_source,

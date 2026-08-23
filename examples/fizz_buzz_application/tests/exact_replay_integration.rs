@@ -15,7 +15,7 @@ fn exact_replays_sample_log_without_divergence() {
     let resource = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/fizz-buzz-log.ndjson");
     let graph = build_exact_replay_graph(&resource).expect("build graph");
 
-    let config = ExactReplayConfig::new(graph.pools, graph.registry, graph.log_reader);
+    let config = ExactReplayConfig::new(graph.executor_params, graph.registry, graph.log_reader);
     let mut executor = ExactReplayExecutor::new(config).expect("construct executor");
 
     assert!(executor.execution_count() > 0, "sample log has executions");
@@ -58,7 +58,7 @@ fn exact_replays_sample_log_with_unlogged_integers() {
         .join("resources/fizz-buzz-log-integer-unlogged.ndjson");
     let graph = build_exact_replay_graph(&resource).expect("build graph");
 
-    let config = ExactReplayConfig::new(graph.pools, graph.registry, graph.log_reader);
+    let config = ExactReplayConfig::new(graph.executor_params, graph.registry, graph.log_reader);
     let mut executor = ExactReplayExecutor::new(config).expect("construct executor");
 
     assert!(executor.execution_count() > 0, "sample log has executions");

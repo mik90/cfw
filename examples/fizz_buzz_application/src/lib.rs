@@ -3,7 +3,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use task::channel_registry::ChannelRegistry;
 use task::execution_log::ExecutionLogLevel;
-use task::executor::{ExecutorStopSignal, ThreadPoolConfig};
+use task::executor::{ExecutorParams, ExecutorStopSignal};
 use task::task_graph_builder::{BuiltTaskGraph, TaskGraphBuilder};
 
 pub struct BuiltGraph {
@@ -103,10 +103,10 @@ pub fn build_replay_graph(
 
 /// Everything the exact replay executor needs to replay a recorded log: the
 /// application thread pools (rebuilt in the same global order as the original
-/// run), a channel registry for deserialization/output capture, and the parsed
-/// log file.
+/// run, with their interned channel/callback names), a channel registry for
+/// deserialization/output capture, and the parsed log file.
 pub struct ExactReplayGraph {
-    pub pools: Vec<ThreadPoolConfig>,
+    pub executor_params: ExecutorParams,
     pub registry: ChannelRegistry,
     pub log_reader: Box<dyn logging::log_file::LogFileReader>,
 }
@@ -132,7 +132,7 @@ pub fn build_exact_replay_graph(
     )?);
 
     Ok(ExactReplayGraph {
-        pools: std::mem::take(&mut graph.pools),
+        executor_params: ExecutorParams::new(std::mem::take(&mut graph.pools)),
         registry: std::mem::take(&mut graph.channel_registry),
         log_reader,
     })

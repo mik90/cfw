@@ -24,7 +24,7 @@ use task::execution_log::{
     Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
     ExecutionLogEntry, ExecutionLogLevel, ExecutionLogMessage, LoggedMessage,
 };
-use task::executor::{Executor, ExecutorStopSignal, ThreadPoolConfig};
+use task::executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig};
 use task::forwarded_message::ForwardedMessage;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
@@ -394,7 +394,7 @@ fn replay_graph(nodes: Vec<CallbackNode>) -> (exact_replay_executor::ExactReplay
         .register_forwarded_channel::<bool, u32>(FORWARDED_CHANNEL.into(), SOURCE_CHANNEL.into());
 
     let config = exact_replay_executor::ExactReplayConfig::new(
-        vec![ThreadPoolConfig::new(1, nodes)],
+        ExecutorParams::new(vec![ThreadPoolConfig::new(1, nodes)]),
         registry,
         Box::new(reader),
     );
@@ -495,7 +495,7 @@ fn replays_a_live_forwarding_run() {
         .expect("build live graph");
 
     let mut exec = live_executor::LiveExecutor::new_multi_pool_with_execution_log(
-        std::mem::take(&mut graph.pools),
+        ExecutorParams::new(std::mem::take(&mut graph.pools)),
         std::mem::take(&mut graph.execution_log_publishers),
         Duration::from_millis(50),
     );
@@ -547,7 +547,7 @@ fn replays_a_live_forwarding_run() {
         .register_forwarded_channel::<bool, u32>(FORWARDED_CHANNEL.into(), SOURCE_CHANNEL.into());
 
     let config = exact_replay_executor::ExactReplayConfig::new(
-        vec![ThreadPoolConfig::new(1, nodes)],
+        ExecutorParams::new(vec![ThreadPoolConfig::new(1, nodes)]),
         replay_registry,
         Box::new(reader),
     );

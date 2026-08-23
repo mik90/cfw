@@ -1,5 +1,4 @@
-use crate::pub_sub::{CallbackNameTag, ChannelNameTag};
-use crate::string_interner::StringInterner;
+use crate::string_interner::{CallbackNameTag, ChannelNameTag, StringInterner};
 use crate::time::FrameworkTime;
 
 #[derive(Clone, Debug)]

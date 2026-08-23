@@ -57,11 +57,11 @@ fn main() {
         build_exact_replay_graph(&args.log_path).expect("Could not build exact replay graph");
 
     if args.print {
-        print_nodes(&graph.pools);
+        print_nodes(&graph.executor_params.pools);
         return;
     }
 
-    let config = ExactReplayConfig::new(graph.pools, graph.registry, graph.log_reader);
+    let config = ExactReplayConfig::new(graph.executor_params, graph.registry, graph.log_reader);
     let config = if args.best_effort {
         config.with_divergence_policy(DivergencePolicy::BestEffort)
     } else {

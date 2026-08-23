@@ -3,9 +3,18 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
-// TODO define tags in here
-pub type CallbackNameInterner = StringInterner<crate::pub_sub::CallbackNameTag>;
-pub type ChannelNameInterner = StringInterner<crate::pub_sub::ChannelNameTag>;
+/// Marker type distinguishing interned callback names from interned channel
+/// names, so [`StringInterner`] lookups stay strongly typed.
+#[derive(Clone, Debug)]
+pub struct CallbackNameTag {}
+
+/// Marker type distinguishing interned channel names from interned callback
+/// names, so [`StringInterner`] lookups stay strongly typed.
+#[derive(Clone, Debug)]
+pub struct ChannelNameTag {}
+
+pub type CallbackNameInterner = StringInterner<CallbackNameTag>;
+pub type ChannelNameInterner = StringInterner<ChannelNameTag>;
 
 /// Strong-type for accessing interned channel names or task names
 #[derive(Debug)]
@@ -17,10 +26,7 @@ pub struct InternId<MarkerType> {
 
 impl<MarkerType> Clone for InternId<MarkerType> {
     fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            _marker: Default::default(),
-        }
+        *self
     }
 }
 

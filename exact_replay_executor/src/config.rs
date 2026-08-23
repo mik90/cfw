@@ -2,7 +2,7 @@
 
 use logging::log_file::LogFileReader;
 use task::channel_registry::ChannelRegistry;
-use task::executor::{ExecutorParams, ThreadPoolConfig};
+use task::executor::ExecutorParams;
 
 use crate::replay_task::DivergencePolicy;
 
@@ -33,12 +33,12 @@ pub struct ExactReplayConfig {
 impl ExactReplayConfig {
     /// Create a new configuration with default divergence policy.
     pub fn new(
-        pools: Vec<ThreadPoolConfig>,
+        executor_params: ExecutorParams,
         registry: ChannelRegistry,
         log_reader: Box<dyn LogFileReader>,
     ) -> Self {
         ExactReplayConfig {
-            executor_params: ExecutorParams::new(pools),
+            executor_params,
             registry,
             log_reader,
             divergence_policy: DEFAULT_DIVERGENCE_POLICY,

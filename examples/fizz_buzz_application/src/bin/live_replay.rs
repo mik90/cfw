@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use fizz_buzz_application::build_replay_graph;
 use live_replay_executor::LiveReplayExecutor;
-use task::executor::Executor;
+use task::executor::{Executor, ExecutorParams};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -64,7 +64,7 @@ fn main() {
     }
 
     let mut executor = LiveReplayExecutor::new_with_execution_log(
-        std::mem::take(&mut built.graph.pools),
+        ExecutorParams::new(std::mem::take(&mut built.graph.pools)),
         std::mem::take(&mut built.graph.execution_log_publishers),
         Duration::from_millis(500),
         replay_cfg,

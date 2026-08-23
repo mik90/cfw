@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use crate::callback_storage::CallbackStorage;
-use crate::pub_sub::{CallbackNameTag, ChannelNameTag};
-use crate::string_interner::StringInterner;
+use crate::string_interner::{CallbackNameTag, ChannelNameTag, StringInterner};
 use crate::time::FrameworkTime;
 
 #[derive(Debug)]
