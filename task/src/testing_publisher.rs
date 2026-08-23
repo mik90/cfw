@@ -20,7 +20,9 @@ pub struct TestPublisher<T> {
     executor_time_source: Arc<TimeSource>,
 }
 
-impl<T: Send + Sync + Default + 'static> TestPublisher<T> {
+// This real channel fixture moves values/final drops between workers (`Send`),
+// fans out immutable reads (`Sync`), and retains queued values (`'static`).
+impl<T: Send + Sync + 'static> TestPublisher<T> {
     pub fn new(channel_name: ChannelName, capacity: usize, time_source: Arc<TimeSource>) -> Self {
         TestPublisher {
             publisher: Publisher::new(PublisherConfig {
@@ -32,7 +34,9 @@ impl<T: Send + Sync + Default + 'static> TestPublisher<T> {
     }
 }
 
-impl<T: Send + Sync + Default + 'static> GenericPublisher for TestPublisher<T> {
+// The erased fixture has the same cross-worker ownership (`Send`), shared-read
+// (`Sync`), and `Any`/queue-retention (`'static`) requirements as production.
+impl<T: Send + Sync + 'static> GenericPublisher for TestPublisher<T> {
     fn as_any(&mut self) -> &mut dyn Any {
         self
     }
@@ -84,6 +88,8 @@ impl<T: Send + Sync + Default + 'static> GenericPublisher for TestPublisher<T> {
     }
 }
 
+// Sending moves values/final drops to workers (`Send`), fans out shared reads
+// (`Sync`), and may retain values in queues (`'static`).
 impl<T: Default + Send + Sync + 'static> TestPublisher<T> {
     /// Sends a message, immediately flushing loaned values
     pub fn send(&mut self, message: T) {
@@ -100,6 +106,8 @@ impl<T: Default + Send + Sync + 'static> TestPublisher<T> {
     }
 }
 
+// Copied sends have the same cross-worker (`Send`), shared-read (`Sync`), and
+// queue-retention (`'static`) requirements.
 impl<T: Default + Send + Sync + 'static + Clone> TestPublisher<T> {
     /// Sends a message, immediately flushing loaned values
     /// Avoids putting a large type on the heap.

@@ -97,7 +97,9 @@ impl<T> Drop for ArenaPtr<T> {
     }
 }
 
-/// SAFETY: Pub/sub enforces mutual exclusion on pointers
+/// SAFETY: `Send` permits ownership and the final drop to occur on another
+/// thread; `Sync` is required because cloned pointers permit concurrent
+/// immutable reads of the same published value.
 unsafe impl<T: Send + Sync> Send for ArenaPtr<T> {}
 
 /// Pointer to a message that we assume is read-only based on pub/sub invariants

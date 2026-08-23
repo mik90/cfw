@@ -317,8 +317,9 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             }
         }
 
-        // Every worker, including one that caught a callback panic, parks at
-        // this barrier while retaining its logger arena.
+        // Every worker, including one that panicked during logger initialization,
+        // processing, or final flush, parks at this barrier while retaining its
+        // logger arena.
         {
             use std::sync::atomic::Ordering as O;
             let guard = self.shared_state.shutdown_mutex.lock().unwrap();
@@ -336,9 +337,10 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             .take()
             .is_some_and(|handle| handle.join().is_err());
 
-        // SAFETY: every worker is parked at the cleanup barrier and the
-        // periodic scheduler was joined above.
-        unsafe { self.nodes.cleanup_subscribers_when_quiescent() };
+        // SAFETY: all workers have unwound from their protected worker bodies
+        // and are parked at the cleanup barrier, and the periodic scheduler has
+        // joined, so no callback-interior reference can be held or obtained.
+        unsafe { self.nodes.cleanup_subscribers_with_exclusive_access() };
 
         // Release workers from the barrier
         self.shared_state
@@ -499,33 +501,26 @@ fn worker_loop_core<T: TimeSource>(
         FrameworkTime,
     ),
 ) {
-    let mut panic_payload = None;
     let mut logger_init = init;
-    let mut logger = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        logger_init.as_ref()?;
-        let now = time_source.now();
-        logger_init.take().map(|init| WorkerLogger::new(init, now))
-    })) {
-        Ok(logger) => logger,
-        Err(payload) => {
-            shared_state.request_stop();
-            panic_payload = Some(payload);
-            None
-        }
-    };
-
-    while panic_payload.is_none() {
-        let index = match pool_state.work_rx.recv() {
-            Ok(SHUTDOWN_SENTINEL) => break,
-            Ok(idx) => idx,
-            Err(_) => break,
-        };
-
-        if !shared_state.should_run.load(Ordering::Relaxed) {
-            break;
+    let mut logger = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if logger_init.is_some() {
+            // Read the clock before transferring logger-init ownership.
+            let now = time_source.now();
+            logger = WorkerLogger::new(&mut logger_init, now);
         }
 
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        loop {
+            let index = match pool_state.work_rx.recv() {
+                Ok(SHUTDOWN_SENTINEL) => break,
+                Ok(idx) => idx,
+                Err(_) => break,
+            };
+
+            if !shared_state.should_run.load(Ordering::Relaxed) {
+                break;
+            }
+
             process(
                 index,
                 nodes,
@@ -533,27 +528,18 @@ fn worker_loop_core<T: TimeSource>(
                 logger.as_mut(),
                 time_source.now(),
             );
-        })) {
-            Ok(()) => {}
-            Err(payload) => {
-                shared_state.request_stop();
-                panic_payload = Some(payload);
-                break;
-            }
         }
-    }
 
-    // Commit residual logger loans before cleanup, but do not schedule
-    // consumer callbacks while the executor is quiescing.
-    if panic_payload.is_none()
-        && let Some(logger) = logger.as_mut()
-        && let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Commit residual logger loans before cleanup, but do not schedule
+        // consumer callbacks while the executor is shutting down.
+        if let Some(logger) = logger.as_mut() {
             let mut sink = NoopReadyNodeSink;
             logger.flush_remaining(time_source.now(), &mut sink);
-        }))
-    {
+        }
+    }));
+    let panic_payload = result.err();
+    if panic_payload.is_some() {
         shared_state.request_stop();
-        panic_payload = Some(payload);
     }
 
     // Update the predicate while holding the same mutex used by the waiter.
@@ -1613,6 +1599,26 @@ mod tests {
         }
     }
 
+    struct PanicOnWorkerCall {
+        call: usize,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl TimeSource for PanicOnWorkerCall {
+        fn now(&self) -> task::time::FrameworkTime {
+            if std::thread::current()
+                .name()
+                .is_some_and(|name| name.starts_with("cfw_pool_"))
+            {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == self.call {
+                    panic!("intentional worker time-source panic on call {call}");
+                }
+            }
+            task::time::FrameworkTime::from_nanoseconds(0)
+        }
+    }
+
     #[test]
     fn unstarted_executor_drops_callback() {
         let drops = Arc::new(AtomicUsize::new(0));
@@ -1785,6 +1791,37 @@ mod tests {
         }
         assert!(!executor.is_running());
         assert_eq!(executor.stop_threads(), Err(vec![0]));
+    }
+
+    #[test]
+    fn logger_final_flush_panic_reaches_cleanup_barrier() {
+        let node = CallbackNode::new_named(
+            Box::new(LifecycleProbe {
+                runs: Arc::new(AtomicUsize::new(0)),
+                drops: Arc::new(AtomicUsize::new(0)),
+            }),
+            "event_only".into(),
+        );
+        let mut pools = vec![ThreadPoolConfig::new(1, vec![node])];
+        let mut log_publishers = task::execution_log::log_publishers(&pools);
+        task::execution_log::connect(&mut pools, &mut log_publishers)
+            .expect("connect execution log");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut executor = LiveExecutor::new_multi_pool_with_execution_log_and_time(
+            ExecutorParams::new(pools),
+            log_publishers,
+            time::Duration::from_secs(1),
+            PanicOnWorkerCall {
+                // Initialization is the first worker call. With no queued work,
+                // the second call supplies the final-flush timestamp.
+                call: 2,
+                calls: calls.clone(),
+            },
+        );
+
+        executor.start_threads();
+        assert_eq!(executor.stop_threads(), Err(vec![0]));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

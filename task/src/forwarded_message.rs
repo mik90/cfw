@@ -30,12 +30,14 @@ pub struct ForwardedMessage<UserData, ForwardedData> {
 
 /// Forwarded payloads are immutable after publication; the arena reference
 /// counts keep the pointed-to message alive while it is shared.
-// SAFETY: shared access only dereferences immutable forwarded payloads.
+// SAFETY: `Sync` needs `UserData: Sync`; arena-backed forwarded data needs
+// `Send + Sync` because cloned pointers may be moved and read concurrently.
 unsafe impl<UserData: Sync, ForwardedData: Send + Sync> Sync
     for ForwardedMessage<UserData, ForwardedData>
 {
 }
-// SAFETY: moving transfers ownership of the immutable arena reader reference.
+// SAFETY: `Send` needs `UserData: Send`; moving transfers ownership of the
+// immutable arena reader reference, whose forwarded data needs `Send + Sync`.
 unsafe impl<UserData: Send, ForwardedData: Send + Sync> Send
     for ForwardedMessage<UserData, ForwardedData>
 {

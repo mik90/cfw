@@ -29,8 +29,13 @@ pub(crate) struct WorkerLoggerInit {
 }
 
 impl WorkerLogger {
-    pub(crate) fn new(init: WorkerLoggerInit, now: FrameworkTime) -> Self {
-        WorkerLogger {
+    /// Allocate scratch storage before moving the publisher out of init, so a
+    /// recoverable allocation panic leaves the publisher arena alive for cleanup.
+    pub(crate) fn new(init: &mut Option<WorkerLoggerInit>, now: FrameworkTime) -> Option<Self> {
+        let scratch_capacity = init.as_ref()?.scratch_capacity;
+        let recv_scratch = Vec::with_capacity(scratch_capacity);
+        let init = init.take().expect("checked above");
+        Some(WorkerLogger {
             current_loan: None,
             publisher: init.publisher,
             flush_period: init.flush_period,
@@ -41,9 +46,9 @@ impl WorkerLogger {
             next_entry: 0,
             next_msg: 0,
             dropped: Saturating(0),
-            recv_scratch: Vec::with_capacity(init.scratch_capacity),
+            recv_scratch,
             recv_scratch_len: 0,
-        }
+        })
     }
 
     pub(crate) fn has_data(&mut self) -> bool {
@@ -222,5 +227,33 @@ impl WorkerLogger {
         if self.next_entry > 0 || self.next_msg > 0 {
             self.flush_current(at, sink);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use task::publisher::PublisherConfig;
+
+    #[test]
+    fn initialization_panic_retains_logger_init() {
+        let mut init = Some(WorkerLoggerInit {
+            publisher: Publisher::new(PublisherConfig {
+                capacity: 1,
+                channel_name: "execution_log".into(),
+            }),
+            flush_period: Duration::from_secs(1),
+            scratch_capacity: usize::MAX,
+        });
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = WorkerLogger::new(&mut init, FrameworkTime::from_nanoseconds(0));
+        }));
+
+        assert!(result.is_err());
+        assert!(
+            init.is_some(),
+            "publisher ownership must remain outside the unwind boundary"
+        );
     }
 }

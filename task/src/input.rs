@@ -11,7 +11,7 @@ pub struct RequiredInput<'a, T> {
     guard: ReadBufferGuard<'a, Message<T>>,
 }
 
-impl<'a, T: 'static> RequiredInput<'a, T> {
+impl<'a, T> RequiredInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> RequiredInput<'a, T> {
         let buffers = subscriber.buffers();
         let guard = buffers.read_buffer();
@@ -19,11 +19,6 @@ impl<'a, T: 'static> RequiredInput<'a, T> {
             panic!("RequiredInput should only have been constructed on non-empty read-buffer");
         }
         RequiredInput { buffers, guard }
-    }
-
-    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> RequiredInput<'a, T> {
-        let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
-        RequiredInput::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
     }
 
     pub fn value(&self) -> &T {
@@ -35,7 +30,15 @@ impl<'a, T: 'static> RequiredInput<'a, T> {
     }
 }
 
-impl<'a, T: 'static> Deref for RequiredInput<'a, T> {
+// This downcast uses `Any`, so the payload type must be `'static`.
+impl<'a, T: 'static> RequiredInput<'a, T> {
+    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> RequiredInput<'a, T> {
+        let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
+        RequiredInput::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
+    }
+}
+
+impl<T> Deref for RequiredInput<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -47,25 +50,17 @@ pub struct ForwardableRequiredInput<'a, T> {
     input: RequiredInput<'a, T>,
 }
 
-impl<'a, T: Send + Sync + 'static> ForwardableRequiredInput<'a, T> {
+impl<'a, T> ForwardableRequiredInput<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = RequiredInput::new(&forwardable_subscriber.subscriber);
         Self { input }
-    }
-
-    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> Self {
-        let typed = subscriber
-            .as_any()
-            .downcast_mut::<ForwardableSubscriber<T>>()
-            .expect("Expected proc macro to use the correct types");
-        ForwardableRequiredInput::new(typed)
     }
 
     pub fn value(&self) -> &T {
         self.input.value()
     }
 
-    pub fn forward<'b, UserData: Default + Send + Sync + 'static>(
+    pub fn forward<'b, UserData: Default>(
         mut self,
         output: &'b mut ForwardingOutput<UserData, T>,
     ) -> ForwardedOutput<'b, UserData, T> {
@@ -79,7 +74,18 @@ impl<'a, T: Send + Sync + 'static> ForwardableRequiredInput<'a, T> {
     }
 }
 
-impl<'a, T: Send + Sync + 'static> Deref for ForwardableRequiredInput<'a, T> {
+// This downcast uses `Any`, so the payload type must be `'static`.
+impl<'a, T: 'static> ForwardableRequiredInput<'a, T> {
+    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> Self {
+        let typed = subscriber
+            .as_any()
+            .downcast_mut::<ForwardableSubscriber<T>>()
+            .expect("Expected proc macro to use the correct types");
+        ForwardableRequiredInput::new(typed)
+    }
+}
+
+impl<T> Deref for ForwardableRequiredInput<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -92,16 +98,11 @@ pub struct OptionalInput<'a, T> {
     guard: ReadBufferGuard<'a, Message<T>>,
 }
 
-impl<'a, T: 'static> OptionalInput<'a, T> {
+impl<'a, T> OptionalInput<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> OptionalInput<'a, T> {
         let buffers = subscriber.buffers();
         let guard = buffers.read_buffer();
         OptionalInput { buffers, guard }
-    }
-
-    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> OptionalInput<'a, T> {
-        let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
-        OptionalInput::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
     }
 
     pub fn value(&self) -> Option<&T> {
@@ -113,25 +114,25 @@ impl<'a, T: 'static> OptionalInput<'a, T> {
     }
 }
 
+// This downcast uses `Any`, so the payload type must be `'static`.
+impl<'a, T: 'static> OptionalInput<'a, T> {
+    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> OptionalInput<'a, T> {
+        let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
+        OptionalInput::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
+    }
+}
+
 pub struct ForwardableOptionalInput<'a, T> {
     input: OptionalInput<'a, T>,
 }
 
-impl<'a, T: Send + Sync + 'static> ForwardableOptionalInput<'a, T> {
+impl<'a, T> ForwardableOptionalInput<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = OptionalInput::new(&forwardable_subscriber.subscriber);
         Self { input }
     }
 
-    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> Self {
-        let typed = subscriber
-            .as_any()
-            .downcast_mut::<ForwardableSubscriber<T>>()
-            .expect("Expected proc macro to use the correct types");
-        ForwardableOptionalInput::new(typed)
-    }
-
-    pub fn forward<'b, UserData: Default + Send + Sync + 'static>(
+    pub fn forward<'b, UserData: Default>(
         mut self,
         output: &'b mut ForwardingOutput<UserData, T>,
     ) -> Option<ForwardedOutput<'b, UserData, T>> {
@@ -148,21 +149,27 @@ impl<'a, T: Send + Sync + 'static> ForwardableOptionalInput<'a, T> {
     }
 }
 
+// This downcast uses `Any`, so the payload type must be `'static`.
+impl<'a, T: 'static> ForwardableOptionalInput<'a, T> {
+    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> Self {
+        let typed = subscriber
+            .as_any()
+            .downcast_mut::<ForwardableSubscriber<T>>()
+            .expect("Expected proc macro to use the correct types");
+        ForwardableOptionalInput::new(typed)
+    }
+}
+
 pub struct InputSpan<'a, T> {
     buffers: &'a DoubleBuffer<Message<T>>,
     guard: ReadBufferGuard<'a, Message<T>>,
 }
 
-impl<'a, T: 'static> InputSpan<'a, T> {
+impl<'a, T> InputSpan<'a, T> {
     pub fn new(subscriber: &'a Subscriber<T>) -> InputSpan<'a, T> {
         let buffers = subscriber.buffers();
         let guard = buffers.read_buffer();
         InputSpan { buffers, guard }
-    }
-
-    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> InputSpan<'a, T> {
-        let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
-        InputSpan::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
     }
 
     pub fn inputs(&mut self) -> impl Iterator<Item = &Message<T>> {
@@ -181,28 +188,39 @@ impl<'a, T: 'static> InputSpan<'a, T> {
     }
 }
 
+// This downcast uses `Any`, so the payload type must be `'static`.
+impl<'a, T: 'static> InputSpan<'a, T> {
+    pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> InputSpan<'a, T> {
+        let typed_subscriber = subscriber.as_any().downcast_mut::<Subscriber<T>>();
+        InputSpan::new(typed_subscriber.expect("Expected proc macro to use the correct types"))
+    }
+}
+
 pub struct ForwardableInputSpan<'a, T> {
     input: InputSpan<'a, T>,
 }
 
-impl<'a, T: Send + Sync + 'static> ForwardableInputSpan<'a, T> {
+impl<'a, T> ForwardableInputSpan<'a, T> {
     pub fn new(forwardable_subscriber: &'a ForwardableSubscriber<T>) -> Self {
         let input = InputSpan::new(&forwardable_subscriber.subscriber);
         Self { input }
     }
 
+    pub fn drain_forwards<'b, UserData: Default>(
+        &mut self,
+        output: &'b mut ForwardingOutput<UserData, T>,
+    ) -> ForwardedOutputSpan<'b, UserData, T> {
+        ForwardedOutputSpan::new(output.publisher, self.input.guard.drain_contiguous())
+    }
+}
+
+// This downcast uses `Any`, so the payload type must be `'static`.
+impl<'a, T: 'static> ForwardableInputSpan<'a, T> {
     pub fn new_downcasted(subscriber: &'a mut dyn GenericSubscriber) -> Self {
         let typed = subscriber
             .as_any()
             .downcast_mut::<ForwardableSubscriber<T>>()
             .expect("Expected proc macro to use the correct types");
         ForwardableInputSpan::new(typed)
-    }
-
-    pub fn drain_forwards<'b, UserData: Default + Send + Sync + 'static>(
-        &mut self,
-        output: &'b mut ForwardingOutput<UserData, T>,
-    ) -> ForwardedOutputSpan<'b, UserData, T> {
-        ForwardedOutputSpan::new(output.publisher, self.input.guard.drain_contiguous())
     }
 }

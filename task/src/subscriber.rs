@@ -39,15 +39,6 @@ pub struct Subscriber<T> {
 }
 
 impl<T> Subscriber<T> {
-    pub fn new(config: SubscriberConfig) -> Self {
-        Subscriber {
-            buffers: DoubleBuffer::new(config.capacity),
-            config,
-            queue_has_new_data: false,
-            readiness_state: None,
-        }
-    }
-
     pub fn config(&self) -> &SubscriberConfig {
         &self.config
     }
@@ -105,6 +96,23 @@ impl<T> Subscriber<T> {
     }
 }
 
+// Subscriber channels may move queued values and final drops between workers
+// (`Send`), share one published value with concurrent readers (`Sync`), and
+// retain values beyond caller borrows (`'static`).
+impl<T: Send + Sync + 'static> Subscriber<T> {
+    pub fn new(config: SubscriberConfig) -> Self {
+        Subscriber {
+            buffers: DoubleBuffer::new(config.capacity),
+            config,
+            queue_has_new_data: false,
+            readiness_state: None,
+        }
+    }
+}
+
+// Erased subscribers move with callback state and may drop queued values on a
+// worker (`Send`), read shared published values (`Sync`), and expose payloads
+// through `Any` while retaining them in queues (`'static`).
 impl<T: Send + Sync + 'static> GenericSubscriber for Subscriber<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
@@ -172,7 +180,9 @@ pub struct ForwardableSubscriber<T> {
     pub subscriber: Subscriber<T>,
 }
 
-impl<T> ForwardableSubscriber<T> {
+// Forwardable channels have the same cross-worker ownership (`Send`), shared
+// read (`Sync`), and queue-retention (`'static`) requirements.
+impl<T: Send + Sync + 'static> ForwardableSubscriber<T> {
     pub fn new(config: SubscriberConfig) -> Self {
         Self {
             subscriber: Subscriber::new(config),
@@ -180,6 +190,8 @@ impl<T> ForwardableSubscriber<T> {
     }
 }
 
+// Erased forwarding subscribers move queued ownership between workers
+// (`Send`), read shared arena values (`Sync`), and use `Any`/queues (`'static`).
 impl<T: Send + Sync + 'static> GenericSubscriber for ForwardableSubscriber<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self

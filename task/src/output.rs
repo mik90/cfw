@@ -11,11 +11,14 @@ pub struct ForwardingOutput<'a, T, F> {
     pub(crate) publisher: &'a mut ForwardingPublisher<T, F>,
 }
 
-impl<'a, T: Default + Send + Sync + 'static, F: Send + Sync + 'static> ForwardingOutput<'a, T, F> {
+impl<'a, T, F> ForwardingOutput<'a, T, F> {
     pub fn new(publisher: &'a mut ForwardingPublisher<T, F>) -> Self {
         Self { publisher }
     }
+}
 
+// This downcast uses `Any`, so both payload component types must be `'static`.
+impl<'a, T: 'static, F: 'static> ForwardingOutput<'a, T, F> {
     pub fn new_downcasted(publisher: &'a mut dyn GenericPublisher) -> Self {
         ForwardingOutput::new(ForwardingPublisher::new_downcasted(publisher))
     }
@@ -44,7 +47,7 @@ pub struct Output<'a, T> {
     pub on_publish_failure: PublishFailureCallback,
 }
 
-impl<'a, T: Send + Sync + 'static> Output<'a, T> {
+impl<'a, T> Output<'a, T> {
     pub fn value(&self) -> &T {
         &self
             .publisher
@@ -82,7 +85,7 @@ impl<'a, T: Send + Sync + 'static> Output<'a, T> {
     }
 }
 
-impl<'a, T: Default + Send + Sync + 'static> Output<'a, T> {
+impl<'a, T: Default> Output<'a, T> {
     pub fn new_default(publisher: &'a mut Publisher<T>) -> Self {
         let loaned_value_idx = publisher
             .loan_default()
@@ -93,14 +96,17 @@ impl<'a, T: Default + Send + Sync + 'static> Output<'a, T> {
             on_publish_failure: PublishFailureCallback::panic(),
         }
     }
+}
 
+// `new_downcasted` uses `Any`; only `'static` is needed for that type check.
+impl<'a, T: Default + 'static> Output<'a, T> {
     pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> Output<'_, T> {
         let typed_publisher = publisher.as_any().downcast_mut::<Publisher<T>>();
         Output::new_default(typed_publisher.expect("Expected proc macro to use the correct types"))
     }
 }
 
-impl<T: Send + Sync + 'static> Deref for Output<'_, T> {
+impl<T> Deref for Output<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -108,7 +114,7 @@ impl<T: Send + Sync + 'static> Deref for Output<'_, T> {
     }
 }
 
-impl<T: Send + Sync + 'static> DerefMut for Output<'_, T> {
+impl<T> DerefMut for Output<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         self.value_mut()
     }
@@ -120,7 +126,7 @@ pub struct OutputSpan<'a, T> {
     publisher: &'a mut Publisher<T>,
 }
 
-impl<'a, T: Send + Sync + 'static> OutputSpan<'a, T> {
+impl<'a, T> OutputSpan<'a, T> {
     pub fn outputs(&self) -> impl Iterator<Item = &T> {
         self.publisher
             .loaned_values_at(self.loaned_value_idx_start, self.loaned_value_idx_end)
@@ -158,7 +164,7 @@ impl<'a, T: Send + Sync + 'static> OutputSpan<'a, T> {
     }
 }
 
-impl<'a, T: Default + Send + Sync + 'static> OutputSpan<'a, T> {
+impl<'a, T: Default> OutputSpan<'a, T> {
     pub fn new(publisher: &'a mut Publisher<T>) -> Self {
         for _ in 0..publisher.config().capacity {
             publisher.loan_default().unwrap();
@@ -169,7 +175,10 @@ impl<'a, T: Default + Send + Sync + 'static> OutputSpan<'a, T> {
             publisher,
         }
     }
+}
 
+// `new_downcasted` uses `Any`; only `'static` is needed for that type check.
+impl<'a, T: Default + 'static> OutputSpan<'a, T> {
     pub fn new_downcasted(publisher: &'a mut dyn GenericPublisher) -> OutputSpan<'a, T> {
         let typed_publisher = publisher.as_any().downcast_mut::<Publisher<T>>();
         OutputSpan::new(typed_publisher.expect("Expected proc macro to use the correct types"))
@@ -180,7 +189,7 @@ pub struct ForwardedOutput<'a, T, F> {
     inner: Output<'a, ForwardedMessage<T, F>>,
 }
 
-impl<'a, T: Send + Sync + 'static, F: Send + Sync + 'static> ForwardedOutput<'a, T, F> {
+impl<'a, T, F> ForwardedOutput<'a, T, F> {
     pub fn value(&self) -> &T {
         &self.inner.value().message
     }
@@ -190,7 +199,7 @@ impl<'a, T: Send + Sync + 'static, F: Send + Sync + 'static> ForwardedOutput<'a,
     }
 }
 
-impl<'a, T: Default + Send + Sync + 'static, F: Send + Sync + 'static> ForwardedOutput<'a, T, F> {
+impl<'a, T: Default, F> ForwardedOutput<'a, T, F> {
     pub(crate) fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptr: ArenaReaderPtr<Message<F>>,
@@ -213,7 +222,7 @@ impl<'a, T: Default + Send + Sync + 'static, F: Send + Sync + 'static> Forwarded
     }
 }
 
-impl<T: Send + Sync + 'static, F: Send + Sync + 'static> Deref for ForwardedOutput<'_, T, F> {
+impl<T, F> Deref for ForwardedOutput<'_, T, F> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -221,7 +230,7 @@ impl<T: Send + Sync + 'static, F: Send + Sync + 'static> Deref for ForwardedOutp
     }
 }
 
-impl<T: Send + Sync + 'static, F: Send + Sync + 'static> DerefMut for ForwardedOutput<'_, T, F> {
+impl<T, F> DerefMut for ForwardedOutput<'_, T, F> {
     fn deref_mut(&mut self) -> &mut T {
         self.value_mut()
     }
@@ -231,9 +240,7 @@ pub struct ForwardedOutputSpan<'a, T, F> {
     inner: OutputSpan<'a, ForwardedMessage<T, F>>,
 }
 
-impl<'a, T: Default + Send + Sync + 'static, F: Send + Sync + 'static>
-    ForwardedOutputSpan<'a, T, F>
-{
+impl<'a, T: Default, F> ForwardedOutputSpan<'a, T, F> {
     pub(crate) fn new(
         publisher: &'a mut ForwardingPublisher<T, F>,
         forwarded_ptrs: impl IntoIterator<Item = ArenaReaderPtr<Message<F>>>,

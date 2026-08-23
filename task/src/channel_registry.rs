@@ -189,9 +189,9 @@ impl ChannelRegistry {
         self
     }
 
-    fn register_deserializer<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
-        &mut self,
-    ) -> &mut Self {
+    // Deserialization stores values behind `Any` and indexes them by `TypeId`,
+    // so it needs `'static`, but does not itself transport payloads.
+    fn register_deserializer<T: 'static + Loggable<Context<'static> = ()>>(&mut self) -> &mut Self {
         // Deserializer — uses the blanket serde (Context<'static> = ()) path
         let deserializer: DeserializerFn = Arc::new(|bytes: &[u8]| {
             let value = T::deserialize(bytes)?;
@@ -201,6 +201,9 @@ impl ChannelRegistry {
         self
     }
 
+    // Factories construct erased publishers that move values/final drops
+    // between workers (`Send`), fan out immutable reads (`Sync`), and use
+    // `Any`/queues that cannot retain short-lived borrows (`'static`).
     pub fn register_publisher_factory<
         T: 'static + Loggable<Context<'static> = ()> + Send + Sync,
     >(
@@ -246,6 +249,8 @@ impl ChannelRegistry {
     /// [`ForwardedMessage`](crate::forwarded_message::ForwardedMessage), use
     /// [`register_forwarded_channel`](Self::register_forwarded_channel)
     /// instead.
+    // Full registration moves values/final drops between workers (`Send`),
+    // shares immutable reads (`Sync`), and uses `Any`/queues (`'static`).
     pub fn register_channel<T: 'static + Loggable<Context<'static> = ()> + Send + Sync>(
         &mut self,
         channel: ChannelName,
@@ -277,6 +282,9 @@ impl ChannelRegistry {
     ///
     /// [`ForwardedMessage<T, F>`]: crate::forwarded_message::ForwardedMessage
     #[cfg(feature = "serde")]
+    // Forwarded registration moves both payload components between workers
+    // (`Send`), shares arena-backed reads (`Sync`), and retains/type-erases them
+    // (`'static`).
     pub fn register_forwarded_channel<
         T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
         F: Clone + Send + Sync + 'static,
@@ -437,6 +445,8 @@ impl<T: 'static + Loggable> Probe<T> {
     }
 }
 
+// Full-channel probing requires cross-worker ownership (`Send`), shared reads
+// (`Sync`), and `Any`/queue retention (`'static`).
 impl<T: 'static + Loggable<Context<'static> = ()> + Send + Sync> Probe<T> {
     pub fn try_register_channel(&self, registry: &mut ChannelRegistry, channel: ChannelName) {
         registry.register_channel::<T>(channel);

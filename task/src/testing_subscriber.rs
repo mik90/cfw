@@ -49,6 +49,8 @@ pub struct TestSubscriber<T> {
     subscriber: Subscriber<T>,
 }
 
+// This real channel endpoint moves queued values/final drops between workers
+// (`Send`), reads shared published values (`Sync`), and retains them (`'static`).
 impl<T: Send + Sync + 'static> TestSubscriber<T> {
     /// Creates a `TestSubscriber` with the default queue depth
     /// ([`DEFAULT_TEST_SUBSCRIBER_CAPACITY`]).
@@ -65,7 +67,7 @@ impl<T: Send + Sync + 'static> TestSubscriber<T> {
     }
 }
 
-impl<T: 'static + Clone> TestSubscriber<T> {
+impl<T: Clone> TestSubscriber<T> {
     /// Drains and returns all queued messages, cloned out as owned values.
     ///
     /// Panics if any messages were ever dropped due to the queue overflowing — that
@@ -117,6 +119,8 @@ impl<T: 'static + Clone> TestSubscriber<T> {
     }
 }
 
+// The erased fixture has the same cross-worker ownership (`Send`), shared-read
+// (`Sync`), and `Any`/queue-retention (`'static`) requirements as production.
 impl<T: Send + Sync + 'static> GenericSubscriber for TestSubscriber<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         // Expose the inner `Subscriber<T>` rather than `self`: this is what lets

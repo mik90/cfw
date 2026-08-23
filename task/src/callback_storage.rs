@@ -314,10 +314,13 @@ impl SharedCallbackNode {
     }
 
     /// # Safety
-    /// No thread may access this node while cleanup runs. The caller must have
-    /// exclusive access to the callback interior for the duration of the call.
-    pub unsafe fn cleanup_subscribers_when_quiescent(&self) {
-        // SAFETY: callers guarantee no worker or scheduler can access nodes.
+    /// This bypasses the run-state protocol. The caller must guarantee
+    /// exclusive access to the callback interior for the whole call: no
+    /// overlapping `execute`, `access`, `try_access`, or unsafe cleanup may
+    /// occur. The atomic state need not be `Idle`; `Enqueued` is valid when
+    /// external synchronization prevents workers from claiming it.
+    pub unsafe fn cleanup_subscribers_with_exclusive_access(&self) {
+        // SAFETY: callers guarantee exclusive callback-interior access.
         unsafe {
             (*self.node.get())
                 .callback()
@@ -476,13 +479,15 @@ impl CallbackStorage {
     }
 
     /// # Safety
-    /// No worker or scheduler may access any node while cleanup runs. The
-    /// caller must have exclusive access to every callback interior for the
-    /// duration of the call.
-    pub unsafe fn cleanup_subscribers_when_quiescent(&self) {
+    /// This bypasses each node's run-state protocol. The caller must guarantee
+    /// exclusive access to every callback interior for the whole call: no
+    /// overlapping `execute`, `access`, `try_access`, or unsafe cleanup may
+    /// occur. Atomic state need not be `Idle`; `Enqueued` is valid when
+    /// external synchronization prevents workers from claiming it.
+    pub unsafe fn cleanup_subscribers_with_exclusive_access(&self) {
         for node in self.iter_shared() {
             // SAFETY: upheld by this method's caller for every node.
-            unsafe { node.cleanup_subscribers_when_quiescent() };
+            unsafe { node.cleanup_subscribers_with_exclusive_access() };
         }
     }
 }

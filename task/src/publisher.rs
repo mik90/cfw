@@ -80,6 +80,9 @@ pub struct Publisher<T> {
     forwarded_channels: Vec<ChannelName>,
 }
 
+// Erased publishers move payload ownership and final drops between workers
+// (`Send`), fan out shared immutable values (`Sync`), and use `Any`/`TypeId`
+// while queues may retain values beyond caller borrows (`'static`).
 impl<T: 'static + Send + Sync> GenericPublisher for Publisher<T> {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
@@ -161,6 +164,98 @@ impl<T: 'static + Send + Sync> GenericPublisher for Publisher<T> {
     }
 }
 
+impl<T> Publisher<T> {
+    pub fn config(&self) -> &PublisherConfig {
+        &self.config
+    }
+
+    pub(crate) fn loaned_count(&self) -> usize {
+        self.loaned_values.len()
+    }
+
+    pub(crate) fn loaned_value_at(&self, index: usize) -> &LoanedValue<T> {
+        &self.loaned_values[index]
+    }
+
+    pub(crate) fn loaned_value_at_mut(&mut self, index: usize) -> &mut LoanedValue<T> {
+        &mut self.loaned_values[index]
+    }
+
+    /// Mutably borrow the payload (`Message<T>::message`) of an outstanding
+    /// loan by index. Lets a long-lived loan be mutated in place across
+    /// several writes before being sent — used by executors that fill an
+    /// execution-log message over multiple executions before flushing it.
+    pub fn loaned_payload_mut(&mut self, index: usize) -> &mut T {
+        let msg: &mut Message<T> = self.loaned_value_at_mut(index).value_mut();
+        &mut msg.message
+    }
+
+    /// Mark an outstanding loan as sent so a subsequent `flush_loaned_values`
+    /// will publish it. Paired with [`loan_default`] / [`loaned_payload_mut`].
+    pub fn mark_loan_sent(&mut self, index: usize) {
+        self.loaned_value_at_mut(index).sent = true;
+    }
+
+    pub(crate) fn loaned_values_at(
+        &self,
+        start_index: usize,
+        end_index: usize,
+    ) -> &[LoanedValue<T>] {
+        &self.loaned_values[start_index..=end_index]
+    }
+
+    pub(crate) fn loaned_values_at_mut(
+        &mut self,
+        start_index: usize,
+        end_index: usize,
+    ) -> &mut [LoanedValue<T>] {
+        &mut self.loaned_values[start_index..=end_index]
+    }
+
+    pub(crate) fn loan_with(
+        &mut self,
+        factory: impl FnOnce(&mut MaybeUninit<T>),
+    ) -> Result<usize, LoanError> {
+        if self.loaned_values.len() >= self.config.capacity {
+            return Err(LoanError::LoanCapacityReached);
+        }
+        let allocated_ptr = match self.arena.try_allocate_with(|slot| {
+            let msg_ptr = slot.as_mut_ptr();
+            // SAFETY: All fields of `Message<T>` are initialized before the slot is assumed init:
+            // header is written here; factory is responsible for fully initializing `message`.
+            unsafe {
+                let header = std::ptr::addr_of_mut!((*msg_ptr).header);
+                let message = std::ptr::addr_of_mut!((*msg_ptr).message).cast::<MaybeUninit<T>>();
+                header.write(MessageHeader::default());
+                factory(&mut *message);
+            }
+        }) {
+            Some(ptr) => ptr,
+            None => {
+                panic!(
+                    "Tried to publish on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
+                    self.config.channel_name,
+                    self.arena.capacity()
+                );
+            }
+        };
+        self.loaned_values.push(LoanedValue::new(allocated_ptr));
+        Ok(self.loaned_values.len() - 1)
+    }
+
+    pub fn loan_and_init(
+        &mut self,
+        initializer: impl FnOnce(&mut MaybeUninit<T>),
+    ) -> Result<usize, LoanError> {
+        self.loan_with(initializer)
+    }
+
+    // Loans cannot be held across runs
+}
+
+// Public channel construction and flushing move payload ownership/final drops
+// between workers (`Send`), fan out immutable references (`Sync`), and may
+// retain queued values beyond caller borrows (`'static`).
 impl<T: Send + Sync + 'static> Publisher<T> {
     pub fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
         let mut sink = NoopReadyNodeSink;
@@ -243,88 +338,11 @@ impl<T: Send + Sync + 'static> Publisher<T> {
             forwarded_channels,
         }
     }
-
-    pub fn config(&self) -> &PublisherConfig {
-        &self.config
-    }
-
-    pub(crate) fn loaned_count(&self) -> usize {
-        self.loaned_values.len()
-    }
-
-    pub(crate) fn loaned_value_at(&self, index: usize) -> &LoanedValue<T> {
-        &self.loaned_values[index]
-    }
-
-    pub(crate) fn loaned_value_at_mut(&mut self, index: usize) -> &mut LoanedValue<T> {
-        &mut self.loaned_values[index]
-    }
-
-    /// Mutably borrow the payload (`Message<T>::message`) of an outstanding
-    /// loan by index. Lets a long-lived loan be mutated in place across
-    /// several writes before being sent — used by executors that fill an
-    /// execution-log message over multiple executions before flushing it.
-    pub fn loaned_payload_mut(&mut self, index: usize) -> &mut T {
-        let msg: &mut Message<T> = self.loaned_value_at_mut(index).value_mut();
-        &mut msg.message
-    }
-
-    /// Mark an outstanding loan as sent so a subsequent `flush_loaned_values`
-    /// will publish it. Paired with [`loan_default`] / [`loaned_payload_mut`].
-    pub fn mark_loan_sent(&mut self, index: usize) {
-        self.loaned_value_at_mut(index).sent = true;
-    }
-
-    pub(crate) fn loaned_values_at(
-        &self,
-        start_index: usize,
-        end_index: usize,
-    ) -> &[LoanedValue<T>] {
-        &self.loaned_values[start_index..=end_index]
-    }
-
-    pub(crate) fn loaned_values_at_mut(
-        &mut self,
-        start_index: usize,
-        end_index: usize,
-    ) -> &mut [LoanedValue<T>] {
-        &mut self.loaned_values[start_index..=end_index]
-    }
-
-    pub(crate) fn loan_with(
-        &mut self,
-        factory: impl FnOnce(&mut MaybeUninit<T>),
-    ) -> Result<usize, LoanError> {
-        if self.loaned_values.len() >= self.config.capacity {
-            return Err(LoanError::LoanCapacityReached);
-        }
-        let allocated_ptr = match self.arena.try_allocate_with(|slot| {
-            let msg_ptr = slot.as_mut_ptr();
-            // SAFETY: All fields of `Message<T>` are initialized before the slot is assumed init:
-            // header is written here; factory is responsible for fully initializing `message`.
-            unsafe {
-                let header = std::ptr::addr_of_mut!((*msg_ptr).header);
-                let message = std::ptr::addr_of_mut!((*msg_ptr).message).cast::<MaybeUninit<T>>();
-                header.write(MessageHeader::default());
-                factory(&mut *message);
-            }
-        }) {
-            Some(ptr) => ptr,
-            None => {
-                panic!(
-                    "Tried to publish on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
-                    self.config.channel_name,
-                    self.arena.capacity()
-                );
-            }
-        };
-        self.loaned_values.push(LoanedValue::new(allocated_ptr));
-        Ok(self.loaned_values.len() - 1)
-    }
-
-    // Loans cannot be held across runs
 }
 
+// Typed connections send arena pointers to subscriber workers (`Send`), where
+// the same published value may be read concurrently (`Sync`); queued values
+// must not contain non-`'static` borrows.
 impl<T: Send + Sync + 'static> Publisher<T> {
     pub fn add_typed_subscriber(&mut self, typed_subscriber: &mut Subscriber<T>) {
         let buffer_guard = typed_subscriber.write_guard();
@@ -360,16 +378,9 @@ impl<T: Send + Sync + 'static> Publisher<T> {
     ) {
         self.add_typed_subscriber(&mut forwardable_subscriber.subscriber)
     }
-
-    pub fn loan_and_init(
-        &mut self,
-        initializer: impl FnOnce(&mut MaybeUninit<T>),
-    ) -> Result<usize, LoanError> {
-        self.loan_with(initializer)
-    }
 }
 
-impl<T: Default + Send + Sync + 'static> Publisher<T> {
+impl<T: Default> Publisher<T> {
     pub fn loan_default(&mut self) -> Result<usize, LoanError> {
         self.loan_with(|slot| {
             slot.write(T::default());
@@ -377,9 +388,7 @@ impl<T: Default + Send + Sync + 'static> Publisher<T> {
     }
 }
 
-impl<T: Default + Send + Sync + 'static, F: Send + Sync + 'static>
-    Publisher<ForwardedMessage<T, F>>
-{
+impl<T: Default, F> Publisher<ForwardedMessage<T, F>> {
     pub fn loan_forwarded(
         &mut self,
         forwarded_ptr: ArenaReaderPtr<Message<F>>,
@@ -394,7 +403,26 @@ pub struct ForwardingPublisher<T, F> {
     pub(crate) inner: Publisher<ForwardedMessage<T, F>>,
 }
 
-impl<T: Default + Send + Sync + 'static, F: Send + Sync + 'static> ForwardingPublisher<T, F> {
+impl<T, F> ForwardingPublisher<T, F> {
+    pub fn forwarded_channels(&self) -> &[ChannelName] {
+        self.inner.forwarded_channels.as_slice()
+    }
+}
+
+// This downcast uses `Any`, so both component types must be `'static`.
+impl<T: 'static, F: 'static> ForwardingPublisher<T, F> {
+    pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> &mut Self {
+        publisher
+            .as_any()
+            .downcast_mut::<ForwardingPublisher<T, F>>()
+            .expect("Expected proc macro to use the correct types")
+    }
+}
+
+// Forwarding channels move both payload components and their final drops
+// between workers (`Send`), expose immutable values concurrently (`Sync`), and
+// may retain them beyond caller borrows (`'static`).
+impl<T: Send + Sync + 'static, F: Send + Sync + 'static> ForwardingPublisher<T, F> {
     pub fn new(config: PublisherConfig, forwarded_channels: Vec<ChannelName>) -> Self {
         Self {
             inner: Publisher::new_with_forwards(config, forwarded_channels),
@@ -409,23 +437,15 @@ impl<T: Default + Send + Sync + 'static, F: Send + Sync + 'static> ForwardingPub
         self.inner.allocate_arena();
     }
 
-    pub fn forwarded_channels(&self) -> &[ChannelName] {
-        self.inner.forwarded_channels.as_slice()
-    }
-
     pub fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
         self.inner.flush_loaned_values(timestamp);
     }
-
-    pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> &mut Self {
-        publisher
-            .as_any()
-            .downcast_mut::<ForwardingPublisher<T, F>>()
-            .expect("Expected proc macro to use the correct types")
-    }
 }
 
-impl<T: Default + Send + Sync + 'static, F: Send + Sync + 'static> GenericPublisher
+// Erased forwarding publishers move both payload components and final drops
+// between workers (`Send`), expose shared immutable values (`Sync`), and use
+// `Any`/`TypeId` while queues retain values (`'static`).
+impl<T: Send + Sync + 'static, F: Send + Sync + 'static> GenericPublisher
     for ForwardingPublisher<T, F>
 {
     fn as_any(&mut self) -> &mut dyn std::any::Any {
