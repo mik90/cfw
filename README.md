@@ -82,7 +82,7 @@ In order of priority
 - [ ] log queue capacity shouldn't have a default value of 10, and we should have better configuration for per channel configuration
 - [x] register loggable types even without macro usage (use register_channels)
 - [ ] work in experimental mpsc queue
-- [ ] interned channel names and callback names to avoid allocations
+- [x] interned channel names and callback names to avoid allocations
     - use arena type, maybe leak at startup?
     - we could write mapping of intern ID to values to disk at build time
     - mainly relevant for publishing channel names at runtime
