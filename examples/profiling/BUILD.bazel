@@ -1,0 +1,10 @@
+load("//bazel:rust.bzl", "rust_binary")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "profiling",
+    srcs = ["src/main.rs"],
+    deps = all_crate_deps(normal = True),
+)

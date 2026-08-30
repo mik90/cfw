@@ -1,0 +1,31 @@
+load("//bazel:rust.bzl", "miri_test", "rust_benchmark", "rust_library", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "base",
+    srcs = glob(["src/**/*.rs"]),
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "base_unit_tests",
+    crate = ":base",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_benchmark(
+    name = "mpsc_benchmark",
+    srcs = ["benches/mpsc_benchmark.rs"],
+    deps = [":base"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+miri_test(
+    name = "base_miri",
+    srcs = glob(["src/**/*.rs"]),
+    deps = all_crate_deps(normal = True),
+)

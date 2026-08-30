@@ -1,0 +1,53 @@
+# Bazel settings for cfw.
+#
+# Cargo remains the primary build system; these configs mirror the Cargo
+# profiles defined in the workspace Cargo.toml so the two systems stay roughly
+# in sync. Bazel compilation modes map to rustc flags through the
+# rules_rs/rules_rust toolchain:
+#   dbg       -> opt-level=0, debuginfo=2, strip=none
+#   fastbuild -> opt-level=0, debuginfo=0, strip=none
+#   opt       -> opt-level=3, debuginfo=0, strip=debuginfo
+
+# Allow OS-specific configs (unused on Linux today; future-proofing for CI).
+common --enable_platform_specific_config
+
+# ---- Cargo profile equivalents --------------------------------------------
+
+# `cargo build` (dev profile)
+build:dev --compilation_mode=dbg
+
+# `cargo build --release`
+build:release --compilation_mode=opt
+
+# Bazel compilation-mode aliases.
+build:dbg --config=dev
+build:opt --config=release
+
+# `cargo build --profile profiling`: release + full debuginfo + no stripping.
+# Use the repeatable `extra_rustc_flag` (not the plural setting, which keeps
+# only the last assignment) so both codegen overrides land after the
+# compilation-mode flags.
+build:profiling --config=release
+build:profiling --strip=never
+build:profiling --@rules_rust//rust/settings:extra_rustc_flag=--codegen=debuginfo=2
+build:profiling --@rules_rust//rust/settings:extra_rustc_flag=--codegen=strip=none
+
+# `cargo build --profile vtune`: profiling + LTO off + split-debuginfo off.
+build:vtune --config=profiling
+build:vtune --@rules_rust//rust/settings:lto=off
+build:vtune --@rules_rust//rust/settings:extra_rustc_flag=--codegen=split-debuginfo=off
+
+# ---- Lint / CI -------------------------------------------------------------
+
+# Run clippy across all Rust targets:
+#   bazel build --config=lint //...
+build:lint --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:lint --output_groups=clippy_checks
+
+# CI-friendly output and behavior. Deny rustc warnings in first-party crates
+# (mirrors lint.sh's `RUSTFLAGS=-D warnings`); generated third-party crates
+# opt out via skip_per_crate_rustc_flags.
+build:ci --keep_going
+build:ci --@rules_rust//rust/settings:per_crate_rustc_flag=//@-Dwarnings
+test:ci --test_output=errors
+test:ci --test_summary=terse

@@ -1,0 +1,25 @@
+load("//bazel:rust.bzl", "miri_test", "rust_library", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "live_executor",
+    srcs = glob(["src/**/*.rs"]),
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "live_executor_unit_tests",
+    crate = ":live_executor",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+miri_test(
+    name = "live_executor_miri",
+    srcs = glob(["src/**/*.rs"]),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

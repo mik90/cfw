@@ -1,0 +1,48 @@
+load("//bazel:rust.bzl", "rust_binary", "rust_library", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "fizz_buzz_application",
+    srcs = ["src/lib.rs"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "live",
+    srcs = ["src/bin/live.rs"],
+    deps = [":fizz_buzz_application"] + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "live-replay",
+    srcs = ["src/bin/live_replay.rs"],
+    deps = [":fizz_buzz_application"] + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "exact-replay",
+    srcs = ["src/bin/exact_replay.rs"],
+    deps = [":fizz_buzz_application"] + all_crate_deps(normal = True),
+)
+
+# The test resolves its resources via env!("CARGO_MANIFEST_DIR") at runtime.
+# rules_rust's default CARGO_MANIFEST_DIR embeds the compile-time sandbox
+# working directory, which process_wrapper rejects, so point it at the package
+# directory relative to the test's CWD (the runfiles workspace root, `_main/`).
+rust_test(
+    name = "exact_replay_integration_test",
+    srcs = ["tests/exact_replay_integration.rs"],
+    data = [
+        "resources/fizz-buzz-log.ndjson",
+        "resources/fizz-buzz-log-integer-unlogged.ndjson",
+    ],
+    rustc_env = {
+        "CARGO_MANIFEST_DIR": "examples/fizz_buzz_application",
+    },
+    deps = [":fizz_buzz_application"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

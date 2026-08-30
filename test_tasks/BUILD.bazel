@@ -1,0 +1,10 @@
+load("//bazel:rust.bzl", "rust_library")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "test_tasks",
+    srcs = glob(["src/**/*.rs"]),
+    deps = all_crate_deps(normal = True),
+)

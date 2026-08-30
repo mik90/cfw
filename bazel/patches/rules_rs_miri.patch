@@ -1,0 +1,191 @@
+diff --git a/rs/experimental/miri/private/compile.bzl b/rs/experimental/miri/private/compile.bzl
+--- a/rs/experimental/miri/private/compile.bzl
++++ b/rs/experimental/miri/private/compile.bzl
+@@ -43,8 +43,9 @@ def _crate_provider(target):
+ def _rustc_files(target, crate):
+     env_files = list(crate.rustc_env_files)
+     flag_files = []
++    out_dirs = []
+     if DepInfo not in target:
+-        return struct(env_files = env_files, flag_files = flag_files)
++        return struct(env_files = env_files, flag_files = flag_files, out_dirs = out_dirs)
+ 
+     dep_env = target[DepInfo].dep_env
+     if dep_env:
+@@ -55,8 +56,10 @@ def _rustc_files(target, crate):
+             env_files.append(build_info.rustc_env)
+         if build_info.flags:
+             flag_files.append(build_info.flags)
++        if build_info.out_dir:
++            out_dirs.append(build_info.out_dir)
+ 
+-    return struct(env_files = env_files, flag_files = flag_files)
++    return struct(env_files = env_files, flag_files = flag_files, out_dirs = out_dirs)
+ 
+ def alias_for_dep(aliases, dep, dep_crate):
+     for candidate in [
+@@ -104,6 +107,10 @@ def _miri_dep_variants(deps, use_host_outputs = False, proc_macro_only = False):
+         if MiriCrateInfo in dep:
+             if proc_macro_only and dep[MiriCrateInfo].crate_info.type != "proc-macro":
+                 continue
++            if not proc_macro_only and dep[MiriCrateInfo].crate_info.type == "proc-macro":
++                # Proc macros run in the exec configuration and belong in
++                # proc_macro_deps, not the target-config deps.
++                continue
+             compiled_crate = dep[MiriCrateInfo].host if use_host_outputs else dep[MiriCrateInfo].target
+             crate_info = compiled_crate.crate_info
+             dep_info = compiled_crate.dep_info
+@@ -112,6 +119,11 @@ def _miri_dep_variants(deps, use_host_outputs = False, proc_macro_only = False):
+                 continue
+             fail("{} does not provide MiriCrateInfo".format(dep.label))
+ 
++        if proc_macro_only and not crate_info:
++            # Provider-only deps (build scripts, cc_library) must not be
++            # duplicated into proc_macro_deps; they belong in normal deps.
++            continue
++
+         if crate_info or BuildInfo in dep or CcInfo in dep or CrateGroupInfo in dep:
+             variants.append(DepVariantInfo(
+                 build_info = dep[BuildInfo] if BuildInfo in dep else None,
+@@ -180,7 +192,9 @@ def _emit_miri_rustc_action(
+         env,
+         mnemonic,
+         progress_message,
+-        cfg_miri = False):
++        cfg_miri = False,
++        out_dir = None,
++        out_dirs = []):
+     metadata = _sanitize_for_rustc_metadata(str(ctx.label))
+ 
+     args = ctx.actions.args()
+@@ -209,7 +223,7 @@ def _emit_miri_rustc_action(
+ 
+     transitive_inputs = [dep.transitive_inputs for dep in direct_deps]
+     transitive_outputs = [dep.transitive_outputs for dep in direct_deps]
+-    direct_inputs = [crate.root, sysroot] + rustc_env_files + rustc_flag_files
++    direct_inputs = [crate.root, sysroot] + rustc_env_files + rustc_flag_files + out_dirs
+     compile_inputs = depset(
+         direct = direct_inputs,
+         transitive = [
+@@ -219,9 +233,15 @@ def _emit_miri_rustc_action(
+         ] + transitive_inputs,
+     )
+ 
++    process_wrapper_args = miri_process_wrapper_args(ctx, toolchain, rustc_env_files, args)
++    if out_dir != None:
++        process_wrapper_args[0].add_all([out_dir], before_each = "--out-dir", expand_directories = False)
++    for out_dir_file in out_dirs:
++        process_wrapper_args[0].add_all([out_dir_file], before_each = "--subst", format_each = out_dir_file.path + "=%s", expand_directories = False)
++
+     ctx.actions.run(
+         executable = toolchain.process_wrapper,
+-        arguments = miri_process_wrapper_args(ctx, toolchain, rustc_env_files, args),
++        arguments = process_wrapper_args,
+         env = env,
+         inputs = compile_inputs,
+         outputs = [output],
+@@ -253,6 +273,7 @@ def _miri_compile_action(
+         direct_deps,
+         output,
+         rustc_files,
++        out_dir,
+         target_triple,
+         sysroot,
+         env,
+@@ -267,6 +288,8 @@ def _miri_compile_action(
+         output = output,
+         rustc_env_files = rustc_files.env_files,
+         rustc_flag_files = rustc_files.flag_files,
++        out_dir = out_dir,
++        out_dirs = rustc_files.out_dirs,
+         target_triple = target_triple,
+         sysroot = sysroot,
+         env = env,
+@@ -362,6 +385,11 @@ def _miri_compile_aspect_impl(target, ctx):
+     rust_toolchain = ctx.toolchains[_RUST_TOOLCHAIN_TYPE]
+     rustc_files = _rustc_files(target, crate)
+     deps = ctx.rule.attr.deps
++    out_dir = None
++    for dep in deps:
++        if BuildInfo in dep and dep[BuildInfo].out_dir:
++            out_dir = dep[BuildInfo].out_dir
++            break
+     proc_macro_deps = ctx.rule.attr.proc_macro_deps
+     aliases = ctx.rule.attr.aliases
+     direct_crate_aliases = _direct_crate_aliases(target)
+@@ -382,6 +410,8 @@ def _miri_compile_aspect_impl(target, ctx):
+ 
+     if crate.type == "proc-macro":
+         host = struct(
++            crate_info = host.crate_info,
++            dep_info = host.dep_info,
+             output = host.output,
+             transitive_inputs = depset(transitive = [host.transitive_inputs, crate.data]),
+             transitive_outputs = host.transitive_outputs,
+@@ -401,6 +431,7 @@ def _miri_compile_aspect_impl(target, ctx):
+         direct_deps = direct_deps,
+         output = _target_rlib_output(ctx, crate, "miri"),
+         rustc_files = rustc_files,
++        out_dir = out_dir,
+         target_triple = toolchain.target_triple,
+         sysroot = toolchain.miri_sysroot,
+         cfg_miri = True,
+
+diff --git a/rs/experimental/miri/miri_test.bzl b/rs/experimental/miri/miri_test.bzl
+--- a/rs/experimental/miri/miri_test.bzl
++++ b/rs/experimental/miri/miri_test.bzl
+@@ -79,6 +79,28 @@ def _miri_compile_args(ctx, toolchain, crate_root, crate_name, direct_deps):
+     )
+     return args
+ 
++def _cargo_env(ctx, crate_name):
++    version = ctx.attr.version
++    major, minor, patch = version.split(".", 2)
++    if "-" in patch:
++        patch, pre = patch.split("-", 1)
++    else:
++        pre = ""
++    return {
++        "CARGO_CRATE_NAME": crate_name,
++        "CARGO_PKG_NAME": crate_name,
++        "CARGO_PKG_VERSION": version,
++        "CARGO_PKG_VERSION_MAJOR": major,
++        "CARGO_PKG_VERSION_MINOR": minor,
++        "CARGO_PKG_VERSION_PATCH": patch,
++        "CARGO_PKG_VERSION_PRE": pre,
++        "CARGO_PKG_AUTHORS": "",
++        "CARGO_PKG_DESCRIPTION": "",
++        "CARGO_PKG_HOMEPAGE": "",
++        "CARGO_PKG_LICENSE": "",
++        "CARGO_PKG_LICENSE_FILE": "",
++    }
++
+ def _emit_miri_check_action(ctx, toolchain, crate_root, crate_name, direct_deps):
+     output = ctx.actions.declare_file(ctx.label.name + ".miri_check.rmeta")
+     args = _miri_compile_args(ctx, toolchain, crate_root, crate_name, direct_deps)
+@@ -87,7 +109,7 @@ def _emit_miri_check_action(ctx, toolchain, crate_root, crate_name, direct_deps)
+     ctx.actions.run(
+         executable = toolchain.process_wrapper,
+         arguments = miri_process_wrapper_args(ctx, toolchain, [], args),
+-        env = ctx.attr.env | {
++        env = _cargo_env(ctx, crate_name) | ctx.attr.env | {
+             "MIRI_BE_RUSTC": "target",
+             "MIRI_SYSROOT": toolchain.miri_sysroot.path,
+             "REPOSITORY_NAME": ctx.label.workspace_name,
+@@ -175,7 +197,7 @@ def _miri_test_impl(ctx):
+             files = depset([executable, check_output]),
+             runfiles = _miri_runfiles(ctx, toolchain, crate_root, args_file, check_output, direct_deps),
+         ),
+-        RunEnvironmentInfo(environment = ctx.attr.env),
++        RunEnvironmentInfo(environment = _cargo_env(ctx, crate_name) | ctx.attr.env),
+     ]
+ 
+ miri_test = rule(
+@@ -191,6 +213,7 @@ miri_test = rule(
+         "miri_flags": attr.string_list(doc = "Extra flags passed to the Miri driver."),
+         "rustc_flags": attr.string_list(doc = "Extra rustc-compatible flags passed to Miri."),
+         "srcs": attr.label_list(allow_files = [".rs"], mandatory = True),
++        "version": attr.string(default = "0.0.0", doc = "Cargo package version exposed as CARGO_PKG_VERSION."),
+         "_runner": attr.label(
+             default = Label("//rs/experimental/miri/private:miri_test_runner"),
+             executable = True,

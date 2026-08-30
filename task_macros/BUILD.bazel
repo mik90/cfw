@@ -1,0 +1,29 @@
+load("//bazel:rust.bzl", "miri_test", "rust_proc_macro", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_proc_macro(
+    name = "task_macros",
+    srcs = ["src/lib.rs"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "task_macros_test",
+    srcs = ["tests/test.rs"],
+    proc_macro_deps = [":task_macros"],
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+miri_test(
+    name = "task_macros_test_miri",
+    srcs = ["tests/test.rs"],
+    deps = [
+        ":task_macros",
+        "//task",
+    ],
+)

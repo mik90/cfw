@@ -1,0 +1,45 @@
+load("//bazel:rust.bzl", "miri_test", "rust_benchmark", "rust_library", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "task",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = [
+        "serde",
+        "testing",
+    ],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "task_unit_tests",
+    crate = ":task",
+    crate_features = [
+        "serde",
+        "testing",
+    ],
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_benchmark(
+    name = "pub_sub_latency",
+    srcs = ["benches/pub_sub_latency.rs"],
+    deps = [":task"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+miri_test(
+    name = "task_miri",
+    srcs = glob(["src/**/*.rs"]),
+    rustc_flags = [
+        "--cfg",
+        'feature="serde"',
+        "--cfg",
+        'feature="testing"',
+    ],
+    deps = all_crate_deps(normal = True),
+)

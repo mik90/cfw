@@ -1,2 +1,11 @@
 /target
 /tmp
+
+# Bazel outputs
+/bazel-*
+
+# Bazel rust-analyzer generated files (optional editor setup; do not commit)
+/rust-project.json
+/.rules_rust_analyzer/
+/.vscode/.rules_rust_analyzer/
+/.helix/.rules_rust_analyzer/

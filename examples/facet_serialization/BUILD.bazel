@@ -1,0 +1,25 @@
+load("//bazel:rust.bzl", "miri_test", "rust_binary", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "facet_serialization",
+    srcs = ["src/main.rs"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "facet_serialization_test",
+    crate = ":facet_serialization",
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+miri_test(
+    name = "facet_serialization_miri",
+    srcs = ["src/main.rs"],
+    deps = all_crate_deps(normal = True),
+)

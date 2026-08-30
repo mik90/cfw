@@ -1,0 +1,76 @@
+module(
+    name = "cfw",
+)
+
+bazel_dep(name = "rules_rs", version = "0.0.107")
+bazel_dep(name = "llvm", version = "0.8.18")
+bazel_dep(name = "platforms", version = "1.1.0")
+
+# Narrow upstream fixes for the experimental rules_rs 0.0.107 Miri rules:
+# deduplicate build-script and proc-macro deps, propagate build-script OUT_DIR,
+# preserve host proc-macro providers, and expose CARGO_PKG_* to Miri tests.
+# See bazel/patches/rules_rs_miri.patch.
+single_version_override(
+    module_name = "rules_rs",
+    patch_strip = 1,
+    patches = ["//bazel/patches:rules_rs_miri.patch"],
+    version = "0.0.107",
+)
+
+# ---------------------------------------------------------------------------
+# Rust toolchains.
+#
+# Pin the Bazel Rust toolchain to Rust 1.98.0 with edition 2024. The Bazel
+# toolchain is deliberately kept separate from Cargo (Cargo has no pinned
+# toolchain). We only need x86_64-unknown-linux-gnu for now, but the rules_rs
+# toolchain extension provisions the full supported matrix; unused archives
+# are only fetched lazily.
+# ---------------------------------------------------------------------------
+toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
+toolchains.toolchain(
+    edition = "2024",
+    version = "1.98.0",
+)
+
+# Experimental Miri toolchain, pinned to a dated nightly.
+toolchains.experimental_miri(
+    exec_triples = ["x86_64-unknown-linux-gnu"],
+    version = "nightly/2026-08-29",
+)
+use_repo(
+    toolchains,
+    "default_rust_toolchains",
+    "miri_toolchains",
+)
+
+# Expose rules_rs's patched rules_rust repository under its conventional
+# apparent name. This keeps existing `@rules_rust//...` loads working and is
+# required by the rules_rust rust-analyzer integration
+# (`@rules_rust//tools/rust_analyzer:setup`).
+rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+use_repo(rules_rust, "rules_rust")
+
+register_toolchains(
+    "@default_rust_toolchains//...",
+    "@llvm//toolchain:all",
+    # Experimental Miri toolchains (rules_rs); used only by `miri_test` targets.
+    "@miri_toolchains//:all",
+)
+
+# ---------------------------------------------------------------------------
+# Cargo dependency resolution.
+#
+# Cargo.toml and Cargo.lock remain the single source of truth for Rust
+# dependencies. Only x86_64-unknown-linux-gnu participates for now.
+# ---------------------------------------------------------------------------
+crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lock = "//:Cargo.lock",
+    cargo_toml = "//:Cargo.toml",
+    generate_lint_config = True,
+    platform_triples = [
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+use_repo(crate, "crates")

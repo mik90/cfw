@@ -1,0 +1,36 @@
+load("//bazel:rust.bzl", "miri_test", "rust_library", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "logging",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = [
+        "serde",
+        "testing",
+    ],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "logging_unit_tests",
+    crate = ":logging",
+    crate_features = [
+        "serde",
+        "testing",
+    ],
+    deps = all_crate_deps(normal_dev = True),
+)
+
+miri_test(
+    name = "logging_miri",
+    srcs = glob(["src/**/*.rs"]),
+    rustc_flags = [
+        "--cfg",
+        'feature="serde"',
+        "--cfg",
+        'feature="testing"',
+    ],
+    deps = all_crate_deps(normal = True),
+)
