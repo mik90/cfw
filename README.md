@@ -16,6 +16,163 @@ If you want a Rust task framework with actual integrations and meaningful suppor
 
 This is a mix of human code and LLM-generated code depending on how much I wanted to build something out myself.
 
+## Overview
+
+cfw provides a pub/sub messaging framework that is combined with callback execution. This allows user code to leverage the framework for structured concurrency.
+It's useful to delegate concurrency to a framework in some domains (robotics, automotive, etc) so that it can be modelled consistently between onboard execution and simulation. 
+There are other benefits to structured concurrency of course, (less likely to hit data races) but there's a difference between avoiding a race at runtime and trying to reproduce exactly what happened in concurrent execution. The former we consider a feature we get for free, but the latter encompasses more and should be the main goal of a concurrent robotics framework.
+
+### Task API
+
+The task API is best supported (for better or worse) through a proc macro in [task_macros](./task_macros). This allows for the most concise declaration at the expense of proc macros being hard to reason about.
+
+Being a WIP, this is certainly liable to change at any point, and I'm omitting some annoying details but this is the core API:
+
+```rust
+pub struct FizzBuzzCalculator {}
+
+#[task_callback] // Marked on impl block, as the macro inserts some `fn`s
+impl FizzBuzzCalculator {
+    // User declares a `run`, and the inputs/outputs are described by the function signature
+    fn run(
+        &mut self, // Can take mut self, although shouldn't be strictly necessary
+        // For each input/output, users declare a type from input.rs or output.rs
+        // Default channels can be set, and the input/output behavior is declared through the type
+        
+        // This integer input is required for running, and defaults to the INTEGER_CHANNEL
+        #[channel(FizzBuzzTaskInfo::INTEGER_CHANNEL)] integer: RequiredInput<u64>,
+        // We have a single output channel (defaulted to fizz buzz)
+        #[channel(FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<String>,
+    ) {
+        // Input can be accessed through Deref, although both header/payload are available
+        let is_fizz = (*integer).is_multiple_of(3);
+        let is_buzz = (*integer).is_multiple_of(5);
+        let is_fizz_buzz = is_fizz && is_buzz;
+
+        if is_fizz_buzz {
+            // Although we happen to use a dynamically allocated string here, all pub/sub types are allocated in arenas
+            // so if a contiguous type is used, users can leverage zero-copy messaging without dynamic memory allocation.
+            // Here, we could do that by using a fixed size string.
+            *fizz_buzz_string = String::from("FizzBuzz");
+        } else if is_fizz {
+            *fizz_buzz_string = String::from("Fizz");
+        } else if is_buzz {
+            *fizz_buzz_string = String::from("Buzz");
+        } else {
+            *fizz_buzz_string = integer.to_string();
+        }
+        fizz_buzz_string.send();
+    }
+
+```
+
+Underneath the macro API, there is a non-macro [Callback trait](task/src/callback.rs) that the macro implements.
+This _can_ be implemented manually although it's tedious to do so. The lack of variadic generic support in Rust makes you need to lean on macros, so I don't really know a way around this.
+
+The `Callback` trait exposes an interface for callbacks to
+- iterate over all subscribers/publishers
+- flush all subscribers into the more friendly Input types
+- actually trigger the user-defined callback
+- flush all publisher loans into the pub/sub system
+
+### Task building API
+
+This is the part I'm least happy with, and would like to change.
+
+Currently, each task definition requires a `callback_builder()` function that allows the user to set the expected execution time or any time-based execution behavior (periodics).
+
+On top of that, we have a `CallbackBuilder` type that allows for swapping out channel names and other frequently changed components of a callback.
+
+On top of _that_, there is a `TaskGraphBuilder` that allows for composing pre-configured callbacks and `CallbackBuilder`s. 
+The `TaskGraphBuilder` is more inline with what I want to support, it's just the intermediate layers between this top level and the lower levels that I'm less settled on..
+
+The `TaskGraphBuilder` lets us compose many callbacks together alongside where they live in a variable count of thread pools.
+Additionally, it's where we can layer on `TaskGraphBuildStep`s. This trait allows code to iterate over all existing callbacks (including channels) so that it can insert new callbacks. This allows us to inject logging or diagnostic handling callbacks that may subscribe to every channel in the graph, or channels with certain names/types, or something else entirely. 
+
+The main difficulty with build steps is that, as we layer them, there may be a cyclic dependency. For example, the logging build step may have a diagnostic channel that should be handled. But the diagnostic build step itself has a channel that should be logged. We need to run both, but no order is correct since it's a cycle.
+We can fix this by either
+1. having build steps declare some static channels that are present regardless of ordering
+2. running build steps multiple times, kind of like how compiler optimization passes can be run multiple times to piggyback off each other
+
+Haven't figured out what I want yet, I'd lean towards 2 but then there's the question of "what if you have an infinite loop of channels being created"?
+
+I think the best solution is to have a validation pass after the graph is built.
+
+### Executors
+
+Different use-cases call for different executors.
+[ROS has a few types of executors](https://docs.ros.org/en/lyrical/ROS-Framework/client-libraries/About-Executors/About-Executors.html#types-of-executors) although the newer "Callback Group Events Executor" is the most similar to what cfw has modelled in each of its executors.
+
+cfw has a single idea of an executor and then models it in vaguely the same way for each intended use-case
+
+#### [live_executor](./live_executor)
+
+This executor runs off the wall-clock and is what you'd run onboard a robot.
+It schedules callbacks greedily and the execution order is non-deterministic.
+Running this in tests is going to be flaky behavior-wise, although it's entirely possible to build tasks agnostic towards execution order and is generally useful to do so for the purpose of testing the framework.
+
+#### [live_replay_executor](./live_replay_executor)
+
+This executor is dependant on `live_executor` with a mild twist. It can run at a time-multiplier (generally you'd want it _slower_ than 1x) and is useful for local workflows where you want to either run a task slowly or play back logged data slowly and get a loose idea of how it works.
+
+This is best for testing visualization tools or quick debugging, but not much else.
+
+#### [exact_replay_executor](./exact_replay_executor)
+
+This executor is meant for triaging/reproducing an issue seen on the robot.
+Exact replay requires a log that contains execution logs which are produced by the frame during execution (surprisingly).
+Generally we can assume this executor is replaying execution from the live_executor, but it can theoretically reproduce executions from any executor.
+
+An executor can be configured to emit [execution logs](./task/src/execution_log.rs) which track
+- the time the callback executed
+- what inputs the callback executed with
+- what outputs the callback emitted
+
+Executions logs are meant to be shallow, so they only track the _headers_ of the messages that were used. It is up to a logger to actually log those messages and this replay executor performas a lookup of header->message in order to replay executions.
+
+This saves a lot of logging bandwidth since a callback may expect some required input at startup and leave it in its input queue for the entire duration of execution.
+
+#### [simulation_executor](./simulation_executor)
+
+This executor is built to be deterministic across runs. So, given a set of inputs (synthetic or log based), it will result in the same exact execution order assuming that all the user-provided callbacks are deterministic.
+
+The execution order may differ from any given execution from the live executor, this is meant to be a loose model that provides some insight into how code will behave in the live_executor but provides determinism so that simulation runs between commits can be robustly compared.
+
+Execution occurs within a serialized step, where the executor basically calls step in a cycle and within a step, fans out execution across a fixed set of threads and then joins.
+Originally I used Rayon with `par_iter` but I hit some Miri violation inside of Rayon during thread bringup so I ended up hand-rolling the worker threads to avoid it ¯\_(ツ)_/¯.
+
+Even though the execution threads are parallel, they can still model the thread-pooling of a live executor where certain callbacks may not be executed at the same time since they share a single threaded 'virtual' thread pool. So, if two callbacks `Foo` and `Bar` are on a single-threaded p virtual pool, they should never be executed at the same simulation time. If they have two threads on that virtual pool, they are allowed to be executed at the same simulation time.
+
+Splitting the notion of executor pools and virtual pools allows the executor to tune for CPU resources and wall-clock execution time while still modelling a given live executor setup.
+
+As for inputs, the simulation executor can allow for some synthetic inputs which are generated within the graph or via an API to some external simulator program. An external program would need to be integrated via some callback that allows the external program to work within the bounds of cfw.
+
+This may make more sense as I describe the log based simulation support. The simulation executor provides a [log simulation](simulation_executor/src/log_simulation.rs) utility where a callback reads in a log with some look-ahead, and requests execution times depending on the time of the logged messages. This lets the log callback drive hte simulation time forward since it'll keep requesting logging times in the 'future' as the log moves ahead.
+
+
+#### [unit_test_executor](./testing/src/unit_test_executor.rs)
+
+Unit testing at the task API is useful for bringing up a task and making sure it behaves as you'd expect it to behave. 
+This executor is specific to unit tests and is built on the simulation executor since it allows for fixed execution order and avoids the native flakiness of the live executor.
+
+Users are able to create test publishers to inject messages and test subscribers to listen to messages.
+The workflow generally goes:
+1. Create unit test executor builder
+2. Add your callbacks under test to the executor
+3. Create test publishers to inject messages
+4. Create test subscribers to listen to messages
+5. Build the executor
+5. Inject some messages
+6. Step the executor
+7. Query the test subscribers and assert on the values
+8. Repeat steps 5-7 until happy
+
+### Logging
+
+Honestly, the logging is bit of an afterthought. I've implemented a really naive approach based on `serde_json` which is super inefficient. The logging here is really just so I can iterate on the other components since logging is required to do exact replay
+
+I'd like this part to be modular so that users could implement their own serialization support and logging APIs that are more efficient.
+
 ## TODO 
 
 In order of priority
