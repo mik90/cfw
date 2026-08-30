@@ -276,30 +276,33 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             thread::Builder::new()
                 .name(String::from("cfw_periodic"))
                 .spawn(move || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let mut exec_times: VecDeque<TimeTriggeredNode> = VecDeque::new();
-                        // Plan purely from the snapshots seeded by the executor
-                        // before spawning: the periodic thread never reads node
-                        // internals. (A node already running at startup has a
-                        // snapshot from its seeding too.)
-                        for (index, node) in nodes.iter().enumerate() {
-                            if let Some(t) = node.next_exec_time() {
-                                exec_times.push_back(TimeTriggeredNode {
-                                    index,
-                                    requested_exec_time: t,
-                                });
+                    // Catching panics allows us to do some cleanup before continuing the panic
+                    let panic_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let mut exec_times: VecDeque<TimeTriggeredNode> =
+                                VecDeque::with_capacity(nodes.len());
+                            // Plan purely from the snapshots seeded by the executor
+                            // before spawning: the periodic thread never reads node
+                            // internals. (A node already running at startup has a
+                            // snapshot from its seeding too.)
+                            for (index, node) in nodes.iter().enumerate() {
+                                if let Some(t) = node.next_exec_time() {
+                                    exec_times.push_back(TimeTriggeredNode {
+                                        index,
+                                        requested_exec_time: t,
+                                    });
+                                }
                             }
-                        }
-                        while shared_state.should_run.load(Ordering::Acquire) {
-                            body(
-                                shared_state.as_ref(),
-                                &nodes,
-                                &mut exec_times,
-                                time_source.as_ref(),
-                            );
-                        }
-                    }));
-                    if let Err(payload) = result {
+                            while shared_state.should_run.load(Ordering::Acquire) {
+                                body(
+                                    shared_state.as_ref(),
+                                    &nodes,
+                                    &mut exec_times,
+                                    time_source.as_ref(),
+                                );
+                            }
+                        }));
+                    if let Err(payload) = panic_result {
                         shared_state.request_stop();
                         std::panic::resume_unwind(payload);
                     }
@@ -503,7 +506,8 @@ fn worker_loop_core<T: TimeSource>(
 ) {
     let mut logger_init = init;
     let mut logger = None;
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    // Catching panics allows us to do some cleanup before continuing the panic
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if logger_init.is_some() {
             // Read the clock before transferring logger-init ownership.
             let now = time_source.now();
@@ -537,7 +541,7 @@ fn worker_loop_core<T: TimeSource>(
             logger.flush_remaining(time_source.now(), &mut sink);
         }
     }));
-    let panic_payload = result.err();
+    let panic_payload = panic_result.err();
     if panic_payload.is_some() {
         shared_state.request_stop();
     }
