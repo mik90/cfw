@@ -15,6 +15,7 @@ The goal is to make an integration-agnostic framework that can plug into a bunch
 If you want a Rust task framework with actual integrations and meaningful support, you should use https://github.com/copper-project/copper-rs.
 
 This is a mix of human code and LLM-generated code depending on how much I wanted to build something out myself.
+However, this README is still human-maintained (although bots are able to check off TODO items).
 
 ## Overview
 
@@ -139,9 +140,9 @@ This executor is built to be deterministic across runs. So, given a set of input
 The execution order may differ from any given execution from the live executor, this is meant to be a loose model that provides some insight into how code will behave in the live_executor but provides determinism so that simulation runs between commits can be robustly compared.
 
 Execution occurs within a serialized step, where the executor basically calls step in a cycle and within a step, fans out execution across a fixed set of threads and then joins.
-Originally I used Rayon with `par_iter` but I hit some Miri violation inside of Rayon during thread bringup so I ended up hand-rolling the worker threads to avoid it ¯\_(ツ)_/¯.
+Originally I used Rayon with `par_iter` but I hit some Miri violation inside of Rayon during thread bringup so I ended up hand-rolling the worker threads to avoid it `¯\_(ツ)_/¯`.
 
-Even though the execution threads are parallel, they can still model the thread-pooling of a live executor where certain callbacks may not be executed at the same time since they share a single threaded 'virtual' thread pool. So, if two callbacks `Foo` and `Bar` are on a single-threaded p virtual pool, they should never be executed at the same simulation time. If they have two threads on that virtual pool, they are allowed to be executed at the same simulation time.
+Even though the execution threads are parallel, they can still model the thread-pooling of a live executor where certain callbacks may not be executed at the same time since they share a single threaded 'virtual' thread pool. So, if two callbacks `Foo` and `Bar` are on a single-threaded virtual pool, they should never be executed at the same simulation time. If they have two threads on that virtual pool, they are allowed to be executed at the same simulation time.
 
 Splitting the notion of executor pools and virtual pools allows the executor to tune for CPU resources and wall-clock execution time while still modelling a given live executor setup.
 
@@ -169,9 +170,19 @@ The workflow generally goes:
 
 ### Logging
 
-Honestly, the logging is bit of an afterthought. I've implemented a really naive approach based on `serde_json` which is super inefficient. The logging here is really just so I can iterate on the other components since logging is required to do exact replay
+Honestly, the logging is bit of an afterthought. I've implemented a really naive approach based on `serde_json` which is super inefficient. The logging here is really just so I can iterate on the other components since logging is required to do exact replay.
 
 I'd like this part to be modular so that users could implement their own serialization support and logging APIs that are more efficient.
+
+There is a notion of "event logging" and "continuous logging". One big WIP item is supporting execution logs in event logging.
+Contiuous logging assumes that all messages will be written to disk, so lookup of any header in an execution log should succeed.
+
+Event logging assumes that only a subset of messages will be logged to disk whenever a user-determined "event" has occured. This is a  common workflow in various robotics/automotive/avionics/rail systems since these systems may be running for a very long time and there is only so much disk space/lifespan.
+This makes shallow execution logging much harder, since the logger must have a notion of what messages callbacks are actually using so that it can log them. If a callback logs an execution that says "I ran with inputs A, B, and C", then the event logger must ensure that it has logged "A, B, and C" regardless of when those messages were seen in the system. So it'll likely need a lookup table of all execution logs to whether those headers were already logged.
+
+This excution log lookup is something I haven't built yet in the logging task, but it's something I'd like to build.
+
+In both "event logging" and "continuous logging", we also have to handle the case where messages are dropped. Arenas are fixed size at task graph build, and the logger can only run so frequently to consume messages. There is not infinite CPU, memory, or time so we have to either drop or block the entire graph until the CPU can catch up. Blocking the whole graph is not possible, as logging is treated like any other callback, so it is up to the user to tune the logging queue sizes accordingly to avoid drops and to handle drops as they find fit.
 
 ## TODO 
 
