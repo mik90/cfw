@@ -23,6 +23,17 @@ cfw provides a pub/sub messaging framework that is combined with callback execut
 It's useful to delegate concurrency to a framework in some domains (robotics, automotive, etc) so that it can be modelled consistently between onboard execution and simulation. 
 There are other benefits to structured concurrency of course, (less likely to hit data races) but there's a difference between avoiding a race at runtime and trying to reproduce exactly what happened in concurrent execution. The former we consider a feature we get for free, but the latter encompasses more and should be the main goal of a concurrent robotics framework.
 
+I use "task" and "callback" interchangeably and don't feel like consolidating the two yet. I suppose that a "task" can be a "callback" based on how the code has played out. But we could consider a task as a group of callbacks. A task is definitely not a process though, as many task frameworks tend to define it.
+
+Related to that, users are meant to keep callbacks in a single process as much as is reasonable for their use-case.
+Processes tend to have some level of base cost when it comes to either OS scheduling or whatever accoutrements are added to the infrastructure. 
+A heavily multi-process system's benefit is mainly in the realm of
+- minimizing impact when a process crashes
+- configuring OS permissions 
+
+For the former, I'm hoping that Rust's memory safety can minimize the impact of crashing. It is up to users to avoid panics, though.
+For the latter, I can't really do anything about this.
+
 ### Task API
 
 The task API is best supported (for better or worse) through a proc macro in [task_macros](./task_macros). This allows for the most concise declaration at the expense of proc macros being hard to reason about.
