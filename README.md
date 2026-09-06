@@ -274,6 +274,12 @@ Run tests including linting and miri
 ./run_test.sh
 ```
 
+Run just lints and `cargo check`
+
+```bash
+./lint.sh
+```
+
 ## Debugging tips
 
 To view proc macro output of the unit test in test.rs
