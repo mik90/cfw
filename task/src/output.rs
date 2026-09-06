@@ -1,11 +1,10 @@
 use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::GenericPublisher;
 use crate::message::Message;
-use crate::publisher::{ForwardingPublisher, Publisher, SendError};
+use crate::publisher::{ForwardingPublisher, Publisher};
 use base::arena::ArenaReaderPtr;
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex};
 
 pub struct ForwardingOutput<'a, T, F> {
     pub(crate) publisher: &'a mut ForwardingPublisher<T, F>,
@@ -24,27 +23,9 @@ impl<'a, T: 'static, F: 'static> ForwardingOutput<'a, T, F> {
     }
 }
 
-pub struct PublishFailureCallback(Arc<Mutex<dyn FnMut(SendError)>>);
-
-impl PublishFailureCallback {
-    pub fn new<F>(f: F) -> Self
-    where
-        F: FnMut(SendError) + 'static,
-    {
-        PublishFailureCallback(Arc::new(Mutex::new(f)))
-    }
-
-    pub fn panic() -> Self {
-        PublishFailureCallback(Arc::new(Mutex::new(|e| {
-            panic!("Publish failed: {:?}", e);
-        })))
-    }
-}
-
 pub struct Output<'a, T> {
     pub(crate) publisher: &'a mut Publisher<T>,
     pub(crate) loaned_value_idx: usize,
-    pub on_publish_failure: PublishFailureCallback,
 }
 
 impl<'a, T> Output<'a, T> {
@@ -80,7 +61,6 @@ impl<'a, T> Output<'a, T> {
         Output {
             publisher,
             loaned_value_idx,
-            on_publish_failure: PublishFailureCallback::panic(),
         }
     }
 }
@@ -93,7 +73,6 @@ impl<'a, T: Default> Output<'a, T> {
         Output {
             publisher,
             loaned_value_idx,
-            on_publish_failure: PublishFailureCallback::panic(),
         }
     }
 }
@@ -212,7 +191,6 @@ impl<'a, T: Default, F> ForwardedOutput<'a, T, F> {
         let output = Output {
             loaned_value_idx,
             publisher: &mut publisher.inner,
-            on_publish_failure: PublishFailureCallback::panic(),
         };
         ForwardedOutput { inner: output }
     }
