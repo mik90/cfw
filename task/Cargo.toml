@@ -7,13 +7,16 @@ edition = "2024"
 
 [features]
 testing = []
+default = ["iceoryx2"] # Just enable by default for ease of iteration
 serde = ["dep:serde", "dep:serde_json"]
+iceoryx2 = ["dep:iceoryx2"]
 
 [dependencies]
 base = { path = "../base" }
 libc = "0.2.186"                                   # Used for retreiving time from the system
 serde = { workspace = true, optional = true }      # Allows serde loggability for task types
 serde_json = { workspace = true, optional = true } # Default backend for loggability
+iceoryx2 = {workspace = true, optional = true } # Optional iceoryx2 integration
 
 [dev-dependencies]
 criterion = "0.5"

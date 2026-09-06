@@ -8,6 +8,10 @@ pub mod executor;
 pub mod forwarded_message;
 pub mod generic_publisher;
 pub mod generic_subscriber;
+#[cfg(feature = "iceoryx2")]
+pub mod iceoryx2_publisher;
+#[cfg(feature = "iceoryx2")]
+pub mod iceoryx2_subscriber;
 pub mod input;
 pub mod loggable;
 pub mod message;

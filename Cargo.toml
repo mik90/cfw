@@ -29,8 +29,11 @@ allow_attributes_without_reason = "deny"
 dead_code = "allow" # Not ideal, but im iterating a lot and this is getting chatty
 
 [workspace.dependencies]
+# Optional serde integration, just a default serialization setup
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+# Optional iceoryx2 integration
+iceoryx2 =  "0.9"
 
 [profile.profiling]
 # See run_flamegraph.sh for how to run
