@@ -242,6 +242,9 @@ In order of priority
   - arena configuration may be different per backing pub/sub system
   - the reason we'd do this instead of introducing another callback that publishes on a given channel is that another callback means we have another queue whose capacity we have to manage
   - blocking pub/sub is fine here since people can opt into it, if they want async pub/sub they can have a separate callback to do the work
+  - triggering/required inputs may be difficult. I imagine that we'll need a separate readiness thread
+    - if a required trigger comes in but we're waiting on a required non-trigger, we need the required non-trigger to allow for callback scheduling. So a readiness thread would either need to wake on that non-trigger or poll (probably former).
+    - optional non-trigger inputs won't affect readiness at all
 - [x] provide task storage abstraction
   - cleanup subscriber buffers before publishers
   - allow for indexing with some strong types
