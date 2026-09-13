@@ -1,0 +1,3 @@
+
+# Arbitrary value, but we don't want stack overflows
+stack-size-threshold = 60000
