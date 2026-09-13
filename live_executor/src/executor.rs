@@ -1903,10 +1903,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "assert_no_alloc relies on a custom #[global_allocator], which Miri doesn't run"
-    )]
     #[ignore = "not enabled in normal runs since it aborts"]
     /// We expect that the assert_no_alloc crate will abort on allocs
     fn test_no_alloc_catches_allocs() {
