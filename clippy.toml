@@ -1,3 +1,5 @@
 
 # (clippy::large_stack_frames) Arbitrary value, helps avoid stack overflows
 stack-size-threshold = 200_000
+# (clippy::large_stack_frames) Avoid overflows in tests
+allow-large-stack-frames-in-tests = false
