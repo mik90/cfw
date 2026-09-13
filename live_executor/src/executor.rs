@@ -661,6 +661,7 @@ impl LiveExecutor<WallClock> {
 #[cfg(test)]
 mod tests {
     use std::{
+        process::Command,
         sync::{
             Arc, Mutex, OnceLock,
             atomic::{AtomicUsize, Ordering},
@@ -1850,5 +1851,85 @@ mod tests {
         }
         assert!(!executor.is_running());
         assert_eq!(executor.stop_threads(), Err(vec![1]));
+    }
+
+    struct AllocatingCallback {
+        allocated_byte_array: Box<[u8]>,
+    }
+
+    impl Default for AllocatingCallback {
+        fn default() -> Self {
+            AllocatingCallback {
+                allocated_byte_array: Box::new([0u8]),
+            }
+        }
+    }
+
+    impl Callback for AllocatingCallback {
+        fn run(&mut self, _ctx: &Context) -> Run {
+            self.allocated_byte_array = Box::new([0u8; 10]);
+            Run { num_iterations: 1 }
+        }
+        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
+        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
+        fn for_each_subscriber_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+        ) {
+        }
+        fn for_each_publisher_mut<'a>(
+            &'a mut self,
+            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
+        ) {
+        }
+        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "assert_no_alloc relies on a custom #[global_allocator], which Miri doesn't run"
+    )]
+    /// We expect that the assert_no_alloc crate will panic on allocs
+    fn test_run_aborting_test() {
+        let output = Command::new("cargo")
+            .args(["test", "--", "test_no_alloc_catches_allocs", "--ignored"])
+            .output()
+            .expect("Failed to run subommand");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !output.status.success(),
+            "Expected subcommand to fail, but it succeeded: {stdout}"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("memory allocation of 10 bytes failed"),
+            "Subprocess test stderr didn't contain expected message of 'memory allocation of 10 bytes failed': {stderr}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "assert_no_alloc relies on a custom #[global_allocator], which Miri doesn't run"
+    )]
+    #[ignore = "not enabled in normal runs since it aborts"]
+    /// We expect that the assert_no_alloc crate will abort on allocs
+    fn test_no_alloc_catches_allocs() {
+        let mut allocating_node =
+            CallbackNode::new_named(Box::new(AllocatingCallback::default()), "allocating".into());
+        allocating_node
+            .set_execution_time_callback(Box::new(|now| Some(now + time::Duration::from_secs(1))));
+
+        let mut executor = LiveExecutor::new(1, vec![allocating_node]);
+
+        executor.start_threads_no_alloc();
+        let deadline = std::time::Instant::now() + time::Duration::from_secs(15);
+        while executor.is_running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(time::Duration::from_millis(10));
+        }
+        assert!(executor.stop().is_ok());
     }
 }
