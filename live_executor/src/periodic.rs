@@ -121,14 +121,13 @@ mod tests {
     }
 
     impl Callback for PeriodicCounter {
-        fn run(&mut self, _ctx: &Context) -> task::callback::Run {
+        fn run(&mut self, _ctx: &Context) {
             let run_number = self.run_count.fetch_add(1, Ordering::SeqCst) + 1;
             if run_number >= self.target_runs
                 && let Some(signal) = self.stop_signal.get()
             {
                 signal.request_stop();
             }
-            task::callback::Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}

@@ -52,7 +52,7 @@ pub(crate) fn node_executor_thread(
         // proceeds to flush publishers as soon as it receives the response, so
         // the node must be free by then.
         let execution_duration = nodes[work_request.index].access(|node| {
-            let _ = node.run(&ctx);
+            node.run(&ctx);
             node.execution_duration()
         });
 

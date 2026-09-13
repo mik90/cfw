@@ -207,7 +207,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    use task::callback::{Callback, CallbackNode, PortMut, Run};
+    use task::callback::{Callback, CallbackNode, PortMut};
     use task::context::Context;
     use task::execution_log::ExecutionLogDescriptor;
     use task::generic_publisher::GenericPublisher;
@@ -224,9 +224,7 @@ mod tests {
     }
 
     impl Callback for PassthroughCallback {
-        fn run(&mut self, _ctx: &Context) -> Run {
-            Run::new(1)
-        }
+        fn run(&mut self, _ctx: &Context) {}
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
             f(&self.sub);
         }

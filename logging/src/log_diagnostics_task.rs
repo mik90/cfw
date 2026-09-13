@@ -1,4 +1,4 @@
-use task::callback::{Callback, PortMut, Run};
+use task::callback::{Callback, PortMut};
 use task::context::Context;
 use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
@@ -76,7 +76,7 @@ impl LogDiagnosticsTask {
 }
 
 impl Callback for LogDiagnosticsTask {
-    fn run(&mut self, _ctx: &Context) -> Run {
+    fn run(&mut self, _ctx: &Context) {
         let mut subscribers = std::mem::take(&mut self.subscribers);
         for subscriber in subscribers.iter_mut() {
             let mut input = OptionalInput::<LogError>::new(subscriber);
@@ -86,7 +86,6 @@ impl Callback for LogDiagnosticsTask {
             }
         }
         self.subscribers = subscribers;
-        Run::new(1)
     }
 
     fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {

@@ -592,7 +592,7 @@ fn hydrate_subscribers(
 mod tests {
     use super::*;
     use crate::report::DEFAULT_MAX_MISMATCH_DETAILS;
-    use task::callback::{Callback, PortMut, Run};
+    use task::callback::{Callback, PortMut};
     use task::output::Output;
     use task::publisher::{Publisher, PublisherConfig};
     use task::subscriber::{Subscriber, SubscriberConfig};
@@ -608,14 +608,13 @@ mod tests {
     }
 
     impl Callback for IdentityCallback {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             let input = task::input::OptionalInput::<u64>::new_downcasted(&mut self.subscriber);
             if let Some(val) = input.value() {
                 let mut output = Output::<u64>::new_downcasted(&mut self.publisher);
                 *output = *val;
                 output.send();
             }
-            Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
@@ -709,11 +708,10 @@ mod tests {
             publisher: Publisher<u64>,
         }
         impl Callback for AlwaysPublish {
-            fn run(&mut self, _ctx: &Context) -> Run {
+            fn run(&mut self, _ctx: &Context) {
                 let mut output = Output::new_default(&mut self.publisher);
                 *output = 7u64;
                 output.send();
-                Run::new(1)
             }
             fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
             fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
@@ -796,11 +794,10 @@ mod tests {
             publisher: Publisher<u64>,
         }
         impl Callback for AlwaysPublish {
-            fn run(&mut self, _ctx: &Context) -> Run {
+            fn run(&mut self, _ctx: &Context) {
                 let mut output = Output::new_default(&mut self.publisher);
                 *output = 7u64;
                 output.send();
-                Run::new(1)
             }
             fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
             fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
@@ -930,13 +927,12 @@ mod tests {
             received: Arc<Mutex<Vec<(FrameworkTime, u64)>>>,
         }
         impl Callback for RecordingCallback {
-            fn run(&mut self, _ctx: &Context) -> Run {
+            fn run(&mut self, _ctx: &Context) {
                 let mut input = task::input::InputSpan::<u64>::new_downcasted(&mut self.subscriber);
                 let mut records = self.received.lock().unwrap();
                 for msg in input.inputs() {
                     records.push((msg.header.published_at, msg.message));
                 }
-                Run::new(1)
             }
             fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
                 f(&self.subscriber);

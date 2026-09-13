@@ -437,16 +437,15 @@ mod tests {
     fn test_zero_duration_node_frees_pool_thread() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use task::callback::{Callback, PortMut, Run};
+        use task::callback::{Callback, PortMut};
         use task::context::Context;
         use task::generic_publisher::GenericPublisher;
         use task::generic_subscriber::GenericSubscriber;
 
         struct CountingCallback(Arc<AtomicUsize>);
         impl Callback for CountingCallback {
-            fn run(&mut self, _ctx: &Context) -> Run {
+            fn run(&mut self, _ctx: &Context) {
                 self.0.fetch_add(1, Ordering::Relaxed);
-                Run::new(1)
             }
             fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
             fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
@@ -495,7 +494,7 @@ mod tests {
         use std::sync::Arc;
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use task::callback::{Callback, PortMut, Run};
+        use task::callback::{Callback, PortMut};
         use task::context::Context;
         use task::generic_publisher::GenericPublisher;
         use task::generic_subscriber::GenericSubscriber;
@@ -511,14 +510,13 @@ mod tests {
             max: u64,
         }
         impl Callback for CounterPublisher {
-            fn run(&mut self, _ctx: &Context) -> Run {
+            fn run(&mut self, _ctx: &Context) {
                 if self.next < self.max {
                     let mut out = Output::<u64>::new_default(&mut self.publisher);
                     *out = self.next;
                     out.send();
                     self.next += 1;
                 }
-                Run::new(1)
             }
             fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
             fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
@@ -550,7 +548,7 @@ mod tests {
             violations: Arc<AtomicUsize>,
         }
         impl Callback for GatedConsumer {
-            fn run(&mut self, _ctx: &Context) -> Run {
+            fn run(&mut self, _ctx: &Context) {
                 let read_front = |sub: &mut Subscriber<u64>| -> Option<u64> {
                     let guard = sub.read_buffer();
                     guard.front().map(|msg| msg.message)
@@ -561,7 +559,6 @@ mod tests {
                         self.violations.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                Run::new(1)
             }
             fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
                 f(&self.trigger);

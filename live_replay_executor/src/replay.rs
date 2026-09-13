@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use logging::sorted_log_stream::{ReplaySinkMap, SortedLogStreamReader, build_replay_sinks};
-use task::callback::{Callback, CallbackNode, PortMut, Run};
+use task::callback::{Callback, CallbackNode, PortMut};
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::executor::ExecutorStopSignal;
@@ -22,20 +22,15 @@ pub struct ReplayTask {
 }
 
 impl Callback for ReplayTask {
-    fn run(&mut self, ctx: &Context) -> Run {
+    fn run(&mut self, ctx: &Context) {
         let (batch, next_time) = self.reader.read_until(ctx.now);
         for entry in &batch {
             self.sinks.publish(entry);
         }
 
         let done = next_time.is_none();
-        if done {
-            if let Some(signal) = self.stop_signal.get() {
-                signal.request_stop();
-            }
-            Run::new(0)
-        } else {
-            Run::new(1)
+        if done && let Some(signal) = self.stop_signal.get() {
+            signal.request_stop();
         }
     }
 

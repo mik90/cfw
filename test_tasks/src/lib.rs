@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use task::callback::{Callback, CallbackNode, PortMut, Run};
+use task::callback::{Callback, CallbackNode, PortMut};
 use task::callback_builder::CallbackBuilder;
 use task::callback_storage::CallbackStorage;
 use task::context::Context;
@@ -184,9 +184,7 @@ impl StringCollector {
 pub struct NoOpCallback;
 
 impl Callback for NoOpCallback {
-    fn run(&mut self, _ctx: &Context) -> Run {
-        Run::new(1)
-    }
+    fn run(&mut self, _ctx: &Context) {}
     fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
     fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
     fn for_each_subscriber_mut<'a>(

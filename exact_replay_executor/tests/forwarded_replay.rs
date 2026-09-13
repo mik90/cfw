@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use task::callback::{Callback, CallbackNode, PortMut, Run};
+use task::callback::{Callback, CallbackNode, PortMut};
 use task::callback_builder::CallbackBuilder;
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
@@ -53,16 +53,14 @@ struct IntegerProducer {
 }
 
 impl Callback for IntegerProducer {
-    fn run(&mut self, _ctx: &Context) -> Run {
+    fn run(&mut self, _ctx: &Context) {
         if self.value >= self.max {
             self.done.store(1, Ordering::Release);
-            return Run::new(0);
         }
         let mut output = Output::new_default(&mut self.publisher);
         *output = self.value;
         self.value += 1;
         output.send();
-        Run::new(1)
     }
     fn register_channels(&self, registry: &mut ChannelRegistry) {
         // Hand-rolled callback: register the concrete port type explicitly.
@@ -94,13 +92,12 @@ struct Forwarder {
 }
 
 impl Callback for Forwarder {
-    fn run(&mut self, _ctx: &Context) -> Run {
+    fn run(&mut self, _ctx: &Context) {
         let input = ForwardableOptionalInput::new(&self.subscriber);
         if let Some(mut fwd) = input.forward(&mut ForwardingOutput::new(&mut self.publisher)) {
             *fwd = true;
             fwd.send();
         }
-        Run::new(1)
     }
     fn register_channels(&self, registry: &mut ChannelRegistry) {
         // Hand-rolled callback: register the concrete port types explicitly.
@@ -142,7 +139,7 @@ struct Consumer {
 }
 
 impl Callback for Consumer {
-    fn run(&mut self, _ctx: &Context) -> Run {
+    fn run(&mut self, _ctx: &Context) {
         let mut input =
             InputSpan::<ForwardedMessage<bool, u32>>::new_downcasted(&mut self.subscriber);
         let mut received = self.received.lock().unwrap();
@@ -157,7 +154,6 @@ impl Callback for Consumer {
         {
             signal.request_stop();
         }
-        Run::new(1)
     }
     fn register_channels(&self, registry: &mut ChannelRegistry) {
         // Hand-rolled callback: register the concrete port type explicitly.

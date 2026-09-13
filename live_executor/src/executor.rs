@@ -401,7 +401,7 @@ fn process_work_item(
                 if !logger.has_data() {
                     // Just track drop and continue
                     node_guard.drain_subscribers();
-                    let _ = node_guard.run(&ctx);
+                    node_guard.run(&ctx);
                     node_guard.flush_publishers(ctx.now, &mut sink);
                     return;
                 }
@@ -409,13 +409,13 @@ fn process_work_item(
                 match node_guard.execution_log_level() {
                     ExecutionLogLevel::Off => {
                         node_guard.drain_subscribers();
-                        let _ = node_guard.run(&ctx);
+                        node_guard.run(&ctx);
                         node_guard.flush_publishers(ctx.now, &mut sink);
                     }
                     ExecutionLogLevel::Duration => {
                         node_guard.drain_subscribers();
                         let start = task::time::FrameworkTime::from_wall_clock();
-                        let _ = node_guard.run(&ctx);
+                        node_guard.run(&ctx);
                         let end = task::time::FrameworkTime::from_wall_clock();
                         let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
@@ -441,7 +441,7 @@ fn process_work_item(
                             });
                         });
                         let start = task::time::FrameworkTime::from_wall_clock();
-                        let _ = node_guard.run(&ctx);
+                        node_guard.run(&ctx);
                         let end = task::time::FrameworkTime::from_wall_clock();
                         let duration = end.checked_duration_since(start).unwrap_or(Duration::ZERO);
 
@@ -474,7 +474,7 @@ fn process_work_item(
             }
             None => {
                 node_guard.drain_subscribers();
-                let _ = node_guard.run(&ctx);
+                node_guard.run(&ctx);
                 node_guard.flush_publishers(ctx.now, &mut sink);
             }
         }
@@ -672,7 +672,7 @@ mod tests {
 
     use task::{
         callback::{
-            Callback, CallbackNode, CallbackViews, InputKind, OutputKind, PortMut, Run,
+            Callback, CallbackNode, CallbackViews, InputKind, OutputKind, PortMut,
             connect_callback_nodes,
         },
         callback_builder::CallbackBuilder,
@@ -696,12 +696,11 @@ mod tests {
     }
 
     impl Callback for NoAllocPublisher {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             let mut output = Output::<u64>::new_default(&mut self.publisher);
             *output = self.value;
             self.value = self.value.wrapping_add(1);
             output.send();
-            Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
@@ -732,7 +731,7 @@ mod tests {
     }
 
     impl Callback for OptionalTriggerSubscriber {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             let mut input = OptionalInput::<u64>::new(&self.subscriber);
             while input.value().is_some() {
                 let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
@@ -743,7 +742,6 @@ mod tests {
                 }
                 input.clear();
             }
-            Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
@@ -774,7 +772,7 @@ mod tests {
     }
 
     impl Callback for NoAllocSubscriber {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             let _input = RequiredInput::<u64>::new(&self.subscriber);
             let count = self.messages_received.fetch_add(1, Ordering::SeqCst) + 1;
             if count >= self.target_count
@@ -782,7 +780,6 @@ mod tests {
             {
                 signal.request_stop();
             }
-            Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
@@ -816,7 +813,7 @@ mod tests {
     }
 
     impl Callback for SpinningSubscriber {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             // Widen the window during which a concurrent publisher trigger
             // must be handled as a deferred re-run rather than a re-borrow.
             sleep(self.spin);
@@ -827,7 +824,6 @@ mod tests {
             {
                 signal.request_stop();
             }
-            Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
@@ -1307,7 +1303,7 @@ mod tests {
     }
 
     impl Callback for ExecutionLogCollector {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             let mut input =
                 OptionalInput::<task::execution_log::ExecutionLogMessage>::new(&self.subscriber);
             while let Some(msg) = input.value().cloned() {
@@ -1320,7 +1316,6 @@ mod tests {
             {
                 signal.request_stop();
             }
-            Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
@@ -1413,14 +1408,13 @@ mod tests {
     }
 
     impl Callback for ExecutionLogCounter {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             let mut input =
                 OptionalInput::<task::execution_log::ExecutionLogMessage>::new(&self.subscriber);
             while input.value().is_some() {
                 self.count.fetch_add(1, Ordering::Relaxed);
                 input.clear();
             }
-            Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
@@ -1550,9 +1544,8 @@ mod tests {
     }
 
     impl Callback for LifecycleProbe {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             self.runs.fetch_add(1, Ordering::SeqCst);
-            Run::new(1)
         }
         fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
         fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
@@ -1572,7 +1565,7 @@ mod tests {
     struct PanickingCallback;
 
     impl Callback for PanickingCallback {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             panic!("intentional worker panic");
         }
         fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
@@ -1866,9 +1859,8 @@ mod tests {
     }
 
     impl Callback for AllocatingCallback {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             self.allocated_byte_array = Box::new([0u8; 10]);
-            Run { num_iterations: 1 }
         }
         fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
         fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}

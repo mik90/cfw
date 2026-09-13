@@ -646,16 +646,15 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         const _: () = {
-            use task::callback::{Run, Callback, PortMut};
+            use task::callback::{Callback, PortMut};
             use task::generic_subscriber::GenericSubscriber;
             use task::generic_publisher::GenericPublisher;
             use task::input::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
             use task::output::{Output, OutputSpan, ForwardingOutput};
 
             impl Callback for #callback_name {
-                fn run(&mut self, ctx: &task::context::Context) -> Run {
+                fn run(&mut self, ctx: &task::context::Context) {
                     self.user.run(#(#run_args),*);
-                    Run::new(1)
                 }
 
                 fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {

@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use task::callback::{Callback, PortMut, Run};
+use task::callback::{Callback, PortMut};
 use task::context::Context;
 use task::execution_log::{self, EXECUTION_LOG_DESCRIPTOR_ARTIFACT};
 use task::generic_publisher::GenericPublisher;
@@ -258,7 +258,7 @@ pub(crate) fn open_writer(_path: &Path) -> Box<dyn LogFileWriter> {
 }
 
 impl Callback for ContinuousLogTask {
-    fn run(&mut self, ctx: &Context) -> Run {
+    fn run(&mut self, ctx: &Context) {
         // Write execution log descriptor as artifact on first run
         if let Some(descriptor) = self.execution_log_descriptor.take() {
             let mut scratch = Vec::new();
@@ -278,7 +278,6 @@ impl Callback for ContinuousLogTask {
                 }
             }
         }
-
         let mut channel_loggers = std::mem::take(&mut self.channel_loggers);
         let mut subscribers = std::mem::take(&mut self.subscribers);
         for (sub, logger) in subscribers.iter_mut().zip(channel_loggers.iter_mut()) {
@@ -292,7 +291,6 @@ impl Callback for ContinuousLogTask {
         if let Err(e) = self.flush() {
             self.record_error("<writer>".to_string(), e, ctx.now);
         }
-
         if !self.error_buffer.is_empty() {
             for err in self.error_buffer.drain() {
                 let mut output = Output::<LogError>::new_default(&mut self.diagnostics_publisher);
@@ -300,8 +298,6 @@ impl Callback for ContinuousLogTask {
                 output.send();
             }
         }
-
-        Run::new(1)
     }
 
     fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
@@ -410,7 +406,7 @@ impl EventLogTask {
 }
 
 impl Callback for EventLogTask {
-    fn run(&mut self, ctx: &Context) -> Run {
+    fn run(&mut self, ctx: &Context) {
         // Write execution log descriptor as artifact on first run
         if let Some(descriptor) = self.execution_log_descriptor.take() {
             let mut scratch = Vec::new();
@@ -452,8 +448,6 @@ impl Callback for EventLogTask {
                 output.send();
             }
         }
-
-        Run::new(1)
     }
 
     fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {

@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use task::callback::{Callback, CallbackViews, PortMut, Run};
+use task::callback::{Callback, CallbackViews, PortMut};
 use task::callback_builder::CallbackBuilder;
 use task::context::Context;
 use task::generic_publisher::GenericPublisher;
@@ -50,14 +50,13 @@ impl CounterProducer {
 }
 
 impl Callback for CounterProducer {
-    fn run(&mut self, _ctx: &Context) -> Run {
+    fn run(&mut self, _ctx: &Context) {
         if self.counter < self.max {
             let mut out = Output::<u64>::new_default(&mut self.publisher);
             *out = self.counter;
             out.send();
             self.counter += 1;
         }
-        Run::new(1)
     }
 
     fn register_channels(&self, registry: &mut task::channel_registry::ChannelRegistry) {
@@ -126,14 +125,13 @@ impl NonLoggableProducer {
 }
 
 impl Callback for NonLoggableProducer {
-    fn run(&mut self, _ctx: &Context) -> Run {
+    fn run(&mut self, _ctx: &Context) {
         if self.counter < 1 {
             let mut out = Output::<NonLoggable>::new_default(&mut self.publisher);
             out._value = self.counter;
             out.send();
             self.counter += 1;
         }
-        Run::new(1)
     }
 
     fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}

@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use logging::sorted_log_stream::{ReplaySinkMap, SortedLogStreamReader, build_replay_sinks};
-use task::callback::{Callback, CallbackNode, PortMut, Run};
+use task::callback::{Callback, CallbackNode, PortMut};
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::executor::ExecutorStopSignal;
@@ -22,12 +22,11 @@ pub struct LogSimulationTask {
 }
 
 impl Callback for LogSimulationTask {
-    fn run(&mut self, ctx: &Context) -> Run {
+    fn run(&mut self, ctx: &Context) {
         let (batch, next_time) = self.reader.read_until(ctx.now);
         for entry in &batch {
             self.sinks.publish(entry);
         }
-
         match next_time {
             Some(t) => {
                 self.next_time_ns.store(t, Ordering::Relaxed);
@@ -40,8 +39,6 @@ impl Callback for LogSimulationTask {
                 }
             }
         }
-
-        Run::new(0)
     }
 
     fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}

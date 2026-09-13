@@ -66,17 +66,6 @@ impl From<OutputKind> for PublisherConfig {
     }
 }
 
-#[derive(Debug)]
-pub struct Run {
-    pub num_iterations: usize,
-}
-
-impl Run {
-    pub fn new(num_iterations: usize) -> Run {
-        Run { num_iterations }
-    }
-}
-
 // ── PortMut ──
 
 /// One mutable port visit — lets callers collect *both* subscriber and
@@ -89,7 +78,7 @@ pub enum PortMut<'a> {
 // ── New Callback trait ──
 
 pub trait Callback: Send {
-    fn run(&mut self, ctx: &crate::context::Context) -> Run;
+    fn run(&mut self, ctx: &crate::context::Context);
 
     fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber));
     fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher));
@@ -515,7 +504,7 @@ impl CallbackNode {
         self.log_level = level;
     }
 
-    pub fn run(&mut self, ctx: &crate::context::Context) -> Run {
+    pub fn run(&mut self, ctx: &crate::context::Context) {
         self.callback.run(ctx)
     }
     pub fn subscribers_request_execution(&self) -> bool {
@@ -569,9 +558,7 @@ mod test {
     }
 
     impl Callback for VecPorts {
-        fn run(&mut self, _ctx: &crate::context::Context) -> Run {
-            Run::new(0)
-        }
+        fn run(&mut self, _ctx: &crate::context::Context) {}
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
             for s in &self.subs {
                 f(s.as_ref());
@@ -610,9 +597,7 @@ mod test {
 
     struct NoopCallback;
     impl Callback for NoopCallback {
-        fn run(&mut self, _ctx: &crate::context::Context) -> Run {
-            Run::new(0)
-        }
+        fn run(&mut self, _ctx: &crate::context::Context) {}
         fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
         fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
         fn for_each_subscriber_mut<'a>(
@@ -684,7 +669,7 @@ mod test {
             received: Vec<u64>,
         }
         impl Callback for LoopbackCallback {
-            fn run(&mut self, _ctx: &Context) -> Run {
+            fn run(&mut self, _ctx: &Context) {
                 let input = OptionalInput::<u64>::new_downcasted(&mut self.subscriber);
                 if let Some(msg) = input.value() {
                     self.received.push(*msg);
@@ -693,7 +678,6 @@ mod test {
                 *output = self.value_to_publish;
                 output.send();
                 self.value_to_publish += 1;
-                Run::new(1)
             }
             fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
                 f(&self.subscriber);
@@ -1114,9 +1098,7 @@ mod test {
             publisher: ForwardingPublisher<bool, u64>,
         }
         impl Callback for Forwarder {
-            fn run(&mut self, _ctx: &crate::context::Context) -> Run {
-                Run::new(0)
-            }
+            fn run(&mut self, _ctx: &crate::context::Context) {}
             fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
             fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
                 f(&self.publisher);
@@ -1141,9 +1123,7 @@ mod test {
             subscriber: Subscriber<ForwardedMessage<bool, u64>>,
         }
         impl Callback for Receiver {
-            fn run(&mut self, _ctx: &crate::context::Context) -> Run {
-                Run::new(0)
-            }
+            fn run(&mut self, _ctx: &crate::context::Context) {}
             fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
                 f(&self.subscriber);
             }

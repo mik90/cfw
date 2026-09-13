@@ -416,7 +416,7 @@ mod test {
     use std::assert_matches;
 
     use super::*;
-    use crate::callback::{Callback, PortMut, Run};
+    use crate::callback::{Callback, PortMut};
     use crate::callback_builder::CallbackBuilder;
     use crate::context::Context;
     use crate::generic_publisher::GenericPublisher;
@@ -431,9 +431,7 @@ mod test {
     }
 
     impl Callback for DummyCallback {
-        fn run(&mut self, _ctx: &Context) -> Run {
-            Run::new(1)
-        }
+        fn run(&mut self, _ctx: &Context) {}
 
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
             for s in &self.subs {
@@ -500,9 +498,7 @@ mod test {
     }
 
     impl Callback for I32SubscriberCallback {
-        fn run(&mut self, _ctx: &Context) -> Run {
-            Run::new(1)
-        }
+        fn run(&mut self, _ctx: &Context) {}
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
             f(&self.subscriber);
         }

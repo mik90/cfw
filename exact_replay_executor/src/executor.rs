@@ -288,7 +288,7 @@ mod tests {
     use std::collections::HashMap;
     use std::thread;
 
-    use task::callback::{Callback, CallbackNode, PortMut, Run};
+    use task::callback::{Callback, CallbackNode, PortMut};
     use task::context::Context;
     use task::execution_log::{
         Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
@@ -314,14 +314,13 @@ mod tests {
     }
 
     impl Callback for PassthroughCallback {
-        fn run(&mut self, _ctx: &Context) -> Run {
+        fn run(&mut self, _ctx: &Context) {
             let input = task::input::OptionalInput::<u64>::new_downcasted(&mut self.sub);
             if let Some(val) = input.value() {
                 let mut output = Output::<u64>::new_downcasted(&mut self.pub_);
                 *output = *val;
                 output.send();
             }
-            Run::new(1)
         }
 
         fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
@@ -788,11 +787,10 @@ mod tests {
             publisher: Publisher<u64>,
         }
         impl Callback for AlwaysPublish {
-            fn run(&mut self, _ctx: &Context) -> Run {
+            fn run(&mut self, _ctx: &Context) {
                 let mut output = Output::new_default(&mut self.publisher);
                 *output = 7u64;
                 output.send();
-                Run::new(1)
             }
             fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
             fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
