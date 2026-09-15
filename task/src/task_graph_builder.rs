@@ -287,7 +287,7 @@ impl TaskGraphBuilder {
     }
 
     /// Register every node's channels into `registry`. Idempotent: `#[task_callback]`
-    /// callbacks register their loggable ports via `Probe` (no-op for
+    /// callbacks register their loggable types via `Probe` (no-op for
     /// non-loggable types); hand-written callbacks default to a no-op.
     fn register_nodes(nodes: &[CallbackNode], registry: &mut ChannelRegistry) {
         for node in nodes {
@@ -416,7 +416,7 @@ mod test {
     use std::assert_matches;
 
     use super::*;
-    use crate::callback::{Callback, PortMut};
+    use crate::callback::{Callback, PubOrSub, PubOrSubMut};
     use crate::callback_builder::CallbackBuilder;
     use crate::context::Context;
     use crate::generic_publisher::GenericPublisher;
@@ -433,38 +433,20 @@ mod test {
     impl Callback for DummyCallback {
         fn run(&mut self, _ctx: &Context) {}
 
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
             for s in &self.subs {
-                f(s.as_ref());
+                f(PubOrSub::Subscriber(s.as_ref()));
             }
-        }
-        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
             for p in &self.pubs {
-                f(p.as_ref());
+                f(PubOrSub::Publisher(p.as_ref()));
             }
         }
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
             for s in self.subs.iter_mut() {
-                f(s.as_mut());
-            }
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-            for p in self.pubs.iter_mut() {
-                f(p.as_mut());
-            }
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            for s in self.subs.iter_mut() {
-                f(PortMut::Subscriber(s.as_mut()));
+                f(PubOrSubMut::Subscriber(s.as_mut()));
             }
             for p in self.pubs.iter_mut() {
-                f(PortMut::Publisher(p.as_mut()));
+                f(PubOrSubMut::Publisher(p.as_mut()));
             }
         }
     }
@@ -499,23 +481,11 @@ mod test {
 
     impl Callback for I32SubscriberCallback {
         fn run(&mut self, _ctx: &Context) {}
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-            f(&self.subscriber);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Subscriber(&self.subscriber));
         }
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-            f(&mut self.subscriber);
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Subscriber(&mut self.subscriber));
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Subscriber(&mut self.subscriber));
         }
     }
 

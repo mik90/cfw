@@ -1,7 +1,7 @@
 //! Descriptor and descriptor-less execution validation.
 //!
 //! Validates that the execution log descriptor matches the supplied callback
-//! nodes, and that every channel referenced by an **actively replayed** port
+//! nodes, and that every channel referenced by an **actively replayed** pub or sub
 //! has the required registrations in the [`ChannelRegistry`].
 
 use std::collections::{HashMap, HashSet};
@@ -15,15 +15,15 @@ use crate::log_reader::ReplayLog;
 
 /// Validate the parsed `ReplayLog` against the rebuilt callback nodes:
 ///
-/// - **Eagerly** (for every descriptor entry): check that every node/port/
-///   channel referenced in the descriptor exists in the nodes and that the
-///   channel names match the node's ports.
-/// - **Lazily** (only for ports that actually appear in a parsed
+/// - **Eagerly** (for every descriptor entry): check that every node/pub-or-
+///   sub/channel referenced in the descriptor exists in the nodes and that
+///   the channel names match the node's pub or subs.
+/// - **Lazily** (only for pub or subs that actually appear in a parsed
 ///   [`ReplayExecution`]): require registry capabilities — a deserializer and
-///   publisher factory for subscriber ports, a serializer for publisher ports.
+///   publisher factory for subscribers, a serializer for publishers.
 ///
 /// Descriptor-only channels that are never referenced by a parsed replay
-/// execution may remain unregistered (lazy). Actively replayed ports must be
+/// execution may remain unregistered (lazy). Actively replayed pub or subs must be
 /// registered — the replay needs to deserialize incoming messages (subscriber)
 /// or capture outgoing messages (publisher) for them.
 ///
@@ -37,7 +37,7 @@ pub(crate) fn validate_descriptor(
 
     let descriptor = &replay_log.descriptor;
 
-    // Active ports per node: the union of all subscriber/publisher ordinals
+    // Active pub or subs per node: the union of all subscriber/publisher ordinals
     // that appear in any parsed execution for that node.
     let mut active_received: HashMap<usize, HashSet<u16>> = HashMap::new();
     let mut active_published: HashMap<usize, HashSet<u16>> = HashMap::new();
@@ -207,11 +207,9 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    use task::callback::{Callback, CallbackNode, PortMut};
+    use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
     use task::context::Context;
     use task::execution_log::ExecutionLogDescriptor;
-    use task::generic_publisher::GenericPublisher;
-    use task::generic_subscriber::GenericSubscriber;
     use task::publisher::{Publisher, PublisherConfig};
     use task::subscriber::{Subscriber, SubscriberConfig};
 
@@ -225,27 +223,13 @@ mod tests {
 
     impl Callback for PassthroughCallback {
         fn run(&mut self, _ctx: &Context) {}
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-            f(&self.sub);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Subscriber(&self.sub));
+            f(PubOrSub::Publisher(&self.pub_));
         }
-        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-            f(&self.pub_);
-        }
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-            f(&mut self.sub);
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-            f(&mut self.pub_);
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Subscriber(&mut self.sub));
-            f(PortMut::Publisher(&mut self.pub_));
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Subscriber(&mut self.sub));
+            f(PubOrSubMut::Publisher(&mut self.pub_));
         }
     }
 
@@ -323,9 +307,9 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_only_port_may_be_unregistered() {
+    fn descriptor_only_pub_or_sub_may_be_unregistered() {
         // No channels registered at all. The descriptor references "input"
-        // and "output", but NO execution replays any port, so the channels
+        // and "output", but NO execution replays any pub or sub, so the channels
         // may remain lazy/unregistered.
         let registry = ChannelRegistry::new();
         let desc = make_descriptor();
@@ -334,15 +318,15 @@ mod tests {
         let result = validate_descriptor(&log, &CallbackStorage::from_nodes(vec![node]), &registry);
         assert!(
             result.is_ok(),
-            "descriptor-only ports may remain unregistered: {:?}",
+            "descriptor-only pub or subs may remain unregistered: {:?}",
             result
         );
     }
 
     #[test]
     fn descriptor_only_publisher_may_be_unregistered() {
-        // Only the subscriber port is actively replayed. The publisher port
-        // is referenced by the descriptor but never replayed, so "output"
+        // Only the subscriber is actively replayed. The publisher is
+        // referenced by the descriptor but never replayed, so "output"
         // may remain unregistered.
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("input".into());
@@ -359,8 +343,8 @@ mod tests {
 
     #[test]
     fn descriptor_only_subscriber_may_be_unregistered() {
-        // Only the publisher port is actively replayed. The subscriber port
-        // is referenced by the descriptor but never replayed, so "input"
+        // Only the publisher is actively replayed. The subscriber is
+        // referenced by the descriptor but never replayed, so "input"
         // may remain unregistered.
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("output".into());

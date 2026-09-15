@@ -538,29 +538,16 @@ impl Drop for CallbackStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::callback::{Callback, CallbackNode};
+    use crate::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
     use crate::context::Context;
-    use crate::generic_publisher::GenericPublisher;
-    use crate::generic_subscriber::GenericSubscriber;
     use std::time::Duration;
 
     struct NoopCallback;
 
     impl Callback for NoopCallback {
         fn run(&mut self, _ctx: &Context) {}
-        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(crate::callback::PortMut<'a>)) {}
+        fn for_each_pub_or_sub<'a>(&'a self, _f: &mut dyn FnMut(PubOrSub<'a>)) {}
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PubOrSubMut<'a>)) {}
     }
 
     fn make_node() -> SharedCallbackNode {

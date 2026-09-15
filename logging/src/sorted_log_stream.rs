@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use task::callback::PortMut;
+use task::callback::PubOrSubMut;
 use task::channel_registry::{ChannelPublisherWriter, ChannelRegistry, DeserializerFn};
 use task::execution_log::EXECUTION_LOG_CHANNEL;
 use task::generic_publisher::GenericPublisher;
@@ -481,10 +481,10 @@ impl ReplaySinkMap {
         }
     }
 
-    /// Invoke `f` for every port (publisher only).
-    pub fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
+    /// Invoke `f` for every publisher as a mutable pub-or-sub.
+    pub fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
         for sink in self.sinks.values_mut() {
-            f(PortMut::Publisher(sink.publisher.as_mut()));
+            f(PubOrSubMut::Publisher(sink.publisher.as_mut()));
         }
     }
 }

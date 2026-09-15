@@ -672,15 +672,13 @@ mod tests {
 
     use task::{
         callback::{
-            Callback, CallbackNode, CallbackViews, InputKind, OutputKind, PortMut,
+            Callback, CallbackNode, CallbackViews, InputKind, OutputKind, PubOrSub, PubOrSubMut,
             connect_callback_nodes,
         },
         callback_builder::CallbackBuilder,
         context::Context,
         execution_log::ExecutionLogLevel,
         executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig, TimeSource},
-        generic_publisher::GenericPublisher,
-        generic_subscriber::GenericSubscriber,
         input::{OptionalInput, RequiredInput},
         output::Output,
         publisher::Publisher,
@@ -703,23 +701,11 @@ mod tests {
             output.send();
         }
 
-        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-            f(&self.publisher);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Publisher(&self.publisher));
         }
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-            f(&mut self.publisher);
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Publisher(&mut self.publisher));
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Publisher(&mut self.publisher));
         }
     }
 
@@ -744,23 +730,11 @@ mod tests {
             }
         }
 
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-            f(&self.subscriber);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Subscriber(&self.subscriber));
         }
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-            f(&mut self.subscriber);
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Subscriber(&mut self.subscriber));
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -782,23 +756,11 @@ mod tests {
             }
         }
 
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-            f(&self.subscriber);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Subscriber(&self.subscriber));
         }
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-            f(&mut self.subscriber);
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Subscriber(&mut self.subscriber));
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -826,23 +788,11 @@ mod tests {
             }
         }
 
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-            f(&self.subscriber);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Subscriber(&self.subscriber));
         }
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-            f(&mut self.subscriber);
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Subscriber(&mut self.subscriber));
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -1318,23 +1268,11 @@ mod tests {
             }
         }
 
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-            f(&self.subscriber);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Subscriber(&self.subscriber));
         }
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-            f(&mut self.subscriber);
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Subscriber(&mut self.subscriber));
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -1417,23 +1355,11 @@ mod tests {
             }
         }
 
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-            f(&self.subscriber);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Subscriber(&self.subscriber));
         }
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-            f(&mut self.subscriber);
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Subscriber(&mut self.subscriber));
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Subscriber(&mut self.subscriber));
         }
     }
 
@@ -1547,19 +1473,8 @@ mod tests {
         fn run(&mut self, _ctx: &Context) {
             self.runs.fetch_add(1, Ordering::SeqCst);
         }
-        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+        fn for_each_pub_or_sub<'a>(&'a self, _f: &mut dyn FnMut(PubOrSub<'a>)) {}
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PubOrSubMut<'a>)) {}
     }
 
     struct PanickingCallback;
@@ -1568,19 +1483,8 @@ mod tests {
         fn run(&mut self, _ctx: &Context) {
             panic!("intentional worker panic");
         }
-        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+        fn for_each_pub_or_sub<'a>(&'a self, _f: &mut dyn FnMut(PubOrSub<'a>)) {}
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PubOrSubMut<'a>)) {}
     }
 
     struct PanicOnThread(&'static str);
@@ -1862,19 +1766,8 @@ mod tests {
         fn run(&mut self, _ctx: &Context) {
             self.allocated_byte_array = Box::new([0u8; 10]);
         }
-        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+        fn for_each_pub_or_sub<'a>(&'a self, _f: &mut dyn FnMut(PubOrSub<'a>)) {}
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PubOrSubMut<'a>)) {}
     }
 
     #[test]

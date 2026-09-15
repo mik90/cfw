@@ -1,12 +1,10 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use task::callback::{Callback, CallbackNode, PortMut};
+use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
 use task::callback_builder::CallbackBuilder;
 use task::callback_storage::CallbackStorage;
 use task::context::Context;
 use task::executor::ExecutorStopSignal;
-use task::generic_publisher::GenericPublisher;
-use task::generic_subscriber::GenericSubscriber;
 use task::input::RequiredInput;
 use task::output::Output;
 use task::task_graph_builder::TaskGraphBuilder;
@@ -185,15 +183,8 @@ pub struct NoOpCallback;
 
 impl Callback for NoOpCallback {
     fn run(&mut self, _ctx: &Context) {}
-    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-    fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-    fn for_each_subscriber_mut<'a>(
-        &'a mut self,
-        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-    ) {
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, _f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {}
-    fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+    fn for_each_pub_or_sub<'a>(&'a self, _f: &mut dyn FnMut(PubOrSub<'a>)) {}
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PubOrSubMut<'a>)) {}
 }
 
 pub fn build_no_op_callback_node() -> CallbackNode {

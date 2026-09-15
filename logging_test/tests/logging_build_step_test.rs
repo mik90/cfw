@@ -11,11 +11,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use task::callback::{Callback, CallbackViews, PortMut};
+use task::callback::{Callback, CallbackViews as _, PubOrSub, PubOrSubMut};
 use task::callback_builder::CallbackBuilder;
 use task::context::Context;
-use task::generic_publisher::GenericPublisher;
-use task::generic_subscriber::GenericSubscriber;
 use task::output::Output;
 use task::publisher::{Publisher, PublisherConfig};
 use task::task_graph_builder::TaskGraphBuilder;
@@ -60,27 +58,18 @@ impl Callback for CounterProducer {
     }
 
     fn register_channels(&self, registry: &mut task::channel_registry::ChannelRegistry) {
-        // Hand-written callbacks register their concrete port types explicitly;
+        // Hand-written callbacks register their concrete pub or sub types explicitly;
         // `#[task_callback]` does this for you.
         task::channel_registry::Probe::<u64>::new().try_register(registry);
         task::channel_registry::Probe::<u64>::new()
             .try_register_channel(registry, self.publisher.config().channel_name.clone());
     }
 
-    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        f(&self.publisher);
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+        f(PubOrSub::Publisher(&self.publisher));
     }
-    fn for_each_subscriber_mut<'a>(
-        &'a mut self,
-        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-    ) {
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
-        f(&mut self.publisher);
-    }
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        f(PortMut::Publisher(&mut self.publisher));
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+        f(PubOrSubMut::Publisher(&mut self.publisher));
     }
 }
 
@@ -134,20 +123,11 @@ impl Callback for NonLoggableProducer {
         }
     }
 
-    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        f(&self.publisher);
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+        f(PubOrSub::Publisher(&self.publisher));
     }
-    fn for_each_subscriber_mut<'a>(
-        &'a mut self,
-        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-    ) {
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
-        f(&mut self.publisher);
-    }
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        f(PortMut::Publisher(&mut self.publisher));
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+        f(PubOrSubMut::Publisher(&mut self.publisher));
     }
 }
 

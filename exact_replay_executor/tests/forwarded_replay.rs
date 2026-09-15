@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use task::callback::{Callback, CallbackNode, PortMut};
+use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
 use task::callback_builder::CallbackBuilder;
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
@@ -26,8 +26,8 @@ use task::execution_log::{
 };
 use task::executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig};
 use task::forwarded_message::ForwardedMessage;
-use task::generic_publisher::GenericPublisher;
-use task::generic_subscriber::GenericSubscriber;
+use task::generic_publisher::GenericPublisher as _;
+use task::generic_subscriber::GenericSubscriber as _;
 use task::input::{ForwardableOptionalInput, InputSpan};
 use task::loggable::Loggable;
 use task::message::{Message, MessageHeader};
@@ -63,25 +63,16 @@ impl Callback for IntegerProducer {
         output.send();
     }
     fn register_channels(&self, registry: &mut ChannelRegistry) {
-        // Hand-rolled callback: register the concrete port type explicitly.
+        // Hand-rolled callback: register the concrete pub or sub type explicitly.
         task::channel_registry::Probe::<u32>::new().try_register(registry);
         task::channel_registry::Probe::<u32>::new()
             .try_register_channel(registry, self.publisher.config().channel_name.clone());
     }
-    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        f(&self.publisher);
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+        f(PubOrSub::Publisher(&self.publisher));
     }
-    fn for_each_subscriber_mut<'a>(
-        &'a mut self,
-        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-    ) {
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
-        f(&mut self.publisher);
-    }
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        f(PortMut::Publisher(&mut self.publisher));
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+        f(PubOrSubMut::Publisher(&mut self.publisher));
     }
 }
 
@@ -100,7 +91,7 @@ impl Callback for Forwarder {
         }
     }
     fn register_channels(&self, registry: &mut ChannelRegistry) {
-        // Hand-rolled callback: register the concrete port types explicitly.
+        // Hand-rolled callback: register the concrete pub or sub types explicitly.
         // The forwarded channel only gets its serializer here — the full
         // channel mapping (deserializer + publisher factory) is registered by
         // the replay executor via `register_forwarded_channel`.
@@ -112,21 +103,13 @@ impl Callback for Forwarder {
         task::channel_registry::Probe::<ForwardedMessage<bool, u32>>::new()
             .try_register_channel(registry, self.publisher.config().channel_name.clone());
     }
-    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-        f(&self.subscriber);
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+        f(PubOrSub::Subscriber(&self.subscriber));
+        f(PubOrSub::Publisher(&self.publisher));
     }
-    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        f(&self.publisher);
-    }
-    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
-        f(&mut self.subscriber);
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
-        f(&mut self.publisher);
-    }
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        f(PortMut::Subscriber(&mut self.subscriber));
-        f(PortMut::Publisher(&mut self.publisher));
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+        f(PubOrSubMut::Subscriber(&mut self.subscriber));
+        f(PubOrSubMut::Publisher(&mut self.publisher));
     }
 }
 
@@ -156,22 +139,17 @@ impl Callback for Consumer {
         }
     }
     fn register_channels(&self, registry: &mut ChannelRegistry) {
-        // Hand-rolled callback: register the concrete port type explicitly.
+        // Hand-rolled callback: register the concrete pub or sub type explicitly.
         use task::channel_registry::MaybeRegister as _;
         task::channel_registry::Probe::<ForwardedMessage<bool, u32>>::new().try_register(registry);
         task::channel_registry::Probe::<ForwardedMessage<bool, u32>>::new()
             .try_register_channel(registry, self.subscriber.config().channel_name.clone());
     }
-    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-        f(&self.subscriber);
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+        f(PubOrSub::Subscriber(&self.subscriber));
     }
-    fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
-        f(&mut self.subscriber);
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, _f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {}
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        f(PortMut::Subscriber(&mut self.subscriber));
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+        f(PubOrSubMut::Subscriber(&mut self.subscriber));
     }
 }
 

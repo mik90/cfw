@@ -3,12 +3,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use logging::sorted_log_stream::{ReplaySinkMap, SortedLogStreamReader, build_replay_sinks};
-use task::callback::{Callback, CallbackNode, PortMut};
+use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::executor::ExecutorStopSignal;
-use task::generic_publisher::GenericPublisher;
-use task::generic_subscriber::GenericSubscriber;
 use task::pub_sub::ChannelName;
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 use task::time::FrameworkTime;
@@ -34,20 +32,12 @@ impl Callback for ReplayTask {
         }
     }
 
-    fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        self.sinks.for_each_publisher(f);
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+        self.sinks
+            .for_each_publisher(&mut |p| f(PubOrSub::Publisher(p)));
     }
-    fn for_each_subscriber_mut<'a>(
-        &'a mut self,
-        _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-    ) {
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
-        self.sinks.for_each_publisher_mut(f);
-    }
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        self.sinks.for_each_port_mut(f);
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+        self.sinks.for_each_pub_or_sub_mut(f);
     }
 }
 
@@ -147,6 +137,7 @@ mod tests {
     use task::channel_registry::ChannelRegistry;
     use task::context::Context;
     use task::executor::ExecutorStopSignal;
+    use task::generic_publisher::GenericPublisher as _;
     use task::input::OptionalInput;
     use task::publisher::Publisher;
     use task::string_interner::{CallbackNameInterner, ChannelNameInterner};

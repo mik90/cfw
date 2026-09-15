@@ -592,7 +592,7 @@ fn hydrate_subscribers(
 mod tests {
     use super::*;
     use crate::report::DEFAULT_MAX_MISMATCH_DETAILS;
-    use task::callback::{Callback, PortMut};
+    use task::callback::Callback;
     use task::output::Output;
     use task::publisher::{Publisher, PublisherConfig};
     use task::subscriber::{Subscriber, SubscriberConfig};
@@ -617,27 +617,18 @@ mod tests {
             }
         }
 
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-            f(&self.subscriber);
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(task::callback::PubOrSub<'a>)) {
+            f(task::callback::PubOrSub::Subscriber(&self.subscriber));
+            f(task::callback::PubOrSub::Publisher(&self.publisher));
         }
-        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-            f(&self.publisher);
-        }
-        fn for_each_subscriber_mut<'a>(
+        fn for_each_pub_or_sub_mut<'a>(
             &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+            f: &mut dyn FnMut(task::callback::PubOrSubMut<'a>),
         ) {
-            f(&mut self.subscriber);
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-            f(&mut self.publisher);
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            f(PortMut::Subscriber(&mut self.subscriber));
-            f(PortMut::Publisher(&mut self.publisher));
+            f(task::callback::PubOrSubMut::Subscriber(
+                &mut self.subscriber,
+            ));
+            f(task::callback::PubOrSubMut::Publisher(&mut self.publisher));
         }
     }
 
@@ -713,23 +704,14 @@ mod tests {
                 *output = 7u64;
                 output.send();
             }
-            fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-            fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-                f(&self.publisher);
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(task::callback::PubOrSub<'a>)) {
+                f(task::callback::PubOrSub::Publisher(&self.publisher));
             }
-            fn for_each_subscriber_mut<'a>(
+            fn for_each_pub_or_sub_mut<'a>(
                 &'a mut self,
-                _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+                f: &mut dyn FnMut(task::callback::PubOrSubMut<'a>),
             ) {
-            }
-            fn for_each_publisher_mut<'a>(
-                &'a mut self,
-                f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-            ) {
-                f(&mut self.publisher);
-            }
-            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-                f(PortMut::Publisher(&mut self.publisher));
+                f(task::callback::PubOrSubMut::Publisher(&mut self.publisher));
             }
         }
 
@@ -799,23 +781,14 @@ mod tests {
                 *output = 7u64;
                 output.send();
             }
-            fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-            fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-                f(&self.publisher);
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(task::callback::PubOrSub<'a>)) {
+                f(task::callback::PubOrSub::Publisher(&self.publisher));
             }
-            fn for_each_subscriber_mut<'a>(
+            fn for_each_pub_or_sub_mut<'a>(
                 &'a mut self,
-                _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+                f: &mut dyn FnMut(task::callback::PubOrSubMut<'a>),
             ) {
-            }
-            fn for_each_publisher_mut<'a>(
-                &'a mut self,
-                f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-            ) {
-                f(&mut self.publisher);
-            }
-            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-                f(PortMut::Publisher(&mut self.publisher));
+                f(task::callback::PubOrSubMut::Publisher(&mut self.publisher));
             }
         }
 
@@ -934,23 +907,16 @@ mod tests {
                     records.push((msg.header.published_at, msg.message));
                 }
             }
-            fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-                f(&self.subscriber);
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(task::callback::PubOrSub<'a>)) {
+                f(task::callback::PubOrSub::Subscriber(&self.subscriber));
             }
-            fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-            fn for_each_subscriber_mut<'a>(
+            fn for_each_pub_or_sub_mut<'a>(
                 &'a mut self,
-                f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
+                f: &mut dyn FnMut(task::callback::PubOrSubMut<'a>),
             ) {
-                f(&mut self.subscriber);
-            }
-            fn for_each_publisher_mut<'a>(
-                &'a mut self,
-                _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-            ) {
-            }
-            fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-                f(PortMut::Subscriber(&mut self.subscriber));
+                f(task::callback::PubOrSubMut::Subscriber(
+                    &mut self.subscriber,
+                ));
             }
         }
 

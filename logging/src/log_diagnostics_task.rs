@@ -1,7 +1,5 @@
-use task::callback::{Callback, PortMut};
+use task::callback::{Callback, PubOrSub, PubOrSubMut};
 use task::context::Context;
-use task::generic_publisher::GenericPublisher;
-use task::generic_subscriber::GenericSubscriber;
 use task::input::OptionalInput;
 use task::pub_sub::ChannelName;
 use task::subscriber::{Subscriber, SubscriberConfig};
@@ -88,21 +86,14 @@ impl Callback for LogDiagnosticsTask {
         self.subscribers = subscribers;
     }
 
-    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
         for s in &self.subscribers {
-            f(s);
+            f(PubOrSub::Subscriber(s));
         }
     }
-    fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
         for s in self.subscribers.iter_mut() {
-            f(s);
-        }
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, _f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {}
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        for s in self.subscribers.iter_mut() {
-            f(PortMut::Subscriber(s));
+            f(PubOrSubMut::Subscriber(s));
         }
     }
 }

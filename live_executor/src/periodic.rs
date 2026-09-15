@@ -105,11 +105,9 @@ mod tests {
     };
 
     use task::{
-        callback::{Callback, CallbackNode, PortMut},
+        callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut},
         context::Context,
         executor::{Executor, ExecutorStopSignal},
-        generic_publisher::GenericPublisher,
-        generic_subscriber::GenericSubscriber,
     };
 
     use crate::LiveExecutor;
@@ -130,19 +128,8 @@ mod tests {
             }
         }
 
-        fn for_each_subscriber<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {}
-        fn for_each_publisher<'a>(&'a self, _f: &mut dyn FnMut(&'a dyn GenericPublisher)) {}
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            _f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-        }
-        fn for_each_port_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PortMut<'a>)) {}
+        fn for_each_pub_or_sub<'a>(&'a self, _f: &mut dyn FnMut(PubOrSub<'a>)) {}
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PubOrSubMut<'a>)) {}
     }
 
     #[test]

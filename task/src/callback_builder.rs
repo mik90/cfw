@@ -175,7 +175,7 @@ mod test {
     use std::assert_matches;
 
     use super::*;
-    use crate::callback::{Callback, PortMut};
+    use crate::callback::{Callback, PubOrSub, PubOrSubMut};
     use crate::context::Context;
     use crate::generic_publisher::GenericPublisher;
     use crate::generic_subscriber::GenericSubscriber;
@@ -191,38 +191,20 @@ mod test {
     impl Callback for DummyCallback {
         fn run(&mut self, _ctx: &Context) {}
 
-        fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
             for s in &self.subs {
-                f(s.as_ref());
+                f(PubOrSub::Subscriber(s.as_ref()));
             }
-        }
-        fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
             for p in &self.pubs {
-                f(p.as_ref());
+                f(PubOrSub::Publisher(p.as_ref()));
             }
         }
-        fn for_each_subscriber_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericSubscriber),
-        ) {
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
             for s in self.subs.iter_mut() {
-                f(s.as_mut());
-            }
-        }
-        fn for_each_publisher_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-        ) {
-            for p in self.pubs.iter_mut() {
-                f(p.as_mut());
-            }
-        }
-        fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-            for s in self.subs.iter_mut() {
-                f(PortMut::Subscriber(s.as_mut()));
+                f(PubOrSubMut::Subscriber(s.as_mut()));
             }
             for p in self.pubs.iter_mut() {
-                f(PortMut::Publisher(p.as_mut()));
+                f(PubOrSubMut::Publisher(p.as_mut()));
             }
         }
     }

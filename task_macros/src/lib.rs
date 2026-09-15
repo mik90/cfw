@@ -25,7 +25,7 @@ enum TypeForm {
 }
 
 #[derive(Clone)]
-enum PortKind {
+enum PubOrSubKind {
     Sub { msg: Ident, ikind: InputKind },
     ForwardableSub { msg: Ident, ikind: InputKind },
     Pub { msg: Ident, okind: OutputKind },
@@ -35,7 +35,7 @@ enum PortKind {
 
 #[derive(Clone)]
 struct SigArg {
-    port_kind: PortKind,
+    pub_or_sub_kind: PubOrSubKind,
     field_name: Ident,
     /// Channel name expression from an optional `#[channel(...)]` attribute.
     channel: Option<syn::Expr>,
@@ -187,7 +187,7 @@ fn sanitize_impl(item_impl: &ItemImpl) -> ItemImpl {
     sanitized
 }
 
-/// Wrap a port's default config expression so it carries the `#[channel(...)]`
+/// Wrap a pub or sub's default config expression so it carries the `#[channel(...)]`
 /// name, e.g. `{ let mut __cfg: SubscriberConfig = ...; __cfg.channel_name = "x".into(); __cfg }`.
 /// Returns the expression unchanged when no channel was declared.
 fn with_channel(
@@ -299,48 +299,48 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
             syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment")
         })?;
 
-        let port_kind = match (last.ident.to_string().as_str(), &form) {
-            ("RequiredInput", TypeForm::Value) => PortKind::Sub {
+        let pub_or_sub_kind = match (last.ident.to_string().as_str(), &form) {
+            ("RequiredInput", TypeForm::Value) => PubOrSubKind::Sub {
                 msg: get_message_type(pat_ty)?,
                 ikind: InputKind::Required,
             },
-            ("OptionalInput", TypeForm::Value) => PortKind::Sub {
+            ("OptionalInput", TypeForm::Value) => PubOrSubKind::Sub {
                 msg: get_message_type(pat_ty)?,
                 ikind: InputKind::Optional,
             },
-            ("InputSpan", TypeForm::Value) => PortKind::Sub {
+            ("InputSpan", TypeForm::Value) => PubOrSubKind::Sub {
                 msg: get_message_type(pat_ty)?,
                 ikind: InputKind::Span,
             },
-            ("ForwardableRequiredInput", TypeForm::Value) => PortKind::ForwardableSub {
+            ("ForwardableRequiredInput", TypeForm::Value) => PubOrSubKind::ForwardableSub {
                 msg: get_message_type(pat_ty)?,
                 ikind: InputKind::Required,
             },
-            ("ForwardableOptionalInput", TypeForm::Value) => PortKind::ForwardableSub {
+            ("ForwardableOptionalInput", TypeForm::Value) => PubOrSubKind::ForwardableSub {
                 msg: get_message_type(pat_ty)?,
                 ikind: InputKind::Optional,
             },
-            ("ForwardableInputSpan", TypeForm::Value) => PortKind::ForwardableSub {
+            ("ForwardableInputSpan", TypeForm::Value) => PubOrSubKind::ForwardableSub {
                 msg: get_message_type(pat_ty)?,
                 ikind: InputKind::Span,
             },
-            ("Output", TypeForm::Value) => PortKind::Pub {
+            ("Output", TypeForm::Value) => PubOrSubKind::Pub {
                 msg: get_message_type(pat_ty)?,
                 okind: OutputKind::Default,
             },
-            ("OutputSpan", TypeForm::Value) => PortKind::Pub {
+            ("OutputSpan", TypeForm::Value) => PubOrSubKind::Pub {
                 msg: get_message_type(pat_ty)?,
                 okind: OutputKind::Span,
             },
             ("ForwardingOutput", TypeForm::Value) => {
                 let (user_data, forwarded) = get_two_message_types(pat_ty)?;
-                PortKind::ForwardingPub {
+                PubOrSubKind::ForwardingPub {
                     user_data,
                     forwarded,
                 }
             }
-            ("Context", TypeForm::Value) => PortKind::Context,
-            ("Context", TypeForm::Ref_) => PortKind::Context,
+            ("Context", TypeForm::Value) => PubOrSubKind::Context,
+            ("Context", TypeForm::Ref_) => PubOrSubKind::Context,
             _ => {
                 return Err(syn::Error::new_spanned(
                     &last.ident,
@@ -351,10 +351,10 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                 ));
             }
         };
-        let is_context = matches!(port_kind, PortKind::Context);
+        let is_context = matches!(pub_or_sub_kind, PubOrSubKind::Context);
         let channel = channel_expr(pat_ty, is_context)?;
         arguments.push(SigArg {
-            port_kind,
+            pub_or_sub_kind,
             field_name: fname,
             channel,
         });
@@ -376,18 +376,15 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let struct_name = &sig.callback_type;
-    let ports_name = Ident::new(&format!("{}Ports", struct_name), struct_name.span());
+    let pub_or_subs_name = Ident::new(&format!("{}PubOrSubs", struct_name), struct_name.span());
     let callback_name = Ident::new(&format!("{}Callback", struct_name), struct_name.span());
 
     // ── Per-field code bits ──
     let mut field_defs: Vec<syn::Field> = Vec::new();
-    let mut field_ctors: Vec<syn::FieldValue> = Vec::new(); // for ports_name constructor
+    let mut field_ctors: Vec<syn::FieldValue> = Vec::new(); // for pub_or_subs_name constructor
     let mut run_args: Vec<syn::Expr> = Vec::new();
-    let mut for_each_sub_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut for_each_pub_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut for_each_sub_mut_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut for_each_pub_mut_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut port_mut_stmts: Vec<syn::Stmt> = Vec::new();
+    let mut pub_or_sub_stmts: Vec<syn::Stmt> = Vec::new();
+    let mut pub_or_sub_mut_stmts: Vec<syn::Stmt> = Vec::new();
     let mut drain_stmts: Vec<syn::Stmt> = Vec::new();
     let mut flush_stmts: Vec<syn::Stmt> = Vec::new();
     let mut flush_logged_stmts: Vec<syn::Stmt> = Vec::new();
@@ -399,8 +396,8 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for sig_arg in sig.arguments.iter() {
         let fname = &sig_arg.field_name;
-        match &sig_arg.port_kind {
-            PortKind::Sub { msg, ikind } => {
+        match &sig_arg.pub_or_sub_kind {
+            PubOrSubKind::Sub { msg, ikind } => {
                 let cfg: syn::Expr = match ikind {
                     InputKind::Required => parse_quote!(task::callback::InputKind::Required.into()),
                     InputKind::Optional => parse_quote!(task::callback::InputKind::Optional.into()),
@@ -416,23 +413,32 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     .push(parse_quote!(#fname: task::subscriber::Subscriber::<#msg>::new(#cfg)));
 
                 let ctor: syn::Expr = match ikind {
-                    InputKind::Required => parse_quote!(RequiredInput::new(&self.ports.#fname)),
-                    InputKind::Optional => parse_quote!(OptionalInput::new(&self.ports.#fname)),
-                    InputKind::Span => parse_quote!(InputSpan::new(&self.ports.#fname)),
+                    InputKind::Required => {
+                        parse_quote!(RequiredInput::new(&self.pub_or_subs.#fname))
+                    }
+                    InputKind::Optional => {
+                        parse_quote!(OptionalInput::new(&self.pub_or_subs.#fname))
+                    }
+                    InputKind::Span => parse_quote!(InputSpan::new(&self.pub_or_subs.#fname)),
                 };
                 run_args.push(ctor);
 
-                for_each_sub_stmts.push(parse_quote!(f(&self.ports.#fname);));
-                for_each_sub_mut_stmts.push(parse_quote!(f(&mut self.ports.#fname);));
-                port_mut_stmts.push(parse_quote!(f(PortMut::Subscriber(&mut self.ports.#fname));));
-                drain_stmts.push(
-                    parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.ports.#fname);),
+                pub_or_sub_stmts.push(
+                    parse_quote!(f(task::callback::PubOrSub::Subscriber(&self.pub_or_subs.#fname));),
                 );
-                sub_exec_terms
-                    .push(parse_quote!(GenericSubscriber::requests_execution(&self.ports.#fname)));
-                able_terms.push(parse_quote!(GenericSubscriber::able_to_run(&self.ports.#fname)));
+                pub_or_sub_mut_stmts.push(parse_quote!(
+                    f(task::callback::PubOrSubMut::Subscriber(&mut self.pub_or_subs.#fname));
+                ));
+                drain_stmts.push(
+                    parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.pub_or_subs.#fname);),
+                );
+                sub_exec_terms.push(
+                    parse_quote!(GenericSubscriber::requests_execution(&self.pub_or_subs.#fname)),
+                );
+                able_terms
+                    .push(parse_quote!(GenericSubscriber::able_to_run(&self.pub_or_subs.#fname)));
                 input_ready_terms.push(parse_quote!(
-                    self.ports.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.ports.#fname)
+                    self.pub_or_subs.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.pub_or_subs.#fname)
                 ));
                 register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<#msg>::new().try_register(registry);
@@ -440,14 +446,14 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<#msg>::new().try_register_channel(
                         registry,
-                        self.ports.#fname.config().channel_name.clone(),
+                        self.pub_or_subs.#fname.config().channel_name.clone(),
                     );
                 ));
                 drop_stmts.push(parse_quote!(
-                    GenericSubscriber::cleanup_buffers(&self.ports.#fname);
+                    GenericSubscriber::cleanup_buffers(&self.pub_or_subs.#fname);
                 ));
             }
-            PortKind::ForwardableSub { msg, ikind } => {
+            PubOrSubKind::ForwardableSub { msg, ikind } => {
                 let cfg: syn::Expr = match ikind {
                     InputKind::Required => parse_quote!(task::callback::InputKind::Required.into()),
                     InputKind::Optional => parse_quote!(task::callback::InputKind::Optional.into()),
@@ -464,26 +470,33 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let ctor: syn::Expr = match ikind {
                     InputKind::Required => {
-                        parse_quote!(ForwardableRequiredInput::new(&self.ports.#fname))
+                        parse_quote!(ForwardableRequiredInput::new(&self.pub_or_subs.#fname))
                     }
                     InputKind::Optional => {
-                        parse_quote!(ForwardableOptionalInput::new(&self.ports.#fname))
+                        parse_quote!(ForwardableOptionalInput::new(&self.pub_or_subs.#fname))
                     }
-                    InputKind::Span => parse_quote!(ForwardableInputSpan::new(&self.ports.#fname)),
+                    InputKind::Span => {
+                        parse_quote!(ForwardableInputSpan::new(&self.pub_or_subs.#fname))
+                    }
                 };
                 run_args.push(ctor);
 
-                for_each_sub_stmts.push(parse_quote!(f(&self.ports.#fname);));
-                for_each_sub_mut_stmts.push(parse_quote!(f(&mut self.ports.#fname);));
-                port_mut_stmts.push(parse_quote!(f(PortMut::Subscriber(&mut self.ports.#fname));));
-                drain_stmts.push(
-                    parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.ports.#fname);),
+                pub_or_sub_stmts.push(
+                    parse_quote!(f(task::callback::PubOrSub::Subscriber(&self.pub_or_subs.#fname));),
                 );
-                sub_exec_terms
-                    .push(parse_quote!(GenericSubscriber::requests_execution(&self.ports.#fname)));
-                able_terms.push(parse_quote!(GenericSubscriber::able_to_run(&self.ports.#fname)));
+                pub_or_sub_mut_stmts.push(parse_quote!(
+                    f(task::callback::PubOrSubMut::Subscriber(&mut self.pub_or_subs.#fname));
+                ));
+                drain_stmts.push(
+                    parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.pub_or_subs.#fname);),
+                );
+                sub_exec_terms.push(
+                    parse_quote!(GenericSubscriber::requests_execution(&self.pub_or_subs.#fname)),
+                );
+                able_terms
+                    .push(parse_quote!(GenericSubscriber::able_to_run(&self.pub_or_subs.#fname)));
                 input_ready_terms.push(parse_quote!(
-                    self.ports.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.ports.#fname)
+                    self.pub_or_subs.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.pub_or_subs.#fname)
                 ));
                 register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<#msg>::new().try_register(registry);
@@ -491,14 +504,14 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<#msg>::new().try_register_channel(
                         registry,
-                        self.ports.#fname.config().channel_name.clone(),
+                        self.pub_or_subs.#fname.config().channel_name.clone(),
                     );
                 ));
                 drop_stmts.push(parse_quote!(
-                    GenericSubscriber::cleanup_buffers(&self.ports.#fname);
+                    GenericSubscriber::cleanup_buffers(&self.pub_or_subs.#fname);
                 ));
             }
-            PortKind::Pub { msg, okind } => {
+            PubOrSubKind::Pub { msg, okind } => {
                 let cfg: syn::Expr = match okind {
                     OutputKind::Default => parse_quote!(task::callback::OutputKind::Default.into()),
                     OutputKind::Span => parse_quote!(task::callback::OutputKind::Span.into()),
@@ -514,18 +527,21 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let ctor: syn::Expr = match okind {
                     OutputKind::Default => {
-                        parse_quote!(Output::new_default(&mut self.ports.#fname))
+                        parse_quote!(Output::new_default(&mut self.pub_or_subs.#fname))
                     }
-                    OutputKind::Span => parse_quote!(OutputSpan::new(&mut self.ports.#fname)),
+                    OutputKind::Span => parse_quote!(OutputSpan::new(&mut self.pub_or_subs.#fname)),
                 };
                 run_args.push(ctor);
 
-                for_each_pub_stmts.push(parse_quote!(f(&self.ports.#fname);));
-                for_each_pub_mut_stmts.push(parse_quote!(f(&mut self.ports.#fname);));
-                port_mut_stmts.push(parse_quote!(f(PortMut::Publisher(&mut self.ports.#fname));));
-                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.ports.#fname, timestamp, sink);));
+                pub_or_sub_stmts.push(
+                    parse_quote!(f(task::callback::PubOrSub::Publisher(&self.pub_or_subs.#fname));),
+                );
+                pub_or_sub_mut_stmts.push(parse_quote!(
+                    f(task::callback::PubOrSubMut::Publisher(&mut self.pub_or_subs.#fname));
+                ));
+                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.pub_or_subs.#fname, timestamp, sink);));
                 flush_logged_stmts.push(parse_quote!(
-                    GenericPublisher::flush_loaned_values_logged(&mut self.ports.#fname, timestamp, sink, &mut |h| hook(ordinal, h));
+                    GenericPublisher::flush_loaned_values_logged(&mut self.pub_or_subs.#fname, timestamp, sink, &mut |h| hook(ordinal, h));
                 ));
                 flush_logged_stmts.push(parse_quote!(ordinal += 1;));
                 register_stmts.push(parse_quote!(
@@ -534,11 +550,11 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 register_stmts.push(parse_quote!(
                     task::channel_registry::Probe::<#msg>::new().try_register_channel(
                         registry,
-                        self.ports.#fname.config().channel_name.clone(),
+                        self.pub_or_subs.#fname.config().channel_name.clone(),
                     );
                 ));
             }
-            PortKind::ForwardingPub {
+            PubOrSubKind::ForwardingPub {
                 user_data,
                 forwarded,
             } => {
@@ -552,14 +568,17 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     #cfg, vec![]
                 )));
 
-                run_args.push(parse_quote!(ForwardingOutput::new(&mut self.ports.#fname)));
+                run_args.push(parse_quote!(ForwardingOutput::new(&mut self.pub_or_subs.#fname)));
 
-                for_each_pub_stmts.push(parse_quote!(f(&self.ports.#fname);));
-                for_each_pub_mut_stmts.push(parse_quote!(f(&mut self.ports.#fname);));
-                port_mut_stmts.push(parse_quote!(f(PortMut::Publisher(&mut self.ports.#fname));));
-                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.ports.#fname, timestamp, sink);));
+                pub_or_sub_stmts.push(
+                    parse_quote!(f(task::callback::PubOrSub::Publisher(&self.pub_or_subs.#fname));),
+                );
+                pub_or_sub_mut_stmts.push(parse_quote!(
+                    f(task::callback::PubOrSubMut::Publisher(&mut self.pub_or_subs.#fname));
+                ));
+                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.pub_or_subs.#fname, timestamp, sink);));
                 flush_logged_stmts.push(parse_quote!(
-                    GenericPublisher::flush_loaned_values_logged(&mut self.ports.#fname, timestamp, sink, &mut |h| hook(ordinal, h));
+                    GenericPublisher::flush_loaned_values_logged(&mut self.pub_or_subs.#fname, timestamp, sink, &mut |h| hook(ordinal, h));
                 ));
                 flush_logged_stmts.push(parse_quote!(ordinal += 1;));
                 register_stmts.push(parse_quote!(
@@ -572,11 +591,11 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         task::forwarded_message::ForwardedMessage<#user_data, #forwarded>
                     >::new().try_register_channel(
                         registry,
-                        self.ports.#fname.config().channel_name.clone(),
+                        self.pub_or_subs.#fname.config().channel_name.clone(),
                     );
                 ));
             }
-            PortKind::Context => {
+            PubOrSubKind::Context => {
                 run_args.push(parse_quote!(ctx));
             }
         }
@@ -617,13 +636,13 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #sanitized_impl
 
         #[allow(non_camel_case_types)]
-        pub struct #ports_name {
+        pub struct #pub_or_subs_name {
             #(#field_defs,)*
         }
 
         pub struct #callback_name {
             user: #struct_name,
-            ports: #ports_name,
+            pub_or_subs: #pub_or_subs_name,
         }
 
         impl #struct_name {
@@ -637,7 +656,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     stringify!(#struct_name).into(),
                     Box::new(#callback_name {
                         user: self,
-                        ports: #ports_name {
+                        pub_or_subs: #pub_or_subs_name {
                             #(#field_ctors,)*
                         },
                     }),
@@ -646,7 +665,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         const _: () = {
-            use task::callback::{Callback, PortMut};
+            use task::callback::Callback;
             use task::generic_subscriber::GenericSubscriber;
             use task::generic_publisher::GenericPublisher;
             use task::input::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
@@ -657,20 +676,11 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     self.user.run(#(#run_args),*);
                 }
 
-                fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
-                    #(#for_each_sub_stmts)*
+                fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(task::callback::PubOrSub<'a>)) {
+                    #(#pub_or_sub_stmts)*
                 }
-                fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-                    #(#for_each_pub_stmts)*
-                }
-                fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
-                    #(#for_each_sub_mut_stmts)*
-                }
-                fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
-                    #(#for_each_pub_mut_stmts)*
-                }
-                fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-                    #(#port_mut_stmts)*
+                fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(task::callback::PubOrSubMut<'a>)) {
+                    #(#pub_or_sub_mut_stmts)*
                 }
 
                 fn drain_subscribers(&self) {

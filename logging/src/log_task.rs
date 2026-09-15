@@ -12,10 +12,9 @@ use std::sync::Mutex;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use task::callback::{Callback, PortMut};
+use task::callback::Callback;
 use task::context::Context;
 use task::execution_log::{self, EXECUTION_LOG_DESCRIPTOR_ARTIFACT};
-use task::generic_publisher::GenericPublisher;
 use task::generic_subscriber::GenericSubscriber;
 use task::loggable::Loggable;
 use task::output::Output;
@@ -300,27 +299,24 @@ impl Callback for ContinuousLogTask {
         }
     }
 
-    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(task::callback::PubOrSub<'a>)) {
         for s in &self.subscribers {
-            f(s.as_ref());
+            f(task::callback::PubOrSub::Subscriber(s.as_ref()));
         }
+        f(task::callback::PubOrSub::Publisher(
+            &self.diagnostics_publisher,
+        ));
     }
-    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        f(&self.diagnostics_publisher);
-    }
-    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
+    fn for_each_pub_or_sub_mut<'a>(
+        &'a mut self,
+        f: &mut dyn FnMut(task::callback::PubOrSubMut<'a>),
+    ) {
         for s in self.subscribers.iter_mut() {
-            f(s.as_mut());
+            f(task::callback::PubOrSubMut::Subscriber(s.as_mut()));
         }
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
-        f(&mut self.diagnostics_publisher);
-    }
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        for s in self.subscribers.iter_mut() {
-            f(PortMut::Subscriber(s.as_mut()));
-        }
-        f(PortMut::Publisher(&mut self.diagnostics_publisher));
+        f(task::callback::PubOrSubMut::Publisher(
+            &mut self.diagnostics_publisher,
+        ));
     }
 }
 
@@ -450,31 +446,29 @@ impl Callback for EventLogTask {
         }
     }
 
-    fn for_each_subscriber<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericSubscriber)) {
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(task::callback::PubOrSub<'a>)) {
         for s in &self.subscribers_to_log {
-            f(s.as_ref());
+            f(task::callback::PubOrSub::Subscriber(s.as_ref()));
         }
-        f(&self.event_subscriber);
+        f(task::callback::PubOrSub::Subscriber(&self.event_subscriber));
+        f(task::callback::PubOrSub::Publisher(
+            &self.diagnostics_publisher,
+        ));
     }
-    fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        f(&self.diagnostics_publisher);
-    }
-    fn for_each_subscriber_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericSubscriber)) {
+    fn for_each_pub_or_sub_mut<'a>(
+        &'a mut self,
+        f: &mut dyn FnMut(task::callback::PubOrSubMut<'a>),
+    ) {
         for s in self.subscribers_to_log.iter_mut() {
-            f(s.as_mut());
+            f(task::callback::PubOrSubMut::Subscriber(s.as_mut()));
         }
-        f(&mut self.event_subscriber);
-    }
-    fn for_each_publisher_mut<'a>(&'a mut self, f: &mut dyn FnMut(&'a mut dyn GenericPublisher)) {
-        f(&mut self.diagnostics_publisher);
-    }
-    fn for_each_port_mut<'a>(&'a mut self, f: &mut dyn FnMut(PortMut<'a>)) {
-        for s in self.subscribers_to_log.iter_mut() {
-            f(PortMut::Subscriber(s.as_mut()));
-        }
-        f(PortMut::Subscriber(&mut self.event_subscriber));
+        f(task::callback::PubOrSubMut::Subscriber(
+            &mut self.event_subscriber,
+        ));
 
-        f(PortMut::Publisher(&mut self.diagnostics_publisher));
+        f(task::callback::PubOrSubMut::Publisher(
+            &mut self.diagnostics_publisher,
+        ));
     }
 }
 
