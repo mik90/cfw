@@ -589,6 +589,39 @@ impl<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2OptionalInput<'a, 
     }
 }
 
+/// Windowed view over an iox2 input's retained samples, oldest to newest.
+/// Capacity greater than one provides the lookback window used by event-data
+/// recorder patterns.
+pub struct Iox2SpanInput<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> {
+    guard: Iox2SampleGuard<'a, T>,
+}
+
+impl<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2SpanInput<'a, T> {
+    /// Borrow the retained samples of an iox2 subscriber.
+    pub fn new(subscriber: &'a Iox2Subscriber<T>) -> Self {
+        Self {
+            guard: Iox2SampleGuard {
+                samples: subscriber.read.borrow_mut(),
+            },
+        }
+    }
+
+    /// Iterate retained samples, oldest to newest.
+    pub fn inputs(&self) -> impl Iterator<Item = &Message<T>> + '_ {
+        self.guard.samples.iter().map(|sample| &**sample)
+    }
+
+    /// Number of retained samples.
+    pub fn len(&self) -> usize {
+        self.guard.len()
+    }
+
+    /// Whether no samples are retained.
+    pub fn is_empty(&self) -> bool {
+        self.guard.is_empty()
+    }
+}
+
 /// Native-config-compatible iox2 publisher field type.
 pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     config: PublisherConfig,
@@ -1246,6 +1279,7 @@ mod tests {
     use crate::{
         callback::{Callback, PubOrSub, PubOrSubMut},
         context::Context,
+        time::FrameworkTime,
     };
     use crate::{
         pub_sub_factory::{EndpointKind, Iox2EndpointInfo},
@@ -1633,6 +1667,155 @@ mod tests {
                 });
             });
         (value, header)
+    }
+
+    /// Span input exposes the retained iox2 window oldest to newest.
+    #[test]
+    fn iox2_span_input_iterates_oldest_to_newest() {
+        struct WindowProducer(Iox2Publisher<u64>, u64);
+        impl Callback for WindowProducer {
+            fn run(&mut self, _ctx: &Context) {
+                let mut out = Iox2Output::new_default(&mut self.0);
+                *out = self.1;
+                self.1 += 1;
+                out.send();
+            }
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+                f(PubOrSub::Publisher(&self.0));
+            }
+            fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+                f(PubOrSubMut::Publisher(&mut self.0));
+            }
+        }
+        struct WindowConsumer(Iox2Subscriber<u64>);
+        impl Callback for WindowConsumer {
+            fn run(&mut self, _ctx: &Context) {}
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+                f(PubOrSub::Subscriber(&self.0));
+            }
+            fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+                f(PubOrSubMut::Subscriber(&mut self.0));
+            }
+        }
+        let channel = "stage2_span_window";
+        let built = TaskGraphBuilder::new()
+            .add_pool(1, |pool| {
+                pool.add_callback_builder(
+                    test_callback(
+                        "window_pub",
+                        Box::new(WindowProducer(
+                            Iox2Publisher::new(PublisherConfig {
+                                capacity: 1,
+                                channel_name: channel.into(),
+                            }),
+                            1,
+                        )),
+                    )
+                    .with_publisher_channels(&[channel]),
+                )
+                .add_callback_builder(
+                    test_callback(
+                        "window_sub",
+                        Box::new(WindowConsumer(Iox2Subscriber::new(SubscriberConfig {
+                            is_optional: true,
+                            capacity: 4,
+                            is_trigger: false,
+                            keep_across_runs: true,
+                            channel_name: channel.into(),
+                        }))),
+                    )
+                    .with_subscriber_channels(&[channel]),
+                )
+            })
+            .build()
+            .expect("window graph builds");
+        let names = ChannelNameInterner::default();
+        let callbacks = CallbackNameInterner::default();
+        let ctx = Context::new(FrameworkTime::from_nanoseconds(9), &names, &callbacks);
+        for _ in 1..=3 {
+            built.pools[0]
+                .nodes
+                .get(CallbackNodeId(0))
+                .unwrap()
+                .access(|node| {
+                    node.run(&ctx);
+                    node.flush_publishers(ctx.now, &mut NoopReadyNodeSink);
+                });
+        }
+        built.pools[0]
+            .nodes
+            .get(CallbackNodeId(1))
+            .unwrap()
+            .access(|node| {
+                node.drain_subscribers();
+                node.callback_mut()
+                    .for_each_subscriber_mut(&mut |subscriber| {
+                        let subscriber = subscriber
+                            .as_any()
+                            .downcast_mut::<Iox2Subscriber<u64>>()
+                            .unwrap();
+                        let span = Iox2SpanInput::new(subscriber);
+                        assert_eq!(
+                            span.inputs()
+                                .map(|message| message.message)
+                                .collect::<Vec<_>>(),
+                            vec![1, 2, 3]
+                        );
+                    });
+            });
+    }
+
+    /// Optional input value selects newest while `clear` removes the oldest retained sample.
+    #[test]
+    fn iox2_optional_input_clear_keeps_newest_value() {
+        let channel = "stage2_optional_clear";
+        let built = TaskGraphBuilder::new()
+            .add_pool(1, |pool| {
+                pool.add_callback_builder(
+                    test_callback(
+                        "producer",
+                        Box::new(CountingProducer {
+                            publisher: Iox2Publisher::new(iox2_publisher_config(channel)),
+                            next: 1,
+                        }),
+                    )
+                    .with_publisher_channels(&[channel]),
+                )
+                .add_callback_builder(
+                    test_callback(
+                        "consumer",
+                        Box::new(Iox2Consumer {
+                            subscriber: Iox2Subscriber::new(iox2_subscriber_config(channel, 4)),
+                        }),
+                    )
+                    .with_subscriber_channels(&[channel]),
+                )
+            })
+            .build()
+            .unwrap();
+        let pools = &built.pools;
+        let names = ChannelNameInterner::default();
+        let callbacks = CallbackNameInterner::default();
+        let ctx = Context::new(FrameworkTime::from_nanoseconds(77), &names, &callbacks);
+        run_producer(pools, 3, &ctx);
+        pools[0]
+            .nodes
+            .get(CallbackNodeId(1))
+            .unwrap()
+            .access(|node| {
+                node.drain_subscribers();
+                node.callback_mut()
+                    .for_each_subscriber_mut(&mut |subscriber| {
+                        let subscriber = subscriber
+                            .as_any()
+                            .downcast_mut::<Iox2Subscriber<u64>>()
+                            .unwrap();
+                        let mut input = Iox2OptionalInput::new(subscriber);
+                        assert_eq!(input.value(), Some(&3));
+                        input.clear();
+                        assert_eq!(input.value(), Some(&3));
+                    });
+            });
     }
 
     /// A publish, flush, drain, and read cycle round-trips the payload and

@@ -30,7 +30,55 @@ enum PubOrSubKind {
     ForwardableSub { msg: Ident, ikind: InputKind },
     Pub { msg: Ident, okind: OutputKind },
     ForwardingPub { user_data: Ident, forwarded: Ident },
+    Iox2Sub { msg: Ident, span: bool },
+    Iox2Event,
+    Iox2Pub { msg: Ident },
+    Iox2Notifier,
     Context,
+}
+
+fn iox2_message_type(pat_ty: &PatType, type_name: &str) -> Result<Ident, syn::Error> {
+    let syn::Type::Path(path) = pat_ty.ty.as_ref() else {
+        return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type"));
+    };
+    let segment = path.path.segments.last().expect("path has segment");
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return Err(syn::Error::new_spanned(
+            &pat_ty.ty,
+            format!("`{type_name}` takes exactly one payload type argument"),
+        ));
+    };
+    if args.args.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            &pat_ty.ty,
+            format!("`{type_name}` takes exactly one payload type argument"),
+        ));
+    }
+    match args.args.first().unwrap() {
+        syn::GenericArgument::Type(syn::Type::Path(ty)) => {
+            ty.path.get_ident().cloned().ok_or_else(|| {
+                syn::Error::new_spanned(&pat_ty.ty, "payload type must be a simple identifier")
+            })
+        }
+        _ => Err(syn::Error::new_spanned(
+            &pat_ty.ty,
+            "payload type must be a simple identifier",
+        )),
+    }
+}
+
+fn iox2_no_arguments(pat_ty: &PatType, type_name: &str) -> Result<(), syn::Error> {
+    let syn::Type::Path(path) = pat_ty.ty.as_ref() else {
+        return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type"));
+    };
+    let segment = path.path.segments.last().expect("path has segment");
+    if !matches!(segment.arguments, syn::PathArguments::None) {
+        return Err(syn::Error::new_spanned(
+            &pat_ty.ty,
+            format!("`{type_name}` takes no type arguments"),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -339,13 +387,32 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                     forwarded,
                 }
             }
+            ("Iox2OptionalInput", TypeForm::Value) => PubOrSubKind::Iox2Sub {
+                msg: iox2_message_type(pat_ty, "Iox2OptionalInput")?,
+                span: false,
+            },
+            ("Iox2SpanInput", TypeForm::Value) => PubOrSubKind::Iox2Sub {
+                msg: iox2_message_type(pat_ty, "Iox2SpanInput")?,
+                span: true,
+            },
+            ("Iox2Event", TypeForm::Value) => {
+                iox2_no_arguments(pat_ty, "Iox2Event")?;
+                PubOrSubKind::Iox2Event
+            }
+            ("Iox2Output", TypeForm::Value) => PubOrSubKind::Iox2Pub {
+                msg: iox2_message_type(pat_ty, "Iox2Output")?,
+            },
+            ("Iox2NotifyOutput", TypeForm::Value) => {
+                iox2_no_arguments(pat_ty, "Iox2NotifyOutput")?;
+                PubOrSubKind::Iox2Notifier
+            }
             ("Context", TypeForm::Value) => PubOrSubKind::Context,
             ("Context", TypeForm::Ref_) => PubOrSubKind::Context,
             _ => {
                 return Err(syn::Error::new_spanned(
                     &last.ident,
                     format!(
-                        "unknown callback argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan, Output, OutputSpan, ForwardingOutput, Context, or &Context",
+                        "unknown callback argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan, Output, OutputSpan, ForwardingOutput, Iox2OptionalInput, Iox2SpanInput, Iox2Event, Iox2Output, Iox2NotifyOutput, Context, or &Context",
                         last.ident
                     ),
                 ));
@@ -595,6 +662,115 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     );
                 ));
             }
+            PubOrSubKind::Iox2Sub { msg, span } => {
+                let capacity = if *span { 4usize } else { 1usize };
+                let cfg = with_channel(
+                    parse_quote!(task::subscriber::SubscriberConfig {
+                        is_optional: true, capacity: #capacity, is_trigger: false,
+                        keep_across_runs: true, channel_name: String::new(),
+                    }),
+                    sig_arg.channel.as_ref(),
+                    quote!(task::subscriber::SubscriberConfig),
+                );
+                field_defs.push(parse_quote!(pub #fname: task::iox2::Iox2Subscriber<#msg>));
+                field_ctors
+                    .push(parse_quote!(#fname: task::iox2::Iox2Subscriber::<#msg>::new(#cfg)));
+                let ctor = if *span {
+                    parse_quote!(task::iox2::Iox2SpanInput::new(&self.pub_or_subs.#fname))
+                } else {
+                    parse_quote!(task::iox2::Iox2OptionalInput::new(&self.pub_or_subs.#fname))
+                };
+                run_args.push(ctor);
+                pub_or_sub_stmts.push(parse_quote!(f(task::callback::PubOrSub::Subscriber(&self.pub_or_subs.#fname));));
+                pub_or_sub_mut_stmts.push(parse_quote!(f(task::callback::PubOrSubMut::Subscriber(&mut self.pub_or_subs.#fname));));
+                drain_stmts.push(parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.pub_or_subs.#fname);));
+                sub_exec_terms.push(
+                    parse_quote!(GenericSubscriber::requests_execution(&self.pub_or_subs.#fname)),
+                );
+                able_terms
+                    .push(parse_quote!(GenericSubscriber::able_to_run(&self.pub_or_subs.#fname)));
+                input_ready_terms.push(parse_quote!(self.pub_or_subs.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.pub_or_subs.#fname)));
+                register_stmts.push(parse_quote!(task::channel_registry::Probe::<#msg>::new().try_register(registry);));
+                register_stmts.push(parse_quote!(task::channel_registry::Probe::<#msg>::new().try_register_channel(registry, self.pub_or_subs.#fname.config().channel_name.clone());));
+                drop_stmts.push(
+                    parse_quote!(GenericSubscriber::cleanup_buffers(&self.pub_or_subs.#fname);),
+                );
+            }
+            PubOrSubKind::Iox2Event => {
+                let cfg = with_channel(
+                    parse_quote!(task::subscriber::SubscriberConfig {
+                        is_optional: true,
+                        capacity: 1,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: String::new(),
+                    }),
+                    sig_arg.channel.as_ref(),
+                    quote!(task::subscriber::SubscriberConfig),
+                );
+                field_defs.push(parse_quote!(pub #fname: task::iox2::Iox2EventSubscriber));
+                field_ctors.push(parse_quote!(#fname: task::iox2::Iox2EventSubscriber::new(#cfg)));
+                run_args.push(parse_quote!(task::iox2::Iox2Event::new(&self.pub_or_subs.#fname)));
+                pub_or_sub_stmts.push(parse_quote!(f(task::callback::PubOrSub::Subscriber(&self.pub_or_subs.#fname));));
+                pub_or_sub_mut_stmts.push(parse_quote!(f(task::callback::PubOrSubMut::Subscriber(&mut self.pub_or_subs.#fname));));
+                drain_stmts.push(parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.pub_or_subs.#fname);));
+                sub_exec_terms.push(
+                    parse_quote!(GenericSubscriber::requests_execution(&self.pub_or_subs.#fname)),
+                );
+                able_terms
+                    .push(parse_quote!(GenericSubscriber::able_to_run(&self.pub_or_subs.#fname)));
+                input_ready_terms.push(parse_quote!(self.pub_or_subs.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.pub_or_subs.#fname)));
+                drop_stmts.push(
+                    parse_quote!(GenericSubscriber::cleanup_buffers(&self.pub_or_subs.#fname);),
+                );
+            }
+            PubOrSubKind::Iox2Pub { msg } => {
+                let cfg = with_channel(
+                    parse_quote!(task::publisher::PublisherConfig {
+                        capacity: 1,
+                        channel_name: String::new()
+                    }),
+                    sig_arg.channel.as_ref(),
+                    quote!(task::publisher::PublisherConfig),
+                );
+                field_defs.push(parse_quote!(pub #fname: task::iox2::Iox2Publisher<#msg>));
+                field_ctors
+                    .push(parse_quote!(#fname: task::iox2::Iox2Publisher::<#msg>::new(#cfg)));
+                run_args.push(
+                    parse_quote!(task::iox2::Iox2Output::new_default(&mut self.pub_or_subs.#fname)),
+                );
+                pub_or_sub_stmts.push(
+                    parse_quote!(f(task::callback::PubOrSub::Publisher(&self.pub_or_subs.#fname));),
+                );
+                pub_or_sub_mut_stmts.push(parse_quote!(f(task::callback::PubOrSubMut::Publisher(&mut self.pub_or_subs.#fname));));
+                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.pub_or_subs.#fname, timestamp, sink);));
+                flush_logged_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values_logged(&mut self.pub_or_subs.#fname, timestamp, sink, &mut |h| hook(ordinal, h));));
+                flush_logged_stmts.push(parse_quote!(ordinal += 1;));
+                register_stmts.push(parse_quote!(task::channel_registry::Probe::<#msg>::new().try_register(registry);));
+                register_stmts.push(parse_quote!(task::channel_registry::Probe::<#msg>::new().try_register_channel(registry, self.pub_or_subs.#fname.config().channel_name.clone());));
+            }
+            PubOrSubKind::Iox2Notifier => {
+                let cfg = with_channel(
+                    parse_quote!(task::publisher::PublisherConfig {
+                        capacity: 1,
+                        channel_name: String::new()
+                    }),
+                    sig_arg.channel.as_ref(),
+                    quote!(task::publisher::PublisherConfig),
+                );
+                field_defs.push(parse_quote!(pub #fname: task::iox2::Iox2Notifier));
+                field_ctors.push(parse_quote!(#fname: task::iox2::Iox2Notifier::new(#cfg)));
+                run_args.push(
+                    parse_quote!(task::iox2::Iox2NotifyOutput::new(&mut self.pub_or_subs.#fname)),
+                );
+                pub_or_sub_stmts.push(
+                    parse_quote!(f(task::callback::PubOrSub::Publisher(&self.pub_or_subs.#fname));),
+                );
+                pub_or_sub_mut_stmts.push(parse_quote!(f(task::callback::PubOrSubMut::Publisher(&mut self.pub_or_subs.#fname));));
+                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.pub_or_subs.#fname, timestamp, sink);));
+                flush_logged_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values_logged(&mut self.pub_or_subs.#fname, timestamp, sink, &mut |h| hook(ordinal, h));));
+                flush_logged_stmts.push(parse_quote!(ordinal += 1;));
+            }
             PubOrSubKind::Context => {
                 run_args.push(parse_quote!(ctx));
             }
@@ -670,6 +846,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
             use task::generic_publisher::GenericPublisher;
             use task::input::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
             use task::output::{Output, OutputSpan, ForwardingOutput};
+            use task::iox2::{Iox2OptionalInput, Iox2SpanInput, Iox2Event, Iox2Output, Iox2NotifyOutput};
 
             impl Callback for #callback_name {
                 fn run(&mut self, ctx: &task::context::Context) {
@@ -709,4 +886,42 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(tokens)
+}
+
+#[cfg(test)]
+mod macro_validation_tests {
+    use super::*;
+
+    // Manual consumer feature check: with `task = { default-features = false }`,
+    // `fn run(&mut self, event: Iox2Event) {}` expands to `task::iox2::Iox2Event`
+    // and rustc reports `could not find iox2 in task` (the module is cfg-gated).
+
+    fn signature_for(argument: &str) -> Result<MacroCallbackSignature, syn::Error> {
+        let source = format!(
+            "impl Example {{ fn run(&mut self, value: {argument}) {{}} fn callback_builder(self) {{}} }}"
+        );
+        let item = syn::parse_str::<ItemImpl>(&source).unwrap();
+        find_signature(&item)
+    }
+
+    #[test]
+    fn iox2_event_type_arguments_have_a_direct_diagnostic() {
+        let error = signature_for("Iox2Event<u64>").err().unwrap().to_string();
+        assert!(
+            error.contains("Iox2Event` takes no type arguments"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn iox2_payload_views_require_one_argument() {
+        let error = signature_for("Iox2OptionalInput")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains("Iox2OptionalInput` takes exactly one payload type argument"),
+            "{error}"
+        );
+    }
 }
