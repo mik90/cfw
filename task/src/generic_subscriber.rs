@@ -31,6 +31,16 @@ pub trait GenericSubscriber: Send {
     ) -> Result<(), TaskGraphBuildError> {
         Ok(())
     }
+
+    /// Hand an event subscriber's listener and registration to the live executor.
+    /// The default means this subscriber is not an event input.
+    #[cfg(feature = "iceoryx2")]
+    fn iox2_take_event_registration(
+        &mut self,
+        _ctx: &mut dyn crate::iox2::Iox2OpenCtx,
+    ) -> Result<Option<crate::iox2::Iox2EventRegistration>, String> {
+        Ok(None)
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any;
 
     fn config(&self) -> &SubscriberConfig;

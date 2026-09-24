@@ -5,7 +5,7 @@ pub mod pool_state;
 pub mod stop_signal;
 pub mod worker_logger;
 
-pub use error::LiveExecutorError;
+pub use error::{LiveExecutorError, LiveExecutorStartError};
 pub use executor::LiveExecutor;
 pub use stop_signal::StopSignal;
 

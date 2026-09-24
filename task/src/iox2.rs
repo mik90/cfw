@@ -18,7 +18,7 @@ use iceoryx2::{
     config::Config,
     node::{Node, NodeBuilder},
     port::{
-        notifier::Notifier, publisher::Publisher as IoxPublisher,
+        listener::Listener, notifier::Notifier, publisher::Publisher as IoxPublisher,
         subscriber::Subscriber as IoxSubscriber,
     },
     prelude::*,
@@ -46,6 +46,51 @@ pub struct EventRecord {
     pub event_id: EventId,
     /// Number of occurrences represented by this record.
     pub count: u64,
+}
+
+/// Listener and staging state transferred to the live readiness thread.
+pub struct Iox2EventRegistration {
+    /// Event listener owned by the readiness thread.
+    pub listener: Listener<ipc_threadsafe::Service>,
+    /// Bounded queue receiving folded event activations.
+    pub staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    /// Readiness signal for the target optional-trigger subscriber.
+    pub readiness: Option<crate::callback::SubscriberReadiness>,
+}
+
+/// Atomic counters describing the live executor's event-readiness thread.
+#[derive(Default)]
+pub struct Iox2ReadinessMetrics {
+    /// Number of waitset wake batches processed.
+    pub wake_batches: std::sync::atomic::AtomicU64,
+    /// Number of individual iceoryx2 event activations drained.
+    pub activations: std::sync::atomic::AtomicU64,
+    /// Saturating sum of activation counts.
+    pub total_counts: std::sync::atomic::AtomicU64,
+    /// Number of folded staging records displaced by overflow.
+    pub dropped_records: std::sync::atomic::AtomicU64,
+    /// Saturating sum of counts represented by displaced records.
+    pub dropped_counts: std::sync::atomic::AtomicU64,
+    /// Maximum observed wake-to-last-schedule latency in nanoseconds.
+    pub max_drain_latency_ns: std::sync::atomic::AtomicU64,
+    /// Number of readiness-thread loop passes.
+    pub loop_iterations: std::sync::atomic::AtomicU64,
+}
+
+impl Iox2ReadinessMetrics {
+    /// Snapshot all counters in a stable named tuple.
+    pub fn snapshot(&self) -> (u64, u64, u64, u64, u64, u64, u64) {
+        use std::sync::atomic::Ordering;
+        (
+            self.wake_batches.load(Ordering::Relaxed),
+            self.activations.load(Ordering::Relaxed),
+            self.total_counts.load(Ordering::Relaxed),
+            self.dropped_records.load(Ordering::Relaxed),
+            self.dropped_counts.load(Ordering::Relaxed),
+            self.max_drain_latency_ns.load(Ordering::Relaxed),
+            self.loop_iterations.load(Ordering::Relaxed),
+        )
+    }
 }
 
 /// Event input staging queue shared with its injector and readiness producer.
@@ -246,6 +291,32 @@ impl GenericSubscriber for Iox2EventSubscriber {
     fn iox2_open(&mut self, ctx: &mut dyn Iox2OpenCtx) -> Result<(), TaskGraphBuildError> {
         let channel = self.config.channel_name.clone();
         ctx.event_service(&channel).map(|_| ())
+    }
+    fn iox2_take_event_registration(
+        &mut self,
+        ctx: &mut dyn Iox2OpenCtx,
+    ) -> Result<Option<Iox2EventRegistration>, String> {
+        let channel = self.config.channel_name.clone();
+        let readiness = self.readiness_state.clone();
+        if !matches!(
+            readiness,
+            Some(crate::callback::SubscriberReadiness::OptionalTrigger(_))
+        ) {
+            return Err(format!(
+                "event input channel {channel} has no optional-trigger readiness"
+            ));
+        }
+        let listener = ctx
+            .event_service(&channel)
+            .map_err(|error| error.to_string())?
+            .listener_builder()
+            .create()
+            .map_err(|error| format!("unable to create listener for channel {channel}: {error}"))?;
+        Ok(Some(Iox2EventRegistration {
+            listener,
+            staging: Arc::clone(&self.staging),
+            readiness,
+        }))
     }
 }
 
@@ -907,6 +978,7 @@ pub trait Iox2OpenCtx {
 /// Graph-scoped iceoryx2 resources: one node, per-channel service settings
 /// from the endpoint scan, and a cache of opened event services. Settings are
 /// immutable after construction; only the event-service cache grows.
+#[derive(Debug)]
 pub struct Iox2Context {
     node: Node<ipc_threadsafe::Service>,
     namespace: Option<String>,

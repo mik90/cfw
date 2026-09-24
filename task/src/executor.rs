@@ -27,6 +27,8 @@ pub struct ExecutorParams {
     pools: Vec<ThreadPoolConfig>,
     channel_interner: StringInterner<ChannelNameTag>,
     callback_interner: StringInterner<CallbackNameTag>,
+    #[cfg(feature = "iceoryx2")]
+    iox2_context: Option<crate::iox2::Iox2Context>,
 }
 
 impl ExecutorParams {
@@ -53,7 +55,34 @@ impl ExecutorParams {
             pools,
             channel_interner,
             callback_interner,
+            #[cfg(feature = "iceoryx2")]
+            iox2_context: None,
         }
+    }
+
+    /// Attach resources from a graph containing iox2 endpoints.
+    #[cfg(feature = "iceoryx2")]
+    pub fn with_iox2_context(mut self, context: Option<crate::iox2::Iox2Context>) -> Self {
+        self.iox2_context = context;
+        self
+    }
+
+    /// Consume parameters while preserving an optional graph-scoped iox2 context.
+    #[cfg(feature = "iceoryx2")]
+    pub fn into_parts_with_iox2_context(
+        self,
+    ) -> (
+        Vec<ThreadPoolConfig>,
+        StringInterner<ChannelNameTag>,
+        StringInterner<CallbackNameTag>,
+        Option<crate::iox2::Iox2Context>,
+    ) {
+        (
+            self.pools,
+            self.channel_interner,
+            self.callback_interner,
+            self.iox2_context,
+        )
     }
 
     pub fn pools(&self) -> &[ThreadPoolConfig] {

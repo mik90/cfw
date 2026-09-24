@@ -5,12 +5,18 @@ edition = "2024"
 
 [lib]
 
+[features]
+default = ["iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "dep:iceoryx2"]
+
 [dependencies]
-task = { path = "../task" }
+task = { path = "../task", default-features = false }
 crossbeam = "0.8"
+iceoryx2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 test_tasks = { path = "../test_tasks" }
+task = { path = "../task", features = ["testing"] }
 assert_no_alloc = {
     # Only the git release has backtrace support
     git = "https://github.com/Windfisch/rust-assert-no-alloc", rev="95120d996240a2c279a6067502e11b62d30563a6",
