@@ -3,15 +3,58 @@ use std::any::{Any, TypeId};
 use crate::generic_subscriber::GenericSubscriber;
 use crate::message::MessageHeader;
 use crate::pub_sub::ChannelName;
+use crate::pub_sub_factory::Iox2EndpointInfo;
 use crate::publisher::PublisherConfig;
 use crate::scheduling::ReadyNodeSink;
 use crate::subscriber::SubscriberConfig;
+use crate::task_graph_builder::TaskGraphBuildError;
 use crate::time::FrameworkTime;
 
 #[derive(Debug)]
-pub struct ConnectionTypeMismatch {}
+pub struct ConnectionTypeMismatch {
+    /// Channel whose endpoints could not be connected.
+    pub channel: Option<ChannelName>,
+    /// Publisher transport name.
+    pub publisher_transport: Option<String>,
+    /// Subscriber transport name.
+    pub subscriber_transport: Option<String>,
+}
+
+impl ConnectionTypeMismatch {
+    /// Construct an endpoint mismatch with channel and transport diagnostics.
+    pub fn new(
+        channel: ChannelName,
+        publisher_transport: impl Into<String>,
+        subscriber_transport: impl Into<String>,
+    ) -> Self {
+        Self {
+            channel: Some(channel),
+            publisher_transport: Some(publisher_transport.into()),
+            subscriber_transport: Some(subscriber_transport.into()),
+        }
+    }
+}
 
 pub trait GenericPublisher: Send {
+    /// Report this endpoint for graph-wide transport and payload validation.
+    fn iox2_find_endpoints(
+        &self,
+        _add: &mut dyn FnMut(Iox2EndpointInfo) -> Result<(), TaskGraphBuildError>,
+    ) -> Result<(), TaskGraphBuildError> {
+        Ok(())
+    }
+
+    /// Open this endpoint's iceoryx2 resources (service ports, notifiers) after
+    /// graph validation and connection. Only meaningful for iox2-backed
+    /// publishers; the default no-op keeps every other implementation
+    /// transport-neutral.
+    #[cfg(feature = "iceoryx2")]
+    fn iox2_open(
+        &mut self,
+        _ctx: &mut dyn crate::iox2::Iox2OpenCtx,
+    ) -> Result<(), TaskGraphBuildError> {
+        Ok(())
+    }
     fn as_any(&mut self) -> &mut dyn Any;
 
     fn config(&self) -> &PublisherConfig;

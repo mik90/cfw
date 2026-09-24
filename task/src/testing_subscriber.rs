@@ -164,6 +164,16 @@ impl<T: Send + Sync + 'static> GenericSubscriber for TestSubscriber<T> {
     fn readiness_state(&self) -> Option<SubscriberReadiness> {
         self.subscriber.readiness_state()
     }
+
+    fn drain_queued_inputs(
+        &mut self,
+        f: &mut dyn FnMut(
+            &crate::message::MessageHeader,
+            &dyn std::any::Any,
+        ) -> Result<(), crate::channel_registry::BoxedError>,
+    ) -> Result<(), crate::channel_registry::BoxedError> {
+        self.subscriber.drain_queued_inputs(f)
+    }
 }
 
 #[cfg(test)]

@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use crate::generic_publisher::GenericPublisher;
 use crate::generic_subscriber::GenericSubscriber;
-use crate::input::InputSpan;
 use crate::loggable::{DeserializeError, ForwardedMessageContext, Loggable, SerializeError};
 use crate::message::MessageHeader;
 use crate::pub_sub::ChannelName;
@@ -53,7 +52,7 @@ pub type BoxedError = Box<dyn std::error::Error + Send + Sync>;
 pub type MessageSink<'a> = &'a mut dyn FnMut(&MessageHeader, &[u8]) -> Result<(), BoxedError>;
 
 /// Type-erased, shared serializer closure. The closure takes a `GenericSubscriber`,
-/// drains it via the right typed `InputSpan::<T>` (T captured statically in
+/// drains it via the object-safe subscriber interface (T captured statically in
 /// the closure's monomorphization), serializes each drained message's value
 /// into the caller-provided scratch buffer, and invokes `sink(header, body_bytes)`
 /// for each message so the caller can write it to disk.
@@ -171,18 +170,18 @@ impl ChannelRegistry {
     fn register_serializer<T: 'static + Loggable>(&mut self) -> &mut Self {
         let serializer: SerializerFn = Arc::new(
             |sub: &mut dyn GenericSubscriber, scratch: &mut Vec<u8>, sink: MessageSink<'_>| {
-                let mut span = InputSpan::<T>::new_downcasted(sub);
-                // drain_inputs yields ArenaReaderPtr<Message<T>>; `Deref`
-                // gives us `&Message<T>` transparently inside the loop body.
-                for msg in span.drain_inputs() {
-                    let msg = &*msg;
+                sub.drain_queued_inputs(&mut |header, payload| {
                     scratch.clear();
-                    msg.message
-                        .serialize(scratch)
-                        .map_err(MessageSinkError::Serialize)?;
-                    sink(&msg.header, scratch).map_err(MessageSinkError::Sink)?;
-                }
-                Ok(())
+                    let value = payload
+                        .downcast_ref::<T>()
+                        .expect("serializer type mismatch");
+                    value.serialize(scratch).map_err(|error| {
+                        Box::new(MessageSinkError::Serialize(error)) as BoxedError
+                    })?;
+                    sink(header, scratch)
+                        .map_err(|error| Box::new(MessageSinkError::Sink(error)) as BoxedError)
+                })
+                .map_err(MessageSinkError::Sink)
             },
         );
         self.serializers.insert(TypeId::of::<T>(), serializer);

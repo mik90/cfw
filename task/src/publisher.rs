@@ -84,6 +84,18 @@ pub struct Publisher<T> {
 // (`Send`), fan out shared immutable values (`Sync`), and use `Any`/`TypeId`
 // while queues may retain values beyond caller borrows (`'static`).
 impl<T: 'static + Send + Sync> GenericPublisher for Publisher<T> {
+    fn iox2_find_endpoints(
+        &self,
+        add: &mut dyn FnMut(
+            crate::pub_sub_factory::Iox2EndpointInfo,
+        ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError>,
+    ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError> {
+        add(crate::pub_sub_factory::Iox2EndpointInfo {
+            channel: self.config.channel_name.clone(),
+            kind: crate::pub_sub_factory::EndpointKind::NativePub,
+            payload_type: Some(std::any::TypeId::of::<T>()),
+        })
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -149,7 +161,11 @@ impl<T: 'static + Send + Sync> GenericPublisher for Publisher<T> {
             self.add_typed_forwarded_subscriber(typed);
             return Ok(());
         }
-        Err(ConnectionTypeMismatch {})
+        Err(ConnectionTypeMismatch::new(
+            self.config.channel_name.clone(),
+            "native",
+            "unknown",
+        ))
     }
 
     fn build_matching_subscriber(
@@ -448,6 +464,18 @@ impl<T: Send + Sync + 'static, F: Send + Sync + 'static> ForwardingPublisher<T, 
 impl<T: Send + Sync + 'static, F: Send + Sync + 'static> GenericPublisher
     for ForwardingPublisher<T, F>
 {
+    fn iox2_find_endpoints(
+        &self,
+        add: &mut dyn FnMut(
+            crate::pub_sub_factory::Iox2EndpointInfo,
+        ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError>,
+    ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError> {
+        add(crate::pub_sub_factory::Iox2EndpointInfo {
+            channel: self.inner.config.channel_name.clone(),
+            kind: crate::pub_sub_factory::EndpointKind::NativeForwardingPub,
+            payload_type: Some(std::any::TypeId::of::<ForwardedMessage<T, F>>()),
+        })
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }

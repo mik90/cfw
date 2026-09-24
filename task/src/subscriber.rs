@@ -114,6 +114,18 @@ impl<T: Send + Sync + 'static> Subscriber<T> {
 // worker (`Send`), read shared published values (`Sync`), and expose payloads
 // through `Any` while retaining them in queues (`'static`).
 impl<T: Send + Sync + 'static> GenericSubscriber for Subscriber<T> {
+    fn iox2_find_endpoints(
+        &self,
+        add: &mut dyn FnMut(
+            crate::pub_sub_factory::Iox2EndpointInfo,
+        ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError>,
+    ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError> {
+        add(crate::pub_sub_factory::Iox2EndpointInfo {
+            channel: self.config.channel_name.clone(),
+            kind: crate::pub_sub_factory::EndpointKind::NativeSub,
+            payload_type: Some(std::any::TypeId::of::<T>()),
+        })
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -174,6 +186,21 @@ impl<T: Send + Sync + 'static> GenericSubscriber for Subscriber<T> {
             );
         }
     }
+
+    fn drain_queued_inputs(
+        &mut self,
+        f: &mut dyn FnMut(
+            &MessageHeader,
+            &dyn std::any::Any,
+        ) -> Result<(), crate::channel_registry::BoxedError>,
+    ) -> Result<(), crate::channel_registry::BoxedError> {
+        let mut guard = self.buffers.read_buffer();
+        for message in guard.drain_contiguous() {
+            let message = &*message;
+            f(&message.header, &message.message)?;
+        }
+        Ok(())
+    }
 }
 
 pub struct ForwardableSubscriber<T> {
@@ -193,6 +220,18 @@ impl<T: Send + Sync + 'static> ForwardableSubscriber<T> {
 // Erased forwarding subscribers move queued ownership between workers
 // (`Send`), read shared arena values (`Sync`), and use `Any`/queues (`'static`).
 impl<T: Send + Sync + 'static> GenericSubscriber for ForwardableSubscriber<T> {
+    fn iox2_find_endpoints(
+        &self,
+        add: &mut dyn FnMut(
+            crate::pub_sub_factory::Iox2EndpointInfo,
+        ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError>,
+    ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError> {
+        add(crate::pub_sub_factory::Iox2EndpointInfo {
+            channel: self.subscriber.config.channel_name.clone(),
+            kind: crate::pub_sub_factory::EndpointKind::NativeForwardedSub,
+            payload_type: Some(std::any::TypeId::of::<T>()),
+        })
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -235,5 +274,15 @@ impl<T: Send + Sync + 'static> GenericSubscriber for ForwardableSubscriber<T> {
 
     fn for_each_queued_input(&self, f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any)) {
         self.subscriber.for_each_queued_input(f);
+    }
+
+    fn drain_queued_inputs(
+        &mut self,
+        f: &mut dyn FnMut(
+            &MessageHeader,
+            &dyn std::any::Any,
+        ) -> Result<(), crate::channel_registry::BoxedError>,
+    ) -> Result<(), crate::channel_registry::BoxedError> {
+        self.subscriber.drain_queued_inputs(f)
     }
 }

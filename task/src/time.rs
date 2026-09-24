@@ -4,10 +4,13 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "iceoryx2")]
+use iceoryx2::prelude::ZeroCopySend;
 use libc::{self, CLOCK_MONOTONIC};
 /// Monotonic clock with fixed size
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "iceoryx2", repr(C), derive(iceoryx2::prelude::ZeroCopySend))]
 pub struct FrameworkTime {
     nanoseconds: i64,
 }

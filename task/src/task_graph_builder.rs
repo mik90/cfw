@@ -1,5 +1,6 @@
 use std::{collections::HashMap, fmt};
 
+use crate::pub_sub_factory::{EndpointKind, Iox2EndpointInfo};
 use crate::{
     ChannelRegistry,
     callback::{CallbackNode, MismatchTypeError, connect_callback_nodes},
@@ -60,6 +61,8 @@ pub struct TaskGraphBuilder {
     execution_log_level_override: Option<ExecutionLogLevel>,
     channel_registry: ChannelRegistry,
     debug_info: bool,
+    #[cfg(feature = "iceoryx2")]
+    iox2_config: Option<crate::iox2::Iox2GraphConfig>,
 }
 
 pub struct BuiltTaskGraph {
@@ -74,6 +77,9 @@ pub struct BuiltTaskGraph {
     /// Dangling-channel diagnostics, present when built with
     /// [`TaskGraphBuilder::with_debug_info`].
     pub debug_info: Option<GraphDebugInfo>,
+    /// Graph-scoped iceoryx2 resources, when the graph declares iox2 endpoints.
+    #[cfg(feature = "iceoryx2")]
+    pub iox2_context: Option<crate::iox2::Iox2Context>,
 }
 
 /// Dangling-channel diagnostics, produced when built with
@@ -157,6 +163,20 @@ pub enum TaskGraphBuildError {
     },
     /// Error during execution-log wiring.
     ExecutionLogError(execution_log::ExecutionLogConnectError),
+    /// A channel combines native and iceoryx2 endpoints.
+    MixedTransport { channel: String, kinds: Vec<String> },
+    /// Data endpoints on one channel disagree on payload type.
+    MixedPayloadType { channel: String },
+    /// An iox2 endpoint declares zero capacity.
+    ZeroCapacity { channel: String },
+    /// User iox2 endpoints cannot use the framework execution-log channel.
+    Iox2ExecutionLogChannel { channel: String },
+    /// An iceoryx2 channel name could not become a service name.
+    InvalidServiceName { channel: String, reason: String },
+    /// Opening an iceoryx2 service or port failed.
+    Iox2ServiceOpen { channel: String, source: String },
+    /// Creating the graph's iceoryx2 node failed.
+    Iox2NodeCreation { source: String },
 }
 
 impl fmt::Display for TaskGraphBuildError {
@@ -177,6 +197,30 @@ impl fmt::Display for TaskGraphBuildError {
                 )
             }
             Self::ExecutionLogError(e) => write!(f, "Execution log wiring failed: {}", e),
+            Self::MixedTransport { channel, kinds } => write!(
+                f,
+                "Channel {channel} mixes transports: {}",
+                kinds.join(", ")
+            ),
+            Self::MixedPayloadType { channel } => {
+                write!(f, "Channel {channel} has mixed payload types")
+            }
+            Self::ZeroCapacity { channel } => write!(f, "Channel {channel} has zero iox2 capacity"),
+            Self::Iox2ExecutionLogChannel { channel } => write!(
+                f,
+                "iox2 endpoints cannot use execution-log channel {channel}"
+            ),
+            Self::InvalidServiceName { channel, reason } => write!(
+                f,
+                "Channel {channel} cannot become an iceoryx2 service name: {reason}"
+            ),
+            Self::Iox2ServiceOpen { channel, source } => write!(
+                f,
+                "Opening iceoryx2 service for channel {channel} failed: {source}"
+            ),
+            Self::Iox2NodeCreation { source } => {
+                write!(f, "Creating the graph's iceoryx2 node failed: {source}")
+            }
         }
     }
 }
@@ -237,6 +281,8 @@ impl TaskGraphBuilder {
             execution_log_level_override: None,
             channel_registry: ChannelRegistry::new(),
             debug_info: false,
+            #[cfg(feature = "iceoryx2")]
+            iox2_config: None,
         }
     }
 
@@ -253,6 +299,13 @@ impl TaskGraphBuilder {
     /// [`BuiltTaskGraph::debug_info`]. Defaults to `false`.
     pub fn with_debug_info(mut self, enabled: bool) -> TaskGraphBuilder {
         self.debug_info = enabled;
+        self
+    }
+
+    /// Configure iceoryx2 node creation and channel-name namespace.
+    #[cfg(feature = "iceoryx2")]
+    pub fn with_iox2_config(mut self, config: crate::iox2::Iox2GraphConfig) -> Self {
+        self.iox2_config = Some(config);
         self
     }
 
@@ -341,12 +394,44 @@ impl TaskGraphBuilder {
         // too (idempotent) so later steps and replay can resolve them.
         Self::register_nodes(&all_nodes, &mut self.channel_registry);
 
+        // Scan endpoints after the build steps so build-step-created endpoints
+        // (e.g. logging subscribers) participate in transport validation, and
+        // after channel renames so service names see their final form.
+        let mut endpoint_infos = Vec::new();
+        for node in &all_nodes {
+            node.callback()
+                .for_each_pub_or_sub(&mut |endpoint| match endpoint {
+                    crate::callback::PubOrSub::Subscriber(sub) => {
+                        let _ = sub.iox2_find_endpoints(&mut |info| {
+                            endpoint_infos.push(info);
+                            Ok(())
+                        });
+                    }
+                    crate::callback::PubOrSub::Publisher(publi) => {
+                        let _ = publi.iox2_find_endpoints(&mut |info| {
+                            endpoint_infos.push(info);
+                            Ok(())
+                        });
+                    }
+                });
+        }
+        validate_iox2_endpoints(&endpoint_infos)?;
+        #[cfg(feature = "iceoryx2")]
+        let mut iox2_context = crate::iox2::Iox2Context::from_endpoints(
+            self.iox2_config
+                .as_ref()
+                .unwrap_or(&crate::iox2::Iox2GraphConfig::default()),
+            &endpoint_infos,
+        )?;
+
         if all_nodes.is_empty() {
             return Ok(BuiltTaskGraph {
                 pools: vec![],
                 execution_log_publishers: vec![],
                 channel_registry: self.channel_registry,
                 debug_info: None,
+                #[cfg(feature = "iceoryx2")]
+                iox2_context,
             });
         }
 
@@ -359,6 +444,10 @@ impl TaskGraphBuilder {
                 }
             }
             connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
+            #[cfg(feature = "iceoryx2")]
+            if let Some(context) = iox2_context.as_mut() {
+                Self::open_iox2_endpoints(&mut all_nodes, context)?;
+            }
             let pools = vec![ThreadPoolConfig::new(1, all_nodes)];
             let debug_info = Self::compute_debug_info(self.debug_info, &pools);
             return Ok(BuiltTaskGraph {
@@ -366,6 +455,8 @@ impl TaskGraphBuilder {
                 execution_log_publishers: vec![], // TODO: shouldn't this be populated with one publisher?
                 channel_registry: self.channel_registry,
                 debug_info,
+                #[cfg(feature = "iceoryx2")]
+                iox2_context,
             });
         }
         pool_node_counts[0] += extra;
@@ -377,6 +468,10 @@ impl TaskGraphBuilder {
         }
 
         connect_callback_nodes(&mut all_nodes).map_err(TaskGraphBuildError::ConnectionError)?;
+        #[cfg(feature = "iceoryx2")]
+        if let Some(context) = iox2_context.as_mut() {
+            Self::open_iox2_endpoints(&mut all_nodes, context)?;
+        }
 
         let mut pools = Vec::with_capacity(pool_node_counts.len());
         for (i, &count) in pool_node_counts.iter().enumerate() {
@@ -395,6 +490,8 @@ impl TaskGraphBuilder {
             execution_log_publishers,
             channel_registry: self.channel_registry,
             debug_info,
+            #[cfg(feature = "iceoryx2")]
+            iox2_context,
         })
     }
 
@@ -409,6 +506,97 @@ impl TaskGraphBuilder {
             dangling_publishers: find_dangling_publishers(pools),
         })
     }
+
+    /// Open every iox2 endpoint's services and ports. Runs after the graph is
+    /// fully validated and connected so a failed build creates no services.
+    #[cfg(feature = "iceoryx2")]
+    fn open_iox2_endpoints(
+        nodes: &mut [CallbackNode],
+        context: &mut crate::iox2::Iox2Context,
+    ) -> Result<(), TaskGraphBuildError> {
+        let mut failure: Option<TaskGraphBuildError> = None;
+        for node in nodes {
+            node.callback_mut()
+                .for_each_pub_or_sub_mut(&mut |endpoint| {
+                    if failure.is_some() {
+                        return;
+                    }
+                    let result = match endpoint {
+                        crate::callback::PubOrSubMut::Subscriber(subscriber) => {
+                            subscriber.iox2_open(context)
+                        }
+                        crate::callback::PubOrSubMut::Publisher(publisher) => {
+                            publisher.iox2_open(context)
+                        }
+                    };
+                    if let Err(error) = result {
+                        failure = Some(error);
+                    }
+                });
+        }
+        failure.map_or(Ok(()), Err)
+    }
+}
+
+fn validate_iox2_endpoints(infos: &[Iox2EndpointInfo]) -> Result<(), TaskGraphBuildError> {
+    let mut channels: HashMap<&str, Vec<&Iox2EndpointInfo>> = HashMap::new();
+    for info in infos {
+        channels.entry(&info.channel).or_default().push(info);
+    }
+    for (channel, entries) in channels {
+        let iox = entries.iter().any(|info| {
+            matches!(
+                info.kind,
+                EndpointKind::Iox2DataSub { .. }
+                    | EndpointKind::Iox2DataPub { .. }
+                    | EndpointKind::Iox2EventSub
+                    | EndpointKind::Iox2Notifier { .. }
+            )
+        });
+        if !iox {
+            continue;
+        }
+        if channel == execution_log::EXECUTION_LOG_CHANNEL {
+            return Err(TaskGraphBuildError::Iox2ExecutionLogChannel {
+                channel: channel.to_owned(),
+            });
+        }
+        let native = entries.iter().any(|info| {
+            matches!(
+                info.kind,
+                EndpointKind::NativeSub
+                    | EndpointKind::NativePub
+                    | EndpointKind::NativeForwardedSub
+                    | EndpointKind::NativeForwardingPub
+            )
+        });
+        if native {
+            return Err(TaskGraphBuildError::MixedTransport {
+                channel: channel.to_owned(),
+                kinds: entries.iter().map(|e| format!("{:?}", e.kind)).collect(),
+            });
+        }
+        if entries.iter().any(|info| {
+            matches!(
+                info.kind,
+                EndpointKind::Iox2DataSub { capacity: 0 }
+                    | EndpointKind::Iox2DataPub { capacity: 0, .. }
+            )
+        }) {
+            return Err(TaskGraphBuildError::ZeroCapacity {
+                channel: channel.to_owned(),
+            });
+        }
+        let mut payloads = entries.iter().filter_map(|info| info.payload_type);
+        if let Some(first) = payloads.next()
+            && payloads.any(|id| id != first)
+        {
+            return Err(TaskGraphBuildError::MixedPayloadType {
+                channel: channel.to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

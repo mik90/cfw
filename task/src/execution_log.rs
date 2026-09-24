@@ -312,7 +312,7 @@ pub fn connect(
                     for log_pub in log_pubs.iter_mut() {
                         match log_pub.connect_to_subscriber(subscriber) {
                             Ok(()) => {}
-                            Err(ConnectionTypeMismatch {}) => {
+                            Err(ConnectionTypeMismatch { .. }) => {
                                 return Err(ExecutionLogConnectError {
                                     channel_name: EXECUTION_LOG_CHANNEL.into(),
                                     subscriber_node: node_name.clone(),

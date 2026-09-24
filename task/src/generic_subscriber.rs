@@ -1,6 +1,9 @@
 use crate::callback::SubscriberReadiness;
+use crate::channel_registry::BoxedError;
 use crate::message::MessageHeader;
+use crate::pub_sub_factory::Iox2EndpointInfo;
 use crate::subscriber::SubscriberConfig;
+use crate::task_graph_builder::TaskGraphBuildError;
 use std::any::Any;
 
 pub struct QueueInfo {
@@ -9,6 +12,25 @@ pub struct QueueInfo {
 }
 
 pub trait GenericSubscriber: Send {
+    /// Report this endpoint for graph-wide transport and payload validation.
+    fn iox2_find_endpoints(
+        &self,
+        _add: &mut dyn FnMut(Iox2EndpointInfo) -> Result<(), TaskGraphBuildError>,
+    ) -> Result<(), TaskGraphBuildError> {
+        Ok(())
+    }
+
+    /// Open this endpoint's iceoryx2 resources (service ports, notifiers) after
+    /// graph validation and connection. Only meaningful for iox2-backed
+    /// subscribers; the default no-op keeps every other implementation
+    /// transport-neutral.
+    #[cfg(feature = "iceoryx2")]
+    fn iox2_open(
+        &mut self,
+        _ctx: &mut dyn crate::iox2::Iox2OpenCtx,
+    ) -> Result<(), TaskGraphBuildError> {
+        Ok(())
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any;
 
     fn config(&self) -> &SubscriberConfig;
@@ -40,6 +62,13 @@ pub trait GenericSubscriber: Send {
     /// `&dyn Any`). The default no-op impl is used by subscribers that don't
     /// participate in logging.
     fn for_each_queued_input(&self, _f: &mut dyn FnMut(&MessageHeader, &dyn Any)) {}
+
+    /// Drain queued inputs, invoking `f` once per message and consuming each
+    /// message even if the callback returns an error.
+    fn drain_queued_inputs(
+        &mut self,
+        _f: &mut dyn FnMut(&MessageHeader, &dyn Any) -> Result<(), BoxedError>,
+    ) -> Result<(), BoxedError>;
 
     /// Inject this subscriber's readiness role (gating bit, or bit-less
     /// optional-trigger handle). Called by CallbackNode::new_with after
