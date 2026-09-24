@@ -63,8 +63,10 @@ pub trait GenericSubscriber: Send {
     /// participate in logging.
     fn for_each_queued_input(&self, _f: &mut dyn FnMut(&MessageHeader, &dyn Any)) {}
 
-    /// Drain queued inputs, invoking `f` once per message and consuming each
-    /// message even if the callback returns an error.
+    /// Consume and clear inputs for the logging path. Every implementation
+    /// must choose explicitly: invoke `f` for loggable messages, or provide a
+    /// documented no-op when draining does not apply. A silent default could
+    /// otherwise make a hand-written subscriber disappear from logs unnoticed.
     fn drain_queued_inputs(
         &mut self,
         _f: &mut dyn FnMut(&MessageHeader, &dyn Any) -> Result<(), BoxedError>,

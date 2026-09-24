@@ -11,6 +11,7 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     ops::{Deref, DerefMut},
+    sync::Arc,
 };
 
 use iceoryx2::{
@@ -37,6 +38,525 @@ use crate::{
     subscriber::SubscriberConfig,
     task_graph_builder::TaskGraphBuildError,
 };
+
+/// One event-id/count pair deposited for an event-driven callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventRecord {
+    /// Identifier attached to this event.
+    pub event_id: EventId,
+    /// Number of occurrences represented by this record.
+    pub count: u64,
+}
+
+#[cfg(all(test, feature = "iceoryx2"))]
+mod event_staging_tests {
+    use super::*;
+    use crate::callback::CallbackViews;
+    use crate::generic_subscriber::GenericSubscriber;
+
+    fn subscriber(name: &str) -> Iox2EventSubscriber {
+        Iox2EventSubscriber::new(SubscriberConfig {
+            is_optional: true,
+            capacity: 4,
+            is_trigger: true,
+            keep_across_runs: true,
+            channel_name: name.into(),
+        })
+    }
+
+    /// Staging drain moves the complete batch and clears the previous run's records.
+    #[test]
+    fn iox2_event_staging_drains_all_and_clears() {
+        let sub = subscriber("staging_clear");
+        sub.inject_events(
+            (0..3).map(|id| EventRecord {
+                event_id: EventId::new(id),
+                count: 1,
+            }),
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        assert_eq!(sub.queue_info().writer_size, 3);
+        sub.drain_writer_to_reader();
+        assert_eq!(sub.queue_info().reader_size, 3);
+        sub.drain_writer_to_reader();
+        assert_eq!(sub.queue_info().reader_size, 0);
+    }
+
+    /// Event views sum counts and preserve record order.
+    #[test]
+    fn iox2_event_staging_counts_and_records() {
+        let sub = subscriber("staging_records");
+        sub.inject_events(
+            [(EventId::new(2), 3), (EventId::new(7), 5)]
+                .into_iter()
+                .map(|(event_id, count)| EventRecord { event_id, count }),
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        sub.drain_writer_to_reader();
+        let view = Iox2Event::new(&sub);
+        assert_eq!(view.count(), 8);
+        assert_eq!(
+            view.records().collect::<Vec<_>>(),
+            vec![(EventId::new(2), 3), (EventId::new(7), 5)]
+        );
+    }
+
+    /// Deposits made by distinct producer passes are visible together in one run.
+    #[test]
+    fn iox2_event_staging_multi_injection_aggregates() {
+        let sub = subscriber("staging_multi");
+        sub.inject_events(
+            [EventRecord {
+                event_id: EventId::new(1),
+                count: 4,
+            }],
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        sub.inject_events(
+            [EventRecord {
+                event_id: EventId::new(2),
+                count: 6,
+            }],
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        sub.drain_writer_to_reader();
+        assert_eq!(Iox2Event::new(&sub).count(), 10);
+    }
+
+    /// Staged events request startup execution; draining clears the pending request.
+    #[test]
+    fn iox2_event_staging_requests_execution_tracks_queue() {
+        let sub = subscriber("staging_startup");
+        assert!(!sub.requests_execution());
+        sub.inject_events(
+            [EventRecord {
+                event_id: EventId::new(0),
+                count: 1,
+            }],
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        assert!(sub.requests_execution());
+        sub.drain_writer_to_reader();
+        assert!(!sub.requests_execution());
+    }
+
+    struct StagingGateCallback {
+        required: crate::subscriber::Subscriber<u64>,
+        event: Iox2EventSubscriber,
+    }
+
+    impl crate::callback::Callback for StagingGateCallback {
+        fn run(&mut self, _ctx: &crate::context::Context) {}
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(crate::callback::PubOrSub<'a>)) {
+            f(crate::callback::PubOrSub::Subscriber(&self.required));
+            f(crate::callback::PubOrSub::Subscriber(&self.event));
+        }
+        fn for_each_pub_or_sub_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(crate::callback::PubOrSubMut<'a>),
+        ) {
+            f(crate::callback::PubOrSubMut::Subscriber(&mut self.required));
+            f(crate::callback::PubOrSubMut::Subscriber(&mut self.event));
+        }
+    }
+
+    struct CountingSink(usize);
+    impl crate::scheduling::ReadyNodeSink for CountingSink {
+        fn schedule(&mut self, _node: crate::scheduling::CallbackNodeId) {
+            self.0 += 1;
+        }
+    }
+
+    /// Event notifications wait for required inputs, and later event arrivals nudge a ready node.
+    #[test]
+    fn iox2_event_staging_gating_respects_required_inputs() {
+        let required = crate::subscriber::Subscriber::new(SubscriberConfig {
+            is_optional: false,
+            capacity: 1,
+            is_trigger: false,
+            keep_across_runs: true,
+            channel_name: "required_native".into(),
+        });
+        let event = subscriber("optional_event");
+        let mut node = crate::callback::CallbackNode::new_named(
+            Box::new(StagingGateCallback { required, event }),
+            "gated_event".into(),
+        );
+        node.bind_id(crate::scheduling::CallbackNodeId(3));
+        let mut sink = CountingSink(0);
+        node.callback_mut().for_each_subscriber_mut(&mut |sub| {
+            if sub.config().channel_name == "optional_event" {
+                let event = sub.as_any().downcast_mut::<Iox2EventSubscriber>().unwrap();
+                event.inject_events(
+                    [EventRecord {
+                        event_id: EventId::new(1),
+                        count: 1,
+                    }],
+                    &mut sink,
+                );
+            }
+        });
+        assert_eq!(
+            sink.0, 0,
+            "event alone cannot bypass the required input gate"
+        );
+        let readiness = node.callback().collect_subscribers()[0]
+            .readiness_state()
+            .unwrap();
+        if let crate::callback::SubscriberReadiness::Gating(readiness, bit) = readiness {
+            assert_eq!(
+                readiness.gating_input_arrived(bit),
+                Some(crate::scheduling::CallbackNodeId(3))
+            );
+        } else {
+            panic!("required input must own a gating bit");
+        }
+        assert_eq!(
+            sink.0, 0,
+            "the gating arrival only returns a node id to its producer"
+        );
+        node.callback_mut().for_each_subscriber_mut(&mut |sub| {
+            if sub.config().channel_name == "optional_event" {
+                let event = sub.as_any().downcast_mut::<Iox2EventSubscriber>().unwrap();
+                event.inject_events(
+                    [EventRecord {
+                        event_id: EventId::new(2),
+                        count: 1,
+                    }],
+                    &mut sink,
+                );
+                assert!(event.requests_execution());
+                event.drain_writer_to_reader();
+                assert!(!event.requests_execution());
+            }
+        });
+        assert_eq!(sink.0, 1);
+    }
+}
+
+/// Event input staging queue shared with its injector and readiness producer.
+pub struct Iox2EventSubscriber {
+    config: SubscriberConfig,
+    staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    read: RefCell<VecDeque<EventRecord>>,
+    readiness_state: Option<crate::callback::SubscriberReadiness>,
+}
+
+impl Iox2EventSubscriber {
+    /// Declare an optional-trigger input for events on `config.channel_name`.
+    /// `config.capacity` sizes the staging queue (drop-oldest under burst).
+    pub fn new(mut config: SubscriberConfig) -> Self {
+        assert!(
+            config.capacity > 0,
+            "iox2 event subscriber capacity must be positive for channel {}",
+            config.channel_name
+        );
+        config.is_optional = true;
+        config.is_trigger = true;
+        Self {
+            staging: Arc::new(base::mpsc_queue::MpscQueue::new(config.capacity)),
+            config,
+            read: RefCell::new(VecDeque::new()),
+            readiness_state: None,
+        }
+    }
+
+    /// Make an injector for tests that need to stage events without the live executor.
+    #[cfg(feature = "testing")]
+    pub fn injector(&self) -> Iox2EventInjector {
+        Iox2EventInjector {
+            staging: Arc::clone(&self.staging),
+            readiness: self.readiness_state.clone(),
+        }
+    }
+
+    pub(crate) fn inject_events(
+        &self,
+        records: impl IntoIterator<Item = EventRecord>,
+        sink: &mut dyn crate::scheduling::ReadyNodeSink,
+    ) {
+        for record in records {
+            self.staging.push(record);
+        }
+        if let Some(crate::callback::SubscriberReadiness::OptionalTrigger(readiness)) =
+            &self.readiness_state
+            && let Some(node) = readiness.optional_trigger_arrived()
+        {
+            sink.schedule(node);
+        }
+    }
+}
+
+/// Test-only handle for injecting event records into a graph input.
+#[cfg(feature = "testing")]
+pub struct Iox2EventInjector {
+    staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    readiness: Option<crate::callback::SubscriberReadiness>,
+}
+
+#[cfg(feature = "testing")]
+impl Iox2EventInjector {
+    /// Stage one counted event and notify the node when its required inputs are ready.
+    pub fn notify(
+        &self,
+        event_id: EventId,
+        count: u64,
+        sink: &mut dyn crate::scheduling::ReadyNodeSink,
+    ) {
+        self.staging.push(EventRecord { event_id, count });
+        if let Some(crate::callback::SubscriberReadiness::OptionalTrigger(readiness)) =
+            &self.readiness
+            && let Some(node) = readiness.optional_trigger_arrived()
+        {
+            sink.schedule(node);
+        }
+    }
+}
+
+/// Borrowed view of the event records available to one callback run.
+pub struct Iox2EventGuard<'a> {
+    records: std::cell::RefMut<'a, VecDeque<EventRecord>>,
+}
+
+impl Iox2EventGuard<'_> {
+    /// The oldest event record, if any.
+    pub fn front(&self) -> Option<&EventRecord> {
+        self.records.front()
+    }
+    /// Number of records in this run's event batch.
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+    /// Whether this run has no event records.
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+    /// Remove the oldest record.
+    pub fn pop_front(&mut self) {
+        self.records.pop_front();
+    }
+}
+
+/// Event batch exposed to a callback. An empty rerun is possible when a
+/// producer deposits before the worker drains but fires readiness afterward;
+/// this has the same shape as native optional triggers, whose readiness is
+/// fired per publish while the subscriber drain consumes the message queue.
+pub struct Iox2Event<'a> {
+    guard: Iox2EventGuard<'a>,
+}
+
+impl<'a> Iox2Event<'a> {
+    /// Borrow the event batch retained by a subscriber.
+    pub fn new(subscriber: &'a Iox2EventSubscriber) -> Self {
+        Self {
+            guard: Iox2EventGuard {
+                records: subscriber.read.borrow_mut(),
+            },
+        }
+    }
+    /// Sum of all event counts in the batch.
+    pub fn count(&self) -> u64 {
+        self.guard.records.iter().map(|record| record.count).sum()
+    }
+    /// Iterate event identifiers and their counts in arrival order.
+    pub fn records(&self) -> impl Iterator<Item = (EventId, u64)> + '_ {
+        self.guard
+            .records
+            .iter()
+            .map(|record| (record.event_id, record.count))
+    }
+}
+
+impl GenericSubscriber for Iox2EventSubscriber {
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn config(&self) -> &SubscriberConfig {
+        &self.config
+    }
+    fn config_mut(&mut self) -> &mut SubscriberConfig {
+        &mut self.config
+    }
+    fn able_to_run(&self) -> bool {
+        true
+    }
+    fn requests_execution(&self) -> bool {
+        !self.staging.is_empty()
+    }
+    fn drain_writer_to_reader(&self) {
+        let mut read = self.read.borrow_mut();
+        read.clear();
+        while let Some(record) = self.staging.pop() {
+            read.push_back(record);
+        }
+    }
+    fn queue_info(&self) -> QueueInfo {
+        QueueInfo {
+            reader_size: self.read.borrow().len(),
+            writer_size: self.staging.len(),
+        }
+    }
+    fn cleanup_buffers(&self) {
+        self.read.borrow_mut().clear();
+        self.staging.clear();
+    }
+    fn readiness_state(&self) -> Option<crate::callback::SubscriberReadiness> {
+        self.readiness_state.clone()
+    }
+    fn set_readiness_state(&mut self, state: crate::callback::SubscriberReadiness) {
+        self.readiness_state = Some(state);
+    }
+    /// Event records are not message payloads; they are intentionally not
+    /// channel-logged yet, hence this explicit no-op.
+    fn drain_queued_inputs(
+        &mut self,
+        _f: &mut dyn FnMut(
+            &MessageHeader,
+            &dyn std::any::Any,
+        ) -> Result<(), crate::channel_registry::BoxedError>,
+    ) -> Result<(), crate::channel_registry::BoxedError> {
+        Ok(())
+    }
+    fn iox2_find_endpoints(
+        &self,
+        add: &mut dyn FnMut(
+            crate::pub_sub_factory::Iox2EndpointInfo,
+        ) -> Result<(), TaskGraphBuildError>,
+    ) -> Result<(), TaskGraphBuildError> {
+        add(crate::pub_sub_factory::Iox2EndpointInfo {
+            channel: self.config.channel_name.clone(),
+            kind: EndpointKind::Iox2EventSub,
+            payload_type: None,
+        })
+    }
+    fn iox2_open(&mut self, ctx: &mut dyn Iox2OpenCtx) -> Result<(), TaskGraphBuildError> {
+        let channel = self.config.channel_name.clone();
+        ctx.event_service(&channel).map(|_| ())
+    }
+}
+
+/// Event output endpoint that emits a notification when flushed.
+pub struct Iox2Notifier {
+    config: PublisherConfig,
+    /// Event identifier; can be overridden before graph construction.
+    pub event_id: EventId,
+    notifier: Option<Notifier<ipc_threadsafe::Service>>,
+    notify_pending: bool,
+}
+
+impl Iox2Notifier {
+    /// Declare an event notifier on the configured channel.
+    pub fn new(config: PublisherConfig) -> Self {
+        Self {
+            config,
+            event_id: EventId::new(0),
+            notifier: None,
+            notify_pending: false,
+        }
+    }
+}
+
+/// Mutable one-shot notification output.
+pub struct Iox2NotifyOutput<'a> {
+    notifier: &'a mut Iox2Notifier,
+}
+impl<'a> Iox2NotifyOutput<'a> {
+    /// Prepare a notification for the next publisher flush.
+    pub fn new(notifier: &'a mut Iox2Notifier) -> Self {
+        notifier.notify_pending = false;
+        Self { notifier }
+    }
+    /// Mark the notification pending.
+    pub fn send(self) {
+        self.notifier.notify_pending = true;
+    }
+}
+
+impl crate::generic_publisher::GenericPublisher for Iox2Notifier {
+    fn as_any(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn config(&self) -> &PublisherConfig {
+        &self.config
+    }
+    fn config_mut(&mut self) -> &mut PublisherConfig {
+        &mut self.config
+    }
+    fn forwarded_channels(&self) -> &[String] {
+        &[]
+    }
+    fn allocate_arena(&mut self) {}
+    fn increase_arena_size(&mut self, _additional_capacity: usize) {}
+    fn flush_loaned_values(
+        &mut self,
+        _timestamp: crate::time::FrameworkTime,
+        _sink: &mut dyn crate::scheduling::ReadyNodeSink,
+    ) {
+        if self.notify_pending {
+            self.notifier
+                .as_ref()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "iox2 notifier for channel {} is not open",
+                        self.config.channel_name
+                    )
+                })
+                .notify()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "iox2 notify failed for channel {}: {error}",
+                        self.config.channel_name
+                    )
+                });
+            self.notify_pending = false;
+        }
+    }
+    fn connect_to_subscriber(
+        &mut self,
+        subscriber: &mut dyn GenericSubscriber,
+    ) -> Result<(), crate::generic_publisher::ConnectionTypeMismatch> {
+        if subscriber
+            .as_any()
+            .downcast_mut::<Iox2EventSubscriber>()
+            .is_some()
+        {
+            return Ok(());
+        }
+        Err(crate::generic_publisher::ConnectionTypeMismatch::new(
+            self.config.channel_name.clone(),
+            "iox2 event",
+            "native",
+        ))
+    }
+    fn iox2_find_endpoints(
+        &self,
+        add: &mut dyn FnMut(
+            crate::pub_sub_factory::Iox2EndpointInfo,
+        ) -> Result<(), TaskGraphBuildError>,
+    ) -> Result<(), TaskGraphBuildError> {
+        add(crate::pub_sub_factory::Iox2EndpointInfo {
+            channel: self.config.channel_name.clone(),
+            kind: EndpointKind::Iox2Notifier {
+                event_id: self.event_id.as_value(),
+            },
+            payload_type: None,
+        })
+    }
+    fn iox2_open(&mut self, ctx: &mut dyn Iox2OpenCtx) -> Result<(), TaskGraphBuildError> {
+        let channel = self.config.channel_name.clone();
+        self.notifier = Some(
+            ctx.event_service(&channel)?
+                .notifier_builder()
+                .default_event_id(self.event_id)
+                .create()
+                .map_err(|error| TaskGraphBuildError::Iox2ServiceOpen {
+                    channel,
+                    source: error.to_string(),
+                })?,
+        );
+        Ok(())
+    }
+}
 
 /// iceoryx2 graph-wide naming configuration.
 #[derive(Clone, Debug, Default)]
@@ -724,9 +1244,107 @@ impl Iox2OpenCtx for Iox2Context {
 mod tests {
     use super::*;
     use crate::{
+        callback::{Callback, PubOrSub, PubOrSubMut},
+        context::Context,
+    };
+    use crate::{
         pub_sub_factory::{EndpointKind, Iox2EndpointInfo},
         task_graph_builder::TaskGraphBuildError,
     };
+
+    struct EventProducer(Iox2Notifier);
+    impl Callback for EventProducer {
+        fn run(&mut self, _ctx: &Context) {
+            Iox2NotifyOutput::new(&mut self.0).send();
+        }
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Publisher(&self.0));
+        }
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Publisher(&mut self.0));
+        }
+    }
+
+    struct EventConsumer(Iox2EventSubscriber);
+    impl Callback for EventConsumer {
+        fn run(&mut self, _ctx: &Context) {}
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+            f(PubOrSub::Subscriber(&self.0));
+        }
+        fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+            f(PubOrSubMut::Subscriber(&mut self.0));
+        }
+    }
+
+    /// An event-only graph opens its declared event service and graph notifier.
+    #[test]
+    fn iox2_event_subscriber_opens_service() {
+        let channel = "stage3_event_sub_open";
+        let built = TaskGraphBuilder::new()
+            .add_pool(1, |pool| {
+                pool.add_callback_builder(
+                    test_callback(
+                        "event_sub",
+                        Box::new(EventConsumer(Iox2EventSubscriber::new(
+                            iox2_subscriber_config(channel, 4),
+                        ))),
+                    )
+                    .with_subscriber_channels(&[channel]),
+                )
+            })
+            .build()
+            .expect("event input graph builds");
+        assert!(built.iox2_context.is_some());
+    }
+
+    /// A graph notifier publishes its configured id to an independently attached listener.
+    #[test]
+    fn iox2_notifier_notifies_through_graph() {
+        let channel = "stage3_notifier_graph";
+        let mut built = TaskGraphBuilder::new()
+            .add_pool(1, |pool| {
+                pool.add_callback_builder(
+                    test_callback(
+                        "notifier",
+                        Box::new(EventProducer(Iox2Notifier::new(
+                            crate::publisher::PublisherConfig {
+                                capacity: 1,
+                                channel_name: channel.into(),
+                            },
+                        ))),
+                    )
+                    .with_publisher_channels(&[channel]),
+                )
+            })
+            .build()
+            .expect("notifier graph builds");
+        let context = built.iox2_context.as_mut().unwrap();
+        let listener = context
+            .event_service(channel)
+            .unwrap()
+            .listener_builder()
+            .create()
+            .unwrap();
+        let names = crate::string_interner::ChannelNameInterner::default();
+        let callbacks = crate::string_interner::CallbackNameInterner::default();
+        let time = crate::time::FrameworkTime::from_nanoseconds(42);
+        let ctx = Context::new(time, &names, &callbacks);
+        built.pools[0]
+            .nodes
+            .get(crate::scheduling::CallbackNodeId(0))
+            .unwrap()
+            .access(|node| {
+                node.run(&ctx);
+                node.flush_publishers(time, &mut crate::scheduling::NoopReadyNodeSink);
+            });
+        let mut seen = false;
+        listener
+            .try_wait(|activation| {
+                seen |= activation.id == EventId::new(0);
+            })
+            .unwrap();
+        assert!(seen);
+    }
 
     fn info(
         channel: &str,
@@ -850,8 +1468,6 @@ mod tests {
     // `TaskGraphBuilder` (running the scan, validation, and open lifecycle),
     // and nodes are exercised through `SharedCallbackNode::access`.
 
-    use crate::callback::{Callback, PubOrSub, PubOrSubMut};
-    use crate::context::Context;
     use crate::publisher::Publisher as NativePublisher;
     use crate::scheduling::{CallbackNodeId, NoopReadyNodeSink};
     use crate::string_interner::{CallbackNameInterner, ChannelNameInterner};
