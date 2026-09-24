@@ -48,192 +48,6 @@ pub struct EventRecord {
     pub count: u64,
 }
 
-#[cfg(all(test, feature = "iceoryx2"))]
-mod event_staging_tests {
-    use super::*;
-    use crate::callback::CallbackViews;
-    use crate::generic_subscriber::GenericSubscriber;
-
-    fn subscriber(name: &str) -> Iox2EventSubscriber {
-        Iox2EventSubscriber::new(SubscriberConfig {
-            is_optional: true,
-            capacity: 4,
-            is_trigger: true,
-            keep_across_runs: true,
-            channel_name: name.into(),
-        })
-    }
-
-    /// Staging drain moves the complete batch and clears the previous run's records.
-    #[test]
-    fn iox2_event_staging_drains_all_and_clears() {
-        let sub = subscriber("staging_clear");
-        sub.inject_events(
-            (0..3).map(|id| EventRecord {
-                event_id: EventId::new(id),
-                count: 1,
-            }),
-            &mut crate::scheduling::NoopReadyNodeSink,
-        );
-        assert_eq!(sub.queue_info().writer_size, 3);
-        sub.drain_writer_to_reader();
-        assert_eq!(sub.queue_info().reader_size, 3);
-        sub.drain_writer_to_reader();
-        assert_eq!(sub.queue_info().reader_size, 0);
-    }
-
-    /// Event views sum counts and preserve record order.
-    #[test]
-    fn iox2_event_staging_counts_and_records() {
-        let sub = subscriber("staging_records");
-        sub.inject_events(
-            [(EventId::new(2), 3), (EventId::new(7), 5)]
-                .into_iter()
-                .map(|(event_id, count)| EventRecord { event_id, count }),
-            &mut crate::scheduling::NoopReadyNodeSink,
-        );
-        sub.drain_writer_to_reader();
-        let view = Iox2Event::new(&sub);
-        assert_eq!(view.count(), 8);
-        assert_eq!(
-            view.records().collect::<Vec<_>>(),
-            vec![(EventId::new(2), 3), (EventId::new(7), 5)]
-        );
-    }
-
-    /// Deposits made by distinct producer passes are visible together in one run.
-    #[test]
-    fn iox2_event_staging_multi_injection_aggregates() {
-        let sub = subscriber("staging_multi");
-        sub.inject_events(
-            [EventRecord {
-                event_id: EventId::new(1),
-                count: 4,
-            }],
-            &mut crate::scheduling::NoopReadyNodeSink,
-        );
-        sub.inject_events(
-            [EventRecord {
-                event_id: EventId::new(2),
-                count: 6,
-            }],
-            &mut crate::scheduling::NoopReadyNodeSink,
-        );
-        sub.drain_writer_to_reader();
-        assert_eq!(Iox2Event::new(&sub).count(), 10);
-    }
-
-    /// Staged events request startup execution; draining clears the pending request.
-    #[test]
-    fn iox2_event_staging_requests_execution_tracks_queue() {
-        let sub = subscriber("staging_startup");
-        assert!(!sub.requests_execution());
-        sub.inject_events(
-            [EventRecord {
-                event_id: EventId::new(0),
-                count: 1,
-            }],
-            &mut crate::scheduling::NoopReadyNodeSink,
-        );
-        assert!(sub.requests_execution());
-        sub.drain_writer_to_reader();
-        assert!(!sub.requests_execution());
-    }
-
-    struct StagingGateCallback {
-        required: crate::subscriber::Subscriber<u64>,
-        event: Iox2EventSubscriber,
-    }
-
-    impl crate::callback::Callback for StagingGateCallback {
-        fn run(&mut self, _ctx: &crate::context::Context) {}
-        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(crate::callback::PubOrSub<'a>)) {
-            f(crate::callback::PubOrSub::Subscriber(&self.required));
-            f(crate::callback::PubOrSub::Subscriber(&self.event));
-        }
-        fn for_each_pub_or_sub_mut<'a>(
-            &'a mut self,
-            f: &mut dyn FnMut(crate::callback::PubOrSubMut<'a>),
-        ) {
-            f(crate::callback::PubOrSubMut::Subscriber(&mut self.required));
-            f(crate::callback::PubOrSubMut::Subscriber(&mut self.event));
-        }
-    }
-
-    struct CountingSink(usize);
-    impl crate::scheduling::ReadyNodeSink for CountingSink {
-        fn schedule(&mut self, _node: crate::scheduling::CallbackNodeId) {
-            self.0 += 1;
-        }
-    }
-
-    /// Event notifications wait for required inputs, and later event arrivals nudge a ready node.
-    #[test]
-    fn iox2_event_staging_gating_respects_required_inputs() {
-        let required = crate::subscriber::Subscriber::new(SubscriberConfig {
-            is_optional: false,
-            capacity: 1,
-            is_trigger: false,
-            keep_across_runs: true,
-            channel_name: "required_native".into(),
-        });
-        let event = subscriber("optional_event");
-        let mut node = crate::callback::CallbackNode::new_named(
-            Box::new(StagingGateCallback { required, event }),
-            "gated_event".into(),
-        );
-        node.bind_id(crate::scheduling::CallbackNodeId(3));
-        let mut sink = CountingSink(0);
-        node.callback_mut().for_each_subscriber_mut(&mut |sub| {
-            if sub.config().channel_name == "optional_event" {
-                let event = sub.as_any().downcast_mut::<Iox2EventSubscriber>().unwrap();
-                event.inject_events(
-                    [EventRecord {
-                        event_id: EventId::new(1),
-                        count: 1,
-                    }],
-                    &mut sink,
-                );
-            }
-        });
-        assert_eq!(
-            sink.0, 0,
-            "event alone cannot bypass the required input gate"
-        );
-        let readiness = node.callback().collect_subscribers()[0]
-            .readiness_state()
-            .unwrap();
-        if let crate::callback::SubscriberReadiness::Gating(readiness, bit) = readiness {
-            assert_eq!(
-                readiness.gating_input_arrived(bit),
-                Some(crate::scheduling::CallbackNodeId(3))
-            );
-        } else {
-            panic!("required input must own a gating bit");
-        }
-        assert_eq!(
-            sink.0, 0,
-            "the gating arrival only returns a node id to its producer"
-        );
-        node.callback_mut().for_each_subscriber_mut(&mut |sub| {
-            if sub.config().channel_name == "optional_event" {
-                let event = sub.as_any().downcast_mut::<Iox2EventSubscriber>().unwrap();
-                event.inject_events(
-                    [EventRecord {
-                        event_id: EventId::new(2),
-                        count: 1,
-                    }],
-                    &mut sink,
-                );
-                assert!(event.requests_execution());
-                event.drain_writer_to_reader();
-                assert!(!event.requests_execution());
-            }
-        });
-        assert_eq!(sink.0, 1);
-    }
-}
-
 /// Event input staging queue shared with its injector and readiness producer.
 pub struct Iox2EventSubscriber {
     config: SubscriberConfig,
@@ -1237,6 +1051,192 @@ impl Iox2OpenCtx for Iox2Context {
             .event_services
             .get(channel)
             .expect("event service was just inserted"))
+    }
+}
+
+#[cfg(all(test, feature = "iceoryx2"))]
+mod event_staging_tests {
+    use super::*;
+    use crate::callback::CallbackViews;
+    use crate::generic_subscriber::GenericSubscriber;
+
+    fn subscriber(name: &str) -> Iox2EventSubscriber {
+        Iox2EventSubscriber::new(SubscriberConfig {
+            is_optional: true,
+            capacity: 4,
+            is_trigger: true,
+            keep_across_runs: true,
+            channel_name: name.into(),
+        })
+    }
+
+    /// Staging drain moves the complete batch and clears the previous run's records.
+    #[test]
+    fn iox2_event_staging_drains_all_and_clears() {
+        let sub = subscriber("staging_clear");
+        sub.inject_events(
+            (0..3).map(|id| EventRecord {
+                event_id: EventId::new(id),
+                count: 1,
+            }),
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        assert_eq!(sub.queue_info().writer_size, 3);
+        sub.drain_writer_to_reader();
+        assert_eq!(sub.queue_info().reader_size, 3);
+        sub.drain_writer_to_reader();
+        assert_eq!(sub.queue_info().reader_size, 0);
+    }
+
+    /// Event views sum counts and preserve record order.
+    #[test]
+    fn iox2_event_staging_counts_and_records() {
+        let sub = subscriber("staging_records");
+        sub.inject_events(
+            [(EventId::new(2), 3), (EventId::new(7), 5)]
+                .into_iter()
+                .map(|(event_id, count)| EventRecord { event_id, count }),
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        sub.drain_writer_to_reader();
+        let view = Iox2Event::new(&sub);
+        assert_eq!(view.count(), 8);
+        assert_eq!(
+            view.records().collect::<Vec<_>>(),
+            vec![(EventId::new(2), 3), (EventId::new(7), 5)]
+        );
+    }
+
+    /// Deposits made by distinct producer passes are visible together in one run.
+    #[test]
+    fn iox2_event_staging_multi_injection_aggregates() {
+        let sub = subscriber("staging_multi");
+        sub.inject_events(
+            [EventRecord {
+                event_id: EventId::new(1),
+                count: 4,
+            }],
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        sub.inject_events(
+            [EventRecord {
+                event_id: EventId::new(2),
+                count: 6,
+            }],
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        sub.drain_writer_to_reader();
+        assert_eq!(Iox2Event::new(&sub).count(), 10);
+    }
+
+    /// Staged events request startup execution; draining clears the pending request.
+    #[test]
+    fn iox2_event_staging_requests_execution_tracks_queue() {
+        let sub = subscriber("staging_startup");
+        assert!(!sub.requests_execution());
+        sub.inject_events(
+            [EventRecord {
+                event_id: EventId::new(0),
+                count: 1,
+            }],
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        assert!(sub.requests_execution());
+        sub.drain_writer_to_reader();
+        assert!(!sub.requests_execution());
+    }
+
+    struct StagingGateCallback {
+        required: crate::subscriber::Subscriber<u64>,
+        event: Iox2EventSubscriber,
+    }
+
+    impl crate::callback::Callback for StagingGateCallback {
+        fn run(&mut self, _ctx: &crate::context::Context) {}
+        fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(crate::callback::PubOrSub<'a>)) {
+            f(crate::callback::PubOrSub::Subscriber(&self.required));
+            f(crate::callback::PubOrSub::Subscriber(&self.event));
+        }
+        fn for_each_pub_or_sub_mut<'a>(
+            &'a mut self,
+            f: &mut dyn FnMut(crate::callback::PubOrSubMut<'a>),
+        ) {
+            f(crate::callback::PubOrSubMut::Subscriber(&mut self.required));
+            f(crate::callback::PubOrSubMut::Subscriber(&mut self.event));
+        }
+    }
+
+    struct CountingSink(usize);
+    impl crate::scheduling::ReadyNodeSink for CountingSink {
+        fn schedule(&mut self, _node: crate::scheduling::CallbackNodeId) {
+            self.0 += 1;
+        }
+    }
+
+    /// Event notifications wait for required inputs, and later event arrivals nudge a ready node.
+    #[test]
+    fn iox2_event_staging_gating_respects_required_inputs() {
+        let required = crate::subscriber::Subscriber::new(SubscriberConfig {
+            is_optional: false,
+            capacity: 1,
+            is_trigger: false,
+            keep_across_runs: true,
+            channel_name: "required_native".into(),
+        });
+        let event = subscriber("optional_event");
+        let mut node = crate::callback::CallbackNode::new_named(
+            Box::new(StagingGateCallback { required, event }),
+            "gated_event".into(),
+        );
+        node.bind_id(crate::scheduling::CallbackNodeId(3));
+        let mut sink = CountingSink(0);
+        node.callback_mut().for_each_subscriber_mut(&mut |sub| {
+            if sub.config().channel_name == "optional_event" {
+                let event = sub.as_any().downcast_mut::<Iox2EventSubscriber>().unwrap();
+                event.inject_events(
+                    [EventRecord {
+                        event_id: EventId::new(1),
+                        count: 1,
+                    }],
+                    &mut sink,
+                );
+            }
+        });
+        assert_eq!(
+            sink.0, 0,
+            "event alone cannot bypass the required input gate"
+        );
+        let readiness = node.callback().collect_subscribers()[0]
+            .readiness_state()
+            .unwrap();
+        if let crate::callback::SubscriberReadiness::Gating(readiness, bit) = readiness {
+            assert_eq!(
+                readiness.gating_input_arrived(bit),
+                Some(crate::scheduling::CallbackNodeId(3))
+            );
+        } else {
+            panic!("required input must own a gating bit");
+        }
+        assert_eq!(
+            sink.0, 0,
+            "the gating arrival only returns a node id to its producer"
+        );
+        node.callback_mut().for_each_subscriber_mut(&mut |sub| {
+            if sub.config().channel_name == "optional_event" {
+                let event = sub.as_any().downcast_mut::<Iox2EventSubscriber>().unwrap();
+                event.inject_events(
+                    [EventRecord {
+                        event_id: EventId::new(2),
+                        count: 1,
+                    }],
+                    &mut sink,
+                );
+                assert!(event.requests_execution());
+                event.drain_writer_to_reader();
+                assert!(!event.requests_execution());
+            }
+        });
+        assert_eq!(sink.0, 1);
     }
 }
 
