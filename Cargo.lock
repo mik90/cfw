@@ -1549,6 +1549,7 @@ dependencies = [
 name = "testing"
 version = "0.1.0"
 dependencies = [
+ "iceoryx2",
  "simulation_executor",
  "task",
  "test_tasks",

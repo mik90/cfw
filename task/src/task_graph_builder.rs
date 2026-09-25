@@ -63,6 +63,8 @@ pub struct TaskGraphBuilder {
     debug_info: bool,
     #[cfg(feature = "iceoryx2")]
     iox2_config: Option<crate::iox2::Iox2GraphConfig>,
+    #[cfg(feature = "iceoryx2")]
+    iox2_extra_endpoints: Vec<Iox2EndpointInfo>,
 }
 
 pub struct BuiltTaskGraph {
@@ -283,6 +285,8 @@ impl TaskGraphBuilder {
             debug_info: false,
             #[cfg(feature = "iceoryx2")]
             iox2_config: None,
+            #[cfg(feature = "iceoryx2")]
+            iox2_extra_endpoints: Vec::new(),
         }
     }
 
@@ -306,6 +310,18 @@ impl TaskGraphBuilder {
     #[cfg(feature = "iceoryx2")]
     pub fn with_iox2_config(mut self, config: crate::iox2::Iox2GraphConfig) -> Self {
         self.iox2_config = Some(config);
+        self
+    }
+
+    /// Include additional iox2 endpoint declarations in graph validation and
+    /// service settings aggregation. Callers remain responsible for opening
+    /// the corresponding ports with the resulting graph context.
+    #[cfg(feature = "iceoryx2")]
+    pub fn with_iox2_extra_endpoints(
+        mut self,
+        endpoints: impl IntoIterator<Item = Iox2EndpointInfo>,
+    ) -> Self {
+        self.iox2_extra_endpoints.extend(endpoints);
         self
     }
 
@@ -415,6 +431,8 @@ impl TaskGraphBuilder {
                     }
                 });
         }
+        #[cfg(feature = "iceoryx2")]
+        endpoint_infos.extend(self.iox2_extra_endpoints.iter().cloned());
         validate_iox2_endpoints(&endpoint_infos)?;
         #[cfg(feature = "iceoryx2")]
         let mut iox2_context = crate::iox2::Iox2Context::from_endpoints(

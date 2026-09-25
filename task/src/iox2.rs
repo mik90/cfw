@@ -147,6 +147,15 @@ impl Iox2EventSubscriber {
         }
     }
 
+    /// Create a synchronous test injector for simulation's step-boundary scheduler.
+    /// Staging a record here does not invoke live-executor readiness scheduling.
+    #[cfg(feature = "testing")]
+    pub fn staging_injector(&self) -> Iox2StagingInjector {
+        Iox2StagingInjector {
+            staging: Arc::clone(&self.staging),
+        }
+    }
+
     pub(crate) fn inject_events(
         &self,
         records: impl IntoIterator<Item = EventRecord>,
@@ -169,6 +178,20 @@ impl Iox2EventSubscriber {
 pub struct Iox2EventInjector {
     staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
     readiness: Option<crate::callback::SubscriberReadiness>,
+}
+
+/// Test handle for depositing counted events without invoking live readiness scheduling.
+#[cfg(feature = "testing")]
+pub struct Iox2StagingInjector {
+    staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+}
+
+#[cfg(feature = "testing")]
+impl Iox2StagingInjector {
+    /// Immediately stage one event record for the next simulation step.
+    pub fn notify(&self, event_id: EventId, count: u64) {
+        let _ = self.staging.push(EventRecord { event_id, count });
+    }
 }
 
 #[cfg(feature = "testing")]
@@ -770,7 +793,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2SyntheticPublisher
                 self.channel()
             )
         })?;
-        self.publisher.publish_simulation_sample(header, *payload)
+        self.publisher.publish_with_header(header, *payload)
     }
 }
 
@@ -802,7 +825,9 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
         &mut self.config
     }
 
-    fn publish_simulation_sample(&self, header: MessageHeader, payload: T) -> Result<(), String> {
+    /// Publish a payload with its supplied header without emitting an event notification.
+    /// Intended for inputs controlled by simulation and unit tests.
+    pub fn publish_with_header(&self, header: MessageHeader, payload: T) -> Result<(), String> {
         let channel = self.config.channel_name.as_str();
         let port = self
             .port
