@@ -41,6 +41,16 @@ pub trait GenericSubscriber: Send {
     ) -> Result<Option<crate::iox2::Iox2EventRegistration>, String> {
         Ok(None)
     }
+
+    /// Create a simulation-owned publisher for injecting data into this input's channel.
+    /// The default means this subscriber is not an iox2 data input.
+    #[cfg(feature = "iceoryx2")]
+    fn iox2_create_simulation_publisher(
+        &self,
+        _ctx: &mut dyn crate::iox2::Iox2OpenCtx,
+    ) -> Result<Option<Box<dyn crate::iox2::Iox2SyntheticPublisher>>, String> {
+        Ok(None)
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any;
 
     fn config(&self) -> &SubscriberConfig;

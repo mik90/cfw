@@ -106,6 +106,44 @@ impl SimulationExecutor {
         self.state.lock().unwrap().step()
     }
 
+    /// Schedule synthetic iox2 data for delivery at a simulation-time boundary.
+    ///
+    /// If the background step loop is running, this call waits for its current state lock and the
+    /// input is delivered at a later step boundary.
+    #[cfg(feature = "iceoryx2")]
+    pub fn schedule_iox2_data<T>(
+        &self,
+        at: FrameworkTime,
+        channel: &str,
+        payload: T,
+    ) -> Result<(), crate::state::Iox2InputError>
+    where
+        T: std::fmt::Debug + iceoryx2::prelude::ZeroCopySend + Send + Sync + 'static,
+    {
+        self.state
+            .lock()
+            .unwrap()
+            .schedule_iox2_data(at, channel, payload)
+    }
+
+    /// Schedule a synthetic iox2 event activation for a simulation-time boundary.
+    ///
+    /// If the background step loop is running, this call waits for its current state lock and the
+    /// activation is staged at a later step boundary.
+    #[cfg(feature = "iceoryx2")]
+    pub fn schedule_iox2_event(
+        &self,
+        at: FrameworkTime,
+        channel: &str,
+        event_id: iceoryx2::prelude::EventId,
+        count: u64,
+    ) -> Result<(), crate::state::Iox2InputError> {
+        self.state
+            .lock()
+            .unwrap()
+            .schedule_iox2_event(at, channel, event_id, count)
+    }
+
     pub fn step_count(&self) -> Saturating<usize> {
         self.state.lock().unwrap().step_count()
     }

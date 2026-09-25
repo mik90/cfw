@@ -50,12 +50,30 @@ pub struct EventRecord {
 
 /// Listener and staging state transferred to the live readiness thread.
 pub struct Iox2EventRegistration {
+    /// Channel whose event service this listener receives.
+    pub channel: String,
     /// Event listener owned by the readiness thread.
     pub listener: Listener<ipc_threadsafe::Service>,
     /// Bounded queue receiving folded event activations.
     pub staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
     /// Readiness signal for the target optional-trigger subscriber.
     pub readiness: Option<crate::callback::SubscriberReadiness>,
+}
+
+/// Type-erased publisher owned by a deterministic simulation for injecting a data sample.
+pub trait Iox2SyntheticPublisher: Send {
+    /// The channel this publisher injects into.
+    fn channel(&self) -> &str;
+
+    /// The concrete payload type accepted by this publisher.
+    fn payload_type_id(&self) -> std::any::TypeId;
+
+    /// Publish an owned payload with its requested simulation timestamp.
+    fn publish(
+        &mut self,
+        header: MessageHeader,
+        payload: Box<dyn std::any::Any + Send>,
+    ) -> Result<(), String>;
 }
 
 /// Atomic counters describing the live executor's event-readiness thread.
@@ -316,6 +334,7 @@ impl GenericSubscriber for Iox2EventSubscriber {
             .create()
             .map_err(|error| format!("unable to create listener for channel {channel}: {error}"))?;
         Ok(Some(Iox2EventRegistration {
+            channel,
             listener,
             staging: Arc::clone(&self.staging),
             readiness,
@@ -589,6 +608,19 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> GenericSubscriber for Iox2
         self.port = Some(port);
         Ok(())
     }
+    fn iox2_create_simulation_publisher(
+        &self,
+        ctx: &mut dyn Iox2OpenCtx,
+    ) -> Result<Option<Box<dyn Iox2SyntheticPublisher>>, String> {
+        let mut publisher = Iox2Publisher::<T>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: self.config.channel_name.clone(),
+        });
+        publisher.notify_on_send = false;
+        crate::generic_publisher::GenericPublisher::iox2_open(&mut publisher, ctx)
+            .map_err(|error| error.to_string())?;
+        Ok(Some(Box::new(TypedIox2SyntheticPublisher { publisher })))
+    }
     fn for_each_queued_input(&self, f: &mut dyn FnMut(&MessageHeader, &dyn std::any::Any)) {
         for sample in self.read.borrow().iter() {
             f(&sample.header, &sample.message as &dyn std::any::Any);
@@ -712,6 +744,36 @@ pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     marker: PhantomData<T>,
 }
 
+struct TypedIox2SyntheticPublisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
+    publisher: Iox2Publisher<T>,
+}
+
+impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2SyntheticPublisher
+    for TypedIox2SyntheticPublisher<T>
+{
+    fn channel(&self) -> &str {
+        &self.publisher.config.channel_name
+    }
+
+    fn payload_type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<T>()
+    }
+
+    fn publish(
+        &mut self,
+        header: MessageHeader,
+        payload: Box<dyn std::any::Any + Send>,
+    ) -> Result<(), String> {
+        let payload = payload.downcast::<T>().map_err(|_| {
+            format!(
+                "simulation publisher payload type mismatch on {}",
+                self.channel()
+            )
+        })?;
+        self.publisher.publish_simulation_sample(header, *payload)
+    }
+}
+
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     /// Create an iox2 output declaration.
     pub fn new(config: PublisherConfig) -> Self {
@@ -738,6 +800,23 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     /// Mutably access the native publisher configuration.
     pub fn config_mut(&mut self) -> &mut PublisherConfig {
         &mut self.config
+    }
+
+    fn publish_simulation_sample(&self, header: MessageHeader, payload: T) -> Result<(), String> {
+        let channel = self.config.channel_name.as_str();
+        let port = self
+            .port
+            .as_ref()
+            .ok_or_else(|| format!("iox2 simulation publisher for {channel} is not open"))?;
+        port.loan_uninit()
+            .map_err(|error| format!("iox2 simulation loan failed on {channel}: {error}"))?
+            .write_payload(Message {
+                header,
+                message: payload,
+            })
+            .send()
+            .map(|_| ())
+            .map_err(|error| format!("iox2 simulation send failed on {channel}: {error}"))
     }
 }
 
@@ -1060,7 +1139,9 @@ impl Iox2Context {
                         subscriber_max_borrowed_samples: 2 * buffer_size,
                         history_size: 0,
                         enable_safe_overflow: true,
-                        max_publishers: pubsub_defaults.max_publishers.max(agg.data_pub_count),
+                        max_publishers: pubsub_defaults
+                            .max_publishers
+                            .max(agg.data_pub_count + usize::from(agg.data_sub_count > 0)),
                         max_subscribers: pubsub_defaults.max_subscribers.max(agg.data_sub_count),
                         max_nodes: pubsub_defaults.max_nodes,
                     },
