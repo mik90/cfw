@@ -67,14 +67,20 @@ impl SimulationExecutor {
     /// Create an executor from a [`SimulationConfig`], supporting multiple virtual
     /// pools and a configurable start time.
     pub fn new_with(config: SimulationConfig) -> Self {
+        Self::try_new_with(config)
+            .unwrap_or_else(|error| panic!("Could not create simulation executor: {error:?}"))
+    }
+
+    /// Create an executor and report iox2 listener-registration failures.
+    pub fn try_new_with(config: SimulationConfig) -> Result<Self, StepError> {
         let should_run = Arc::new(AtomicBool::new(false));
 
-        SimulationExecutor {
+        Ok(SimulationExecutor {
             should_run,
-            state: Arc::new(Mutex::new(SimulationState::new_with(config))),
+            state: Arc::new(Mutex::new(SimulationState::try_new_with(config)?)),
             step_thread: None,
             step_error: Arc::new(Mutex::new(None)),
-        }
+        })
     }
 
     /// Block until the step thread exits on its own (e.g. a callback node fired the stop signal).

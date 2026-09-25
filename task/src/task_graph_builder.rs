@@ -302,7 +302,7 @@ impl TaskGraphBuilder {
         self
     }
 
-    /// Configure iceoryx2 node creation and channel-name namespace.
+    /// Configure the iceoryx2 graph node and its runtime configuration.
     #[cfg(feature = "iceoryx2")]
     pub fn with_iox2_config(mut self, config: crate::iox2::Iox2GraphConfig) -> Self {
         self.iox2_config = Some(config);

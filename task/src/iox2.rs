@@ -215,7 +215,10 @@ impl<'a> Iox2Event<'a> {
     }
     /// Sum of all event counts in the batch.
     pub fn count(&self) -> u64 {
-        self.guard.records.iter().map(|record| record.count).sum()
+        self.guard
+            .records
+            .iter()
+            .fold(0, |sum, record| sum.saturating_add(record.count))
     }
     /// Iterate event identifiers and their counts in arrival order.
     pub fn records(&self) -> impl Iterator<Item = (EventId, u64)> + '_ {
@@ -443,13 +446,14 @@ impl crate::generic_publisher::GenericPublisher for Iox2Notifier {
     }
 }
 
-/// iceoryx2 graph-wide naming configuration.
+/// iceoryx2 graph-wide node and runtime configuration.
 #[derive(Clone, Debug, Default)]
 pub struct Iox2GraphConfig {
-    /// Optional prefix prepended to each channel's service name.
-    pub namespace: Option<String>,
     /// Optional iceoryx2 node name.
     pub node_name: Option<String>,
+    /// Optional runtime configuration for the graph node and service defaults.
+    /// When absent, iceoryx2's normal global configuration is used.
+    pub config: Option<Config>,
 }
 
 /// A publisher loan retained until the framework flushes it.
@@ -963,7 +967,7 @@ pub struct EventServiceSettings {
 pub trait Iox2OpenCtx {
     /// The graph's iceoryx2 node.
     fn node(&self) -> &Node<ipc_threadsafe::Service>;
-    /// Fully-qualified service name for a channel (namespace-prefixed).
+    /// Service name for a channel.
     fn service_name(&self, channel: &str) -> Result<ServiceName, TaskGraphBuildError>;
     /// Aggregated publish-subscribe settings for a channel.
     fn pubsub_settings(&self, channel: &str)
@@ -981,7 +985,6 @@ pub trait Iox2OpenCtx {
 #[derive(Debug)]
 pub struct Iox2Context {
     node: Node<ipc_threadsafe::Service>,
-    namespace: Option<String>,
     pubsub_settings: HashMap<String, PubSubServiceSettings>,
     event_settings: HashMap<String, EventServiceSettings>,
     event_services: HashMap<String, EventPortFactory<ipc_threadsafe::Service>>,
@@ -1009,7 +1012,11 @@ impl Iox2Context {
         if !endpoints.iter().any(|endpoint| endpoint.kind.is_iox2()) {
             return Ok(None);
         }
-        let defaults = Config::default();
+        let config: &Config = match graph_config.config.as_ref() {
+            Some(config) => config,
+            None => Config::global_config(),
+        };
+        let defaults = config;
         let pubsub_defaults = &defaults.defaults.publish_subscribe;
         let event_defaults = &defaults.defaults.event;
 
@@ -1073,6 +1080,9 @@ impl Iox2Context {
         }
 
         let mut builder = NodeBuilder::new();
+        if let Some(config) = &graph_config.config {
+            builder = builder.config(config);
+        }
         if let Some(node_name) = &graph_config.node_name {
             let node_name = NodeName::new(node_name).map_err(|error| {
                 TaskGraphBuildError::Iox2NodeCreation {
@@ -1088,24 +1098,17 @@ impl Iox2Context {
             })?;
         Ok(Some(Self {
             node,
-            namespace: graph_config.namespace.clone(),
             pubsub_settings,
             event_settings,
             event_services: HashMap::new(),
         }))
     }
 
-    /// Build the namespace-prefixed service name for a channel.
+    /// Build the service name for a channel.
     fn build_service_name(&self, channel: &str) -> Result<ServiceName, TaskGraphBuildError> {
-        let full_name = match &self.namespace {
-            Some(namespace) => format!("{namespace}/{channel}"),
-            None => channel.to_string(),
-        };
-        ServiceName::new(full_name.as_str()).map_err(|error| {
-            TaskGraphBuildError::InvalidServiceName {
-                channel: channel.to_string(),
-                reason: error.to_string(),
-            }
+        ServiceName::new(channel).map_err(|error| TaskGraphBuildError::InvalidServiceName {
+            channel: channel.to_string(),
+            reason: error.to_string(),
         })
     }
 }
@@ -1210,6 +1213,27 @@ mod event_staging_tests {
             view.records().collect::<Vec<_>>(),
             vec![(EventId::new(2), 3), (EventId::new(7), 5)]
         );
+    }
+
+    /// Event batch count saturates instead of overflowing when records sum past u64::MAX.
+    #[test]
+    fn iox2_event_staging_count_saturates() {
+        let sub = subscriber("staging_count_saturates");
+        sub.inject_events(
+            [
+                EventRecord {
+                    event_id: EventId::new(1),
+                    count: u64::MAX,
+                },
+                EventRecord {
+                    event_id: EventId::new(2),
+                    count: 1,
+                },
+            ],
+            &mut crate::scheduling::NoopReadyNodeSink,
+        );
+        sub.drain_writer_to_reader();
+        assert_eq!(Iox2Event::new(&sub).count(), u64::MAX);
     }
 
     /// Deposits made by distinct producer passes are visible together in one run.
@@ -1497,28 +1521,25 @@ mod tests {
         );
     }
 
-    /// Namespace prefixes are included in service-name validation diagnostics.
+    /// An injected iceoryx2 config controls both the node and service defaults.
     #[test]
-    fn namespace_prefix_is_applied_before_name_validation() {
-        let channel = "x".repeat(255);
-        let endpoints = [info(
-            &channel,
-            EndpointKind::Iox2DataSub { capacity: 1 },
-            Some(std::any::TypeId::of::<u64>()),
-        )];
+    fn graph_config_is_applied_to_node_and_service_settings() {
+        let channel = "stage2_injected_config";
+        let endpoints = [info(channel, EndpointKind::Iox2EventSub, None)];
+        let mut config = Config::default();
+        config.defaults.event.max_listeners = 23;
         let context = Iox2Context::from_endpoints(
             &Iox2GraphConfig {
-                namespace: Some("stage2_prefix".into()),
                 node_name: None,
+                config: Some(config.clone()),
             },
             &endpoints,
         )
         .unwrap()
         .unwrap();
-        let result = context.service_name(&channel);
-        assert!(
-            matches!(result, Err(TaskGraphBuildError::InvalidServiceName { channel: ref value, .. }) if value == &channel)
-        );
+
+        assert_eq!(context.node().config(), &config);
+        assert_eq!(context.event_settings[channel].max_listeners, 23);
     }
 
     /// Declared notifier ids set the inclusive event service maximum.
@@ -1672,14 +1693,11 @@ mod tests {
         }
     }
 
-    fn build_producer_consumer_graph(
-        channel: &str,
-        namespace: Option<String>,
-    ) -> crate::task_graph_builder::BuiltTaskGraph {
+    fn build_producer_consumer_graph(channel: &str) -> crate::task_graph_builder::BuiltTaskGraph {
         TaskGraphBuilder::new()
             .with_iox2_config(crate::iox2::Iox2GraphConfig {
-                namespace,
                 node_name: None,
+                ..Default::default()
             })
             .add_pool(1, |pool| {
                 pool.add_callback_builder(test_callback(
@@ -1896,7 +1914,7 @@ mod tests {
     /// service coexist under one channel name.
     #[test]
     fn iox2_roundtrip_publishes_and_reads() {
-        let built = build_producer_consumer_graph("stage2_roundtrip", None);
+        let built = build_producer_consumer_graph("stage2_roundtrip");
         let pools = &built.pools;
         let channel_interner = ChannelNameInterner::default();
         let callback_interner = CallbackNameInterner::default();
@@ -1921,7 +1939,7 @@ mod tests {
     /// samples were returned to the sample pool.
     #[test]
     fn iox2_eviction_keeps_newest_and_recycles_samples() {
-        let built = build_producer_consumer_graph("stage2_eviction", None);
+        let built = build_producer_consumer_graph("stage2_eviction");
         let pools = &built.pools;
         let channel_interner = ChannelNameInterner::default();
         let callback_interner = CallbackNameInterner::default();
@@ -2052,25 +2070,6 @@ mod tests {
             graph,
             Err(TaskGraphBuildError::MixedPayloadType { ref channel }) if channel == channel
         ));
-    }
-
-    /// A namespaced graph round-trips through namespaced service names, so
-    /// the same channel can coexist under different namespaces.
-    #[test]
-    fn iox2_namespaced_graph_roundtrips() {
-        let built =
-            build_producer_consumer_graph("stage2_namespaced", Some("stage2_namespace".into()));
-        let pools = &built.pools;
-        let channel_interner = ChannelNameInterner::default();
-        let callback_interner = CallbackNameInterner::default();
-        let ctx = Context::new(
-            crate::time::FrameworkTime::from_nanoseconds(77),
-            &channel_interner,
-            &callback_interner,
-        );
-        run_producer(pools, 1, &ctx);
-        let (value, _) = drain_consumer(pools);
-        assert_eq!(value, Some(1));
     }
 
     /// The registered serializer drains each iox2 message exactly once via

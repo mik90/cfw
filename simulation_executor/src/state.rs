@@ -16,6 +16,8 @@ pub enum StepError {
     UnexpectedResponse,
     /// The step loop thread panicked.
     StepThreadPanicked,
+    /// Unable to register or poll an iox2 event listener.
+    Iox2Event(String),
 }
 use std::collections::VecDeque;
 use std::num::Saturating;
@@ -68,6 +70,12 @@ pub struct SimulationState {
 
     /// Number of times the state has been stepped
     step_count: Saturating<usize>,
+
+    #[cfg(feature = "iceoryx2")]
+    event_listeners: Vec<task::iox2::Iox2EventRegistration>,
+    /// Kept last so the node/services outlive callback ports and listeners.
+    #[cfg(feature = "iceoryx2")]
+    iox2_context: Option<task::iox2::Iox2Context>,
 }
 
 impl SimulationState {
@@ -87,11 +95,21 @@ impl SimulationState {
     /// Create an new state from a [`SimulationConfig`], supporting multiple virtual
     /// pools and a configurable start time.
     pub fn new_with(config: SimulationConfig) -> SimulationState {
+        Self::try_new_with(config)
+            .unwrap_or_else(|error| panic!("Could not create simulation state: {error:?}"))
+    }
+
+    /// Construct simulation state and register all iox2 event listeners.
+    pub fn try_new_with(config: SimulationConfig) -> Result<SimulationState, StepError> {
         let SimulationConfig {
             start_time,
             executor_params,
             node_executor_thread_count,
         } = config;
+        #[cfg(feature = "iceoryx2")]
+        let (pools, channel_interner, callback_interner, mut iox2_context) =
+            executor_params.into_parts_with_iox2_context();
+        #[cfg(not(feature = "iceoryx2"))]
         let (pools, channel_interner, callback_interner) = executor_params.into_parts();
         let mut all_nodes: Vec<Arc<SharedCallbackNode>> = vec![];
         let mut node_to_pool: Vec<usize> = Vec::new();
@@ -129,7 +147,39 @@ impl SimulationState {
             node_ready_since: vec![None; num_nodes],
             time: start_time,
             step_count: Saturating(0),
+            #[cfg(feature = "iceoryx2")]
+            event_listeners: Vec::new(),
+            #[cfg(feature = "iceoryx2")]
+            iox2_context: iox2_context.take(),
         };
+        #[cfg(feature = "iceoryx2")]
+        let mut event_listeners = Vec::new();
+        #[cfg(feature = "iceoryx2")]
+        if let Some(context) = state.iox2_context.as_mut() {
+            for node in state.nodes.iter_shared() {
+                let registration = node.access(|n| {
+                    let node_name = n.name().to_owned();
+                    let mut result = Ok(());
+                    n.callback_mut()
+                        .for_each_subscriber_mut(&mut |sub| match sub
+                            .iox2_take_event_registration(context)
+                        {
+                            Ok(Some(registration)) => event_listeners.push(registration),
+                            Ok(None) => {}
+                            Err(error) if result.is_ok() => {
+                                result = Err(format!("node {node_name}: {error}"));
+                            }
+                            Err(_) => {}
+                        });
+                    result
+                });
+                registration.map_err(StepError::Iox2Event)?;
+            }
+        }
+        #[cfg(feature = "iceoryx2")]
+        {
+            state.event_listeners = event_listeners;
+        }
         for _ in 0..node_executor_thread_count {
             // Each thread has its own request receiver; the state owns the matching sender
             let (request_sender, request_recv): (
@@ -154,7 +204,7 @@ impl SimulationState {
             }));
         }
 
-        state
+        Ok(state)
     }
 
     pub fn start(&mut self) {
@@ -233,6 +283,8 @@ impl SimulationState {
     }
 
     pub fn step(&mut self) -> Result<Vec<CallbackNodeIndex>, StepError> {
+        #[cfg(feature = "iceoryx2")]
+        self.poll_event_listeners()?;
         let runnable_nodes = self.allocate_nodes_to_threads();
         // Only drain subscribers for nodes that actually got a thread, so that nodes
         // blocked by pool pressure keep their trigger data for the next step.
@@ -327,6 +379,31 @@ impl SimulationState {
         }
         self.step_count += 1;
         Ok(runnable_nodes)
+    }
+
+    #[cfg(feature = "iceoryx2")]
+    fn poll_event_listeners(&mut self) -> Result<(), StepError> {
+        use task::iox2::EventRecord;
+        for registration in &mut self.event_listeners {
+            let mut folded: Vec<EventRecord> = Vec::new();
+            registration
+                .listener
+                .try_wait(|activation| {
+                    if let Some(record) = folded.iter_mut().find(|r| r.event_id == activation.id) {
+                        record.count = record.count.saturating_add(activation.count);
+                    } else {
+                        folded.push(EventRecord {
+                            event_id: activation.id,
+                            count: activation.count,
+                        });
+                    }
+                })
+                .map_err(|error| StepError::Iox2Event(error.to_string()))?;
+            for record in folded {
+                let _ = registration.staging.push(record);
+            }
+        }
+        Ok(())
     }
 
     pub fn shutdown_node_executor_threads(&mut self) -> Result<(), Vec<usize>> {
@@ -632,5 +709,271 @@ mod tests {
         }
         // Every run pairs the newest trigger value with the retained gate value.
         assert!(observed.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    #[cfg(all(feature = "iceoryx2", not(miri)))]
+    mod iox2_event_tests {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        use iceoryx2::prelude::EventId;
+        use task::callback::{Callback, PubOrSub, PubOrSubMut};
+        use task::context::Context;
+        use task::executor::ExecutorParams;
+        use task::iox2::{
+            Iox2Event, Iox2EventSubscriber, Iox2GraphConfig, Iox2Notifier, Iox2NotifyOutput,
+            Iox2OpenCtx,
+        };
+        use task::output::Output;
+        use task::publisher::{Publisher, PublisherConfig};
+        use task::subscriber::{Subscriber, SubscriberConfig};
+        use task::task_graph_builder::TaskGraphBuilder;
+        use task::time::FrameworkTime;
+
+        use crate::SimulationConfig;
+
+        use super::SimulationState;
+
+        static NEXT_CHANNEL: AtomicUsize = AtomicUsize::new(0);
+        type ObservedEvents = Arc<Mutex<Vec<Vec<(EventId, u64)>>>>;
+
+        fn channel(label: &str) -> String {
+            format!(
+                "sim_{label}_{}_{}",
+                std::process::id(),
+                NEXT_CHANNEL.fetch_add(1, Ordering::Relaxed)
+            )
+        }
+
+        struct GatePublisher(Publisher<u64>);
+
+        impl Callback for GatePublisher {
+            fn run(&mut self, _ctx: &Context) {
+                let mut output = Output::new_default(&mut self.0);
+                *output = 42;
+                output.send();
+            }
+
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+                f(PubOrSub::Publisher(&self.0));
+            }
+
+            fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+                f(PubOrSubMut::Publisher(&mut self.0));
+            }
+        }
+
+        struct EventConsumer {
+            event: Iox2EventSubscriber,
+            required: Option<Subscriber<u64>>,
+            observed: ObservedEvents,
+        }
+
+        impl Callback for EventConsumer {
+            fn run(&mut self, _ctx: &Context) {
+                let event = Iox2Event::new(&self.event);
+                self.observed
+                    .lock()
+                    .unwrap()
+                    .push(event.records().collect());
+            }
+
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+                f(PubOrSub::Subscriber(&self.event));
+                if let Some(required) = &self.required {
+                    f(PubOrSub::Subscriber(required));
+                }
+            }
+
+            fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+                f(PubOrSubMut::Subscriber(&mut self.event));
+                if let Some(required) = &mut self.required {
+                    f(PubOrSubMut::Subscriber(required));
+                }
+            }
+        }
+
+        struct EventProducer {
+            notifier: Iox2Notifier,
+        }
+
+        impl Callback for EventProducer {
+            fn run(&mut self, _ctx: &Context) {
+                Iox2NotifyOutput::new(&mut self.notifier).send();
+            }
+
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+                f(PubOrSub::Publisher(&self.notifier));
+            }
+
+            fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+                f(PubOrSubMut::Publisher(&mut self.notifier));
+            }
+        }
+
+        fn node(name: &str, callback: Box<dyn Callback>) -> task::callback::CallbackNode {
+            let mut node = task::callback::CallbackNode::new_named(callback, name.into());
+            node.set_execution_duration_callback(Box::new(|| Duration::ZERO));
+            node
+        }
+
+        /// The scheduler sees listener activations only at step boundaries and retains them behind required-input gates.
+        #[test]
+        fn event_polling_respects_step_boundaries_and_required_inputs() {
+            let event_channel = channel("gate_event");
+            let gate_channel = channel("gate_data");
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let consumer = node(
+                "event_consumer",
+                Box::new(EventConsumer {
+                    event: Iox2EventSubscriber::new(SubscriberConfig {
+                        is_optional: true,
+                        capacity: 4,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: event_channel.clone(),
+                    }),
+                    required: Some(Subscriber::new(SubscriberConfig {
+                        is_optional: false,
+                        capacity: 1,
+                        is_trigger: false,
+                        keep_across_runs: true,
+                        channel_name: gate_channel.clone(),
+                    })),
+                    observed: observed.clone(),
+                }),
+            );
+            let gate_publisher = node(
+                "gate_publisher",
+                Box::new(GatePublisher(Publisher::new(PublisherConfig {
+                    capacity: 1,
+                    channel_name: gate_channel,
+                }))),
+            );
+            let mut graph = TaskGraphBuilder::new()
+                .with_iox2_config(Iox2GraphConfig::default())
+                .add_pool(2, |pool| {
+                    pool.add_callback(consumer).add_callback(gate_publisher)
+                })
+                .build()
+                .expect("iox2 simulation graph builds");
+            let notifier = graph
+                .iox2_context
+                .as_mut()
+                .unwrap()
+                .event_service(&event_channel)
+                .unwrap()
+                .notifier_builder()
+                .default_event_id(EventId::new(0))
+                .create()
+                .unwrap();
+            let params = ExecutorParams::new(std::mem::take(&mut graph.pools))
+                .with_iox2_context(graph.iox2_context.take());
+            let mut state = SimulationState::try_new_with(SimulationConfig {
+                start_time: FrameworkTime::from_nanoseconds(0),
+                executor_params: params,
+                node_executor_thread_count: 2,
+            })
+            .unwrap();
+            state.start();
+            notifier.notify().unwrap();
+            notifier.notify().unwrap();
+            notifier.notify().unwrap();
+
+            assert!(state.step().unwrap().is_empty());
+            assert!(observed.lock().unwrap().is_empty());
+
+            let names = task::string_interner::ChannelNameInterner::default();
+            let callbacks = task::string_interner::CallbackNameInterner::default();
+            let ctx = Context::new(state.time, &names, &callbacks);
+            state.nodes[1].access(|node| {
+                node.run(&ctx);
+                node.flush_publishers(ctx.now, &mut task::scheduling::NoopReadyNodeSink);
+            });
+
+            assert_eq!(state.step().unwrap(), vec![0]);
+            assert_eq!(*observed.lock().unwrap(), vec![vec![(EventId::new(0), 3)]]);
+        }
+
+        /// Notifications emitted by callback output flushes are polled at the following step boundary.
+        #[test]
+        fn callback_notification_is_visible_on_next_step() {
+            let event_channel = channel("next_step");
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let mut producer = node(
+                "event_producer",
+                Box::new(EventProducer {
+                    notifier: Iox2Notifier::new(PublisherConfig {
+                        capacity: 1,
+                        channel_name: event_channel.clone(),
+                    }),
+                }),
+            );
+            producer
+                .set_execution_time_callback(Box::new(|now| Some(now + Duration::from_secs(1))));
+            let consumer = node(
+                "event_consumer",
+                Box::new(EventConsumer {
+                    event: Iox2EventSubscriber::new(SubscriberConfig {
+                        is_optional: true,
+                        capacity: 4,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: event_channel,
+                    }),
+                    required: None,
+                    observed: observed.clone(),
+                }),
+            );
+            let mut graph = TaskGraphBuilder::new()
+                .with_iox2_config(Iox2GraphConfig::default())
+                .add_pool(2, |pool| pool.add_callback(producer).add_callback(consumer))
+                .build()
+                .expect("iox2 simulation graph builds");
+            let params = ExecutorParams::new(std::mem::take(&mut graph.pools))
+                .with_iox2_context(graph.iox2_context.take());
+            let mut state = SimulationState::try_new_with(SimulationConfig {
+                start_time: FrameworkTime::from_nanoseconds(0),
+                executor_params: params,
+                node_executor_thread_count: 2,
+            })
+            .unwrap();
+            state.start();
+
+            assert_eq!(state.step().unwrap(), vec![0]);
+            assert!(observed.lock().unwrap().is_empty());
+            assert!(state.step().unwrap().contains(&1));
+            assert_eq!(*observed.lock().unwrap(), vec![vec![(EventId::new(0), 1)]]);
+        }
+
+        /// An injected runtime configuration reaches the graph node through TaskGraphBuilder.
+        #[test]
+        fn graph_config_injection_builds_simulation_node() {
+            let event_channel = channel("config");
+            let graph = TaskGraphBuilder::new()
+                .with_iox2_config(Iox2GraphConfig {
+                    node_name: None,
+                    config: Some(iceoryx2::config::Config::default()),
+                })
+                .add_pool(1, |pool| {
+                    pool.add_callback(node(
+                        "event_consumer",
+                        Box::new(EventConsumer {
+                            event: Iox2EventSubscriber::new(SubscriberConfig {
+                                is_optional: true,
+                                capacity: 1,
+                                is_trigger: true,
+                                keep_across_runs: true,
+                                channel_name: event_channel,
+                            }),
+                            required: None,
+                            observed: Arc::new(Mutex::new(Vec::new())),
+                        }),
+                    ))
+                })
+                .build();
+            assert!(graph.is_ok());
+        }
     }
 }

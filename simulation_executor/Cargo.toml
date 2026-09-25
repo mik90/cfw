@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task" }
+iceoryx2 = { workspace = true, optional = true }
 logging = { path = "../logging", optional = true }
 
 [features]
-default = ["log_simulation"]
+default = ["log_simulation", "iceoryx2"]
 log_simulation = ["dep:logging"]
+iceoryx2 = ["task/iceoryx2", "dep:iceoryx2"]
 
 [dev-dependencies]
 test_tasks = { path = "../test_tasks" }
