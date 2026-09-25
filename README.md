@@ -271,16 +271,18 @@ In order of priority
 
 ## Testing
 
-Run tests including linting and miri
-
-```bash
-./run_test.sh
-```
+I started using `justfile`s to run some simple test commands.
 
 Run just lints and `cargo check`
 
 ```bash
-./lint.sh
+just test
+```
+
+Run tests including linting and miri
+
+```bash
+just lint test 
 ```
 
 ## Debugging tips
