@@ -108,6 +108,14 @@ pub type ChannelPublisherFactory =
 pub type ChannelPublisherWriter =
     Arc<dyn Fn(&mut dyn GenericPublisher, Box<dyn Any>) + Send + Sync>;
 
+/// Type-erased replay writer that receives the original logged message header.
+pub type ChannelReplayWriter =
+    Arc<dyn Fn(&mut dyn GenericPublisher, MessageHeader, Box<dyn Any>) + Send + Sync>;
+
+/// Factory for an unopened iox2 publisher and a writer that preserves replay headers.
+pub type Iox2ReplayPublisherFactory =
+    Arc<dyn Fn(ChannelName) -> (Box<dyn GenericPublisher>, ChannelReplayWriter) + Send + Sync>;
+
 /// How a forwarded channel relates to its source channel.
 ///
 /// A forwarded channel carries [`ForwardedMessage<T, F>`] values whose payload

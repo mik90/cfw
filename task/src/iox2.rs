@@ -452,6 +452,14 @@ impl crate::generic_publisher::GenericPublisher for Iox2Notifier {
         {
             return Ok(());
         }
+        let mut is_data_input = false;
+        let report = subscriber.iox2_find_endpoints(&mut |endpoint| {
+            is_data_input |= matches!(endpoint.kind, EndpointKind::Iox2DataSub { .. });
+            Ok(())
+        });
+        if report.is_ok() && is_data_input {
+            return Ok(());
+        }
         Err(crate::generic_publisher::ConnectionTypeMismatch::new(
             self.config.channel_name.clone(),
             "iox2 event",
@@ -535,6 +543,32 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
 }
 
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> GenericSubscriber for Iox2Subscriber<T> {
+    fn iox2_replay_publisher_factory(
+        &self,
+    ) -> Option<crate::channel_registry::Iox2ReplayPublisherFactory> {
+        Some(std::sync::Arc::new(|channel_name| {
+            let mut publisher = Iox2Publisher::<T>::new(PublisherConfig {
+                capacity: 1,
+                channel_name,
+            });
+            publisher.notify_on_send = false;
+            let writer: crate::channel_registry::ChannelReplayWriter =
+                std::sync::Arc::new(|publisher, header, value| {
+                    let publisher = publisher
+                        .as_any()
+                        .downcast_mut::<Iox2Publisher<T>>()
+                        .expect("iox2 replay publisher type mismatch");
+                    let value = value
+                        .downcast::<T>()
+                        .expect("iox2 replay payload type mismatch");
+                    publisher
+                        .publish_with_header(header, *value)
+                        .unwrap_or_else(|error| panic!("iox2 replay publish failed: {error}"));
+                });
+            (Box::new(publisher), writer)
+        }))
+    }
+
     fn iox2_find_endpoints(
         &self,
         add: &mut dyn FnMut(
@@ -951,6 +985,13 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> crate::generic_publisher::
         if subscriber
             .as_any()
             .downcast_mut::<Iox2Subscriber<T>>()
+            .is_some()
+        {
+            return Ok(());
+        }
+        if subscriber
+            .as_any()
+            .downcast_mut::<Iox2EventSubscriber>()
             .is_some()
         {
             return Ok(());
@@ -1531,6 +1572,48 @@ mod tests {
             .build()
             .expect("event input graph builds");
         assert!(built.iox2_context.is_some());
+    }
+
+    /// Data and event ports can share a channel without cross-connecting service kinds.
+    #[test]
+    fn same_name_data_and_event_endpoints_build_together() {
+        let channel = format!("stage4_shared_service_{}", std::process::id());
+        let result = TaskGraphBuilder::new()
+            .add_pool(1, |pool| {
+                pool.add_callback_builder(test_callback(
+                    "data_producer",
+                    Box::new(CountingProducer {
+                        publisher: Iox2Publisher::new(crate::publisher::PublisherConfig {
+                            capacity: 1,
+                            channel_name: channel.clone(),
+                        }),
+                        next: 1,
+                    }),
+                ))
+                .add_callback_builder(test_callback(
+                    "event_producer",
+                    Box::new(EventProducer(Iox2Notifier::new(
+                        crate::publisher::PublisherConfig {
+                            capacity: 1,
+                            channel_name: channel.clone(),
+                        },
+                    ))),
+                ))
+                .add_callback_builder(test_callback(
+                    "data_consumer",
+                    Box::new(Iox2Consumer {
+                        subscriber: Iox2Subscriber::new(iox2_subscriber_config(&channel, 2)),
+                    }),
+                ))
+                .add_callback_builder(test_callback(
+                    "event_consumer",
+                    Box::new(EventConsumer(Iox2EventSubscriber::new(
+                        iox2_subscriber_config(&channel, 2),
+                    ))),
+                ))
+            })
+            .build();
+        assert!(result.is_ok(), "same-name iox2 graph failed: {result:?}");
     }
 
     /// A graph notifier publishes its configured id to an independently attached listener.

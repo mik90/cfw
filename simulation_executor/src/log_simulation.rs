@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use logging::sorted_log_stream::{ReplaySinkMap, SortedLogStreamReader, build_replay_sinks};
+use logging::sorted_log_stream::{
+    ReplaySinkMap, SortedLogStreamReader, build_replay_sinks_with_iox2_factories,
+};
 use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
@@ -99,14 +101,32 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
 
     fn build_step(
         &self,
-        _nodes: &[CallbackNode],
+        nodes: &[CallbackNode],
         channel_registry: &mut ChannelRegistry,
     ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
         let reader_guard = self.reader.lock().unwrap();
         let reader = reader_guard.as_ref().expect(
             "LogSimulationBuildStep: reader already taken; build_step may only be called once",
         );
-        let sinks = build_replay_sinks(reader, channel_registry, &self.denylist)?;
+        let mut iox2_factories = std::collections::HashMap::new();
+        #[cfg(feature = "iceoryx2")]
+        for node in nodes {
+            node.callback().for_each_subscriber(&mut |subscriber| {
+                let channel = subscriber.config().channel_name.clone();
+                if !self.denylist.contains(&channel)
+                    && reader.channel_names().contains(&channel)
+                    && let Some(factory) = subscriber.iox2_replay_publisher_factory()
+                {
+                    iox2_factories.insert(channel, factory);
+                }
+            });
+        }
+        let sinks = build_replay_sinks_with_iox2_factories(
+            reader,
+            channel_registry,
+            &self.denylist,
+            &iox2_factories,
+        )?;
         drop(reader_guard);
 
         if sinks.is_empty() {
@@ -139,6 +159,9 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
         Ok(vec![node])
     }
 }
+
+#[cfg(all(test, feature = "iceoryx2"))]
+mod iox2_tests;
 
 #[cfg(test)]
 mod tests {

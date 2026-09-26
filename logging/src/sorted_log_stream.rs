@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use task::callback::PubOrSubMut;
-use task::channel_registry::{ChannelPublisherWriter, ChannelRegistry, DeserializerFn};
+use task::channel_registry::{
+    ChannelRegistry, ChannelReplayWriter, DeserializerFn, Iox2ReplayPublisherFactory,
+};
 use task::execution_log::EXECUTION_LOG_CHANNEL;
 use task::generic_publisher::GenericPublisher;
 use task::message::MessageHeader;
@@ -416,7 +418,7 @@ pub struct ReplaySink {
     pub channel_name: ChannelName,
     pub deserializer: DeserializerFn,
     pub publisher: Box<dyn GenericPublisher>,
-    pub writer: ChannelPublisherWriter,
+    pub writer: ChannelReplayWriter,
 }
 
 /// Map from channel name to its [`ReplaySink`].
@@ -460,7 +462,7 @@ impl ReplaySinkMap {
         if let Some(sink) = self.get_mut(&entry.channel_name)
             && let Ok(value) = (sink.deserializer)(&entry.serialized_body)
         {
-            (sink.writer)(&mut *sink.publisher, value);
+            (sink.writer)(&mut *sink.publisher, entry.header, value);
         }
     }
 
@@ -504,6 +506,16 @@ pub fn build_replay_sinks(
     registry: &ChannelRegistry,
     denylist: &HashSet<ChannelName>,
 ) -> Result<ReplaySinkMap, TaskGraphBuildStepError> {
+    build_replay_sinks_with_iox2_factories(reader, registry, denylist, &HashMap::new())
+}
+
+/// Build replay sinks, preferring channel-specific iox2 factories over native type factories.
+pub fn build_replay_sinks_with_iox2_factories(
+    reader: &SortedLogStreamReader,
+    registry: &ChannelRegistry,
+    denylist: &HashSet<ChannelName>,
+    iox2_factories: &HashMap<ChannelName, Iox2ReplayPublisherFactory>,
+) -> Result<ReplaySinkMap, TaskGraphBuildStepError> {
     let mut map = ReplaySinkMap::new();
     for channel in reader.channel_names() {
         if channel.as_str() == EXECUTION_LOG_CHANNEL {
@@ -518,15 +530,30 @@ pub fn build_replay_sinks(
             )
             .into());
         };
-        let Some(factory) = registry.channel_publisher_factory(type_id) else {
-            return Err(format!(
-                "replay: no publisher factory for channel '{channel}' type {type_id:?}"
-            )
-            .into());
-        };
-        let (publisher, writer) = factory(channel.clone());
         let Some(deserializer) = registry.deserializer_for(type_id) else {
+            if iox2_factories.contains_key(channel) {
+                return Err(format!(
+                    "replay: no deserializer registered for iox2 channel '{channel}'"
+                )
+                .into());
+            }
             continue;
+        };
+        let (publisher, writer) = if let Some(factory) = iox2_factories.get(channel) {
+            factory(channel.clone())
+        } else {
+            let Some(factory) = registry.channel_publisher_factory(type_id) else {
+                return Err(format!(
+                    "replay: no publisher factory for channel '{channel}' type {type_id:?}"
+                )
+                .into());
+            };
+            let (publisher, native_writer) = factory(channel.clone());
+            let writer: ChannelReplayWriter =
+                std::sync::Arc::new(move |publisher, _header, value| {
+                    native_writer(publisher, value);
+                });
+            (publisher, writer)
         };
         map.insert(
             channel.clone(),

@@ -51,6 +51,14 @@ pub trait GenericSubscriber: Send {
     ) -> Result<Option<Box<dyn crate::iox2::Iox2SyntheticPublisher>>, String> {
         Ok(None)
     }
+
+    /// Provide a typed iox2 publisher factory for log replay without opening its service.
+    #[cfg(feature = "iceoryx2")]
+    fn iox2_replay_publisher_factory(
+        &self,
+    ) -> Option<crate::channel_registry::Iox2ReplayPublisherFactory> {
+        None
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any;
 
     fn config(&self) -> &SubscriberConfig;
