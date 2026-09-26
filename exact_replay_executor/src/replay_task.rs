@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::error::ReplayError;
+#[cfg(feature = "iceoryx2")]
+use crate::log_reader::ReplayIox2Event;
 use crate::log_reader::{PayloadSource, ReplayExecution};
 use crate::report::ReplayReport;
 use crate::reproduce::ReproducedPayloadStore;
@@ -57,7 +59,7 @@ impl DeserializerForHydration {
 /// Per-node persistent state for replay: hydration publishers keyed by
 /// subscriber ordinal, and capture subscribers keyed by publisher ordinal.
 pub(crate) struct ReplayNodeState {
-    /// Hydration publishers: one per subscriber ordinal that receives data.
+    /// Native hydration publishers: one per subscriber ordinal that receives data.
     /// Created once, connected to the subscriber, kept alive for the entire
     /// replay. Maps subscriber ordinal -> (publisher, writer, serializer).
     pub(crate) hydration_publishers: HashMap<
@@ -67,6 +69,9 @@ pub(crate) struct ReplayNodeState {
             task::channel_registry::ChannelPublisherWriter,
         ),
     >,
+    /// Typed IPC publishers kept alive across iox2 data-input hydration runs.
+    #[cfg(feature = "iceoryx2")]
+    pub(crate) iox2_hydration_publishers: HashMap<u16, Box<dyn task::iox2::Iox2SyntheticPublisher>>,
     /// Capture subscribers: one per publisher ordinal. Created once during
     /// the first execution, connected to the publisher, kept alive.
     /// All publishers get a capture subscriber so unexpected outputs are
@@ -80,6 +85,8 @@ impl ReplayNodeState {
     pub fn new() -> Self {
         ReplayNodeState {
             hydration_publishers: HashMap::new(),
+            #[cfg(feature = "iceoryx2")]
+            iox2_hydration_publishers: HashMap::new(),
             capture_subscribers: HashMap::new(),
             capture_subscribers_initialised: false,
         }
@@ -131,6 +138,8 @@ impl<'a> ReplayEnvironment<'a> {
 pub(crate) struct ReplayWorker<'a> {
     env: ReplayEnvironment<'a>,
     node_states: Vec<ReplayNodeState>,
+    #[cfg(feature = "iceoryx2")]
+    iox2_context: Option<&'a mut task::iox2::Iox2Context>,
 }
 
 impl<'a> ReplayWorker<'a> {
@@ -138,7 +147,20 @@ impl<'a> ReplayWorker<'a> {
         ReplayWorker {
             env,
             node_states: (0..node_count).map(|_| ReplayNodeState::new()).collect(),
+            #[cfg(feature = "iceoryx2")]
+            iox2_context: None,
         }
+    }
+
+    #[cfg(feature = "iceoryx2")]
+    pub(crate) fn with_iox2_context(
+        env: ReplayEnvironment<'a>,
+        node_count: usize,
+        context: Option<&'a mut task::iox2::Iox2Context>,
+    ) -> Self {
+        let mut worker = Self::new(env, node_count);
+        worker.iox2_context = context;
+        worker
     }
 
     /// Replay a single execution step: hydrate subscribers, run the callback,
@@ -175,9 +197,20 @@ impl<'a> ReplayWorker<'a> {
         }
 
         // ── Hydrate subscribers ────────────────────────────────────────────
-        if let Err(e) =
-            hydrate_subscribers(node, state, &execution.received, env, report, &node_name)
-        {
+        #[cfg(feature = "iceoryx2")]
+        let hydration = hydrate_subscribers(
+            node,
+            state,
+            &execution.received,
+            env,
+            report,
+            &node_name,
+            self.iox2_context.as_deref_mut(),
+        );
+        #[cfg(not(feature = "iceoryx2"))]
+        let hydration =
+            hydrate_subscribers(node, state, &execution.received, env, report, &node_name);
+        if let Err(e) = hydration {
             errors.push(e);
             if env.policy == DivergencePolicy::Strict {
                 return;
@@ -355,6 +388,37 @@ impl<'a> ReplayWorker<'a> {
     }
 }
 
+/// Deposit an activation for the recorded recipient without live scheduling.
+#[cfg(feature = "iceoryx2")]
+pub(crate) fn stage_iox2_activation(
+    node: &mut CallbackNode,
+    activation: &ReplayIox2Event,
+) -> Result<(), ReplayError> {
+    let node_name = node.name().to_owned();
+    let mut subscribers = node.callback_mut().collect_subscribers_mut();
+    let Some(subscriber) = subscribers.get_mut(activation.subscriber_ordinal as usize) else {
+        return Err(ReplayError::InvalidSubscriberOrdinal {
+            node: node_name,
+            ordinal: activation.subscriber_ordinal,
+            subscriber_count: subscribers.len(),
+        });
+    };
+    if subscriber.config().channel_name != activation.channel {
+        return Err(ReplayError::Iox2Input {
+            node: node_name,
+            channel: activation.channel.clone(),
+            reason: "recorded subscriber channel does not match replay graph".into(),
+        });
+    }
+    subscriber
+        .iox2_stage_replay_event(activation.event_id, activation.count)
+        .map_err(|reason| ReplayError::Iox2Input {
+            node: node_name,
+            channel: activation.channel.clone(),
+            reason,
+        })
+}
+
 /// Create a `PublisherCapture` for every publisher on `node`. This must be
 /// called before `node.run()` so the first execution's outputs are captured.
 /// The capture subscriber is connected, the publisher's arena is re-allocated
@@ -407,12 +471,57 @@ fn bind_capture_subscribers(
 /// Hydrate subscriber inputs from the replay execution's received messages.
 /// Uses persistent hydration publishers created once during setup.
 ///
-/// Clears all subscriber buffers **once** before hydrating any ordinal, so
-/// earlier injections are not wiped by later ordinals.
+/// Clears data subscriber buffers **once** before hydrating any ordinal.
+/// Recorded iox2 event activations remain staged until the callback drains them.
 ///
 /// `env.source_messages` supplies the ordinary-log payloads used to build a
 /// [`ForwardedMessageContext`] for forwarded channels. `env.store` supplies
 /// reproduced payloads for unlogged channels.
+fn replay_payload_body(
+    channel_name: &str,
+    header: &MessageHeader,
+    source: &PayloadSource,
+    env: ReplayEnvironment<'_>,
+    report: &mut ReplayReport,
+    node_name: &str,
+) -> Result<Vec<u8>, ReplayError> {
+    match source {
+        PayloadSource::Logged(body) => {
+            report.record_logged(channel_name);
+            Ok(body.clone())
+        }
+        PayloadSource::Reproduce => {
+            let Some(body) = env
+                .store
+                .take(channel_name, header.published_at.to_nanoseconds())
+            else {
+                report.record_gap(channel_name);
+                return Err(ReplayError::UnreproducibleMessage {
+                    channel: channel_name.into(),
+                    header_time: header.published_at,
+                    direction: task::execution_log::Direction::Received,
+                    node: node_name.into(),
+                    reason:
+                        "channel is not logged; the producing node has not reproduced this payload"
+                            .into(),
+                });
+            };
+            report.record_reproduced(channel_name);
+            Ok(body)
+        }
+        PayloadSource::Gap => {
+            report.record_gap(channel_name);
+            Err(ReplayError::UnreproducibleMessage {
+                channel: channel_name.into(),
+                header_time: header.published_at,
+                direction: task::execution_log::Direction::Received,
+                node: node_name.into(),
+                reason: "unreproducible gap".into(),
+            })
+        }
+    }
+}
+
 fn hydrate_subscribers(
     node: &mut CallbackNode,
     state: &mut ReplayNodeState,
@@ -420,16 +529,94 @@ fn hydrate_subscribers(
     env: ReplayEnvironment<'_>,
     report: &mut ReplayReport,
     node_name: &str,
+    #[cfg(feature = "iceoryx2")] mut iox2_context: Option<&mut task::iox2::Iox2Context>,
 ) -> Result<(), ReplayError> {
-    // ── Clear all subscriber buffers once before any hydration ─────────
+    // ── Clear data subscriber buffers once before any hydration ─────────
     {
         let mut cleanup = |s: &dyn GenericSubscriber| {
+            #[cfg(feature = "iceoryx2")]
+            if s.iox2_is_event_input() {
+                return;
+            }
             s.cleanup_buffers();
         };
         node.callback().for_each_subscriber(&mut cleanup);
     }
 
     for (&ordinal, messages) in received {
+        #[cfg(feature = "iceoryx2")]
+        {
+            let subscribers = node.callback().collect_subscribers();
+            let Some(subscriber) = subscribers.get(ordinal as usize) else {
+                return Err(ReplayError::InvalidSubscriberOrdinal {
+                    node: node_name.to_owned(),
+                    ordinal,
+                    subscriber_count: subscribers.len(),
+                });
+            };
+            if subscriber.iox2_is_data_input() {
+                let channel_name = subscriber.config().channel_name.clone();
+                let context =
+                    iox2_context
+                        .as_deref_mut()
+                        .ok_or_else(|| ReplayError::Iox2Input {
+                            node: node_name.into(),
+                            channel: channel_name.clone(),
+                            reason:
+                                "the replay graph's iox2 context was not attached to ExecutorParams"
+                                    .into(),
+                        })?;
+                if let std::collections::hash_map::Entry::Vacant(slot) =
+                    state.iox2_hydration_publishers.entry(ordinal)
+                {
+                    let subscribers = node.callback().collect_subscribers();
+                    let publisher = subscribers[ordinal as usize]
+                        .iox2_create_simulation_publisher(context)
+                        .map_err(|reason| ReplayError::Iox2Input {
+                            node: node_name.into(),
+                            channel: channel_name.clone(),
+                            reason,
+                        })?
+                        .ok_or_else(|| ReplayError::Iox2Input {
+                            node: node_name.into(),
+                            channel: channel_name.clone(),
+                            reason: "subscriber did not provide an iox2 hydration publisher".into(),
+                        })?;
+                    slot.insert(publisher);
+                }
+                let type_id = env.registry.channel_type(&channel_name).ok_or_else(|| {
+                    ReplayError::UnregisteredChannel {
+                        channel: channel_name.clone(),
+                        node: node_name.into(),
+                    }
+                })?;
+                let deserializer = env.registry.deserializer_for(type_id).ok_or_else(|| {
+                    ReplayError::UnregisteredDeserializer {
+                        channel: channel_name.clone(),
+                        node: node_name.into(),
+                    }
+                })?;
+                let publisher = state.iox2_hydration_publishers.get_mut(&ordinal).unwrap();
+                for (header, source) in messages {
+                    let body =
+                        replay_payload_body(&channel_name, header, source, env, report, node_name)?;
+                    let value = deserializer(&body).map_err(|error| {
+                        ReplayError::DeserializationFailed {
+                            channel: channel_name.clone(),
+                            details: error.to_string(),
+                        }
+                    })?;
+                    publisher.publish_replay(*header, value).map_err(|reason| {
+                        ReplayError::Iox2Input {
+                            node: node_name.into(),
+                            channel: channel_name.clone(),
+                            reason,
+                        }
+                    })?;
+                }
+                continue;
+            }
+        }
         // Ensure a hydration publisher exists for this ordinal.
         if let std::collections::hash_map::Entry::Vacant(e) =
             state.hydration_publishers.entry(ordinal)
@@ -534,41 +721,7 @@ fn hydrate_subscribers(
         // the ordinary log; unlogged payloads are pulled from the reproduction
         // store, which the producing node populated when it was replayed.
         for (header, source) in messages {
-            let body = match source {
-                PayloadSource::Logged(body) => {
-                    report.record_logged(&channel_name);
-                    body.clone()
-                }
-                PayloadSource::Reproduce => {
-                    let Some(body) = env
-                        .store
-                        .take(&channel_name, header.published_at.to_nanoseconds())
-                    else {
-                        report.record_gap(&channel_name);
-                        return Err(ReplayError::UnreproducibleMessage {
-                            channel: channel_name.clone(),
-                            header_time: header.published_at,
-                            direction: task::execution_log::Direction::Received,
-                            node: node_name.to_owned(),
-                            reason: "channel is not logged; the producing node has not \
-                                    reproduced this payload"
-                                .to_owned(),
-                        });
-                    };
-                    report.record_reproduced(&channel_name);
-                    body
-                }
-                PayloadSource::Gap => {
-                    report.record_gap(&channel_name);
-                    return Err(ReplayError::UnreproducibleMessage {
-                        channel: channel_name.clone(),
-                        header_time: header.published_at,
-                        direction: task::execution_log::Direction::Received,
-                        node: node_name.to_owned(),
-                        reason: "unreproducible gap".to_owned(),
-                    });
-                }
-            };
+            let body = replay_payload_body(&channel_name, header, source, env, report, node_name)?;
 
             let value = deserializer.deserialize(&body).map_err(|e| {
                 ReplayError::DeserializationFailed {

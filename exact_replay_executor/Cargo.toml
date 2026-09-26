@@ -3,6 +3,10 @@ name = "exact_replay_executor"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["iceoryx2"]
+iceoryx2 = ["task/iceoryx2"]
+
 [dependencies]
 task = { path = "../task" }
 logging = { path = "../logging" }

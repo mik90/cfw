@@ -9,11 +9,17 @@ use std::time::Duration;
 use task::callback::CallbackNode;
 use task::callback_storage::{CallbackStorage, SharedCallbackNode, WorkerNodes};
 use task::context::Context;
+#[cfg(feature = "iceoryx2")]
+use task::execution_log::EXECUTION_LOG_CHANNEL;
 use task::execution_log::{self, ExecutionLogLevel, ExecutionLogMessage};
 use task::executor::{
     Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig, TimeSource, WallClock,
 };
+#[cfg(feature = "iceoryx2")]
+use task::generic_publisher::GenericPublisher as _;
 use task::publisher::Publisher;
+#[cfg(feature = "iceoryx2")]
+use task::publisher::PublisherConfig;
 use task::scheduling::{CallbackNodeId, NoopReadyNodeSink, ReadyNodeSink};
 use task::time::FrameworkTime;
 
@@ -35,6 +41,21 @@ use task::iox2::{Iox2Context, Iox2EventRegistration, Iox2OpenCtx, Iox2ReadinessM
 
 const DEFAULT_LOG_FLUSH_PERIOD: Duration = Duration::from_millis(500);
 const SHUTDOWN_SENTINEL: usize = usize::MAX;
+
+#[cfg(feature = "iceoryx2")]
+struct ReadinessRegistration {
+    node_index: u32,
+    subscriber_ordinal: u16,
+    event: Iox2EventRegistration,
+}
+
+#[cfg(feature = "iceoryx2")]
+struct ReadinessThreadResources<T: TimeSource> {
+    shared: Arc<SharedThreadPoolState>,
+    nodes: Vec<Arc<SharedCallbackNode>>,
+    metrics: Arc<Iox2ReadinessMetrics>,
+    time_source: Arc<T>,
+}
 
 pub struct LiveExecutor<T: TimeSource = WallClock> {
     worker_threads: Vec<thread::JoinHandle<()>>,
@@ -66,24 +87,38 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     #[cfg(feature = "iceoryx2")]
     fn take_event_registrations(
         &mut self,
-    ) -> Result<Vec<(String, Iox2EventRegistration)>, crate::error::LiveExecutorStartError> {
+    ) -> Result<Vec<ReadinessRegistration>, crate::error::LiveExecutorStartError> {
         let Some(context) = self.iox2_context.as_mut() else {
             return Ok(Vec::new());
         };
         let mut registrations = Vec::new();
-        for node_handle in self.nodes.iter_shared() {
+        for (node_index, node_handle) in self.nodes.iter_shared().enumerate() {
             let result = node_handle.access(|node| {
                 let node_name = node.name().to_owned();
                 let mut error = None;
+                let mut subscriber_ordinal = 0;
                 node.callback_mut()
                     .for_each_subscriber_mut(&mut |subscriber| {
+                        let ordinal = subscriber_ordinal;
+                        subscriber_ordinal += 1;
                         if error.is_some() {
                             return;
                         }
                         match subscriber.iox2_take_event_registration(context) {
-                            Ok(Some(registration)) => {
-                                registrations.push((node_name.clone(), registration))
-                            }
+                            Ok(Some(event)) => match
+                                (u32::try_from(node_index), u16::try_from(ordinal))
+                            {
+                                (Ok(node_index), Ok(subscriber_ordinal)) => {
+                                    registrations.push(ReadinessRegistration {
+                                        node_index,
+                                        subscriber_ordinal,
+                                        event,
+                                    });
+                                }
+                                _ => error = Some(format!(
+                                    "node {node_name} has an event subscriber index outside the execution log's range"
+                                )),
+                            },
                             Ok(None) => {}
                             Err(reason) => error = Some(reason),
                         }
@@ -98,6 +133,52 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             }
         }
         Ok(registrations)
+    }
+
+    #[cfg(feature = "iceoryx2")]
+    fn create_readiness_logger(
+        &mut self,
+        now: FrameworkTime,
+    ) -> Result<Option<WorkerLogger>, crate::error::LiveExecutorStartError> {
+        if self.log_publishers.is_empty() {
+            return Ok(None);
+        }
+
+        let mut publisher = Publisher::<ExecutionLogMessage>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: EXECUTION_LOG_CHANNEL.into(),
+        });
+        for node_handle in self.nodes.iter_shared() {
+            let failure = node_handle.access(|node| {
+                let node_name = node.name().to_owned();
+                let mut failure = None;
+                node.callback_mut()
+                    .for_each_subscriber_mut(&mut |subscriber| {
+                        if subscriber.config().channel_name == EXECUTION_LOG_CHANNEL
+                            && publisher.connect_to_subscriber(subscriber).is_err()
+                        {
+                            failure = Some(node_name.clone());
+                        }
+                    });
+                failure
+            });
+            if let Some(node_name) = failure {
+                return Err(crate::error::LiveExecutorStartError {
+                    node: Some(node_name),
+                    reason: "execution-log subscriber type does not match the readiness logger"
+                        .into(),
+                });
+            }
+        }
+        publisher.allocate_arena();
+        let mut init = Some(WorkerLoggerInit {
+            publisher,
+            flush_period: self.flush_period,
+            scratch_capacity: 0,
+        });
+        let logger = WorkerLogger::new(&mut init, now)
+            .expect("readiness logger was initialized with a publisher");
+        Ok(Some(logger))
     }
 
     #[cfg(feature = "iceoryx2")]
@@ -303,6 +384,12 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         let registrations = self.take_event_registrations()?;
 
         let now = self.time_source.now();
+        #[cfg(feature = "iceoryx2")]
+        let readiness_logger = if registrations.is_empty() {
+            None
+        } else {
+            self.create_readiness_logger(now)?
+        };
         for (index, node) in self.nodes.iter_shared().enumerate() {
             let (next, schedule) = node.access(|node| {
                 let next = node.next_requested_execution_time(now);
@@ -328,31 +415,47 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             let nodes: Vec<Arc<SharedCallbackNode>> = node_handles.iter().cloned().collect();
             let shared_state = self.shared_state.clone();
             let thread_metrics = metrics.clone();
+            let thread_time_source = self.time_source.clone();
             let (done_tx, done_rx) = channel::bounded(1);
             let (ready_tx, ready_rx) = channel::bounded(1);
             let ready_panic = ready_tx.clone();
             let handle = thread::Builder::new()
                 .name(String::from("cfw_iox2_readiness"))
                 .spawn(move || {
+                    let mut logger = readiness_logger;
+                    let mut attached = false;
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         iox2_readiness_thread(
                             registrations,
                             shutdown_listener,
-                            shared_state.clone(),
-                            nodes,
-                            thread_metrics,
+                            ReadinessThreadResources {
+                                shared: shared_state.clone(),
+                                nodes,
+                                metrics: thread_metrics,
+                                time_source: thread_time_source,
+                            },
                             ready_tx,
+                            logger.as_mut(),
+                            &mut attached,
                         );
                     }));
-                    if let Err(payload) = result {
+                    let panic_payload = result.err();
+                    if panic_payload.is_some() {
                         shared_state.request_stop();
                         let _ = ready_panic.send(Err(String::from(
                             "readiness thread panicked during waitset setup or processing",
                         )));
-                        let _ = done_tx.send(());
-                        std::panic::resume_unwind(payload);
                     }
                     let _ = done_tx.send(());
+                    if attached {
+                        let guard = shared_state.shutdown_mutex.lock().unwrap();
+                        drop(shared_state.shutdown_cv.wait_while(guard, |_| {
+                            !shared_state.cleanup_done.load(Ordering::Acquire)
+                        }));
+                    }
+                    if let Some(payload) = panic_payload {
+                        std::panic::resume_unwind(payload);
+                    }
                 })
                 .map_err(|error| crate::error::LiveExecutorStartError {
                     node: None,
@@ -528,24 +631,20 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
         self.shared_state.request_stop();
 
         #[cfg(feature = "iceoryx2")]
-        let readiness_panicked = {
+        let readiness_finished = {
             if let Some(notifier) = &self.shutdown_notifier {
                 let _ = notifier.notify();
             }
-            let panicked = self.readiness_thread.take().is_some_and(|handle| {
-                let finished = self
+            let finished = self.readiness_thread.is_some()
+                && self
                     .readiness_done
                     .take()
                     .is_some_and(|done| done.recv_timeout(Duration::from_millis(100)).is_ok());
-                if finished {
-                    handle.join().is_err()
-                } else {
-                    drop(handle);
-                    false
-                }
-            });
+            if !finished {
+                self.readiness_thread.take();
+            }
             self.shutdown_notifier = None;
-            panicked
+            finished
         };
 
         for pool in self.shared_state.work_router.pools.iter() {
@@ -585,6 +684,13 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
             .store(true, Ordering::Release);
         self.shared_state.shutdown_cv.notify_all();
 
+        #[cfg(feature = "iceoryx2")]
+        let readiness_panicked = readiness_finished
+            && self
+                .readiness_thread
+                .take()
+                .is_some_and(|handle| handle.join().is_err());
+
         // Join worker threads
         let mut panicked_indices = vec![];
         for (i, handle) in self.worker_threads.drain(..).enumerate() {
@@ -613,16 +719,23 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
 }
 
 #[cfg(feature = "iceoryx2")]
-fn iox2_readiness_thread(
-    registrations: Vec<(String, Iox2EventRegistration)>,
+fn iox2_readiness_thread<T: TimeSource>(
+    registrations: Vec<ReadinessRegistration>,
     shutdown_listener: Listener<ipc_threadsafe::Service>,
-    shared: Arc<SharedThreadPoolState>,
-    nodes: Vec<Arc<SharedCallbackNode>>,
-    metrics: Arc<Iox2ReadinessMetrics>,
+    resources: ReadinessThreadResources<T>,
     ready: channel::Sender<Result<(), String>>,
+    mut logger: Option<&mut WorkerLogger>,
+    attached: &mut bool,
 ) {
     use iceoryx2::prelude::{CallbackProgression, WaitSetBuilder};
     use iceoryx2::waitset::WaitSetRunResult;
+
+    let ReadinessThreadResources {
+        shared,
+        nodes,
+        metrics,
+        time_source,
+    } = resources;
 
     let waitset = match WaitSetBuilder::new().create::<ipc_threadsafe::Service>() {
         Ok(waitset) => waitset,
@@ -634,8 +747,8 @@ fn iox2_readiness_thread(
         }
     };
     let mut guards = Vec::with_capacity(registrations.len());
-    for (_, registration) in &registrations {
-        match waitset.attach_notification(&registration.listener) {
+    for registration in &registrations {
+        match waitset.attach_notification(&registration.event.listener) {
             Ok(guard) => guards.push(guard),
             Err(error) => {
                 let _ = ready.send(Err(format!(
@@ -655,6 +768,7 @@ fn iox2_readiness_thread(
         }
     };
     let _ = ready.send(Ok(()));
+    *attached = true;
     let mut sink = LiveReadyNodeSink {
         nodes: &nodes,
         router: &shared.work_router,
@@ -674,14 +788,25 @@ fn iox2_readiness_thread(
                     .expect("failed to drain iox2 readiness shutdown notification");
                 return CallbackProgression::Stop;
             }
-            for (index, (_, registration)) in registrations.iter().enumerate() {
+            for (index, registration) in registrations.iter().enumerate() {
                 if !attachment.has_event_from(&guards[index]) {
                     continue;
                 }
                 let mut folded: Vec<task::iox2::EventRecord> = Vec::new();
                 registration
+                    .event
                     .listener
                     .try_wait(|activation| {
+                        if let Some(logger) = logger.as_deref_mut() {
+                            logger.record_iox2_event(
+                                registration.node_index,
+                                registration.subscriber_ordinal,
+                                activation.id.as_value(),
+                                activation.count,
+                                time_source.now(),
+                                &mut NoopReadyNodeSink,
+                            );
+                        }
                         saturating_counter(&metrics.activations, 1);
                         saturating_counter(&metrics.total_counts, activation.count);
                         if let Some(record) = folded
@@ -699,13 +824,13 @@ fn iox2_readiness_thread(
                     .expect("failed to drain iox2 event listener notification");
 
                 for record in folded {
-                    if !registration.staging.push(record) {
+                    if !registration.event.staging.push(record) {
                         saturating_counter(&metrics.dropped_records, 1);
                         saturating_counter(&metrics.dropped_counts, record.count);
                     }
                 }
                 if let Some(task::callback::SubscriberReadiness::OptionalTrigger(readiness)) =
-                    &registration.readiness
+                    &registration.event.readiness
                     && let Some(node) = readiness.optional_trigger_arrived()
                     && shared.should_run.load(Ordering::Relaxed)
                 {
@@ -715,6 +840,9 @@ fn iox2_readiness_thread(
             }
             CallbackProgression::Continue
         });
+        if let Some(logger) = logger.as_deref_mut() {
+            logger.flush_remaining(time_source.now(), &mut NoopReadyNodeSink);
+        }
         saturating_counter(&metrics.wake_batches, 1);
         if scheduled {
             let nanos = wake_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
@@ -733,9 +861,18 @@ fn iox2_readiness_thread(
 
 #[cfg(feature = "iceoryx2")]
 fn saturating_counter(counter: &AtomicU64, amount: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_add(amount))
-    });
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        match counter.compare_exchange_weak(
+            current,
+            current.saturating_add(amount),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 fn process_work_item(
@@ -2180,13 +2317,15 @@ mod tests {
         assert!(executor.stop().is_ok());
     }
 
-    #[cfg(all(feature = "iceoryx2", not(miri)))]
+    #[cfg(feature = "iceoryx2")]
     mod iox2_readiness_tests {
         use super::*;
+        use std::sync::atomic::AtomicU64;
         use std::sync::mpsc::{
             Receiver as StdReceiver, Sender as StdSender, channel as std_channel,
         };
         use std::time::Duration;
+        use task::execution_log::{EXECUTION_LOG_CHANNEL, ExecutionLogMessage};
         use task::iox2::{Iox2Event, Iox2EventSubscriber, Iox2Notifier, Iox2NotifyOutput};
         use task::scheduling::{CallbackNodeId, NoopReadyNodeSink};
         use task::task_graph_builder::TaskGraphBuilder;
@@ -2255,6 +2394,31 @@ mod tests {
                 if let Some(required) = &mut self.required {
                     f(PubOrSubMut::Subscriber(required));
                 }
+            }
+        }
+
+        struct ExecutionLogCollector {
+            subscriber: Subscriber<ExecutionLogMessage>,
+            observed: StdSender<ExecutionLogMessage>,
+        }
+
+        impl Callback for ExecutionLogCollector {
+            fn run(&mut self, _ctx: &Context) {
+                let mut buffer = self.subscriber.read_buffer();
+                for message in buffer.as_slice() {
+                    let _ = self.observed.send(message.message);
+                }
+                while !buffer.is_empty() {
+                    buffer.pop_front();
+                }
+            }
+
+            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+                f(PubOrSub::Subscriber(&self.subscriber));
+            }
+
+            fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+                f(PubOrSubMut::Subscriber(&mut self.subscriber));
             }
         }
 
@@ -2344,6 +2508,7 @@ mod tests {
 
         /// A notifier activation wakes the single waitset thread and schedules its subscriber.
         #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
         fn readiness_thread_schedules_event_runs() {
             let (tx, rx) = std_channel();
             let mut executor = LiveExecutor::new_multi_pool(executor_params(event_graph(
@@ -2359,8 +2524,188 @@ mod tests {
             executor.stop_threads().unwrap();
         }
 
+        #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
+        fn readiness_logs_each_event_recipient_in_execution_log() {
+            use std::collections::HashSet;
+
+            static NEXT_CHANNEL: AtomicU64 = AtomicU64::new(0);
+            let channel = format!(
+                "live_event_log_{}_{}",
+                std::process::id(),
+                NEXT_CHANNEL.fetch_add(1, Ordering::Relaxed)
+            );
+            let (first_tx, first_rx) = std_channel();
+            let (second_tx, second_rx) = std_channel();
+            let (log_tx, log_rx) = std_channel();
+            let make_consumer = |observed: StdSender<u64>| {
+                Box::new(EventConsumer {
+                    subscriber: Iox2EventSubscriber::new(SubscriberConfig {
+                        is_optional: true,
+                        capacity: 16,
+                        is_trigger: true,
+                        keep_across_runs: true,
+                        channel_name: channel.clone(),
+                    }),
+                    required: None,
+                    observed,
+                    entered: None,
+                    release: None,
+                    runs: Arc::new(AtomicUsize::new(0)),
+                }) as Box<dyn Callback>
+            };
+            let mut built = TaskGraphBuilder::new()
+                .add_pool(1, |pool| {
+                    pool.add_callback_builder(
+                        cb(
+                            "event_source",
+                            Box::new(NotifierCallback(Iox2Notifier::new(
+                                task::publisher::PublisherConfig {
+                                    capacity: 1,
+                                    channel_name: channel.clone(),
+                                },
+                            ))),
+                        )
+                        .with_periodic_execution(Duration::from_millis(20)),
+                    )
+                    .add_callback_builder(cb("event_first", make_consumer(first_tx)))
+                    .add_callback_builder(cb("event_second", make_consumer(second_tx)))
+                    .add_callback_builder(
+                        cb(
+                            "event_log_collector",
+                            Box::new(ExecutionLogCollector {
+                                subscriber: Subscriber::new(SubscriberConfig {
+                                    is_optional: true,
+                                    capacity: 32,
+                                    is_trigger: false,
+                                    keep_across_runs: false,
+                                    channel_name: EXECUTION_LOG_CHANNEL.into(),
+                                }),
+                                observed: log_tx,
+                            }),
+                        )
+                        .with_periodic_execution(Duration::from_millis(5)),
+                    )
+                })
+                .build()
+                .unwrap();
+            let log_publishers = std::mem::take(&mut built.execution_log_publishers);
+            let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
+                executor_params(built),
+                log_publishers,
+                Duration::from_millis(50),
+            );
+            executor.try_start_threads().unwrap();
+            assert!(recv_before(&first_rx, Duration::from_secs(3)) > 0);
+            assert!(recv_before(&second_rx, Duration::from_secs(3)) > 0);
+
+            let mut recipients = HashSet::new();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while recipients.len() < 2 {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                let batch = log_rx
+                    .recv_timeout(remaining)
+                    .expect("readiness event did not reach the execution-log subscriber");
+                for entry in batch.entries.iter().take_while(|entry| entry.is_valid()) {
+                    let Some(event) = entry.iox2_event else {
+                        continue;
+                    };
+                    assert!(matches!(entry.callback_node_index, 1 | 2));
+                    assert_eq!(event.subscriber_ordinal, 0);
+                    assert_eq!(event.event_id, 0);
+                    assert!(event.count > 0);
+                    assert_ne!(event.observed_at, FrameworkTime::INVALID);
+                    assert_eq!(entry.execution_time, event.observed_at);
+                    recipients.insert(entry.callback_node_index);
+                }
+            }
+            assert_eq!(recipients, HashSet::from([1, 2]));
+            executor.stop_threads().unwrap();
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
+        fn readiness_logger_survives_cleanup_of_unread_log_samples() {
+            let channel = format!("live_readiness_cleanup_{}", std::process::id());
+            let (observed_tx, observed_rx) = std_channel();
+            let (unused_log_tx, _unused_log_rx) = std_channel();
+            let mut built = TaskGraphBuilder::new()
+                .add_pool(1, |pool| {
+                    pool.add_callback_builder(
+                        cb(
+                            "cleanup_event_source",
+                            Box::new(NotifierCallback(Iox2Notifier::new(
+                                task::publisher::PublisherConfig {
+                                    capacity: 1,
+                                    channel_name: channel.clone(),
+                                },
+                            ))),
+                        )
+                        .with_periodic_execution(Duration::from_millis(20)),
+                    )
+                    .add_callback_builder(cb(
+                        "cleanup_event_consumer",
+                        Box::new(EventConsumer {
+                            subscriber: Iox2EventSubscriber::new(SubscriberConfig {
+                                is_optional: true,
+                                capacity: 8,
+                                is_trigger: true,
+                                keep_across_runs: true,
+                                channel_name: channel,
+                            }),
+                            required: None,
+                            observed: observed_tx,
+                            entered: None,
+                            release: None,
+                            runs: Arc::new(AtomicUsize::new(0)),
+                        }),
+                    ))
+                    .add_callback_builder(cb(
+                        "unread_execution_log",
+                        Box::new(ExecutionLogCollector {
+                            subscriber: Subscriber::new(SubscriberConfig {
+                                is_optional: true,
+                                capacity: 8,
+                                is_trigger: false,
+                                keep_across_runs: false,
+                                channel_name: EXECUTION_LOG_CHANNEL.into(),
+                            }),
+                            observed: unused_log_tx,
+                        }),
+                    ))
+                })
+                .build()
+                .unwrap();
+            let log_publishers = std::mem::take(&mut built.execution_log_publishers);
+            let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
+                executor_params(built),
+                log_publishers,
+                Duration::from_millis(50),
+            );
+            executor.try_start_threads().unwrap();
+            recv_before(&observed_rx, Duration::from_secs(3));
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let waiting = executor.nodes.iter_shared().nth(2).unwrap().access(|node| {
+                    node.callback().collect_subscribers()[0]
+                        .queue_info()
+                        .writer_size
+                });
+                if waiting > 0 {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no unread log sample arrived"
+                );
+                std::thread::yield_now();
+            }
+            executor.stop_threads().unwrap();
+        }
+
         /// A staged event is included in startup seeding before the readiness thread starts.
         #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
         fn notify_before_thread_start_is_observed() {
             let (tx, rx) = std_channel();
             let built = event_graph(
@@ -2417,6 +2762,7 @@ mod tests {
 
         /// An event arriving during a callback run defers work until the node is released.
         #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
         fn event_during_run_defers_rerun() {
             let (observed_tx, observed_rx) = std_channel();
             let (entered_tx, entered_rx) = std_channel();
@@ -2450,6 +2796,7 @@ mod tests {
 
         /// Shutdown notification interrupts the indefinite wait and joins the readiness thread.
         #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
         fn shutdown_wakes_readiness_thread() {
             let (tx, rx) = std_channel();
             let mut executor = LiveExecutor::new_multi_pool(executor_params(event_graph(
@@ -2468,6 +2815,7 @@ mod tests {
 
         /// A graph without event subscribers creates neither readiness metrics nor a waitset thread.
         #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
         fn zero_event_graph_spawns_no_thread() {
             let mut executor = LiveExecutor::new_multi_pool(ExecutorParams::new(vec![]));
             assert!(executor.iox2_readiness_metrics().is_none());
@@ -2477,6 +2825,7 @@ mod tests {
 
         /// Invalid non-optional readiness fails startup and identifies the callback node.
         #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
         fn invalid_event_readiness_is_a_named_start_error() {
             let channel = "live_ready_bad_registration";
             let mut subscriber = Iox2EventSubscriber::new(task::subscriber::SubscriberConfig {
@@ -2516,6 +2865,7 @@ mod tests {
 
         /// Stopping detaches the waitset before later notifications can schedule callbacks.
         #[test]
+        #[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
         fn no_schedule_after_stop() {
             let (tx, rx) = std_channel();
             let runs = Arc::new(AtomicUsize::new(0));

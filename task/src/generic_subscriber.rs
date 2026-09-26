@@ -59,6 +59,27 @@ pub trait GenericSubscriber: Send {
     ) -> Option<crate::channel_registry::Iox2ReplayPublisherFactory> {
         None
     }
+
+    /// Whether replay hydration must publish real iox2 samples for this input.
+    #[cfg(feature = "iceoryx2")]
+    fn iox2_is_data_input(&self) -> bool {
+        false
+    }
+
+    /// Whether replay must retain queued event activations until the callback drains them.
+    #[cfg(feature = "iceoryx2")]
+    fn iox2_is_event_input(&self) -> bool {
+        false
+    }
+
+    /// Stage one recorded event without triggering the live executor scheduler.
+    #[cfg(feature = "iceoryx2")]
+    fn iox2_stage_replay_event(&self, _event_id: usize, _count: u64) -> Result<(), String> {
+        Err(format!(
+            "subscriber on {} is not an iox2 event input",
+            self.config().channel_name
+        ))
+    }
     fn as_any(&mut self) -> &mut dyn std::any::Any;
 
     fn config(&self) -> &SubscriberConfig;

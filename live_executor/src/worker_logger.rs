@@ -3,6 +3,8 @@ use std::time::Duration;
 use task::execution_log::{
     ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
 };
+#[cfg(feature = "iceoryx2")]
+use task::execution_log::{ExecutionLogEntry, LoggedIox2Event};
 use task::publisher::Publisher;
 use task::scheduling::ReadyNodeSink;
 use task::time::FrameworkTime;
@@ -143,6 +145,40 @@ impl WorkerLogger {
         }
     }
 
+    /// Record an observed event for a callback's subscriber, independently of a callback run.
+    #[cfg(feature = "iceoryx2")]
+    pub(crate) fn record_iox2_event(
+        &mut self,
+        callback_node_index: u32,
+        subscriber_ordinal: u16,
+        event_id: usize,
+        count: u64,
+        observed_at: FrameworkTime,
+        sink: &mut dyn ReadyNodeSink,
+    ) {
+        self.roll_to_fresh_entry(sink);
+        if !self.has_data() {
+            return;
+        }
+        let loan = self.current_loan.expect("has_data acquired a log loan");
+        let current = self.publisher.loaned_payload_mut(loan);
+        current.entries[self.next_entry] = ExecutionLogEntry {
+            callback_node_index,
+            execution_time: observed_at,
+            iox2_event: Some(LoggedIox2Event {
+                subscriber_ordinal,
+                event_id,
+                count,
+                observed_at,
+            }),
+            ..Default::default()
+        };
+        self.next_entry += 1;
+        if self.next_entry == ENTRIES_PER_MESSAGE {
+            self.flush_current(observed_at, sink);
+        }
+    }
+
     pub(crate) fn append(&mut self, msg: LoggedMessage, sink: &mut dyn ReadyNodeSink) {
         let Some(loan) = self.current_loan else {
             self.dropped += 1;
@@ -234,6 +270,69 @@ impl WorkerLogger {
 mod tests {
     use super::*;
     use task::publisher::PublisherConfig;
+
+    #[cfg(feature = "iceoryx2")]
+    #[test]
+    fn readiness_logger_batches_observations_with_their_recipient() {
+        use task::generic_publisher::GenericPublisher as _;
+        use task::subscriber::{Subscriber, SubscriberConfig};
+
+        let mut publisher = Publisher::<ExecutionLogMessage>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+        });
+        let subscriber = Subscriber::<ExecutionLogMessage>::new(SubscriberConfig {
+            is_optional: true,
+            capacity: 2,
+            is_trigger: false,
+            keep_across_runs: false,
+            channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+        });
+        let mut subscriber = subscriber;
+        publisher.connect_to_subscriber(&mut subscriber).unwrap();
+        publisher.allocate_arena();
+        let mut init = Some(WorkerLoggerInit {
+            publisher,
+            flush_period: Duration::from_secs(1),
+            scratch_capacity: 0,
+        });
+        let mut logger = WorkerLogger::new(&mut init, FrameworkTime::from_nanoseconds(1)).unwrap();
+        let observed_at = FrameworkTime::from_nanoseconds(15);
+        logger.record_iox2_event(
+            4,
+            2,
+            9,
+            17,
+            observed_at,
+            &mut task::scheduling::NoopReadyNodeSink,
+        );
+        logger.record_iox2_event(
+            5,
+            0,
+            9,
+            17,
+            observed_at,
+            &mut task::scheduling::NoopReadyNodeSink,
+        );
+        logger.flush_remaining(observed_at, &mut task::scheduling::NoopReadyNodeSink);
+
+        subscriber.drain_writer_to_reader();
+        let buffer = subscriber.read_buffer();
+        let batch = &buffer.front().unwrap().message;
+        for (index, node) in [4, 5].into_iter().enumerate() {
+            let entry = &batch.entries[index];
+            assert_eq!(entry.callback_node_index, node);
+            assert!(!entry.log_whole);
+            let event = entry.iox2_event.unwrap();
+            assert_eq!(event.subscriber_ordinal, if index == 0 { 2 } else { 0 });
+            assert_eq!(event.event_id, 9);
+            assert_eq!(event.count, 17);
+            assert_eq!(event.observed_at, observed_at);
+        }
+        assert_eq!(batch.next_free_entry(), Some(2));
+        drop(buffer);
+        subscriber.cleanup_buffers();
+    }
 
     #[test]
     fn initialization_panic_retains_logger_init() {

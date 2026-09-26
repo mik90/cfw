@@ -260,6 +260,8 @@ mod tests {
         ReplayLog {
             descriptor: desc,
             executions,
+            #[cfg(feature = "iceoryx2")]
+            event_activations: Vec::new(),
             descriptor_less_executions: Vec::new(),
             source_messages: HashMap::new(),
         }

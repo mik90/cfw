@@ -1,5 +1,5 @@
-//! Parses a log file and extracts the execution log descriptor + ordinary log
-//! entries needed for exact replay.
+//! Parses a log file and extracts the descriptor, payloads, callback executions,
+//! and event activations needed for exact replay.
 //!
 //! # Determinism guarantees
 //!
@@ -55,14 +55,29 @@ pub(crate) struct ReplayExecution {
     pub published: HashMap<u16, Vec<(MessageHeader, PayloadSource)>>,
 }
 
-/// Parsed log data: the execution log descriptor, a time-ordered list of
-/// replay executions, and any executions that were skipped because they
+/// One observed event activation to stage before a later exact-replay execution.
+#[cfg(feature = "iceoryx2")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReplayIox2Event {
+    pub callback_node_index: usize,
+    pub subscriber_ordinal: u16,
+    pub channel: ChannelName,
+    pub event_id: usize,
+    pub count: u64,
+    pub observed_at: FrameworkTime,
+}
+
+/// Parsed log data: the descriptor, time-ordered callback executions and event
+/// activations, and any executions that were skipped because they
 /// reference a node with no descriptor entry (expected for infrastructure
 /// nodes added after the descriptor was generated).
 #[derive(Debug)]
 pub(crate) struct ReplayLog {
     pub descriptor: ExecutionLogDescriptor,
     pub executions: Vec<ReplayExecution>,
+    /// Recorded event activations ordered by listener observation time.
+    #[cfg(feature = "iceoryx2")]
+    pub event_activations: Vec<ReplayIox2Event>,
     /// `(node_index, execution_time)` pairs for executions whose node has no
     /// descriptor entry. The executor filters these against known
     /// infrastructure nodes; any that are not infrastructure are an error.
@@ -174,10 +189,44 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
 
     let mut groups: Vec<ExecutionGroup> = Vec::new();
     let mut group_index: HashMap<(usize, i64), usize> = HashMap::new();
+    #[cfg(feature = "iceoryx2")]
+    let mut event_activations = Vec::new();
 
     for msg in &execution_log_entries {
         for entry in &msg.entries {
             if !entry.is_valid() {
+                continue;
+            }
+            #[cfg(feature = "iceoryx2")]
+            if let Some(event) = entry.iox2_event {
+                let node_index = entry.callback_node_index as usize;
+                let callback = descriptor
+                    .index_to_callbacks
+                    .get(&node_index)
+                    .ok_or_else(|| {
+                        ReplayError::MissingOrInvalidDescriptor(format!(
+                            "iox2 event references node[{node_index}] without a descriptor"
+                        ))
+                    })?;
+                let channel = callback
+                    .subscriber_index_to_channel_name
+                    .get(&(event.subscriber_ordinal as usize))
+                    .ok_or_else(|| ReplayError::InvalidSubscriberOrdinal {
+                        node: format!("node[{node_index}]"),
+                        ordinal: event.subscriber_ordinal,
+                        subscriber_count: callback.subscriber_index_to_channel_name.len(),
+                    })?;
+                event_activations.push(ReplayIox2Event {
+                    callback_node_index: node_index,
+                    subscriber_ordinal: event.subscriber_ordinal,
+                    channel: channel.clone(),
+                    event_id: event.event_id,
+                    count: event.count,
+                    observed_at: event.observed_at,
+                });
+                continue;
+            }
+            if entry.is_iox2_event() {
                 continue;
             }
             // Duration-only entries carry no messages and are treated as if
@@ -208,6 +257,8 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
     // Sort groups by execution time.  Use a stable sort so that groups with
     // equal timestamps preserve their original insertion order.
     groups.sort_by_key(|g| g.key.1);
+    #[cfg(feature = "iceoryx2")]
+    event_activations.sort_by_key(|event| event.observed_at);
 
     // ── Phase 3: resolve payloads in replay order ──────────────────────
     //
@@ -329,6 +380,8 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
     Ok(ReplayLog {
         descriptor,
         executions,
+        #[cfg(feature = "iceoryx2")]
+        event_activations,
         descriptor_less_executions,
         source_messages,
     })
@@ -440,6 +493,72 @@ mod tests {
     }
 
     #[test]
+    fn iox2_activations_do_not_become_callback_executions() {
+        use task::execution_log::{CallbackDescriptor, LoggedIox2Event};
+
+        let mut descriptor = ExecutionLogDescriptor::new(&[]);
+        let mut subscribers = HashMap::new();
+        subscribers.insert(1, "event_channel".to_owned());
+        descriptor.index_to_callbacks.insert(
+            0,
+            CallbackDescriptor {
+                subscriber_index_to_channel_name: subscribers,
+                publisher_index_to_channel_name: HashMap::new(),
+            },
+        );
+        let observed_at = FrameworkTime::from_nanoseconds(50);
+        let activation = ExecutionLogEntry {
+            callback_node_index: 0,
+            execution_time: observed_at,
+            iox2_event: Some(LoggedIox2Event {
+                subscriber_ordinal: 1,
+                event_id: 7,
+                count: 3,
+                observed_at,
+            }),
+            ..Default::default()
+        };
+        let callback = ExecutionLogEntry {
+            callback_node_index: 0,
+            execution_time: FrameworkTime::from_nanoseconds(60),
+            log_whole: true,
+            ..Default::default()
+        };
+
+        let mut bytes = Vec::new();
+        let mut writer = JsonLogFileWriter::new(&mut bytes);
+        write_artifact(
+            &mut writer,
+            EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
+            &serde_json::to_vec(&descriptor).unwrap(),
+        );
+        write_entry(
+            &mut writer,
+            EXECUTION_LOG_CHANNEL,
+            &MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
+            &execution_log_bytes(&[activation, callback], 0),
+        );
+        finish_writer(writer);
+
+        let reader = JsonLogFileReader::from_reader(bytes.as_slice()).unwrap();
+        let parsed = parse_replay_log(&reader).unwrap();
+        assert_eq!(parsed.executions.len(), 1);
+        assert_eq!(parsed.executions[0].callback_node_index, 0);
+        assert!(parsed.descriptor_less_executions.is_empty());
+        assert_eq!(
+            parsed.event_activations,
+            vec![ReplayIox2Event {
+                callback_node_index: 0,
+                subscriber_ordinal: 1,
+                channel: "event_channel".into(),
+                event_id: 7,
+                count: 3,
+                observed_at,
+            }]
+        );
+    }
+
+    #[test]
     fn parse_rejects_dropped_entries() {
         let mut buf = Vec::<u8>::new();
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(&mut buf);
@@ -502,7 +621,7 @@ mod tests {
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
             log_whole: true,
-            messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
+            ..Default::default()
         };
         entry.messages[0] = task::execution_log::LoggedMessage {
             ordinal: 0,
@@ -555,7 +674,7 @@ mod tests {
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
             log_whole: true,
-            messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
+            ..Default::default()
         };
         entry.messages[0] = task::execution_log::LoggedMessage {
             ordinal: 0,
@@ -622,7 +741,7 @@ mod tests {
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
             log_whole: true,
-            messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
+            ..Default::default()
         };
         producer.messages[0] = task::execution_log::LoggedMessage {
             ordinal: 0,
@@ -634,7 +753,7 @@ mod tests {
             execution_time: FrameworkTime::from_nanoseconds(150),
             execution_duration_ns: 0,
             log_whole: true,
-            messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
+            ..Default::default()
         };
         consumer.messages[0] = task::execution_log::LoggedMessage {
             ordinal: 0,
@@ -673,7 +792,7 @@ mod tests {
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
             log_whole: true,
-            messages: std::array::from_fn(|_| task::execution_log::LoggedMessage::default()),
+            ..Default::default()
         };
         let scratch = execution_log_bytes(&[entry], 0);
         write_entry(
@@ -734,7 +853,7 @@ mod tests {
                 execution_time: exec_time,
                 execution_duration_ns: 0,
                 log_whole: true,
-                messages: std::array::from_fn(|_| LoggedMessage::default()),
+                ..Default::default()
             };
             entry.messages[0] = LoggedMessage {
                 ordinal: 0,

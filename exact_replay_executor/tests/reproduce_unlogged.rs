@@ -331,7 +331,7 @@ fn make_entry(node: u32, time: FrameworkTime, messages: &[LoggedMessage]) -> Exe
         execution_time: time,
         execution_duration_ns: 0,
         log_whole: true,
-        messages: std::array::from_fn(|_| LoggedMessage::default()),
+        ..Default::default()
     };
     for (i, msg) in messages.iter().enumerate() {
         entry.messages[i] = *msg;

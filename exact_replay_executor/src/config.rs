@@ -17,7 +17,8 @@ pub(crate) const DEFAULT_DIVERGENCE_POLICY: DivergencePolicy = DivergencePolicy:
 /// |---|---|
 /// | `divergence_policy` | [`DivergencePolicy::Strict`] |
 pub struct ExactReplayConfig {
-    /// General executor parameters.
+    /// General executor parameters. For logged iox2 data inputs, attach the
+    /// built graph's iox2 context before constructing the executor.
     pub executor_params: ExecutorParams,
     /// Channel registry containing serializers, deserializers, and publisher
     /// factories for every channel referenced in the log. Output serialization

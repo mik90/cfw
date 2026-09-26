@@ -241,7 +241,7 @@ fn make_entry(node: u32, time_ns: i64, messages: &[LoggedMessage]) -> ExecutionL
         execution_time: FrameworkTime::from_nanoseconds(time_ns),
         execution_duration_ns: 0,
         log_whole: true,
-        messages: std::array::from_fn(|_| LoggedMessage::default()),
+        ..Default::default()
     };
     for (i, msg) in messages.iter().enumerate() {
         entry.messages[i] = *msg;

@@ -15,7 +15,11 @@ use task::string_interner::{CallbackNameInterner, ChannelNameInterner};
 use crate::config::ExactReplayConfig;
 use crate::descriptor::{validate_descriptor, validate_descriptor_less_executions};
 use crate::error::{ExactReplayExecutorError, ReplayError};
+#[cfg(feature = "iceoryx2")]
+use crate::log_reader::ReplayIox2Event;
 use crate::log_reader::parse_replay_log;
+#[cfg(feature = "iceoryx2")]
+use crate::replay_task::stage_iox2_activation;
 use crate::replay_task::{DivergencePolicy, ReplayEnvironment, ReplayWorker};
 use crate::report::{DEFAULT_MAX_MISMATCH_DETAILS, ReplayReport};
 use crate::reproduce::ReproducedPayloadStore;
@@ -62,6 +66,12 @@ pub struct ExactReplayExecutor {
     collected_errors: Arc<std::sync::Mutex<Vec<ReplayError>>>,
     /// Whether the executor has been started.
     started: bool,
+    /// Event activations to inject ahead of the corresponding callback runs.
+    #[cfg(feature = "iceoryx2")]
+    event_activations: Vec<ReplayIox2Event>,
+    /// The graph node and IPC services must outlive replay callback ports.
+    #[cfg(feature = "iceoryx2")]
+    iox2_context: Option<task::iox2::Iox2Context>,
 }
 
 impl ExactReplayExecutor {
@@ -72,6 +82,10 @@ impl ExactReplayExecutor {
         // Split the executor params: pools are flattened into the global node
         // order used by the execution-log descriptor indices, while the
         // interners are retained and forwarded to callbacks via `Context`.
+        #[cfg(feature = "iceoryx2")]
+        let (pools, channel_interner, callback_interner, iox2_context) =
+            config.executor_params.into_parts_with_iox2_context();
+        #[cfg(not(feature = "iceoryx2"))]
         let (pools, channel_interner, callback_interner) = config.executor_params.into_parts();
         let nodes = CallbackStorage::from_shared(
             pools
@@ -108,6 +122,10 @@ impl ExactReplayExecutor {
             callback_interner,
             collected_errors: Arc::new(std::sync::Mutex::new(Vec::new())),
             started: false,
+            #[cfg(feature = "iceoryx2")]
+            event_activations: replay_log.event_activations,
+            #[cfg(feature = "iceoryx2")]
+            iox2_context,
         })
     }
 
@@ -165,6 +183,10 @@ impl Executor for ExactReplayExecutor {
         let callback_interner = std::mem::take(&mut self.callback_interner);
         let collected_errors = self.collected_errors.clone();
         let consumed_count = self.consumed_count.clone();
+        #[cfg(feature = "iceoryx2")]
+        let event_activations = std::mem::take(&mut self.event_activations);
+        #[cfg(feature = "iceoryx2")]
+        let mut iox2_context = self.iox2_context.take();
 
         self.execution_threads.push(thread::spawn(move || {
             // Shared, immutable replay environment plus the worker's per-node
@@ -178,13 +200,49 @@ impl Executor for ExactReplayExecutor {
                 &callback_interner,
                 divergence_policy,
             );
+            #[cfg(feature = "iceoryx2")]
+            let mut worker =
+                ReplayWorker::with_iox2_context(env, nodes.len(), iox2_context.as_mut());
+            #[cfg(not(feature = "iceoryx2"))]
             let mut worker = ReplayWorker::new(env, nodes.len());
+            #[cfg(feature = "iceoryx2")]
+            let mut events = event_activations.into_iter().peekable();
 
             while should_run.load(Ordering::Acquire) {
                 let Some(execution) = scheduler.advance() else {
                     should_run.store(false, Ordering::Release);
                     break;
                 };
+
+                #[cfg(feature = "iceoryx2")]
+                while events
+                    .peek()
+                    .is_some_and(|event| event.observed_at <= execution.execution_time)
+                {
+                    let event = events.next().expect("checked the next activation");
+                    let stage_error = if event.callback_node_index >= nodes.len() {
+                        Some(ReplayError::InvalidCallbackNodeIndex {
+                            index: event.callback_node_index,
+                            node_count: nodes.len(),
+                        })
+                    } else {
+                        nodes[event.callback_node_index]
+                            .access(|node| stage_iox2_activation(node, &event))
+                            .err()
+                    };
+                    if let Some(error) = stage_error {
+                        collected_errors.lock().unwrap().push(error);
+                        report.lock().unwrap().record_error();
+                        if divergence_policy == DivergencePolicy::Strict {
+                            should_run.store(false, Ordering::Release);
+                            break;
+                        }
+                    }
+                }
+                #[cfg(feature = "iceoryx2")]
+                if !should_run.load(Ordering::Acquire) {
+                    break;
+                }
 
                 let node_idx = execution.callback_node_index;
                 if node_idx >= nodes.len() {
@@ -242,6 +300,10 @@ impl Executor for ExactReplayExecutor {
             //    their read buffer. cleanup_buffers() is the correct API for
             //    that.
             nodes.cleanup_subscribers();
+            drop(worker);
+            drop(nodes);
+            #[cfg(feature = "iceoryx2")]
+            drop(iox2_context);
         }));
     }
 
@@ -427,7 +489,7 @@ mod tests {
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
             log_whole: true,
-            messages: std::array::from_fn(|_| LoggedMessage::default()),
+            ..Default::default()
         };
         entry.messages[0] = LoggedMessage {
             ordinal: 0,
@@ -656,7 +718,7 @@ mod tests {
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
             log_whole: true,
-            messages: std::array::from_fn(|_| LoggedMessage::default()),
+            ..Default::default()
         };
         entry.messages[0] = LoggedMessage {
             ordinal: 0,
@@ -676,7 +738,7 @@ mod tests {
             execution_time: FrameworkTime::from_nanoseconds(200),
             execution_duration_ns: 0,
             log_whole: true,
-            messages: std::array::from_fn(|_| LoggedMessage::default()),
+            ..Default::default()
         };
         entry2.messages[0] = LoggedMessage {
             ordinal: 0,

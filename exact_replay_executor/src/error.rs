@@ -26,6 +26,13 @@ pub enum ReplayError {
         channel: ChannelName,
         details: String,
     },
+    /// An iox2 input could not be hydrated or staged during replay.
+    #[cfg(feature = "iceoryx2")]
+    Iox2Input {
+        node: String,
+        channel: ChannelName,
+        reason: String,
+    },
     /// The execution log descriptor could not be parsed or was missing.
     MissingOrInvalidDescriptor(String),
     /// An execution log entry references a callback node index that is out of
@@ -101,6 +108,12 @@ impl fmt::Display for ReplayError {
                     "deserialization failed for channel '{channel}': {details}"
                 )
             }
+            #[cfg(feature = "iceoryx2")]
+            ReplayError::Iox2Input {
+                node,
+                channel,
+                reason,
+            } => write!(f, "iox2 input '{channel}' on node '{node}': {reason}"),
             ReplayError::MissingOrInvalidDescriptor(msg) => {
                 write!(f, "missing or invalid execution log descriptor: {msg}")
             }

@@ -70,6 +70,23 @@ impl LoggedMessage {
     }
 }
 
+/// One iceoryx2 activation observed by the live executor for a subscriber.
+/// The containing entry identifies the callback node; its descriptor resolves
+/// `subscriber_ordinal` to the input channel.
+#[cfg(feature = "iceoryx2")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LoggedIox2Event {
+    /// Index into the receiving callback's subscriber list.
+    pub subscriber_ordinal: u16,
+    /// iceoryx2 event identifier.
+    pub event_id: usize,
+    /// Number of activations represented by this notification.
+    pub count: u64,
+    /// Executor time when the listener drained this activation.
+    pub observed_at: FrameworkTime,
+}
+
 /// A fixed-size slice of one callback's execution. An execution that logs
 /// more than [`MESSAGES_PER_ENTRY`] messages continues in follow-up entries
 /// sharing the same `(callback_node_index, execution_time)`.
@@ -85,6 +102,9 @@ pub struct ExecutionLogEntry {
     /// log at all.
     pub log_whole: bool,
     pub messages: [LoggedMessage; MESSAGES_PER_ENTRY],
+    /// Event input observed independently of a callback execution.
+    #[cfg(feature = "iceoryx2")]
+    pub iox2_event: Option<LoggedIox2Event>,
 }
 
 impl Default for ExecutionLogEntry {
@@ -95,6 +115,8 @@ impl Default for ExecutionLogEntry {
             execution_duration_ns: 0,
             log_whole: false,
             messages: std::array::from_fn(|_| LoggedMessage::default()),
+            #[cfg(feature = "iceoryx2")]
+            iox2_event: None,
         }
     }
 }
@@ -102,6 +124,18 @@ impl Default for ExecutionLogEntry {
 impl ExecutionLogEntry {
     pub fn is_valid(&self) -> bool {
         self.execution_time != FrameworkTime::INVALID
+    }
+
+    /// Whether this entry records an iox2 activation instead of a callback run.
+    pub fn is_iox2_event(&self) -> bool {
+        #[cfg(feature = "iceoryx2")]
+        {
+            self.iox2_event.is_some()
+        }
+        #[cfg(not(feature = "iceoryx2"))]
+        {
+            false
+        }
     }
 
     /// First invalid (unused) message slot in this entry, or `None` if full.
@@ -371,6 +405,46 @@ mod tests {
         assert!(!entry.is_valid());
         assert_eq!(entry.next_free(), Some(0));
         assert!(entry.messages.iter().all(|m| !m.is_valid()));
+        #[cfg(feature = "iceoryx2")]
+        assert!(!entry.is_iox2_event());
+    }
+
+    #[cfg(all(feature = "iceoryx2", feature = "serde"))]
+    #[test]
+    fn event_and_callback_entries_roundtrip_in_one_execution_log() {
+        use crate::loggable::Loggable;
+
+        let observed_at = FrameworkTime::from_nanoseconds(137);
+        let event = ExecutionLogEntry {
+            callback_node_index: 3,
+            execution_time: observed_at,
+            iox2_event: Some(LoggedIox2Event {
+                subscriber_ordinal: 2,
+                event_id: 19,
+                count: 7,
+                observed_at,
+            }),
+            ..Default::default()
+        };
+        let callback = ExecutionLogEntry {
+            callback_node_index: 3,
+            execution_time: FrameworkTime::from_nanoseconds(151),
+            log_whole: true,
+            ..Default::default()
+        };
+        let mut batch = ExecutionLogMessage::default();
+        batch.entries[0] = event;
+        batch.entries[1] = callback;
+        let mut bytes = Vec::new();
+        batch.serialize(&mut bytes).unwrap();
+        let parsed = ExecutionLogMessage::deserialize(&bytes).unwrap();
+
+        assert!(parsed.entries[0].is_iox2_event());
+        assert_eq!(parsed.entries[0].iox2_event, event.iox2_event);
+        assert_eq!(parsed.entries[0].callback_node_index, 3);
+        assert!(!parsed.entries[1].is_iox2_event());
+        assert!(parsed.entries[1].log_whole);
+        assert_eq!(parsed.next_free_entry(), Some(2));
     }
 
     #[test]

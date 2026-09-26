@@ -60,7 +60,7 @@ pub struct Iox2EventRegistration {
     pub readiness: Option<crate::callback::SubscriberReadiness>,
 }
 
-/// Type-erased publisher owned by a deterministic simulation for injecting a data sample.
+/// Type-erased publisher for injecting real data samples into simulation or replay.
 pub trait Iox2SyntheticPublisher: Send {
     /// The channel this publisher injects into.
     fn channel(&self) -> &str;
@@ -73,6 +73,13 @@ pub trait Iox2SyntheticPublisher: Send {
         &mut self,
         header: MessageHeader,
         payload: Box<dyn std::any::Any + Send>,
+    ) -> Result<(), String>;
+
+    /// Publish a deserialized payload produced on the replay worker thread.
+    fn publish_replay(
+        &mut self,
+        header: MessageHeader,
+        payload: Box<dyn std::any::Any>,
     ) -> Result<(), String>;
 }
 
@@ -271,6 +278,18 @@ impl<'a> Iox2Event<'a> {
 }
 
 impl GenericSubscriber for Iox2EventSubscriber {
+    fn iox2_is_event_input(&self) -> bool {
+        true
+    }
+
+    fn iox2_stage_replay_event(&self, event_id: usize, count: u64) -> Result<(), String> {
+        let _ = self.staging.push(EventRecord {
+            event_id: EventId::new(event_id),
+            count,
+        });
+        Ok(())
+    }
+
     fn as_any(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -543,6 +562,10 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
 }
 
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> GenericSubscriber for Iox2Subscriber<T> {
+    fn iox2_is_data_input(&self) -> bool {
+        true
+    }
+
     fn iox2_replay_publisher_factory(
         &self,
     ) -> Option<crate::channel_registry::Iox2ReplayPublisherFactory> {
@@ -824,6 +847,20 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2SyntheticPublisher
         let payload = payload.downcast::<T>().map_err(|_| {
             format!(
                 "simulation publisher payload type mismatch on {}",
+                self.channel()
+            )
+        })?;
+        self.publisher.publish_with_header(header, *payload)
+    }
+
+    fn publish_replay(
+        &mut self,
+        header: MessageHeader,
+        payload: Box<dyn std::any::Any>,
+    ) -> Result<(), String> {
+        let payload = payload.downcast::<T>().map_err(|_| {
+            format!(
+                "replay publisher payload type mismatch on {}",
                 self.channel()
             )
         })?;
