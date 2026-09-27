@@ -60,7 +60,7 @@ struct SubscriberBuffer<T> {
 pub struct Publisher<T> {
     config: PublisherConfig,
     /// Drop ordering is relevant here, arena must be dropped last since loaned values are pointers into the arena
-    pub(crate) loaned_values: Vec<LoanedValue<T>>,
+    loaned_values: Vec<LoanedValue<T>>,
     subscriber_write_buffers: Vec<SubscriberBuffer<T>>,
     arena: Arena<Message<T>>,
     /// This _could_ be part of the publisher config but it's something tied to `T` so it's better to keep it outside of a
