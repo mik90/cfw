@@ -82,6 +82,19 @@ pub enum PubOrSub<'a> {
 pub trait Callback: Send {
     fn run(&mut self, ctx: &crate::context::Context);
 
+    /// Stage channel-level log events before simulation selects runnable nodes.
+    #[cfg(feature = "iceoryx2")]
+    fn dispatch_simulation_events(
+        &mut self,
+        _now: crate::time::FrameworkTime,
+        _stage: &mut dyn FnMut(&str, usize, u64),
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Notify a replay input task when triggered work from this step has settled.
+    fn simulation_stop_if_idle(&mut self, _idle: bool) {}
+
     /// Invoke `f` once per subscriber and once per publisher, through a shared
     /// borrow.
     fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>));

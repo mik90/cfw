@@ -64,8 +64,14 @@ impl ScheduledIox2Input {
 
 type SyntheticPublisherMap = HashMap<String, Box<dyn task::iox2::Iox2SyntheticPublisher>>;
 
+struct SimulationEventChannel {
+    channel: String,
+    listener: iceoryx2::port::listener::Listener<iceoryx2::service::ipc_threadsafe::Service>,
+}
+
 type SimulationIox2Registrations = (
     Vec<task::iox2::Iox2EventRegistration>,
+    Vec<SimulationEventChannel>,
     SyntheticPublisherMap,
 );
 
@@ -115,11 +121,28 @@ fn register_simulation_iox2_inputs(
         });
         result?;
     }
-    Ok((event_listeners, input_publishers))
+    let mut channels: Vec<SimulationEventChannel> = Vec::new();
+    for registration in &event_listeners {
+        if channels
+            .iter()
+            .any(|item| item.channel == registration.channel)
+        {
+            continue;
+        }
+        let channel = registration.channel.clone();
+        let listener = task::iox2::Iox2OpenCtx::event_service(context, &channel)
+            .map_err(|error| StepError::Iox2Event(error.to_string()))?
+            .listener_builder()
+            .create()
+            .map_err(|error| StepError::Iox2Event(format!("channel {channel}: {error}")))?;
+        channels.push(SimulationEventChannel { channel, listener });
+    }
+    Ok((event_listeners, channels, input_publishers))
 }
 
 pub(super) struct Iox2SimulationState {
     event_listeners: Vec<task::iox2::Iox2EventRegistration>,
+    event_channels: Vec<SimulationEventChannel>,
     iox2_input_publishers: SyntheticPublisherMap,
     scheduled_iox2_inputs: Vec<ScheduledIox2Input>,
     next_input_sequence: u64,
@@ -127,17 +150,43 @@ pub(super) struct Iox2SimulationState {
 }
 
 impl Iox2SimulationState {
+    pub(super) fn stage_logged_event(
+        &self,
+        channel: &str,
+        event_id: usize,
+        count: u64,
+        observed_at: FrameworkTime,
+    ) {
+        for registration in self
+            .event_listeners
+            .iter()
+            .filter(|entry| entry.channel == channel)
+        {
+            let _ = registration.staging.push(task::iox2::EventRecord {
+                event_id: iceoryx2::prelude::EventId::new(event_id),
+                count,
+            });
+            if let Some(staging) = &registration.log_staging {
+                let _ = staging.push(task::iox2::ObservedChannelEvent {
+                    header: task::message::MessageHeader::new(observed_at),
+                    event: task::iox2::LoggedChannelEvent { event_id, count },
+                });
+            }
+        }
+    }
     pub(super) fn new(
         nodes: &CallbackStorage,
         mut context: Option<task::iox2::Iox2Context>,
     ) -> Result<Self, StepError> {
-        let (event_listeners, iox2_input_publishers) = if let Some(context) = context.as_mut() {
-            register_simulation_iox2_inputs(nodes, context)?
-        } else {
-            (Vec::new(), HashMap::new())
-        };
+        let (event_listeners, event_channels, iox2_input_publishers) =
+            if let Some(context) = context.as_mut() {
+                register_simulation_iox2_inputs(nodes, context)?
+            } else {
+                (Vec::new(), Vec::new(), HashMap::new())
+            };
         Ok(Self {
             event_listeners,
+            event_channels,
             iox2_input_publishers,
             scheduled_iox2_inputs: Vec::new(),
             next_input_sequence: 0,
@@ -179,6 +228,15 @@ impl Iox2SimulationState {
                         let _ = registration
                             .staging
                             .push(task::iox2::EventRecord { event_id, count });
+                        if let Some(staging) = &registration.log_staging {
+                            let _ = staging.push(task::iox2::ObservedChannelEvent {
+                                header: task::message::MessageHeader::new(input.at),
+                                event: task::iox2::LoggedChannelEvent {
+                                    event_id: event_id.as_value(),
+                                    count,
+                                },
+                            });
+                        }
                     }
                 }
             }
@@ -186,26 +244,33 @@ impl Iox2SimulationState {
         Ok(())
     }
 
-    pub(super) fn poll_listeners(&mut self) -> Result<(), StepError> {
+    pub(super) fn poll_listeners(&mut self, now: FrameworkTime) -> Result<(), StepError> {
         use task::iox2::EventRecord;
-        for registration in &mut self.event_listeners {
-            let mut folded: Vec<EventRecord> = Vec::new();
-            registration
+        for channel in &self.event_channels {
+            channel
                 .listener
                 .try_wait(|activation| {
-                    if let Some(record) = folded.iter_mut().find(|r| r.event_id == activation.id) {
-                        record.count = record.count.saturating_add(activation.count);
-                    } else {
-                        folded.push(EventRecord {
+                    for registration in self
+                        .event_listeners
+                        .iter()
+                        .filter(|registration| registration.channel == channel.channel)
+                    {
+                        let _ = registration.staging.push(EventRecord {
                             event_id: activation.id,
                             count: activation.count,
                         });
+                        if let Some(staging) = &registration.log_staging {
+                            let _ = staging.push(task::iox2::ObservedChannelEvent {
+                                header: task::message::MessageHeader::new(now),
+                                event: task::iox2::LoggedChannelEvent {
+                                    event_id: activation.id.as_value(),
+                                    count: activation.count,
+                                },
+                            });
+                        }
                     }
                 })
                 .map_err(|error| StepError::Iox2Event(error.to_string()))?;
-            for record in folded {
-                let _ = registration.staging.push(record);
-            }
         }
         Ok(())
     }

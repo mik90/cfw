@@ -10,8 +10,9 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 [features]
-default = ["serde"]
+default = ["serde", "iceoryx2"]
 serde = ["dep:serde", "dep:serde_json", "task/serde"]
+iceoryx2 = ["task/iceoryx2"]
 # Test-only utilities (e.g. `InMemoryWriter`) for external test crates like
 # `logging_test`. Kept behind a feature so they stay out of the public API
 # for normal consumers.

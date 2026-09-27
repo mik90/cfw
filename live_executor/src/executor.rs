@@ -50,6 +50,12 @@ struct ReadinessRegistration {
 }
 
 #[cfg(feature = "iceoryx2")]
+struct ReadinessChannel {
+    listener: Listener<ipc_threadsafe::Service>,
+    registrations: Vec<ReadinessRegistration>,
+}
+
+#[cfg(feature = "iceoryx2")]
 struct ReadinessThreadResources<T: TimeSource> {
     shared: Arc<SharedThreadPoolState>,
     nodes: Vec<Arc<SharedCallbackNode>>,
@@ -87,7 +93,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
     #[cfg(feature = "iceoryx2")]
     fn take_event_registrations(
         &mut self,
-    ) -> Result<Vec<ReadinessRegistration>, crate::error::LiveExecutorStartError> {
+    ) -> Result<Vec<ReadinessChannel>, crate::error::LiveExecutorStartError> {
         let Some(context) = self.iox2_context.as_mut() else {
             return Ok(Vec::new());
         };
@@ -132,7 +138,34 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
                 });
             }
         }
-        Ok(registrations)
+        let mut channels: Vec<ReadinessChannel> = Vec::new();
+        for registration in registrations {
+            let channel = &registration.event.channel;
+            if let Some(existing) = channels
+                .iter_mut()
+                .find(|group| group.registrations[0].event.channel == *channel)
+            {
+                existing.registrations.push(registration);
+                continue;
+            }
+            let listener = context
+                .event_service(channel)
+                .map_err(|error| crate::error::LiveExecutorStartError {
+                    node: None,
+                    reason: error.to_string(),
+                })?
+                .listener_builder()
+                .create()
+                .map_err(|error| crate::error::LiveExecutorStartError {
+                    node: None,
+                    reason: format!("unable to create listener for channel {channel}: {error}"),
+                })?;
+            channels.push(ReadinessChannel {
+                listener,
+                registrations: vec![registration],
+            });
+        }
+        Ok(channels)
     }
 
     #[cfg(feature = "iceoryx2")]
@@ -720,7 +753,7 @@ impl<T: TimeSource + 'static> LiveExecutor<T> {
 
 #[cfg(feature = "iceoryx2")]
 fn iox2_readiness_thread<T: TimeSource>(
-    registrations: Vec<ReadinessRegistration>,
+    registrations: Vec<ReadinessChannel>,
     shutdown_listener: Listener<ipc_threadsafe::Service>,
     resources: ReadinessThreadResources<T>,
     ready: channel::Sender<Result<(), String>>,
@@ -748,7 +781,7 @@ fn iox2_readiness_thread<T: TimeSource>(
     };
     let mut guards = Vec::with_capacity(registrations.len());
     for registration in &registrations {
-        match waitset.attach_notification(&registration.event.listener) {
+        match waitset.attach_notification(&registration.listener) {
             Ok(guard) => guards.push(guard),
             Err(error) => {
                 let _ = ready.send(Err(format!(
@@ -792,50 +825,51 @@ fn iox2_readiness_thread<T: TimeSource>(
                 if !attachment.has_event_from(&guards[index]) {
                     continue;
                 }
-                let mut folded: Vec<task::iox2::EventRecord> = Vec::new();
                 registration
-                    .event
                     .listener
                     .try_wait(|activation| {
-                        if let Some(logger) = logger.as_deref_mut() {
-                            logger.record_iox2_event(
-                                registration.node_index,
-                                registration.subscriber_ordinal,
-                                activation.id.as_value(),
-                                activation.count,
-                                time_source.now(),
-                                &mut NoopReadyNodeSink,
-                            );
-                        }
+                        let observed_at = time_source.now();
                         saturating_counter(&metrics.activations, 1);
                         saturating_counter(&metrics.total_counts, activation.count);
-                        if let Some(record) = folded
-                            .iter_mut()
-                            .find(|record| record.event_id == activation.id)
-                        {
-                            record.count = record.count.saturating_add(activation.count);
-                        } else {
-                            folded.push(task::iox2::EventRecord {
-                                event_id: activation.id,
-                                count: activation.count,
-                            });
+                        let record = task::iox2::EventRecord {
+                            event_id: activation.id,
+                            count: activation.count,
+                        };
+                        for recipient in &registration.registrations {
+                            if let Some(logger) = logger.as_deref_mut() {
+                                logger.record_iox2_event(
+                                    recipient.node_index,
+                                    recipient.subscriber_ordinal,
+                                    observed_at,
+                                    &mut NoopReadyNodeSink,
+                                );
+                            }
+                            if !recipient.event.staging.push(record) {
+                                saturating_counter(&metrics.dropped_records, 1);
+                                saturating_counter(&metrics.dropped_counts, record.count);
+                            }
+                            if let Some(staging) = &recipient.event.log_staging {
+                                let _ = staging.push(task::iox2::ObservedChannelEvent {
+                                    header: task::message::MessageHeader::new(observed_at),
+                                    event: task::iox2::LoggedChannelEvent {
+                                        event_id: activation.id.as_value(),
+                                        count: activation.count,
+                                    },
+                                });
+                            }
                         }
                     })
                     .expect("failed to drain iox2 event listener notification");
 
-                for record in folded {
-                    if !registration.event.staging.push(record) {
-                        saturating_counter(&metrics.dropped_records, 1);
-                        saturating_counter(&metrics.dropped_counts, record.count);
+                for recipient in &registration.registrations {
+                    if let Some(task::callback::SubscriberReadiness::OptionalTrigger(readiness)) =
+                        &recipient.event.readiness
+                        && let Some(node) = readiness.optional_trigger_arrived()
+                        && shared.should_run.load(Ordering::Relaxed)
+                    {
+                        sink.schedule(node);
+                        scheduled = true;
                     }
-                }
-                if let Some(task::callback::SubscriberReadiness::OptionalTrigger(readiness)) =
-                    &registration.event.readiness
-                    && let Some(node) = readiness.optional_trigger_arrived()
-                    && shared.should_run.load(Ordering::Relaxed)
-                {
-                    sink.schedule(node);
-                    scheduled = true;
                 }
             }
             CallbackProgression::Continue
@@ -2607,15 +2641,16 @@ mod tests {
                     .recv_timeout(remaining)
                     .expect("readiness event did not reach the execution-log subscriber");
                 for entry in batch.entries.iter().take_while(|entry| entry.is_valid()) {
-                    let Some(event) = entry.iox2_event else {
+                    if !entry.is_iox2_event() {
                         continue;
-                    };
+                    }
                     assert!(matches!(entry.callback_node_index, 1 | 2));
-                    assert_eq!(event.subscriber_ordinal, 0);
-                    assert_eq!(event.event_id, 0);
-                    assert!(event.count > 0);
-                    assert_ne!(event.observed_at, FrameworkTime::INVALID);
-                    assert_eq!(entry.execution_time, event.observed_at);
+                    assert_eq!(entry.messages[0].ordinal, 0);
+                    assert_ne!(
+                        entry.messages[0].header.published_at,
+                        FrameworkTime::INVALID
+                    );
+                    assert_eq!(entry.execution_time, entry.messages[0].header.published_at);
                     recipients.insert(entry.callback_node_index);
                 }
             }

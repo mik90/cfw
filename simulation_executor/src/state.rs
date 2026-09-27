@@ -263,9 +263,27 @@ impl SimulationState {
 
     pub fn step(&mut self) -> Result<Vec<CallbackNodeIndex>, StepError> {
         #[cfg(feature = "iceoryx2")]
+        {
+            let mut due = Vec::new();
+            for node in self.nodes.iter_shared() {
+                node.access(|node| {
+                    node.callback_mut().dispatch_simulation_events(
+                        self.time,
+                        &mut |channel, id, count| {
+                            due.push((channel.to_owned(), id, count));
+                        },
+                    )
+                })
+                .map_err(StepError::Iox2Event)?;
+            }
+            for (channel, id, count) in due {
+                self.iox2.stage_logged_event(&channel, id, count, self.time);
+            }
+        }
+        #[cfg(feature = "iceoryx2")]
         self.iox2.dispatch_due_inputs(self.time)?;
         #[cfg(feature = "iceoryx2")]
-        self.iox2.poll_listeners()?;
+        self.iox2.poll_listeners(self.time)?;
         let runnable_nodes = self.allocate_nodes_to_threads();
         // Only drain subscribers for nodes that actually got a thread, so that nodes
         // blocked by pool pressure keep their trigger data for the next step.
@@ -311,6 +329,17 @@ impl SimulationState {
                 let mut sink = task::scheduling::NoopReadyNodeSink;
                 n.flush_publishers(time, &mut sink)
             });
+        }
+
+        #[cfg(feature = "iceoryx2")]
+        self.iox2.poll_listeners(time)?;
+        let idle = !self.nodes.iter_shared().any(|node| {
+            node.access(|node| node.subscribers_request_execution() && node.required_inputs_ready())
+        });
+        if idle {
+            for node in self.nodes.iter_shared() {
+                node.access(|node| node.callback_mut().simulation_stop_if_idle(true));
+            }
         }
 
         // Update periodic node next-run times from their no-longer-busy instant

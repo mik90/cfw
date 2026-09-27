@@ -191,6 +191,8 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
     let mut group_index: HashMap<(usize, i64), usize> = HashMap::new();
     #[cfg(feature = "iceoryx2")]
     let mut event_activations = Vec::new();
+    #[cfg(feature = "iceoryx2")]
+    let mut event_consumed: HashMap<(usize, u16, ChannelName, i64), usize> = HashMap::new();
 
     for msg in &execution_log_entries {
         for entry in &msg.entries {
@@ -198,8 +200,14 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
                 continue;
             }
             #[cfg(feature = "iceoryx2")]
-            if let Some(event) = entry.iox2_event {
+            if entry.is_iox2_event() {
                 let node_index = entry.callback_node_index as usize;
+                let reference = entry.messages[0];
+                if !reference.is_valid() || reference.direction != Direction::Received {
+                    return Err(ReplayError::MissingOrInvalidDescriptor(format!(
+                        "iox2 event on node[{node_index}] has no received message reference"
+                    )));
+                }
                 let callback = descriptor
                     .index_to_callbacks
                     .get(&node_index)
@@ -210,23 +218,42 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
                     })?;
                 let channel = callback
                     .subscriber_index_to_channel_name
-                    .get(&(event.subscriber_ordinal as usize))
+                    .get(&(reference.ordinal as usize))
                     .ok_or_else(|| ReplayError::InvalidSubscriberOrdinal {
                         node: format!("node[{node_index}]"),
-                        ordinal: event.subscriber_ordinal,
+                        ordinal: reference.ordinal,
                         subscriber_count: callback.subscriber_index_to_channel_name.len(),
+                    })?;
+                let logged_channel = task::iox2::event_log_channel(channel);
+                let at = reference.header.published_at.to_nanoseconds();
+                let occurrence = event_consumed
+                    .entry((node_index, reference.ordinal, logged_channel.clone(), at))
+                    .or_default();
+                let payloads = ordinary_log.get(&(logged_channel.clone(), at));
+                let payload = payloads
+                    .and_then(|payloads| payloads.get(*occurrence))
+                    .ok_or_else(|| ReplayError::UnreproducibleMessage {
+                        channel: logged_channel,
+                        header_time: reference.header.published_at,
+                        direction: Direction::Received,
+                        node: format!("node[{node_index}]"),
+                        reason: "recorded iox2 event has no ordinary-log payload".to_owned(),
+                    })?;
+                *occurrence += 1;
+                let event =
+                    task::iox2::LoggedChannelEvent::deserialize(payload).map_err(|error| {
+                        ReplayError::MissingOrInvalidDescriptor(format!(
+                            "invalid iox2 event payload on {channel}: {error}"
+                        ))
                     })?;
                 event_activations.push(ReplayIox2Event {
                     callback_node_index: node_index,
-                    subscriber_ordinal: event.subscriber_ordinal,
+                    subscriber_ordinal: reference.ordinal,
                     channel: channel.clone(),
                     event_id: event.event_id,
                     count: event.count,
-                    observed_at: event.observed_at,
+                    observed_at: reference.header.published_at,
                 });
-                continue;
-            }
-            if entry.is_iox2_event() {
                 continue;
             }
             // Duration-only entries carry no messages and are treated as if
@@ -494,7 +521,7 @@ mod tests {
 
     #[test]
     fn iox2_activations_do_not_become_callback_executions() {
-        use task::execution_log::{CallbackDescriptor, LoggedIox2Event};
+        use task::execution_log::CallbackDescriptor;
 
         let mut descriptor = ExecutionLogDescriptor::new(&[]);
         let mut subscribers = HashMap::new();
@@ -507,16 +534,16 @@ mod tests {
             },
         );
         let observed_at = FrameworkTime::from_nanoseconds(50);
-        let activation = ExecutionLogEntry {
+        let mut activation = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: observed_at,
-            iox2_event: Some(LoggedIox2Event {
-                subscriber_ordinal: 1,
-                event_id: 7,
-                count: 3,
-                observed_at,
-            }),
+            iox2_event: true,
             ..Default::default()
+        };
+        activation.messages[0] = task::execution_log::LoggedMessage {
+            ordinal: 1,
+            direction: Direction::Received,
+            header: MessageHeader::new(observed_at),
         };
         let callback = ExecutionLogEntry {
             callback_node_index: 0,
@@ -531,6 +558,16 @@ mod tests {
             &mut writer,
             EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
             &serde_json::to_vec(&descriptor).unwrap(),
+        );
+        write_entry(
+            &mut writer,
+            &task::iox2::event_log_channel("event_channel"),
+            &MessageHeader::new(observed_at),
+            &serde_json::to_vec(&task::iox2::LoggedChannelEvent {
+                event_id: 7,
+                count: 3,
+            })
+            .unwrap(),
         );
         write_entry(
             &mut writer,
@@ -555,6 +592,116 @@ mod tests {
                 count: 3,
                 observed_at,
             }]
+        );
+    }
+
+    #[test]
+    fn shared_event_header_matches_same_time_activations_for_each_recipient() {
+        use task::execution_log::{CallbackDescriptor, LoggedMessage};
+        let channel = "shared_event";
+        let at = FrameworkTime::from_nanoseconds(88);
+        let header = MessageHeader::new(at);
+        let mut descriptor = ExecutionLogDescriptor::new(&[]);
+        for node in 0..2 {
+            descriptor.index_to_callbacks.insert(
+                node,
+                CallbackDescriptor {
+                    subscriber_index_to_channel_name: HashMap::from([(0, channel.to_owned())]),
+                    publisher_index_to_channel_name: HashMap::new(),
+                },
+            );
+        }
+        let mut entries = Vec::new();
+        for _ in 0..2 {
+            for node in 0..2 {
+                let mut entry = ExecutionLogEntry {
+                    callback_node_index: node,
+                    execution_time: at,
+                    iox2_event: true,
+                    ..Default::default()
+                };
+                entry.messages[0] = LoggedMessage {
+                    ordinal: 0,
+                    direction: Direction::Received,
+                    header,
+                };
+                entries.push(entry);
+            }
+        }
+        let mut bytes = Vec::new();
+        let mut writer = JsonLogFileWriter::new(&mut bytes);
+        write_artifact(
+            &mut writer,
+            EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
+            &serde_json::to_vec(&descriptor).unwrap(),
+        );
+        for event_id in [7, 9] {
+            write_entry(
+                &mut writer,
+                &task::iox2::event_log_channel(channel),
+                &header,
+                &serde_json::to_vec(&task::iox2::LoggedChannelEvent { event_id, count: 2 })
+                    .unwrap(),
+            );
+        }
+        write_entry(
+            &mut writer,
+            EXECUTION_LOG_CHANNEL,
+            &header,
+            &execution_log_bytes(&entries, 0),
+        );
+        finish_writer(writer);
+        let reader = JsonLogFileReader::from_reader(bytes.as_slice()).unwrap();
+        let log = parse_replay_log(&reader).unwrap();
+        assert_eq!(
+            log.event_activations
+                .iter()
+                .map(|e| (e.callback_node_index, e.event_id, e.count))
+                .collect::<Vec<_>>(),
+            vec![(0, 7, 2), (1, 7, 2), (0, 9, 2), (1, 9, 2)]
+        );
+    }
+
+    #[test]
+    fn missing_ordinary_event_payload_is_an_error() {
+        let mut descriptor = ExecutionLogDescriptor::new(&[]);
+        descriptor.index_to_callbacks.insert(
+            0,
+            task::execution_log::CallbackDescriptor {
+                subscriber_index_to_channel_name: HashMap::from([(0, "source".to_owned())]),
+                publisher_index_to_channel_name: HashMap::new(),
+            },
+        );
+        let at = FrameworkTime::from_nanoseconds(10);
+        let mut event = ExecutionLogEntry {
+            callback_node_index: 0,
+            execution_time: at,
+            iox2_event: true,
+            ..Default::default()
+        };
+        event.messages[0] = task::execution_log::LoggedMessage {
+            ordinal: 0,
+            direction: Direction::Received,
+            header: MessageHeader::new(at),
+        };
+        let mut bytes = Vec::new();
+        let mut writer = JsonLogFileWriter::new(&mut bytes);
+        write_artifact(
+            &mut writer,
+            EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
+            &serde_json::to_vec(&descriptor).unwrap(),
+        );
+        write_entry(
+            &mut writer,
+            EXECUTION_LOG_CHANNEL,
+            &MessageHeader::new(at),
+            &execution_log_bytes(&[event], 0),
+        );
+        finish_writer(writer);
+        let reader = JsonLogFileReader::from_reader(bytes.as_slice()).unwrap();
+        assert!(
+            matches!(parse_replay_log(&reader), Err(ReplayError::UnreproducibleMessage { channel, .. })
+            if channel == "source_iox2_event")
         );
     }
 

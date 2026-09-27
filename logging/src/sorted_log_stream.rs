@@ -499,7 +499,8 @@ impl Default for ReplaySinkMap {
 
 /// Build a [`ReplaySinkMap`] from a [`SortedLogStreamReader`]'s channel names.
 ///
-/// Skips `EXECUTION_LOG_CHANNEL` and any channels in `denylist`. Returns an
+/// Skips `EXECUTION_LOG_CHANNEL`, iceoryx2 event-log channels, and any channels
+/// in `denylist`. Returns an
 /// error if a log channel appears that is not registered in the registry.
 pub fn build_replay_sinks(
     reader: &SortedLogStreamReader,
@@ -518,7 +519,9 @@ pub fn build_replay_sinks_with_iox2_factories(
 ) -> Result<ReplaySinkMap, TaskGraphBuildStepError> {
     let mut map = ReplaySinkMap::new();
     for channel in reader.channel_names() {
-        if channel.as_str() == EXECUTION_LOG_CHANNEL {
+        if channel.as_str() == EXECUTION_LOG_CHANNEL
+            || (cfg!(feature = "iceoryx2") && channel.ends_with("_iox2_event"))
+        {
             continue;
         }
         if denylist.contains(channel) {

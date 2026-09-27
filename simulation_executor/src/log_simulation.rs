@@ -17,28 +17,77 @@ use task::time::{AtomicFrameworkTime, FrameworkTime};
 pub struct LogSimulationTask {
     reader: SortedLogStreamReader,
     sinks: ReplaySinkMap,
+    #[cfg(feature = "iceoryx2")]
+    event_denylist: HashSet<ChannelName>,
+    exhausted: bool,
     next_time_ns: Arc<AtomicFrameworkTime>,
     stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
 }
 
 impl Callback for LogSimulationTask {
     fn run(&mut self, ctx: &Context) {
-        let (batch, next_time) = self.reader.read_until(ctx.now);
-        for entry in &batch {
-            self.sinks.publish(entry);
+        #[cfg(not(feature = "iceoryx2"))]
+        {
+            let (batch, _) = self.reader.read_until(ctx.now);
+            for entry in &batch {
+                self.sinks.publish(entry);
+            }
         }
+        #[cfg(feature = "iceoryx2")]
+        let _ = ctx;
+        let next_time = self.reader.peek_time();
         match next_time {
             Some(t) => {
                 self.next_time_ns.store(t, Ordering::Relaxed);
             }
             None => {
+                self.exhausted = true;
                 self.next_time_ns
                     .store(FrameworkTime::INVALID, Ordering::Relaxed);
-                if let Some(signal) = self.stop_signal.get() {
-                    signal.request_stop();
-                }
             }
         }
+    }
+
+    fn simulation_stop_if_idle(&mut self, idle: bool) {
+        if self.exhausted
+            && idle
+            && let Some(signal) = self.stop_signal.get()
+        {
+            signal.request_stop();
+        }
+    }
+
+    #[cfg(feature = "iceoryx2")]
+    fn dispatch_simulation_events(
+        &mut self,
+        now: FrameworkTime,
+        stage: &mut dyn FnMut(&str, usize, u64),
+    ) -> Result<(), String> {
+        use task::loggable::Loggable;
+        let (batch, _) = self.reader.read_until(now);
+        for entry in batch {
+            if let Some(channel) = entry
+                .channel_name
+                .strip_suffix(task::iox2::IOX2_EVENT_LOG_SUFFIX)
+            {
+                if self.event_denylist.contains(channel)
+                    || self.event_denylist.contains(&entry.channel_name)
+                {
+                    continue;
+                }
+                let payload = task::iox2::LoggedChannelEvent::deserialize(&entry.serialized_body)
+                    .map_err(|error| {
+                    format!("invalid event on {}: {error}", entry.channel_name)
+                })?;
+                stage(channel, payload.event_id, payload.count);
+            } else {
+                self.sinks.publish(&entry);
+            }
+        }
+        self.sinks.for_each_publisher_mut(&mut |publisher| {
+            publisher.flush_loaned_values(now, &mut task::scheduling::NoopReadyNodeSink);
+        });
+        Ok(())
     }
 
     fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
@@ -108,7 +157,12 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
         let reader = reader_guard.as_ref().expect(
             "LogSimulationBuildStep: reader already taken; build_step may only be called once",
         );
+        #[cfg(not(feature = "iceoryx2"))]
+        let _ = nodes;
+        #[cfg(feature = "iceoryx2")]
         let mut iox2_factories = std::collections::HashMap::new();
+        #[cfg(not(feature = "iceoryx2"))]
+        let iox2_factories = std::collections::HashMap::new();
         #[cfg(feature = "iceoryx2")]
         for node in nodes {
             node.callback().for_each_subscriber(&mut |subscriber| {
@@ -127,9 +181,18 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
             &self.denylist,
             &iox2_factories,
         )?;
+        #[cfg(feature = "iceoryx2")]
+        let has_events = reader.channel_names().iter().any(|name| {
+            name.strip_suffix(task::iox2::IOX2_EVENT_LOG_SUFFIX)
+                .is_some_and(|channel| {
+                    !self.denylist.contains(name) && !self.denylist.contains(channel)
+                })
+        });
+        #[cfg(not(feature = "iceoryx2"))]
+        let has_events = false;
         drop(reader_guard);
 
-        if sinks.is_empty() {
+        if sinks.is_empty() && !has_events {
             return Ok(vec![]);
         }
 
@@ -145,6 +208,9 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
         let log_task = LogSimulationTask {
             reader,
             sinks,
+            #[cfg(feature = "iceoryx2")]
+            event_denylist: self.denylist.clone(),
+            exhausted: false,
             next_time_ns: next_time_ns.clone(),
             stop_signal,
         };

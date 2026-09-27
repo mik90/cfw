@@ -1,10 +1,12 @@
 use std::num::Saturating;
 use std::time::Duration;
+#[cfg(feature = "iceoryx2")]
+use task::execution_log::{Direction, ExecutionLogEntry};
 use task::execution_log::{
     ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
 };
 #[cfg(feature = "iceoryx2")]
-use task::execution_log::{ExecutionLogEntry, LoggedIox2Event};
+use task::message::MessageHeader;
 use task::publisher::Publisher;
 use task::scheduling::ReadyNodeSink;
 use task::time::FrameworkTime;
@@ -151,8 +153,6 @@ impl WorkerLogger {
         &mut self,
         callback_node_index: u32,
         subscriber_ordinal: u16,
-        event_id: usize,
-        count: u64,
         observed_at: FrameworkTime,
         sink: &mut dyn ReadyNodeSink,
     ) {
@@ -165,13 +165,13 @@ impl WorkerLogger {
         current.entries[self.next_entry] = ExecutionLogEntry {
             callback_node_index,
             execution_time: observed_at,
-            iox2_event: Some(LoggedIox2Event {
-                subscriber_ordinal,
-                event_id,
-                count,
-                observed_at,
-            }),
+            iox2_event: true,
             ..Default::default()
+        };
+        current.entries[self.next_entry].messages[0] = LoggedMessage {
+            ordinal: subscriber_ordinal,
+            direction: Direction::Received,
+            header: MessageHeader::new(observed_at),
         };
         self.next_entry += 1;
         if self.next_entry == ENTRIES_PER_MESSAGE {
@@ -298,22 +298,8 @@ mod tests {
         });
         let mut logger = WorkerLogger::new(&mut init, FrameworkTime::from_nanoseconds(1)).unwrap();
         let observed_at = FrameworkTime::from_nanoseconds(15);
-        logger.record_iox2_event(
-            4,
-            2,
-            9,
-            17,
-            observed_at,
-            &mut task::scheduling::NoopReadyNodeSink,
-        );
-        logger.record_iox2_event(
-            5,
-            0,
-            9,
-            17,
-            observed_at,
-            &mut task::scheduling::NoopReadyNodeSink,
-        );
+        logger.record_iox2_event(4, 2, observed_at, &mut task::scheduling::NoopReadyNodeSink);
+        logger.record_iox2_event(5, 0, observed_at, &mut task::scheduling::NoopReadyNodeSink);
         logger.flush_remaining(observed_at, &mut task::scheduling::NoopReadyNodeSink);
 
         subscriber.drain_writer_to_reader();
@@ -323,11 +309,9 @@ mod tests {
             let entry = &batch.entries[index];
             assert_eq!(entry.callback_node_index, node);
             assert!(!entry.log_whole);
-            let event = entry.iox2_event.unwrap();
-            assert_eq!(event.subscriber_ordinal, if index == 0 { 2 } else { 0 });
-            assert_eq!(event.event_id, 9);
-            assert_eq!(event.count, 17);
-            assert_eq!(event.observed_at, observed_at);
+            assert!(entry.is_iox2_event());
+            assert_eq!(entry.messages[0].ordinal, if index == 0 { 2 } else { 0 });
+            assert_eq!(entry.messages[0].header.published_at, observed_at);
         }
         assert_eq!(batch.next_free_entry(), Some(2));
         drop(buffer);

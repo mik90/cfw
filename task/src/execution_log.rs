@@ -70,23 +70,6 @@ impl LoggedMessage {
     }
 }
 
-/// One iceoryx2 activation observed by the live executor for a subscriber.
-/// The containing entry identifies the callback node; its descriptor resolves
-/// `subscriber_ordinal` to the input channel.
-#[cfg(feature = "iceoryx2")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LoggedIox2Event {
-    /// Index into the receiving callback's subscriber list.
-    pub subscriber_ordinal: u16,
-    /// iceoryx2 event identifier.
-    pub event_id: usize,
-    /// Number of activations represented by this notification.
-    pub count: u64,
-    /// Executor time when the listener drained this activation.
-    pub observed_at: FrameworkTime,
-}
-
 /// A fixed-size slice of one callback's execution. An execution that logs
 /// more than [`MESSAGES_PER_ENTRY`] messages continues in follow-up entries
 /// sharing the same `(callback_node_index, execution_time)`.
@@ -102,9 +85,10 @@ pub struct ExecutionLogEntry {
     /// log at all.
     pub log_whole: bool,
     pub messages: [LoggedMessage; MESSAGES_PER_ENTRY],
-    /// Event input observed independently of a callback execution.
+    /// An event input reference, stored in `messages[0]` independently of a callback run.
     #[cfg(feature = "iceoryx2")]
-    pub iox2_event: Option<LoggedIox2Event>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub iox2_event: bool,
 }
 
 impl Default for ExecutionLogEntry {
@@ -116,7 +100,7 @@ impl Default for ExecutionLogEntry {
             log_whole: false,
             messages: std::array::from_fn(|_| LoggedMessage::default()),
             #[cfg(feature = "iceoryx2")]
-            iox2_event: None,
+            iox2_event: false,
         }
     }
 }
@@ -130,7 +114,7 @@ impl ExecutionLogEntry {
     pub fn is_iox2_event(&self) -> bool {
         #[cfg(feature = "iceoryx2")]
         {
-            self.iox2_event.is_some()
+            self.iox2_event
         }
         #[cfg(not(feature = "iceoryx2"))]
         {
@@ -418,13 +402,14 @@ mod tests {
         let event = ExecutionLogEntry {
             callback_node_index: 3,
             execution_time: observed_at,
-            iox2_event: Some(LoggedIox2Event {
-                subscriber_ordinal: 2,
-                event_id: 19,
-                count: 7,
-                observed_at,
-            }),
+            iox2_event: true,
             ..Default::default()
+        };
+        let mut event = event;
+        event.messages[0] = LoggedMessage {
+            ordinal: 2,
+            direction: Direction::Received,
+            header: MessageHeader::new(observed_at),
         };
         let callback = ExecutionLogEntry {
             callback_node_index: 3,
@@ -440,7 +425,7 @@ mod tests {
         let parsed = ExecutionLogMessage::deserialize(&bytes).unwrap();
 
         assert!(parsed.entries[0].is_iox2_event());
-        assert_eq!(parsed.entries[0].iox2_event, event.iox2_event);
+        assert_eq!(parsed.entries[0].messages[0], event.messages[0]);
         assert_eq!(parsed.entries[0].callback_node_index, 3);
         assert!(!parsed.entries[1].is_iox2_event());
         assert!(parsed.entries[1].log_whole);

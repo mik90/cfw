@@ -11,10 +11,13 @@ use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::execution_log::{
     Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
-    ExecutionLogEntry, ExecutionLogMessage, LoggedIox2Event, LoggedMessage,
+    ExecutionLogEntry, ExecutionLogMessage, LoggedMessage,
 };
 use task::executor::{Executor, ExecutorParams};
-use task::iox2::{Iox2Event, Iox2EventSubscriber, Iox2OptionalInput, Iox2Subscriber};
+use task::iox2::{
+    Iox2Event, Iox2EventSubscriber, Iox2OptionalInput, Iox2Subscriber, LoggedChannelEvent,
+    event_log_channel,
+};
 use task::loggable::Loggable;
 use task::message::MessageHeader;
 use task::subscriber::SubscriberConfig;
@@ -111,19 +114,21 @@ fn input_node(
 fn write_log(
     descriptor: &ExecutionLogDescriptor,
     data_channel: &str,
+    event_channel: &str,
     header: MessageHeader,
     payload: u64,
 ) -> JsonLogFileReader {
-    let event = ExecutionLogEntry {
+    let event_header = MessageHeader::new(FrameworkTime::from_nanoseconds(50));
+    let mut event = ExecutionLogEntry {
         callback_node_index: 0,
         execution_time: FrameworkTime::from_nanoseconds(50),
-        iox2_event: Some(LoggedIox2Event {
-            subscriber_ordinal: 1,
-            event_id: 7,
-            count: 3,
-            observed_at: FrameworkTime::from_nanoseconds(50),
-        }),
+        iox2_event: true,
         ..Default::default()
+    };
+    event.messages[0] = LoggedMessage {
+        ordinal: 1,
+        direction: Direction::Received,
+        header: event_header,
     };
     let mut execution = ExecutionLogEntry {
         callback_node_index: 0,
@@ -152,6 +157,20 @@ fn write_log(
         let mut body = Vec::new();
         payload.serialize(&mut body).unwrap();
         writer.store_message(data_channel, &header, &body).unwrap();
+        let mut event_body = Vec::new();
+        LoggedChannelEvent {
+            event_id: 7,
+            count: 3,
+        }
+        .serialize(&mut event_body)
+        .unwrap();
+        writer
+            .store_message(
+                &event_log_channel(event_channel),
+                &event_header,
+                &event_body,
+            )
+            .unwrap();
         let mut log_body = Vec::new();
         batch.serialize(&mut log_body).unwrap();
         writer
@@ -178,7 +197,7 @@ fn exact_replay_hydrates_iox2_event_and_data_inputs() {
         .build()
         .unwrap();
     let data_header = MessageHeader::new(FrameworkTime::from_nanoseconds(40));
-    let reader = write_log(&descriptor, &data_channel, data_header, 42);
+    let reader = write_log(&descriptor, &data_channel, &event_channel, data_header, 42);
     let mut registry = ChannelRegistry::new();
     registry.register_channel::<u64>(data_channel);
     let params = ExecutorParams::new(std::mem::take(&mut graph.pools))
@@ -227,6 +246,7 @@ fn exact_replay_names_missing_iox2_graph_context() {
     let reader = write_log(
         &descriptor,
         &data_channel,
+        &event_channel,
         MessageHeader::new(FrameworkTime::from_nanoseconds(40)),
         42,
     );
@@ -272,19 +292,19 @@ fn exact_replay_stages_each_event_before_its_recorded_execution() {
     );
     let descriptor = ExecutionLogDescriptor::new(std::slice::from_ref(&node));
     let mut batch = ExecutionLogMessage::default();
-    for (index, (observed_at, event_id, count)) in [(150, 2, 5), (50, 1, 3)].into_iter().enumerate()
-    {
-        batch.entries[index] = ExecutionLogEntry {
+    for (index, (observed_at, _, _)) in [(150, 2, 5), (50, 1, 3)].into_iter().enumerate() {
+        let mut entry = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(observed_at),
-            iox2_event: Some(LoggedIox2Event {
-                subscriber_ordinal: 0,
-                event_id,
-                count,
-                observed_at: FrameworkTime::from_nanoseconds(observed_at),
-            }),
+            iox2_event: true,
             ..Default::default()
         };
+        entry.messages[0] = LoggedMessage {
+            ordinal: 0,
+            direction: Direction::Received,
+            header: MessageHeader::new(FrameworkTime::from_nanoseconds(observed_at)),
+        };
+        batch.entries[index] = entry;
     }
     for (index, at) in [100, 200].into_iter().enumerate() {
         batch.entries[index + 2] = ExecutionLogEntry {
@@ -303,6 +323,19 @@ fn exact_replay_stages_each_event_before_its_recorded_execution() {
                 &serde_json::to_vec(&descriptor).unwrap(),
             )
             .unwrap();
+        for (at, event_id, count) in [(150, 2, 5), (50, 1, 3)] {
+            let mut payload = Vec::new();
+            LoggedChannelEvent { event_id, count }
+                .serialize(&mut payload)
+                .unwrap();
+            writer
+                .store_message(
+                    &event_log_channel(&channel),
+                    &MessageHeader::new(FrameworkTime::from_nanoseconds(at)),
+                    &payload,
+                )
+                .unwrap();
+        }
         let mut body = Vec::new();
         batch.serialize(&mut body).unwrap();
         writer

@@ -3,13 +3,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use iceoryx2::prelude::ZeroCopySend;
+use logging::log_build_step::{LogTaskConfiguration, LoggingBuildStep, LoggingStrategy};
 use logging::log_file::LogFileWriter;
 use logging::log_file_json::JsonLogFileWriter;
 use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
 use task::context::Context;
 use task::executor::{ExecutorParams, ExecutorStopSignal};
-use task::iox2::{Iox2Event, Iox2EventSubscriber, Iox2OptionalInput, Iox2Subscriber};
+use task::iox2::{
+    Iox2Event, Iox2EventSubscriber, Iox2Notifier, Iox2NotifyOutput, Iox2OptionalInput,
+    Iox2Subscriber, LoggedChannelEvent, event_log_channel,
+};
 use task::message::MessageHeader;
+use task::publisher::PublisherConfig;
 use task::subscriber::{Subscriber, SubscriberConfig};
 use task::task_graph_builder::{BuiltTaskGraph, TaskGraphBuilder};
 use task::time::FrameworkTime;
@@ -242,10 +247,10 @@ fn iox2_log_replay_preserves_header_and_does_not_notify() {
 
     for observed in [&first, &second] {
         let observed = observed.lock().unwrap();
-        assert_eq!(observed[0].1, None);
+        assert_eq!(observed[0].1, Some((42, logged_at)));
         assert!(
             observed.iter().any(|&(ran_at, message, events)| {
-                ran_at > logged_at && message == Some((42, logged_at)) && events == 0
+                ran_at >= logged_at && message == Some((42, logged_at)) && events == 0
             }),
             "replayed iox2 sample/header was not observed: {observed:?}"
         );
@@ -254,6 +259,196 @@ fn iox2_log_replay_preserves_header_and_does_not_notify() {
         no_trigger.lock().unwrap().is_empty(),
         "data must not trigger the event-only reader"
     );
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
+fn ordinary_event_log_fans_out_once_per_subscriber_with_data() {
+    let channel = format!("sim_log_event_fanout_{}", std::process::id());
+    let logged_at = FrameworkTime::from_nanoseconds(2_000);
+    let observed = [
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+    ];
+    let mut bytes = Vec::new();
+    {
+        let mut writer = JsonLogFileWriter::new(&mut bytes);
+        let mut payload = Vec::new();
+        task::loggable::Loggable::serialize(&42_u64, &mut payload).unwrap();
+        writer
+            .store_message(&channel, &MessageHeader::new(logged_at), &payload)
+            .unwrap();
+        payload.clear();
+        task::loggable::Loggable::serialize(
+            &LoggedChannelEvent {
+                event_id: 7,
+                count: 3,
+            },
+            &mut payload,
+        )
+        .unwrap();
+        writer
+            .store_message(
+                &event_log_channel(&channel),
+                &MessageHeader::new(logged_at),
+                &payload,
+            )
+            .unwrap();
+    }
+    let (step, start) = log_build_step_from_bytes(&bytes);
+    let mut builder = TaskGraphBuilder::new()
+        .add_pool(3, |pool| {
+            observed
+                .iter()
+                .enumerate()
+                .fold(pool, |pool, (index, results)| {
+                    pool.add_callback(reader_node(
+                        &format!("event_receiver_{index}"),
+                        Box::new(Iox2Reader {
+                            data: Iox2Subscriber::new(subscriber_config(&channel)),
+                            event: Some(Iox2EventSubscriber::new(subscriber_config(&channel))),
+                            observed: Arc::clone(results),
+                        }),
+                        false,
+                    ))
+                })
+        })
+        .add_build_step(Box::new(step));
+    builder
+        .channel_registry_mut()
+        .register_channel::<u64>(channel);
+    let graph = builder.build().unwrap();
+    let mut state = state_from_graph(graph, start);
+    state.step().unwrap();
+    for recipient in observed {
+        let records = recipient.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0, logged_at);
+        assert_eq!(records[0].2, 3);
+    }
+}
+
+type RecordedEventMessages = Arc<Mutex<Vec<(String, MessageHeader, Vec<u8>)>>>;
+
+struct EventMemoryWriter(RecordedEventMessages);
+
+impl LogFileWriter for EventMemoryWriter {
+    fn store_message(
+        &mut self,
+        channel: &str,
+        header: &MessageHeader,
+        body: &[u8],
+    ) -> Result<(), logging::log_file::BoxedLogError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((channel.to_owned(), *header, body.to_vec()));
+        Ok(())
+    }
+
+    fn write_artifact(
+        &mut self,
+        _name: &str,
+        _body: &[u8],
+    ) -> Result<(), logging::log_file::BoxedLogError> {
+        Ok(())
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
+fn shared_listener_logs_one_channel_event_for_multiple_recipients() {
+    let channel = format!("sim_shared_event_log_{}", std::process::id());
+    let logged_at = FrameworkTime::from_nanoseconds(3_000);
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let log_step = LoggingBuildStep::new(LogTaskConfiguration {
+        output_path: std::path::PathBuf::new(),
+        strategy: LoggingStrategy::Continuous {
+            period: Duration::from_nanos(1),
+        },
+        num_tasks: 1,
+    })
+    .with_writer(Box::new(EventMemoryWriter(Arc::clone(&written))));
+    let builder = TaskGraphBuilder::new()
+        .add_pool(3, |pool| {
+            (0..2).fold(pool, |pool, index| {
+                pool.add_callback(reader_node(
+                    &format!("shared_recipient_{index}"),
+                    Box::new(Iox2Reader {
+                        data: Iox2Subscriber::new(subscriber_config(&channel)),
+                        event: Some(Iox2EventSubscriber::new(subscriber_config(&channel))),
+                        observed: Arc::clone(&results),
+                    }),
+                    false,
+                ))
+            })
+        })
+        .add_build_step(Box::new(log_step));
+    let mut state = state_from_graph(builder.build().unwrap(), logged_at);
+    state
+        .schedule_iox2_event(logged_at, &channel, iceoryx2::prelude::EventId::new(5), 4)
+        .unwrap();
+    state.step().unwrap();
+    state.step().unwrap();
+    let observed = results.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    assert!(observed.iter().all(|item| item.2 == 4));
+    let logged = written.lock().unwrap();
+    let events: Vec<_> = logged
+        .iter()
+        .filter(|(name, _, _)| name == &event_log_channel(&channel))
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].1.published_at, logged_at);
+    let event =
+        <LoggedChannelEvent as task::loggable::Loggable>::deserialize(&events[0].2).unwrap();
+    assert_eq!(
+        event,
+        LoggedChannelEvent {
+            event_id: 5,
+            count: 4
+        }
+    );
+}
+
+#[test]
+fn derived_event_log_channel_cannot_shadow_a_real_channel() {
+    let channel = format!("event_log_collision_{}", std::process::id());
+    let derived = event_log_channel(&channel);
+    let writer = EventMemoryWriter(Arc::new(Mutex::new(Vec::new())));
+    let logging = LoggingBuildStep::new(LogTaskConfiguration {
+        output_path: std::path::PathBuf::new(),
+        strategy: LoggingStrategy::Continuous {
+            period: Duration::from_millis(1),
+        },
+        num_tasks: 1,
+    })
+    .with_writer(Box::new(writer));
+    let error = TaskGraphBuilder::new()
+        .add_pool(1, |pool| {
+            pool.add_callback(reader_node(
+                "event_input",
+                Box::new(Iox2Reader {
+                    data: Iox2Subscriber::new(subscriber_config(&channel)),
+                    event: Some(Iox2EventSubscriber::new(subscriber_config(&channel))),
+                    observed: Arc::new(Mutex::new(Vec::new())),
+                }),
+                false,
+            ))
+            .add_callback(reader_node(
+                "real_derived_channel",
+                Box::new(NativeReader {
+                    data: Subscriber::new(subscriber_config(&derived)),
+                    observed: Arc::new(Mutex::new(Vec::new())),
+                }),
+                false,
+            ))
+        })
+        .add_build_step(Box::new(logging))
+        .build()
+        .expect_err("derived event channel must not shadow data");
+    assert!(error.to_string().contains(&derived));
 }
 
 #[test]
@@ -380,5 +575,113 @@ fn iox2_log_replay_names_unregistered_channel() {
     assert!(
         error.to_string().contains(&channel),
         "diagnostic omitted channel name: {error}"
+    );
+}
+
+struct ForwardEvent {
+    input: Iox2EventSubscriber,
+    output: Iox2Notifier,
+}
+
+impl Callback for ForwardEvent {
+    fn run(&mut self, _ctx: &Context) {
+        if Iox2Event::new(&self.input).count() > 0 {
+            Iox2NotifyOutput::new(&mut self.output).send();
+        }
+    }
+
+    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
+        f(PubOrSub::Subscriber(&self.input));
+        f(PubOrSub::Publisher(&self.output));
+    }
+
+    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
+        f(PubOrSubMut::Subscriber(&mut self.input));
+        f(PubOrSubMut::Publisher(&mut self.output));
+    }
+}
+
+struct EventStopFlag(Arc<std::sync::atomic::AtomicBool>);
+
+impl ExecutorStopSignal for EventStopFlag {
+    fn request_stop(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
+fn logged_event_and_callback_notification_both_run_before_stop() {
+    let source = format!("sim_log_source_{}", std::process::id());
+    let target = format!("sim_log_target_{}", std::process::id());
+    let at = FrameworkTime::from_nanoseconds(4_000);
+    let mut bytes = Vec::new();
+    {
+        let mut writer = JsonLogFileWriter::new(&mut bytes);
+        let mut payload = Vec::new();
+        task::loggable::Loggable::serialize(
+            &LoggedChannelEvent {
+                event_id: 3,
+                count: 2,
+            },
+            &mut payload,
+        )
+        .unwrap();
+        writer
+            .store_message(
+                &event_log_channel(&source),
+                &MessageHeader::new(at),
+                &payload,
+            )
+            .unwrap();
+    }
+    let (build_step, start) = log_build_step_from_bytes(&bytes);
+    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    assert!(
+        build_step
+            .stop_signal_cell
+            .set(Arc::new(EventStopFlag(Arc::clone(&stopped))))
+            .is_ok()
+    );
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let graph = TaskGraphBuilder::new()
+        .add_pool(3, |pool| {
+            pool.add_callback(reader_node(
+                "event_forwarder",
+                Box::new(ForwardEvent {
+                    input: Iox2EventSubscriber::new(subscriber_config(&source)),
+                    output: Iox2Notifier::new(PublisherConfig {
+                        channel_name: target.clone(),
+                        capacity: 1,
+                    }),
+                }),
+                false,
+            ))
+            .add_callback(reader_node(
+                "event_target",
+                Box::new(Iox2Reader {
+                    data: Iox2Subscriber::new(subscriber_config(&target)),
+                    event: Some(Iox2EventSubscriber::new(subscriber_config(&target))),
+                    observed: Arc::clone(&received),
+                }),
+                false,
+            ))
+        })
+        .add_build_step(Box::new(build_step))
+        .build()
+        .unwrap();
+    let mut state = state_from_graph(graph, start);
+    state.step().unwrap();
+    assert!(!stopped.load(std::sync::atomic::Ordering::Acquire));
+    state.step().unwrap();
+    assert!(stopped.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(
+        received
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|item| item.2)
+            .collect::<Vec<_>>(),
+        vec![1]
     );
 }

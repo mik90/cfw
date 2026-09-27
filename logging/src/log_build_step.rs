@@ -9,6 +9,8 @@ use task::execution_log::{
 };
 use task::generic_subscriber::GenericSubscriber;
 use task::pub_sub::ChannelName;
+#[cfg(feature = "iceoryx2")]
+use task::pub_sub_factory::EndpointKind;
 use task::subscriber::{Subscriber, SubscriberConfig};
 use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
 
@@ -57,6 +59,8 @@ pub struct LogTaskConfiguration {
 /// `ChannelLogger` + matching subscriber and injects them into one of the new
 /// `LogTask` `CallbackNode`s via `CallbackNode::new_with`. Channels whose
 /// types aren't registered as loggable are silently skipped.
+/// Iceoryx2 event services also receive one logging subscriber per channel;
+/// their counted activations are written on the derived `_iox2_event` channel.
 ///
 /// The collected channels are spread round-robin across
 /// `LogTaskConfiguration::num_tasks` log tasks so an executor with a
@@ -197,6 +201,67 @@ impl TaskGraphBuildStep for LoggingBuildStep {
                 channel_loggers.push(ChannelLogger::new(channel_name, serializer));
                 subscribers.push(subscriber);
             });
+        }
+
+        #[cfg(feature = "iceoryx2")]
+        {
+            let mut event_channels = HashSet::new();
+            let mut existing_channels = HashSet::new();
+            for node in nodes {
+                node.callback().for_each_pub_or_sub(&mut |endpoint| {
+                    let mut inspect = |channel: &str, kind: EndpointKind| {
+                        existing_channels.insert(channel.to_owned());
+                        if matches!(
+                            kind,
+                            EndpointKind::Iox2EventSub
+                                | EndpointKind::Iox2Notifier { .. }
+                                | EndpointKind::Iox2DataPub {
+                                    notify_on_send: true,
+                                    ..
+                                }
+                        ) {
+                            event_channels.insert(channel.to_owned());
+                        }
+                        Ok(())
+                    };
+                    match endpoint {
+                        task::callback::PubOrSub::Subscriber(sub) => {
+                            let _ = sub
+                                .iox2_find_endpoints(&mut |info| inspect(&info.channel, info.kind));
+                        }
+                        task::callback::PubOrSub::Publisher(publisher) => {
+                            let _ = publisher
+                                .iox2_find_endpoints(&mut |info| inspect(&info.channel, info.kind));
+                        }
+                    }
+                });
+            }
+            for channel in event_channels {
+                if self.unlogged_channels.contains(&channel) {
+                    continue;
+                }
+                let logged_channel = task::iox2::event_log_channel(&channel);
+                if existing_channels.contains(&logged_channel)
+                    || channel_registry.channel_type(&logged_channel).is_some()
+                    || self.unlogged_channels.contains(&logged_channel)
+                {
+                    return Err(format!("iox2 event log channel {logged_channel} collides with or is excluded as a graph channel").into());
+                }
+                channel_registry
+                    .register_channel::<task::iox2::LoggedChannelEvent>(logged_channel.clone());
+                let serializer = channel_registry
+                    .serializer_for(std::any::TypeId::of::<task::iox2::LoggedChannelEvent>())
+                    .expect("registered event log payload has a serializer");
+                let subscriber = task::iox2::Iox2EventSubscriber::new_logging(SubscriberConfig {
+                    is_optional: true,
+                    capacity: DEFAULT_LOG_QUEUE_CAPACITY,
+                    is_trigger: true,
+                    keep_across_runs: true,
+                    channel_name: channel,
+                });
+                channel_loggers.push(ChannelLogger::new(logged_channel, serializer));
+                subscribers.push(Box::new(subscriber));
+            }
         }
 
         // Execution-log channel is published on by per-thread publishers in

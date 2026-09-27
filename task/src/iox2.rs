@@ -18,7 +18,7 @@ use iceoryx2::{
     config::Config,
     node::{Node, NodeBuilder},
     port::{
-        listener::Listener, notifier::Notifier, publisher::Publisher as IoxPublisher,
+        notifier::Notifier, publisher::Publisher as IoxPublisher,
         subscriber::Subscriber as IoxSubscriber,
     },
     prelude::*,
@@ -48,14 +48,41 @@ pub struct EventRecord {
     pub count: u64,
 }
 
-/// Listener and staging state transferred to the live readiness thread.
+/// A counted iceoryx2 activation stored on a channel's `_iox2_event` log channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LoggedChannelEvent {
+    /// Event identifier from the service.
+    pub event_id: usize,
+    /// Number of notifications accumulated by the shared listener.
+    pub count: u64,
+}
+
+/// Suffix reserved for an iceoryx2 service's ordinary event-log channel.
+pub const IOX2_EVENT_LOG_SUFFIX: &str = "_iox2_event";
+
+/// Construct the ordinary-log channel for a service's events.
+pub fn event_log_channel(channel: &str) -> String {
+    format!("{channel}{IOX2_EVENT_LOG_SUFFIX}")
+}
+
+/// An event and the time the shared service listener observed it.
+#[derive(Clone, Copy, Debug)]
+pub struct ObservedChannelEvent {
+    /// Header shared by ordinary logging and execution-log references.
+    pub header: MessageHeader,
+    /// Event payload written to the ordinary log.
+    pub event: LoggedChannelEvent,
+}
+
+/// Subscriber staging state transferred to an executor's event dispatcher.
 pub struct Iox2EventRegistration {
-    /// Channel whose event service this listener receives.
+    /// Channel whose event service supplies this subscriber.
     pub channel: String,
-    /// Event listener owned by the readiness thread.
-    pub listener: Listener<ipc_threadsafe::Service>,
-    /// Bounded queue receiving folded event activations.
+    /// Bounded queue receiving counted event activations.
     pub staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    /// Additional timestamped queue for a logging task, when present.
+    pub log_staging: Option<Arc<base::mpsc_queue::MpscQueue<ObservedChannelEvent>>>,
     /// Readiness signal for the target optional-trigger subscriber.
     pub readiness: Option<crate::callback::SubscriberReadiness>,
 }
@@ -122,6 +149,7 @@ impl Iox2ReadinessMetrics {
 pub struct Iox2EventSubscriber {
     config: SubscriberConfig,
     staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    log_staging: Option<Arc<base::mpsc_queue::MpscQueue<ObservedChannelEvent>>>,
     read: RefCell<VecDeque<EventRecord>>,
     readiness_state: Option<crate::callback::SubscriberReadiness>,
 }
@@ -139,10 +167,20 @@ impl Iox2EventSubscriber {
         config.is_trigger = true;
         Self {
             staging: Arc::new(base::mpsc_queue::MpscQueue::new(config.capacity)),
+            log_staging: None,
             config,
             read: RefCell::new(VecDeque::new()),
             readiness_state: None,
         }
+    }
+
+    /// Create a subscriber that also logs each timestamped listener activation.
+    pub fn new_logging(config: SubscriberConfig) -> Self {
+        let mut subscriber = Self::new(config);
+        subscriber.log_staging = Some(Arc::new(base::mpsc_queue::MpscQueue::new(
+            subscriber.config.capacity,
+        )));
+        subscriber
     }
 
     /// Make an injector for tests that need to stage events without the live executor.
@@ -321,6 +359,9 @@ impl GenericSubscriber for Iox2EventSubscriber {
     fn cleanup_buffers(&self) {
         self.read.borrow_mut().clear();
         self.staging.clear();
+        if let Some(log_staging) = &self.log_staging {
+            log_staging.clear();
+        }
     }
     fn readiness_state(&self) -> Option<crate::callback::SubscriberReadiness> {
         self.readiness_state.clone()
@@ -328,15 +369,18 @@ impl GenericSubscriber for Iox2EventSubscriber {
     fn set_readiness_state(&mut self, state: crate::callback::SubscriberReadiness) {
         self.readiness_state = Some(state);
     }
-    /// Event records are not message payloads; they are intentionally not
-    /// channel-logged yet, hence this explicit no-op.
     fn drain_queued_inputs(
         &mut self,
-        _f: &mut dyn FnMut(
+        f: &mut dyn FnMut(
             &MessageHeader,
             &dyn std::any::Any,
         ) -> Result<(), crate::channel_registry::BoxedError>,
     ) -> Result<(), crate::channel_registry::BoxedError> {
+        if let Some(staging) = &self.log_staging {
+            while let Some(record) = staging.pop() {
+                f(&record.header, &record.event)?;
+            }
+        }
         Ok(())
     }
     fn iox2_find_endpoints(
@@ -369,16 +413,12 @@ impl GenericSubscriber for Iox2EventSubscriber {
                 "event input channel {channel} has no optional-trigger readiness"
             ));
         }
-        let listener = ctx
-            .event_service(&channel)
-            .map_err(|error| error.to_string())?
-            .listener_builder()
-            .create()
-            .map_err(|error| format!("unable to create listener for channel {channel}: {error}"))?;
+        ctx.event_service(&channel)
+            .map_err(|error| error.to_string())?;
         Ok(Some(Iox2EventRegistration {
             channel,
-            listener,
             staging: Arc::clone(&self.staging),
+            log_staging: self.log_staging.clone(),
             readiness,
         }))
     }
@@ -1255,7 +1295,9 @@ impl Iox2Context {
                     channel.to_string(),
                     EventServiceSettings {
                         max_notifiers: event_defaults.max_notifiers.max(agg.notifier_count),
-                        max_listeners: event_defaults.max_listeners.max(agg.event_sub_count),
+                        max_listeners: event_defaults
+                            .max_listeners
+                            .max(usize::from(agg.event_sub_count > 0)),
                         max_nodes: event_defaults.max_nodes,
                         event_id_max_value: agg.max_event_id,
                     },
