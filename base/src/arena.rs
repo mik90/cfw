@@ -134,7 +134,7 @@ impl<T> Deref for ArenaReaderPtr<T> {
 
 /// Each entry is reserved via a mutex
 pub struct ArenaSlot<T> {
-    pub ref_count: AtomicUsize,
+    ref_count: AtomicUsize,
     pub payload: UnsafeCell<MaybeUninit<T>>,
 }
 
