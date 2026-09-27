@@ -764,7 +764,7 @@ mod tests {
         fn run(&mut self, _ctx: &Context) {
             let input = task::input::OptionalInput::<u64>::new_downcasted(&mut self.subscriber);
             if let Some(val) = input.value() {
-                let mut output = Output::<u64>::new_downcasted(&mut self.publisher);
+                let mut output = Output::<u64>::new_downcasted_default(&mut self.publisher);
                 *output = *val;
                 output.send();
             }

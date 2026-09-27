@@ -686,7 +686,7 @@ mod test {
                 if let Some(msg) = input.value() {
                     self.received.push(*msg);
                 }
-                let mut output = Output::<u64>::new_downcasted(&mut self.publisher);
+                let mut output = Output::<u64>::new_downcasted_default(&mut self.publisher);
                 *output = self.value_to_publish;
                 output.send();
                 self.value_to_publish += 1;

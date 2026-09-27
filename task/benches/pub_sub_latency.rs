@@ -56,7 +56,7 @@ fn bench_publish_to_receive(c: &mut Criterion) {
             value = value.wrapping_add(1);
 
             {
-                let mut output = Output::new_downcasted(&mut publisher);
+                let mut output = Output::new_downcasted_default(&mut publisher);
                 *output = value;
                 output.send();
             }

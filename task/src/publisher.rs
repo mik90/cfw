@@ -240,8 +240,8 @@ impl<T> Publisher<T> {
             // SAFETY: All fields of `Message<T>` are initialized before the slot is assumed init:
             // header is written here; factory is responsible for fully initializing `message`.
             unsafe {
-                let header = std::ptr::addr_of_mut!((*msg_ptr).header);
-                let message = std::ptr::addr_of_mut!((*msg_ptr).message).cast::<MaybeUninit<T>>();
+                let header = &raw mut (*msg_ptr).header;
+                let message = (&raw mut (*msg_ptr).message).cast::<MaybeUninit<T>>();
                 header.write(MessageHeader::default());
                 factory(&mut *message);
             }
@@ -265,8 +265,6 @@ impl<T> Publisher<T> {
     ) -> Result<usize, LoanError> {
         self.loan_with(initializer)
     }
-
-    // Loans cannot be held across runs
 }
 
 // Public channel construction and flushing move payload ownership/final drops
@@ -354,12 +352,7 @@ impl<T: Send + Sync + 'static> Publisher<T> {
             forwarded_channels,
         }
     }
-}
 
-// Typed connections send arena pointers to subscriber workers (`Send`), where
-// the same published value may be read concurrently (`Sync`); queued values
-// must not contain non-`'static` borrows.
-impl<T: Send + Sync + 'static> Publisher<T> {
     pub fn add_typed_subscriber(&mut self, typed_subscriber: &mut Subscriber<T>) {
         let buffer_guard = typed_subscriber.write_guard();
         let config = typed_subscriber.config().clone();

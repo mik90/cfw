@@ -79,7 +79,7 @@ impl<'a, T: Default> Output<'a, T> {
 
 // `new_downcasted` uses `Any`; only `'static` is needed for that type check.
 impl<'a, T: Default + 'static> Output<'a, T> {
-    pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> Output<'_, T> {
+    pub fn new_downcasted_default(publisher: &mut dyn GenericPublisher) -> Output<'_, T> {
         let typed_publisher = publisher.as_any().downcast_mut::<Publisher<T>>();
         Output::new_default(typed_publisher.expect("Expected proc macro to use the correct types"))
     }
