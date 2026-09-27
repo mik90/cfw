@@ -15,3 +15,6 @@ iceoryx2 = ["task/iceoryx2", "simulation_executor/iceoryx2", "dep:iceoryx2"]
 
 [dev-dependencies]
 test_tasks = { path = "../test_tasks" }
+
+[lints]
+workspace = true
