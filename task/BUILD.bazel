@@ -7,6 +7,7 @@ rust_library(
     name = "task",
     srcs = glob(["src/**/*.rs"]),
     crate_features = [
+        "iceoryx2",
         "serde",
         "testing",
     ],

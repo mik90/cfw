@@ -1,0 +1,9 @@
+{
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/bower_components": true,
+        "**/bazel-*": true,
+        "**/.idea*": true,
+        "**/*.code-search": true
+    }
+}

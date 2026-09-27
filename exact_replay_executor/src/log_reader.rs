@@ -538,6 +538,7 @@ mod tests {
         assert!(log.executions.is_empty());
     }
 
+    #[cfg(feature = "iceoryx2")]
     #[test]
     fn iox2_activations_do_not_become_callback_executions() {
         use task::execution_log::CallbackDescriptor;
@@ -614,6 +615,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "iceoryx2")]
     #[test]
     fn shared_event_header_matches_same_time_activations_for_each_recipient() {
         use task::execution_log::{CallbackDescriptor, LoggedMessage};
@@ -681,6 +683,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "iceoryx2")]
     #[test]
     fn missing_ordinary_event_payload_is_an_error() {
         let mut descriptor = ExecutionLogDescriptor::new(&[]);

@@ -17,13 +17,14 @@ iceoryx2 = { workspace = true, optional = true }
 [dev-dependencies]
 test_tasks = { path = "../test_tasks" }
 task = { path = "../task", features = ["testing"] }
-assert_no_alloc = {
-    # Only the git release has backtrace support
-    git = "https://github.com/Windfisch/rust-assert-no-alloc", rev="95120d996240a2c279a6067502e11b62d30563a6",
-    # Disable default features so that we panic on allocations
-    default-features = false,
-    features=["backtrace"]
-}
+
+[dev-dependencies.assert_no_alloc]
+# Only the git release has backtrace support
+git = "https://github.com/Windfisch/rust-assert-no-alloc"
+rev = "95120d996240a2c279a6067502e11b62d30563a6"
+# Disable default features so that we panic on allocations
+default-features = false
+features = ["backtrace"]
 
 [lints]
 workspace = true
