@@ -19,11 +19,14 @@ pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
 /// Artifact name used to store the execution log descriptor in the log file.
 pub const EXECUTION_LOG_DESCRIPTOR_ARTIFACT: &str = "execution_log_descriptor";
 
-/// Number of logged messages packed into a single [`ExecutionLogEntry`].
+/// Maximum number of logged messages referenced by a single [`ExecutionLogEntry`].
 /// A single callback execution that produces/receives more than this many
 /// messages splits across multiple entries, grouped by
 /// `(callback_node_index, execution_time)` on the consumer side.
 pub const MESSAGES_PER_ENTRY: usize = 24;
+
+/// Number of message references shared by all entries in one execution-log batch.
+pub const MESSAGES_PER_LOG: usize = 256;
 
 /// Number of [`ExecutionLogEntry`]s packed into a single [`ExecutionLogMessage`].
 /// One pub/sub message is emitted whenever this many entries accumulate,
@@ -70,7 +73,23 @@ impl LoggedMessage {
     }
 }
 
-/// A fixed-size slice of one callback's execution. An execution that logs
+/// Meaning of one execution-log entry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ExecutionLogEntryKind {
+    /// Records execution duration without message references.
+    #[default]
+    Duration,
+    /// Records execution duration and received/published message references.
+    Execution,
+    /// Records one listener activation for a subscriber.
+    #[cfg(feature = "iceoryx2")]
+    Iox2Event,
+}
+
+/// A fixed-size descriptor for one callback execution or listener activation.
+/// Message references reside in the containing [`ExecutionLogMessage`]'s shared pool.
+/// An execution that logs
 /// more than [`MESSAGES_PER_ENTRY`] messages continues in follow-up entries
 /// sharing the same `(callback_node_index, execution_time)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -79,16 +98,12 @@ pub struct ExecutionLogEntry {
     pub callback_node_index: u32,
     pub execution_time: FrameworkTime,
     pub execution_duration_ns: u64,
-    /// Whether this entry records the full execution (`messages` populated) or
-    /// is duration-only. Duration-only entries carry no messages and are
-    /// treated by consumers (e.g. exact replay) as if there was no execution
-    /// log at all.
-    pub log_whole: bool,
-    pub messages: [LoggedMessage; MESSAGES_PER_ENTRY],
-    /// An event input reference, stored in `messages[0]` independently of a callback run.
-    #[cfg(feature = "iceoryx2")]
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub iox2_event: bool,
+    /// Whether the entry describes a duration, full execution, or event activation.
+    pub kind: ExecutionLogEntryKind,
+    /// Offset of this entry's first message reference in the batch's shared pool.
+    pub message_start: u16,
+    /// Number of message references belonging to this entry.
+    pub message_count: u16,
 }
 
 impl Default for ExecutionLogEntry {
@@ -97,10 +112,9 @@ impl Default for ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::INVALID,
             execution_duration_ns: 0,
-            log_whole: false,
-            messages: std::array::from_fn(|_| LoggedMessage::default()),
-            #[cfg(feature = "iceoryx2")]
-            iox2_event: false,
+            kind: ExecutionLogEntryKind::Duration,
+            message_start: 0,
+            message_count: 0,
         }
     }
 }
@@ -114,17 +128,12 @@ impl ExecutionLogEntry {
     pub fn is_iox2_event(&self) -> bool {
         #[cfg(feature = "iceoryx2")]
         {
-            self.iox2_event
+            self.kind == ExecutionLogEntryKind::Iox2Event
         }
         #[cfg(not(feature = "iceoryx2"))]
         {
             false
         }
-    }
-
-    /// First invalid (unused) message slot in this entry, or `None` if full.
-    pub fn next_free(&self) -> Option<usize> {
-        self.messages.iter().position(|m| !m.is_valid())
     }
 }
 
@@ -141,6 +150,8 @@ impl ExecutionLogEntry {
 pub struct ExecutionLogMessage {
     pub number_of_dropped_entries: Saturating<usize>,
     pub entries: [ExecutionLogEntry; ENTRIES_PER_MESSAGE],
+    /// Shared message-reference pool, indexed by each entry's start and count.
+    pub messages: [LoggedMessage; MESSAGES_PER_LOG],
 }
 
 impl Default for ExecutionLogMessage {
@@ -148,6 +159,7 @@ impl Default for ExecutionLogMessage {
         ExecutionLogMessage {
             number_of_dropped_entries: Saturating(0),
             entries: std::array::from_fn(|_| ExecutionLogEntry::default()),
+            messages: std::array::from_fn(|_| LoggedMessage::default()),
         }
     }
 }
@@ -156,6 +168,41 @@ impl ExecutionLogMessage {
     /// First invalid (unused) entry slot in this message, or `None` if full.
     pub fn next_free_entry(&self) -> Option<usize> {
         self.entries.iter().position(|e| !e.is_valid())
+    }
+
+    /// First unused slot in the shared message-reference pool, or `None` if full.
+    pub fn next_free_message(&self) -> Option<usize> {
+        self.messages.iter().position(|message| !message.is_valid())
+    }
+
+    /// Message references owned by an entry in this batch.
+    pub fn messages_for(&self, entry: &ExecutionLogEntry) -> &[LoggedMessage] {
+        let start = usize::from(entry.message_start);
+        let end = start + usize::from(entry.message_count);
+        &self.messages[start..end]
+    }
+
+    /// Append a complete entry and its message references to the fixed-size batch.
+    /// Returns `false` if either pool lacks capacity.
+    pub fn push_entry(&mut self, mut entry: ExecutionLogEntry, messages: &[LoggedMessage]) -> bool {
+        let Some(index) = self.next_free_entry() else {
+            return false;
+        };
+        let start = self.next_free_message().unwrap_or(MESSAGES_PER_LOG);
+        if !entry.is_valid()
+            || messages.len() > MESSAGES_PER_ENTRY
+            || messages.iter().any(|message| !message.is_valid())
+            || (entry.kind == ExecutionLogEntryKind::Duration && !messages.is_empty())
+            || (entry.is_iox2_event() && messages.len() != 1)
+            || start + messages.len() > MESSAGES_PER_LOG
+        {
+            return false;
+        }
+        entry.message_start = start as u16;
+        entry.message_count = messages.len() as u16;
+        self.entries[index] = entry;
+        self.messages[start..start + messages.len()].copy_from_slice(messages);
+        true
     }
 }
 
@@ -168,10 +215,14 @@ impl Loggable for ExecutionLogMessage {
         struct Helper<'a> {
             number_of_dropped_entries: usize,
             entries: &'a [ExecutionLogEntry],
+            messages: &'a [LoggedMessage],
         }
+        let entry_count = self.next_free_entry().unwrap_or(ENTRIES_PER_MESSAGE);
+        let message_count = self.next_free_message().unwrap_or(MESSAGES_PER_LOG);
         let helper = Helper {
             number_of_dropped_entries: self.number_of_dropped_entries.0,
-            entries: &self.entries,
+            entries: &self.entries[..entry_count],
+            messages: &self.messages[..message_count],
         };
         serde_json::to_writer(w, &helper).map_err(SerializeError::SerdeJson)
     }
@@ -181,14 +232,46 @@ impl Loggable for ExecutionLogMessage {
         struct Helper {
             number_of_dropped_entries: usize,
             entries: Vec<ExecutionLogEntry>,
+            messages: Vec<LoggedMessage>,
         }
         let helper: Helper = serde_json::from_slice(bytes).map_err(DeserializeError::SerdeJson)?;
+        let invalid = || {
+            DeserializeError::Other(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid execution-log entry range or batch capacity",
+            )))
+        };
+        if helper.entries.len() > ENTRIES_PER_MESSAGE || helper.messages.len() > MESSAGES_PER_LOG {
+            return Err(invalid());
+        }
+        let mut previous_end = 0;
+        for entry in &helper.entries {
+            let start = usize::from(entry.message_start);
+            let end = start + usize::from(entry.message_count);
+            if !entry.is_valid()
+                || start != previous_end
+                || end > helper.messages.len()
+                || usize::from(entry.message_count) > MESSAGES_PER_ENTRY
+                || (entry.kind == ExecutionLogEntryKind::Duration && start != end)
+                || (entry.is_iox2_event() && end != start + 1)
+            {
+                return Err(invalid());
+            }
+            previous_end = end;
+        }
+        if previous_end != helper.messages.len()
+            || helper.messages.iter().any(|message| !message.is_valid())
+        {
+            return Err(invalid());
+        }
         let mut entries = [ExecutionLogEntry::default(); ENTRIES_PER_MESSAGE];
-        let len = helper.entries.len().min(ENTRIES_PER_MESSAGE);
-        entries[..len].copy_from_slice(&helper.entries[..len]);
+        entries[..helper.entries.len()].copy_from_slice(&helper.entries);
+        let mut messages = [LoggedMessage::default(); MESSAGES_PER_LOG];
+        messages[..helper.messages.len()].copy_from_slice(&helper.messages);
         Ok(ExecutionLogMessage {
             number_of_dropped_entries: Saturating(helper.number_of_dropped_entries),
             entries,
+            messages,
         })
     }
 }
@@ -387,8 +470,8 @@ mod tests {
     fn default_entry_has_all_invalid_messages() {
         let entry = ExecutionLogEntry::default();
         assert!(!entry.is_valid());
-        assert_eq!(entry.next_free(), Some(0));
-        assert!(entry.messages.iter().all(|m| !m.is_valid()));
+        assert_eq!(entry.message_count, 0);
+        assert_eq!(ExecutionLogMessage::default().next_free_message(), Some(0));
         #[cfg(feature = "iceoryx2")]
         assert!(!entry.is_iox2_event());
     }
@@ -402,11 +485,10 @@ mod tests {
         let event = ExecutionLogEntry {
             callback_node_index: 3,
             execution_time: observed_at,
-            iox2_event: true,
+            kind: ExecutionLogEntryKind::Iox2Event,
             ..Default::default()
         };
-        let mut event = event;
-        event.messages[0] = LoggedMessage {
+        let reference = LoggedMessage {
             ordinal: 2,
             direction: Direction::Received,
             header: MessageHeader::new(observed_at),
@@ -414,40 +496,115 @@ mod tests {
         let callback = ExecutionLogEntry {
             callback_node_index: 3,
             execution_time: FrameworkTime::from_nanoseconds(151),
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
         let mut batch = ExecutionLogMessage::default();
-        batch.entries[0] = event;
-        batch.entries[1] = callback;
+        assert!(batch.push_entry(event, &[reference]));
+        assert!(batch.push_entry(callback, &[]));
         let mut bytes = Vec::new();
         batch.serialize(&mut bytes).unwrap();
+        let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(wire["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(wire["messages"].as_array().unwrap().len(), 1);
         let parsed = ExecutionLogMessage::deserialize(&bytes).unwrap();
 
         assert!(parsed.entries[0].is_iox2_event());
-        assert_eq!(parsed.entries[0].messages[0], event.messages[0]);
+        assert_eq!(parsed.messages_for(&parsed.entries[0]), &[reference]);
         assert_eq!(parsed.entries[0].callback_node_index, 3);
         assert!(!parsed.entries[1].is_iox2_event());
-        assert!(parsed.entries[1].log_whole);
+        assert_eq!(parsed.entries[1].kind, ExecutionLogEntryKind::Execution);
         assert_eq!(parsed.next_free_entry(), Some(2));
     }
 
     #[test]
     fn sentinel_occupancy_walks_messages_then_next_entry() {
-        let mut entry = ExecutionLogEntry {
+        let entry = ExecutionLogEntry {
             execution_time: FrameworkTime::from_nanoseconds(1),
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        // Fill 3 of 24 message slots with valid headers; rest stay INVALID.
-        for i in 0..3 {
-            entry.messages[i] = LoggedMessage {
-                ordinal: i as u16,
-                direction: Direction::Received,
-                header: MessageHeader::new(FrameworkTime::from_nanoseconds(10 + i as i64)),
-            };
+        let messages: [LoggedMessage; 3] = std::array::from_fn(|i| LoggedMessage {
+            ordinal: i as u16,
+            direction: Direction::Received,
+            header: MessageHeader::new(FrameworkTime::from_nanoseconds(10 + i as i64)),
+        });
+        let mut batch = ExecutionLogMessage::default();
+        assert!(batch.push_entry(entry, &messages));
+        assert_eq!(batch.next_free_message(), Some(3));
+        assert_eq!(batch.messages_for(&batch.entries[0]), &messages);
+        assert!(std::mem::size_of::<ExecutionLogMessage>() < 8192);
+    }
+
+    #[test]
+    fn shared_message_pool_reports_exhaustion_without_losing_entry_boundaries() {
+        let mut batch = ExecutionLogMessage::default();
+        let at = FrameworkTime::from_nanoseconds(17);
+        let reference = LoggedMessage {
+            header: MessageHeader::new(at),
+            ..Default::default()
+        };
+        for _ in 0..10 {
+            assert!(batch.push_entry(
+                ExecutionLogEntry {
+                    execution_time: at,
+                    kind: ExecutionLogEntryKind::Execution,
+                    ..Default::default()
+                },
+                &[reference; MESSAGES_PER_ENTRY],
+            ));
         }
-        assert_eq!(entry.next_free(), Some(3));
-        assert_eq!(entry.messages.iter().filter(|m| m.is_valid()).count(), 3);
+        assert!(batch.push_entry(
+            ExecutionLogEntry {
+                execution_time: at,
+                kind: ExecutionLogEntryKind::Execution,
+                ..Default::default()
+            },
+            &[reference; MESSAGES_PER_LOG - 10 * MESSAGES_PER_ENTRY],
+        ));
+        assert_eq!(batch.next_free_message(), None);
+        assert!(batch.push_entry(
+            ExecutionLogEntry {
+                execution_time: at,
+                ..Default::default()
+            },
+            &[],
+        ));
+        assert!(!batch.push_entry(
+            ExecutionLogEntry {
+                execution_time: at,
+                kind: ExecutionLogEntryKind::Execution,
+                ..Default::default()
+            },
+            &[reference],
+        ));
+        assert_eq!(batch.messages_for(&batch.entries[10]).len(), 16);
+        assert!(batch.messages_for(&batch.entries[11]).is_empty());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn rejects_out_of_bounds_message_range() {
+        use crate::loggable::Loggable;
+
+        let at = FrameworkTime::from_nanoseconds(5);
+        let mut batch = ExecutionLogMessage::default();
+        assert!(batch.push_entry(
+            ExecutionLogEntry {
+                execution_time: at,
+                kind: ExecutionLogEntryKind::Execution,
+                ..Default::default()
+            },
+            &[LoggedMessage {
+                header: MessageHeader::new(at),
+                ..Default::default()
+            }],
+        ));
+        let mut bytes = Vec::new();
+        batch.serialize(&mut bytes).unwrap();
+        let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        json["entries"][0]["message_count"] = serde_json::json!(2);
+        assert!(ExecutionLogMessage::deserialize(&serde_json::to_vec(&json).unwrap()).is_err());
     }
 
     #[test]

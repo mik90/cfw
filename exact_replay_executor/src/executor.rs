@@ -354,7 +354,8 @@ mod tests {
     use task::context::Context;
     use task::execution_log::{
         Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
-        ExecutionLogDescriptor, ExecutionLogEntry, LoggedMessage,
+        ExecutionLogDescriptor, ExecutionLogEntry, ExecutionLogEntryKind, ExecutionLogMessage,
+        LoggedMessage,
     };
     use task::executor::{ExecutorParams, ThreadPoolConfig};
     use task::message::MessageHeader;
@@ -416,7 +417,7 @@ mod tests {
     fn write_test_log(
         buf: &mut Vec<u8>,
         desc: &ExecutionLogDescriptor,
-        entries: &[ExecutionLogEntry],
+        entries: &[(ExecutionLogEntry, Vec<LoggedMessage>)],
     ) {
         let mut writer = JsonLogFileWriter::new(buf);
 
@@ -426,11 +427,12 @@ mod tests {
             .unwrap();
 
         for chunk in entries.chunks(task::execution_log::ENTRIES_PER_MESSAGE) {
-            let msg_bytes = serde_json::to_vec(&serde_json::json!({
-                "number_of_dropped_entries": 0,
-                "entries": chunk,
-            }))
-            .unwrap();
+            let mut batch = ExecutionLogMessage::default();
+            for (entry, messages) in chunk {
+                assert!(batch.push_entry(*entry, messages));
+            }
+            let mut msg_bytes = Vec::new();
+            task::loggable::Loggable::serialize(&batch, &mut msg_bytes).unwrap();
             writer
                 .store_message(
                     EXECUTION_LOG_CHANNEL,
@@ -441,11 +443,8 @@ mod tests {
         }
 
         // Write ordinary log entries for the input/output values
-        for entry in entries {
-            for msg in &entry.messages {
-                if !msg.is_valid() {
-                    break;
-                }
+        for (_, messages) in entries {
+            for msg in messages {
                 let channel = if msg.direction == Direction::Received {
                     "input"
                 } else {
@@ -484,24 +483,24 @@ mod tests {
         );
 
         let mut entries = Vec::new();
-        let mut entry = ExecutionLogEntry {
+        let entry = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        entry.messages[0] = LoggedMessage {
+        let received = LoggedMessage {
             ordinal: 0,
             direction: Direction::Received,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        entry.messages[1] = LoggedMessage {
+        let published = LoggedMessage {
             ordinal: 0,
             direction: Direction::Published,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        entries.push(entry);
+        entries.push((entry, vec![received, published]));
 
         let mut buf = Vec::new();
         write_test_log(&mut buf, &desc, &entries);
@@ -566,11 +565,12 @@ mod tests {
         writer
             .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes)
             .unwrap();
-        let msg_bytes = serde_json::to_vec(&serde_json::json!({
-            "number_of_dropped_entries": 3,
-            "entries": []
-        }))
-        .unwrap();
+        let batch = ExecutionLogMessage {
+            number_of_dropped_entries: std::num::Saturating(3),
+            ..Default::default()
+        };
+        let mut msg_bytes = Vec::new();
+        task::loggable::Loggable::serialize(&batch, &mut msg_bytes).unwrap();
         writer
             .store_message(
                 EXECUTION_LOG_CHANNEL,
@@ -713,44 +713,44 @@ mod tests {
         );
 
         let mut entries = Vec::new();
-        let mut entry = ExecutionLogEntry {
+        let entry = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        entry.messages[0] = LoggedMessage {
+        let received = LoggedMessage {
             ordinal: 0,
             direction: Direction::Received,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        entry.messages[1] = LoggedMessage {
+        let published = LoggedMessage {
             ordinal: 0,
             direction: Direction::Published,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        entries.push(entry);
+        entries.push((entry, vec![received, published]));
 
         // Second execution with a different execution time.
-        let mut entry2 = ExecutionLogEntry {
+        let entry2 = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(200),
             execution_duration_ns: 0,
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        entry2.messages[0] = LoggedMessage {
+        let received = LoggedMessage {
             ordinal: 0,
             direction: Direction::Received,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(200)),
         };
-        entry2.messages[1] = LoggedMessage {
+        let published = LoggedMessage {
             ordinal: 0,
             direction: Direction::Published,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(200)),
         };
-        entries.push(entry2);
+        entries.push((entry2, vec![received, published]));
 
         let mut buf = Vec::new();
         write_test_log(&mut buf, &desc, &entries);

@@ -11,7 +11,7 @@ use task::channel_registry::ChannelRegistry;
 use task::context::Context;
 use task::execution_log::{
     Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
-    ExecutionLogEntry, ExecutionLogMessage, LoggedMessage,
+    ExecutionLogEntry, ExecutionLogEntryKind, ExecutionLogMessage, LoggedMessage,
 };
 use task::executor::{Executor, ExecutorParams};
 use task::iox2::{
@@ -119,31 +119,31 @@ fn write_log(
     payload: u64,
 ) -> JsonLogFileReader {
     let event_header = MessageHeader::new(FrameworkTime::from_nanoseconds(50));
-    let mut event = ExecutionLogEntry {
+    let event = ExecutionLogEntry {
         callback_node_index: 0,
         execution_time: FrameworkTime::from_nanoseconds(50),
-        iox2_event: true,
+        kind: ExecutionLogEntryKind::Iox2Event,
         ..Default::default()
     };
-    event.messages[0] = LoggedMessage {
+    let event_reference = LoggedMessage {
         ordinal: 1,
         direction: Direction::Received,
         header: event_header,
     };
-    let mut execution = ExecutionLogEntry {
+    let execution = ExecutionLogEntry {
         callback_node_index: 0,
         execution_time: FrameworkTime::from_nanoseconds(100),
-        log_whole: true,
+        kind: ExecutionLogEntryKind::Execution,
         ..Default::default()
     };
-    execution.messages[0] = LoggedMessage {
+    let input_reference = LoggedMessage {
         ordinal: 0,
         direction: Direction::Received,
         header,
     };
     let mut batch = ExecutionLogMessage::default();
-    batch.entries[0] = event;
-    batch.entries[1] = execution;
+    assert!(batch.push_entry(event, &[event_reference]));
+    assert!(batch.push_entry(execution, &[input_reference]));
 
     let mut bytes = Vec::new();
     {
@@ -292,27 +292,30 @@ fn exact_replay_stages_each_event_before_its_recorded_execution() {
     );
     let descriptor = ExecutionLogDescriptor::new(std::slice::from_ref(&node));
     let mut batch = ExecutionLogMessage::default();
-    for (index, (observed_at, _, _)) in [(150, 2, 5), (50, 1, 3)].into_iter().enumerate() {
-        let mut entry = ExecutionLogEntry {
+    for (observed_at, _, _) in [(150, 2, 5), (50, 1, 3)] {
+        let entry = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(observed_at),
-            iox2_event: true,
+            kind: ExecutionLogEntryKind::Iox2Event,
             ..Default::default()
         };
-        entry.messages[0] = LoggedMessage {
+        let reference = LoggedMessage {
             ordinal: 0,
             direction: Direction::Received,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(observed_at)),
         };
-        batch.entries[index] = entry;
+        assert!(batch.push_entry(entry, &[reference]));
     }
-    for (index, at) in [100, 200].into_iter().enumerate() {
-        batch.entries[index + 2] = ExecutionLogEntry {
-            callback_node_index: 0,
-            execution_time: FrameworkTime::from_nanoseconds(at),
-            log_whole: true,
-            ..Default::default()
-        };
+    for at in [100, 200] {
+        assert!(batch.push_entry(
+            ExecutionLogEntry {
+                callback_node_index: 0,
+                execution_time: FrameworkTime::from_nanoseconds(at),
+                kind: ExecutionLogEntryKind::Execution,
+                ..Default::default()
+            },
+            &[]
+        ));
     }
     let mut bytes = Vec::new();
     {

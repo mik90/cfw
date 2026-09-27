@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use logging::log_file::LogFileReader;
 use task::execution_log::{
     Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
-    ExecutionLogEntry, ExecutionLogMessage,
+    ExecutionLogEntry, ExecutionLogEntryKind, ExecutionLogMessage, LoggedMessage,
 };
 use task::loggable::Loggable;
 use task::message::MessageHeader;
@@ -94,9 +94,14 @@ pub(crate) struct ReplayLog {
 /// A group of split entries for one execution, tracking insertion order so
 /// that equal-timestamp groups remain in log order.
 struct ExecutionGroup {
-    entries: Vec<ExecutionLogEntry>,
+    entries: Vec<ExecutionGroupEntry>,
     /// The `(callback_node_index, execution_time_ns)` key.
     key: (usize, i64),
+}
+
+struct ExecutionGroupEntry {
+    entry: ExecutionLogEntry,
+    messages: Vec<LoggedMessage>,
 }
 
 /// Parse a log file reader and extract the execution log descriptor and
@@ -202,7 +207,7 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
             #[cfg(feature = "iceoryx2")]
             if entry.is_iox2_event() {
                 let node_index = entry.callback_node_index as usize;
-                let reference = entry.messages[0];
+                let reference = msg.messages_for(entry)[0];
                 if !reference.is_valid() || reference.direction != Direction::Received {
                     return Err(ReplayError::MissingOrInvalidDescriptor(format!(
                         "iox2 event on node[{node_index}] has no received message reference"
@@ -258,7 +263,7 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
             }
             // Duration-only entries carry no messages and are treated as if
             // there was no execution log at all.
-            if !entry.log_whole {
+            if entry.kind != ExecutionLogEntryKind::Execution {
                 continue;
             }
             let key = (
@@ -277,7 +282,10 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
                     i
                 }
             };
-            groups[idx].entries.push(*entry);
+            groups[idx].entries.push(ExecutionGroupEntry {
+                entry: *entry,
+                messages: msg.messages_for(entry).to_vec(),
+            });
         }
     }
 
@@ -301,8 +309,8 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
 
     for group in &groups {
         let node_idx = group.key.0;
-        let execution_time = group.entries[0].execution_time;
-        let execution_duration_ns = group.entries[0].execution_duration_ns;
+        let execution_time = group.entries[0].entry.execution_time;
+        let execution_duration_ns = group.entries[0].entry.execution_duration_ns;
 
         let Some(cd) = descriptor.index_to_callbacks.get(&node_idx) else {
             descriptor_less_executions.push((node_idx, execution_time));
@@ -314,10 +322,6 @@ pub(crate) fn parse_replay_log(reader: &dyn LogFileReader) -> Result<ReplayLog, 
 
         for entry in &group.entries {
             for msg in &entry.messages {
-                if !msg.is_valid() {
-                    break;
-                }
-
                 // Resolve the channel name from the descriptor.
                 let (channel_name, is_received) =
                     if msg.direction == task::execution_log::Direction::Received {
@@ -450,8 +454,15 @@ fn lookup_payload(
             is_received,
         ))
         .or_insert(0);
+    // A retained input can be read by more than one execution. One ordinary
+    // payload at this timestamp identifies the same sample on every such run.
+    let occurrence = if is_received && bodies.len() == 1 {
+        0
+    } else {
+        *cursor
+    };
     let body = bodies
-        .get(*cursor)
+        .get(occurrence)
         .ok_or_else(|| ReplayError::UnreproducibleMessage {
             channel: channel_name.to_owned(),
             header_time: header.published_at,
@@ -494,12 +505,20 @@ mod tests {
     // triggering clippy::drop_non_drop.
     fn finish_writer<W: std::io::Write>(_: JsonLogFileWriter<W>) {}
 
-    fn execution_log_bytes(entries: &[ExecutionLogEntry], dropped: usize) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({
-            "number_of_dropped_entries": dropped,
-            "entries": entries,
-        }))
-        .unwrap()
+    fn execution_log_bytes(
+        entries: &[(ExecutionLogEntry, Vec<LoggedMessage>)],
+        dropped: usize,
+    ) -> Vec<u8> {
+        let mut batch = ExecutionLogMessage {
+            number_of_dropped_entries: std::num::Saturating(dropped),
+            ..Default::default()
+        };
+        for (entry, messages) in entries {
+            assert!(batch.push_entry(*entry, messages));
+        }
+        let mut bytes = Vec::new();
+        batch.serialize(&mut bytes).unwrap();
+        bytes
     }
 
     #[test]
@@ -534,13 +553,13 @@ mod tests {
             },
         );
         let observed_at = FrameworkTime::from_nanoseconds(50);
-        let mut activation = ExecutionLogEntry {
+        let activation = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: observed_at,
-            iox2_event: true,
+            kind: ExecutionLogEntryKind::Iox2Event,
             ..Default::default()
         };
-        activation.messages[0] = task::execution_log::LoggedMessage {
+        let reference = LoggedMessage {
             ordinal: 1,
             direction: Direction::Received,
             header: MessageHeader::new(observed_at),
@@ -548,7 +567,7 @@ mod tests {
         let callback = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(60),
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
 
@@ -573,7 +592,7 @@ mod tests {
             &mut writer,
             EXECUTION_LOG_CHANNEL,
             &MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
-            &execution_log_bytes(&[activation, callback], 0),
+            &execution_log_bytes(&[(activation, vec![reference]), (callback, vec![])], 0),
         );
         finish_writer(writer);
 
@@ -614,18 +633,18 @@ mod tests {
         let mut entries = Vec::new();
         for _ in 0..2 {
             for node in 0..2 {
-                let mut entry = ExecutionLogEntry {
+                let entry = ExecutionLogEntry {
                     callback_node_index: node,
                     execution_time: at,
-                    iox2_event: true,
+                    kind: ExecutionLogEntryKind::Iox2Event,
                     ..Default::default()
                 };
-                entry.messages[0] = LoggedMessage {
+                let reference = LoggedMessage {
                     ordinal: 0,
                     direction: Direction::Received,
                     header,
                 };
-                entries.push(entry);
+                entries.push((entry, vec![reference]));
             }
         }
         let mut bytes = Vec::new();
@@ -673,13 +692,13 @@ mod tests {
             },
         );
         let at = FrameworkTime::from_nanoseconds(10);
-        let mut event = ExecutionLogEntry {
+        let event = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: at,
-            iox2_event: true,
+            kind: ExecutionLogEntryKind::Iox2Event,
             ..Default::default()
         };
-        event.messages[0] = task::execution_log::LoggedMessage {
+        let reference = LoggedMessage {
             ordinal: 0,
             direction: Direction::Received,
             header: MessageHeader::new(at),
@@ -695,7 +714,7 @@ mod tests {
             &mut writer,
             EXECUTION_LOG_CHANNEL,
             &MessageHeader::new(at),
-            &execution_log_bytes(&[event], 0),
+            &execution_log_bytes(&[(event, vec![reference])], 0),
         );
         finish_writer(writer);
         let reader = JsonLogFileReader::from_reader(bytes.as_slice()).unwrap();
@@ -763,19 +782,19 @@ mod tests {
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
         write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
 
-        let mut entry = task::execution_log::ExecutionLogEntry {
+        let entry = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        entry.messages[0] = task::execution_log::LoggedMessage {
+        let reference = LoggedMessage {
             ordinal: 0,
-            direction: task::execution_log::Direction::Received,
+            direction: Direction::Received,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        let scratch = execution_log_bytes(&[entry], 0);
+        let scratch = execution_log_bytes(&[(entry, vec![reference])], 0);
         write_entry(
             &mut writer,
             EXECUTION_LOG_CHANNEL,
@@ -816,19 +835,19 @@ mod tests {
         let desc_bytes = serde_json::to_vec(&desc).unwrap();
         write_artifact(&mut writer, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &desc_bytes);
 
-        let mut entry = task::execution_log::ExecutionLogEntry {
+        let entry = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        entry.messages[0] = task::execution_log::LoggedMessage {
+        let reference = LoggedMessage {
             ordinal: 0,
-            direction: task::execution_log::Direction::Received,
+            direction: Direction::Received,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        let scratch = execution_log_bytes(&[entry], 0);
+        let scratch = execution_log_bytes(&[(entry, vec![reference])], 0);
         write_entry(
             &mut writer,
             EXECUTION_LOG_CHANNEL,
@@ -883,31 +902,34 @@ mod tests {
 
         // Node 0 published "source" at 100; node 1 received it at 100. No
         // ordinary-log entry for "source" — it was not logged.
-        let mut producer = task::execution_log::ExecutionLogEntry {
+        let producer = ExecutionLogEntry {
             callback_node_index: 0,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        producer.messages[0] = task::execution_log::LoggedMessage {
+        let published = LoggedMessage {
             ordinal: 0,
-            direction: task::execution_log::Direction::Published,
+            direction: Direction::Published,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        let mut consumer = task::execution_log::ExecutionLogEntry {
+        let consumer = ExecutionLogEntry {
             callback_node_index: 1,
             execution_time: FrameworkTime::from_nanoseconds(150),
             execution_duration_ns: 0,
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        consumer.messages[0] = task::execution_log::LoggedMessage {
+        let received = LoggedMessage {
             ordinal: 0,
-            direction: task::execution_log::Direction::Received,
+            direction: Direction::Received,
             header: MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
         };
-        let scratch = execution_log_bytes(&[producer, consumer], 0);
+        let scratch = execution_log_bytes(
+            &[(producer, vec![published]), (consumer, vec![received])],
+            0,
+        );
         write_entry(
             &mut writer,
             EXECUTION_LOG_CHANNEL,
@@ -938,10 +960,10 @@ mod tests {
             callback_node_index: 5,
             execution_time: FrameworkTime::from_nanoseconds(100),
             execution_duration_ns: 0,
-            log_whole: true,
+            kind: ExecutionLogEntryKind::Execution,
             ..Default::default()
         };
-        let scratch = execution_log_bytes(&[entry], 0);
+        let scratch = execution_log_bytes(&[(entry, vec![])], 0);
         write_entry(
             &mut writer,
             EXECUTION_LOG_CHANNEL,
@@ -995,19 +1017,19 @@ mod tests {
         let bodies: &[&[u8]] = &[b"first", b"second"];
         for (i, _expected_body) in bodies.iter().enumerate() {
             let exec_time = FrameworkTime::from_nanoseconds(100 + i as i64);
-            let mut entry = ExecutionLogEntry {
+            let entry = ExecutionLogEntry {
                 callback_node_index: 0,
                 execution_time: exec_time,
                 execution_duration_ns: 0,
-                log_whole: true,
+                kind: ExecutionLogEntryKind::Execution,
                 ..Default::default()
             };
-            entry.messages[0] = LoggedMessage {
+            let reference = LoggedMessage {
                 ordinal: 0,
                 direction: Direction::Received,
                 header: hdr,
             };
-            let scratch = execution_log_bytes(&[entry], 0);
+            let scratch = execution_log_bytes(&[(entry, vec![reference])], 0);
             write_entry(
                 &mut writer,
                 EXECUTION_LOG_CHANNEL,
@@ -1038,5 +1060,18 @@ mod tests {
             PayloadSource::Logged(b"second".to_vec()),
             "second execution should get the second ordinary-log entry"
         );
+    }
+
+    #[test]
+    fn repeated_receive_of_one_logged_sample_uses_its_original_payload() {
+        let header = MessageHeader::new(FrameworkTime::from_nanoseconds(37));
+        let bodies = HashMap::from([(("retained".to_owned(), 37), vec![b"payload".to_vec()])]);
+        let mut consumed = HashMap::new();
+        for _ in 0..3 {
+            assert_eq!(
+                lookup_payload(&bodies, &mut consumed, "retained", &header, true, 0).unwrap(),
+                Some(b"payload".to_vec())
+            );
+        }
     }
 }

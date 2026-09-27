@@ -3,7 +3,8 @@ use std::time::Duration;
 #[cfg(feature = "iceoryx2")]
 use task::execution_log::{Direction, ExecutionLogEntry};
 use task::execution_log::{
-    ENTRIES_PER_MESSAGE, ExecutionLogMessage, LoggedMessage, MESSAGES_PER_ENTRY,
+    ENTRIES_PER_MESSAGE, ExecutionLogEntryKind, ExecutionLogMessage, LoggedMessage,
+    MESSAGES_PER_ENTRY, MESSAGES_PER_LOG,
 };
 #[cfg(feature = "iceoryx2")]
 use task::message::MessageHeader;
@@ -21,6 +22,7 @@ pub(crate) struct WorkerLogger {
     cur_duration: Duration,
     next_entry: usize,
     next_msg: usize,
+    next_pool_msg: usize,
     dropped: Saturating<usize>,
     recv_scratch: Vec<LoggedMessage>,
     recv_scratch_len: usize,
@@ -49,6 +51,7 @@ impl WorkerLogger {
             cur_duration: Duration::ZERO,
             next_entry: 0,
             next_msg: 0,
+            next_pool_msg: 0,
             dropped: Saturating(0),
             recv_scratch,
             recv_scratch_len: 0,
@@ -112,6 +115,7 @@ impl WorkerLogger {
             // `flush_current` already resets both cursors.
             self.next_entry = 0;
             self.next_msg = 0;
+            self.next_pool_msg = 0;
         }
     }
 
@@ -135,7 +139,8 @@ impl WorkerLogger {
         entry.callback_node_index = node_index;
         entry.execution_time = time;
         entry.execution_duration_ns = duration.as_nanos() as u64;
-        entry.log_whole = false;
+        entry.kind = ExecutionLogEntryKind::Duration;
+        entry.message_start = self.next_pool_msg as u16;
         self.next_entry += 1;
         self.next_msg = 0;
         if self.next_entry == ENTRIES_PER_MESSAGE {
@@ -157,6 +162,9 @@ impl WorkerLogger {
         sink: &mut dyn ReadyNodeSink,
     ) {
         self.roll_to_fresh_entry(sink);
+        if self.next_pool_msg == MESSAGES_PER_LOG {
+            self.flush_current(observed_at, sink);
+        }
         if !self.has_data() {
             return;
         }
@@ -165,14 +173,17 @@ impl WorkerLogger {
         current.entries[self.next_entry] = ExecutionLogEntry {
             callback_node_index,
             execution_time: observed_at,
-            iox2_event: true,
+            kind: ExecutionLogEntryKind::Iox2Event,
+            message_start: self.next_pool_msg as u16,
+            message_count: 1,
             ..Default::default()
         };
-        current.entries[self.next_entry].messages[0] = LoggedMessage {
+        current.messages[self.next_pool_msg] = LoggedMessage {
             ordinal: subscriber_ordinal,
             direction: Direction::Received,
             header: MessageHeader::new(observed_at),
         };
+        self.next_pool_msg += 1;
         self.next_entry += 1;
         if self.next_entry == ENTRIES_PER_MESSAGE {
             self.flush_current(observed_at, sink);
@@ -180,34 +191,28 @@ impl WorkerLogger {
     }
 
     pub(crate) fn append(&mut self, msg: LoggedMessage, sink: &mut dyn ReadyNodeSink) {
+        if self.next_msg == MESSAGES_PER_ENTRY {
+            self.roll_to_fresh_entry(sink);
+        }
+        if self.next_pool_msg == MESSAGES_PER_LOG {
+            self.flush_current(self.cur_time, sink);
+        }
         let Some(loan) = self.current_loan else {
             self.dropped += 1;
             return;
         };
-
-        if self.next_msg == MESSAGES_PER_ENTRY {
-            self.next_entry += 1;
-            self.next_msg = 0;
-            if self.next_entry == ENTRIES_PER_MESSAGE {
-                if !self.flush_current(self.cur_time, sink) {
-                    self.dropped += 1;
-                    self.next_entry = 0;
-                    self.next_msg = 0;
-                    return;
-                }
-                self.next_entry = 0;
-            }
-        }
-
         let cur = self.publisher.loaned_payload_mut(loan);
         let entry = &mut cur.entries[self.next_entry];
         if !entry.is_valid() {
             entry.callback_node_index = self.cur_node;
             entry.execution_time = self.cur_time;
             entry.execution_duration_ns = self.cur_duration.as_nanos() as u64;
-            entry.log_whole = true;
+            entry.kind = ExecutionLogEntryKind::Execution;
+            entry.message_start = self.next_pool_msg as u16;
         }
-        entry.messages[self.next_msg] = msg;
+        cur.messages[self.next_pool_msg] = msg;
+        entry.message_count += 1;
+        self.next_pool_msg += 1;
         self.next_msg += 1;
     }
 
@@ -256,6 +261,7 @@ impl WorkerLogger {
         self.current_loan = self.publisher.loan_default().ok();
         self.next_entry = 0;
         self.next_msg = 0;
+        self.next_pool_msg = 0;
         self.current_loan.is_some()
     }
 
@@ -308,12 +314,77 @@ mod tests {
         for (index, node) in [4, 5].into_iter().enumerate() {
             let entry = &batch.entries[index];
             assert_eq!(entry.callback_node_index, node);
-            assert!(!entry.log_whole);
+            assert_eq!(entry.kind, ExecutionLogEntryKind::Iox2Event);
             assert!(entry.is_iox2_event());
-            assert_eq!(entry.messages[0].ordinal, if index == 0 { 2 } else { 0 });
-            assert_eq!(entry.messages[0].header.published_at, observed_at);
+            assert_eq!(
+                batch.messages_for(entry)[0].ordinal,
+                if index == 0 { 2 } else { 0 }
+            );
+            assert_eq!(
+                batch.messages_for(entry)[0].header.published_at,
+                observed_at
+            );
         }
         assert_eq!(batch.next_free_entry(), Some(2));
+        drop(buffer);
+        subscriber.cleanup_buffers();
+    }
+
+    #[test]
+    fn execution_spans_a_full_shared_message_pool_without_losing_references() {
+        use task::generic_publisher::GenericPublisher as _;
+        use task::message::MessageHeader;
+        use task::subscriber::{Subscriber, SubscriberConfig};
+
+        let mut publisher = Publisher::<ExecutionLogMessage>::new(PublisherConfig {
+            capacity: 2,
+            channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+        });
+        let mut subscriber = Subscriber::<ExecutionLogMessage>::new(SubscriberConfig {
+            is_optional: true,
+            capacity: 4,
+            is_trigger: false,
+            keep_across_runs: false,
+            channel_name: task::execution_log::EXECUTION_LOG_CHANNEL.into(),
+        });
+        publisher.connect_to_subscriber(&mut subscriber).unwrap();
+        publisher.allocate_arena();
+        let at = FrameworkTime::from_nanoseconds(100);
+        let mut init = Some(WorkerLoggerInit {
+            publisher,
+            flush_period: Duration::from_secs(1),
+            scratch_capacity: 0,
+        });
+        let mut logger = WorkerLogger::new(&mut init, at).unwrap();
+        let mut sink = task::scheduling::NoopReadyNodeSink;
+        assert!(logger.has_data());
+        logger.begin_execution(7, at, Duration::from_nanos(12), &mut sink);
+        for _ in 0..MESSAGES_PER_LOG + 8 {
+            logger.append(
+                LoggedMessage {
+                    header: MessageHeader::new(at),
+                    ..Default::default()
+                },
+                &mut sink,
+            );
+        }
+        logger.flush_remaining(at, &mut sink);
+
+        subscriber.drain_writer_to_reader();
+        let mut buffer = subscriber.read_buffer();
+        assert_eq!(buffer.len(), 2);
+        let mut total = 0;
+        for batch in buffer.as_slice() {
+            let batch = &batch.message;
+            assert_eq!(batch.number_of_dropped_entries.0, 0);
+            for entry in batch.entries.iter().take_while(|entry| entry.is_valid()) {
+                assert_eq!(entry.callback_node_index, 7);
+                assert_eq!(entry.execution_duration_ns, 12);
+                assert_eq!(entry.kind, ExecutionLogEntryKind::Execution);
+                total += batch.messages_for(entry).len();
+            }
+        }
+        assert_eq!(total, MESSAGES_PER_LOG + 8);
         drop(buffer);
         subscriber.cleanup_buffers();
     }

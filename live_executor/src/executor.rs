@@ -1855,10 +1855,7 @@ mod tests {
                     continue;
                 }
                 assert!(entry.callback_node_index == 0 || entry.callback_node_index == 1);
-                for m in entry.messages.iter() {
-                    if !m.is_valid() {
-                        break;
-                    }
+                for m in msg.messages_for(entry) {
                     assert!(m.header.published_at != task::time::FrameworkTime::INVALID);
                     match m.direction {
                         task::execution_log::Direction::Published => {
@@ -2645,12 +2642,15 @@ mod tests {
                         continue;
                     }
                     assert!(matches!(entry.callback_node_index, 1 | 2));
-                    assert_eq!(entry.messages[0].ordinal, 0);
+                    assert_eq!(batch.messages_for(entry)[0].ordinal, 0);
                     assert_ne!(
-                        entry.messages[0].header.published_at,
+                        batch.messages_for(entry)[0].header.published_at,
                         FrameworkTime::INVALID
                     );
-                    assert_eq!(entry.execution_time, entry.messages[0].header.published_at);
+                    assert_eq!(
+                        entry.execution_time,
+                        batch.messages_for(entry)[0].header.published_at
+                    );
                     recipients.insert(entry.callback_node_index);
                 }
             }

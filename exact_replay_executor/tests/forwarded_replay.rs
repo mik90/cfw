@@ -235,18 +235,19 @@ fn serialize<T: Loggable>(value: &T) -> Vec<u8> {
     buf
 }
 
-fn make_entry(node: u32, time_ns: i64, messages: &[LoggedMessage]) -> ExecutionLogEntry {
-    let mut entry = ExecutionLogEntry {
+fn make_entry(
+    node: u32,
+    time_ns: i64,
+    messages: &[LoggedMessage],
+) -> (ExecutionLogEntry, Vec<LoggedMessage>) {
+    let entry = ExecutionLogEntry {
         callback_node_index: node,
         execution_time: FrameworkTime::from_nanoseconds(time_ns),
         execution_duration_ns: 0,
-        log_whole: true,
+        kind: task::execution_log::ExecutionLogEntryKind::Execution,
         ..Default::default()
     };
-    for (i, msg) in messages.iter().enumerate() {
-        entry.messages[i] = *msg;
-    }
-    entry
+    (entry, messages.to_vec())
 }
 
 fn write_direct_log(buf: &mut Vec<u8>) {
@@ -344,9 +345,9 @@ fn write_direct_log(buf: &mut Vec<u8>) {
         ),
     ];
 
-    for entry in entries {
+    for (entry, messages) in entries {
         let mut msg = ExecutionLogMessage::default();
-        msg.entries[0] = entry;
+        assert!(msg.push_entry(entry, &messages));
         writer
             .store_message(
                 EXECUTION_LOG_CHANNEL,

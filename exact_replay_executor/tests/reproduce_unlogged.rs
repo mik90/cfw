@@ -18,7 +18,8 @@ use task::callback_builder::CallbackBuilder;
 use task::channel_registry::ChannelRegistry;
 use task::execution_log::{
     Direction, EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionLogDescriptor,
-    ExecutionLogEntry, ExecutionLogLevel, ExecutionLogMessage, LoggedMessage,
+    ExecutionLogEntry, ExecutionLogEntryKind, ExecutionLogLevel, ExecutionLogMessage,
+    LoggedMessage,
 };
 use task::executor::{Executor, ExecutorParams, ExecutorStopSignal, ThreadPoolConfig};
 use task::input::InputSpan;
@@ -312,9 +313,9 @@ fn write_direct_log(buf: &mut Vec<u8>) {
         ),
     ];
 
-    for entry in entries {
+    for (entry, messages) in entries {
         let mut msg = ExecutionLogMessage::default();
-        msg.entries[0] = entry;
+        assert!(msg.push_entry(entry, &messages));
         writer
             .store_message(
                 EXECUTION_LOG_CHANNEL,
@@ -325,18 +326,19 @@ fn write_direct_log(buf: &mut Vec<u8>) {
     }
 }
 
-fn make_entry(node: u32, time: FrameworkTime, messages: &[LoggedMessage]) -> ExecutionLogEntry {
-    let mut entry = ExecutionLogEntry {
+fn make_entry(
+    node: u32,
+    time: FrameworkTime,
+    messages: &[LoggedMessage],
+) -> (ExecutionLogEntry, Vec<LoggedMessage>) {
+    let entry = ExecutionLogEntry {
         callback_node_index: node,
         execution_time: time,
         execution_duration_ns: 0,
-        log_whole: true,
+        kind: ExecutionLogEntryKind::Execution,
         ..Default::default()
     };
-    for (i, msg) in messages.iter().enumerate() {
-        entry.messages[i] = *msg;
-    }
-    entry
+    (entry, messages.to_vec())
 }
 
 fn chain_nodes(
@@ -472,7 +474,7 @@ fn unreproducible_source_channel_fails_construction() {
         .write_artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT, &serialize(&desc))
         .expect("write descriptor");
 
-    let entry = make_entry(
+    let (entry, messages) = make_entry(
         0,
         FrameworkTime::from_nanoseconds(100),
         &[LoggedMessage {
@@ -482,7 +484,7 @@ fn unreproducible_source_channel_fails_construction() {
         }],
     );
     let mut msg = ExecutionLogMessage::default();
-    msg.entries[0] = entry;
+    assert!(msg.push_entry(entry, &messages));
     writer
         .store_message(
             EXECUTION_LOG_CHANNEL,
