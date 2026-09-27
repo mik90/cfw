@@ -2311,10 +2311,14 @@ mod tests {
     )]
     /// We expect that the assert_no_alloc crate will panic on allocs
     fn test_run_aborting_test() {
-        let output = Command::new("cargo")
-            .args(["test", "--", "test_no_alloc_catches_allocs", "--ignored"])
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .args([
+                "--exact",
+                "executor::tests::test_no_alloc_catches_allocs",
+                "--ignored",
+            ])
             .output()
-            .expect("Failed to run subommand");
+            .expect("Failed to run subprocess");
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
