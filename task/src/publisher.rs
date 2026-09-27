@@ -613,8 +613,9 @@ mod tests {
         publisher.allocate_arena();
         assert!(publisher.loan_default().is_ok());
         let value = publisher.loaned_value_at(0);
-        let header = &value.value().header;
-        assert_eq!(header.published_at, FrameworkTime::INVALID);
+        // SAFETY: We assume that the header was default-initialized, and are testing that
+        let message = unsafe { value.ptr.payload.get().read().assume_init() };
+        assert_eq!(message.header.published_at, FrameworkTime::INVALID);
     }
 
     /// Arena capacity must cover the publisher's own loans (`config.capacity`)
