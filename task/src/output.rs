@@ -30,19 +30,15 @@ pub struct Output<'a, T> {
 
 impl<'a, T> Output<'a, T> {
     pub fn value(&self) -> &T {
-        &self
-            .publisher
+        self.publisher
             .loaned_value_at(self.loaned_value_idx)
-            .value()
-            .message
+            .payload()
     }
 
     pub fn value_mut(&mut self) -> &mut T {
-        &mut self
-            .publisher
+        self.publisher
             .loaned_value_at_mut(self.loaned_value_idx)
-            .value_mut()
-            .message
+            .payload_mut()
     }
 
     pub fn send(self) {

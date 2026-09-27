@@ -36,27 +36,15 @@ impl<T> LoanedValue<T> {
         LoanedValue { ptr, sent: false }
     }
 
-    pub(crate) fn value(&self) -> &Message<T> {
-        // SAFETY: For a loaned value to have been created, the message should have been initialized
-        unsafe { (*self.ptr.payload.get()).assume_init_ref() }
-    }
-
-    pub(crate) fn value_mut(&mut self) -> &mut Message<T> {
-        // SAFETY: For a loaned value to have been created, the message should have been initialized
-        unsafe { (*self.ptr.payload.get()).assume_init_mut() }
-    }
-
     pub(crate) fn payload(&self) -> &T {
-        &self.value().message
+        // SAFETY: For a loaned value to have been created, the message should have been initialized
+        &unsafe { (*self.ptr.payload.get()).assume_init_ref() }.message
     }
 
     /// Borrow the payload (`Message<T>::message`) of this loan mutably.
     pub(crate) fn payload_mut(&mut self) -> &mut T {
-        &mut self.value_mut().message
-    }
-
-    pub(crate) fn header(&self) -> &MessageHeader {
-        &self.value().header
+        // SAFETY: For a loaned value to have been created, the message should have been initialized
+        &mut unsafe { (*self.ptr.payload.get()).assume_init_mut() }.message
     }
 }
 
@@ -181,6 +169,33 @@ impl<T: 'static + Send + Sync> GenericPublisher for Publisher<T> {
 }
 
 impl<T> Publisher<T> {
+    pub fn new(config: PublisherConfig) -> Self {
+        let capacity = config.capacity;
+        Publisher {
+            config,
+            // Arena will be resized to allow for enough data for subscribers
+            arena: Arena::new(capacity),
+            subscriber_write_buffers: vec![],
+            loaned_values: Vec::with_capacity(capacity),
+            forwarded_channels: vec![],
+        }
+    }
+
+    pub fn new_with_forwards(
+        config: PublisherConfig,
+        forwarded_channels: Vec<ChannelName>,
+    ) -> Self {
+        let capacity = config.capacity;
+        Publisher {
+            config,
+            // Arena will be resized to allow for enough data for subscribers
+            arena: Arena::new(capacity),
+            subscriber_write_buffers: vec![],
+            loaned_values: Vec::with_capacity(capacity),
+            forwarded_channels,
+        }
+    }
+
     pub fn config(&self) -> &PublisherConfig {
         &self.config
     }
@@ -202,8 +217,7 @@ impl<T> Publisher<T> {
     /// several writes before being sent — used by executors that fill an
     /// execution-log message over multiple executions before flushing it.
     pub fn loaned_payload_mut(&mut self, index: usize) -> &mut T {
-        let msg: &mut Message<T> = self.loaned_value_at_mut(index).value_mut();
-        &mut msg.message
+        self.loaned_value_at_mut(index).payload_mut()
     }
 
     /// Mark an outstanding loan as sent so a subsequent `flush_loaned_values`
@@ -323,33 +337,6 @@ impl<T: Send + Sync + 'static> Publisher<T> {
                     }
                 }
             }
-        }
-    }
-
-    pub fn new(config: PublisherConfig) -> Self {
-        let capacity = config.capacity;
-        Publisher {
-            config,
-            // Arena will be resized to allow for enough data for subscribers
-            arena: Arena::new(capacity),
-            subscriber_write_buffers: vec![],
-            loaned_values: Vec::with_capacity(capacity),
-            forwarded_channels: vec![],
-        }
-    }
-
-    pub fn new_with_forwards(
-        config: PublisherConfig,
-        forwarded_channels: Vec<ChannelName>,
-    ) -> Self {
-        let capacity = config.capacity;
-        Publisher {
-            config,
-            // Arena will be resized to allow for enough data for subscribers
-            arena: Arena::new(capacity),
-            subscriber_write_buffers: vec![],
-            loaned_values: Vec::with_capacity(capacity),
-            forwarded_channels,
         }
     }
 
