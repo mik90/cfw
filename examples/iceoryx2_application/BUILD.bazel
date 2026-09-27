@@ -1,0 +1,29 @@
+load("//bazel:rust.bzl", "rust_binary", "rust_library", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "iceoryx2_application",
+    srcs = ["src/lib.rs"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "iceoryx2_application_bin",
+    srcs = ["src/main.rs"],
+    deps = [":iceoryx2_application"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "launcher_test",
+    srcs = ["tests/launcher.rs"],
+    data = [":iceoryx2_application_bin"],
+    rustc_env = {
+        "CARGO_BIN_EXE_iceoryx2_application": "examples/iceoryx2_application/iceoryx2_application_bin",
+    },
+    deps = [":iceoryx2_application"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

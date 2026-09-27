@@ -13,6 +13,7 @@ members = [
     "logging_test",
     "base",
     "examples/fizz_buzz_application",
+    "examples/iceoryx2_application",
     "examples/facet_serialization",
     "examples/profiling",
 ]

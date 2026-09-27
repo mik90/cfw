@@ -1,0 +1,13 @@
+[package]
+name = "iceoryx2_application"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+task = { path = "../../task" }
+task_macros = { path = "../../task_macros" }
+live_executor = { path = "../../live_executor" }
+clap = { version = "4.6.3", features = ["derive"] }
+
+[lints]
+workspace = true

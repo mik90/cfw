@@ -1002,6 +1002,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "iceoryx2_application"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "live_executor",
+ "task",
+ "task_macros",
+]
+
+[[package]]
 name = "iddqd"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
