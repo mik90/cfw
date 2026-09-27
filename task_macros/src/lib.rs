@@ -21,7 +21,7 @@ enum OutputKind {
 enum TypeForm {
     Value,
     RefMut,
-    Ref_,
+    Ref,
 }
 
 #[derive(Clone)]
@@ -331,7 +331,7 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                     }
                 } else {
                     match r.elem.as_ref() {
-                        syn::Type::Path(p) => (p, TypeForm::Ref_),
+                        syn::Type::Path(p) => (p, TypeForm::Ref),
                         _ => {
                             return Err(syn::Error::new_spanned(
                                 &pat_ty.ty,
@@ -406,13 +406,12 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                 iox2_no_arguments(pat_ty, "Iox2NotifyOutput")?;
                 PubOrSubKind::Iox2Notifier
             }
-            ("Context", TypeForm::Value) => PubOrSubKind::Context,
-            ("Context", TypeForm::Ref_) => PubOrSubKind::Context,
+            ("Context", TypeForm::Ref) => PubOrSubKind::Context,
             _ => {
                 return Err(syn::Error::new_spanned(
                     &last.ident,
                     format!(
-                        "unknown callback argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan, Output, OutputSpan, ForwardingOutput, Iox2OptionalInput, Iox2SpanInput, Iox2Event, Iox2Output, Iox2NotifyOutput, Context, or &Context",
+                        "unknown callback argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan, Output, OutputSpan, ForwardingOutput, Iox2OptionalInput, Iox2SpanInput, Iox2Event, Iox2Output, Iox2NotifyOutput, or &Context",
                         last.ident
                     ),
                 ));

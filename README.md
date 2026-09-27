@@ -75,7 +75,7 @@ impl FizzBuzzCalculator {
         }
         fizz_buzz_string.send();
     }
-
+}
 ```
 
 Underneath the macro API, there is a non-macro [Callback trait](task/src/callback.rs) that the macro implements.
