@@ -132,9 +132,13 @@ impl<T> Deref for ArenaReaderPtr<T> {
     }
 }
 
-/// Each entry is reserved via a mutex
+/// A slot in the arena. Read/write access is controlled by the pub/sub framework.
 pub struct ArenaSlot<T> {
+    /// How many references are alive, regardless of whether a publisher or subscriber owns a given slot
     ref_count: AtomicUsize,
+    /// Managed data. UnsafeCell gets around the limitation of how the compiler doesn't know that the pub/sub framework
+    /// avoids mulitple writers on a given slot.
+    /// Since we re-use slots, the data maybe uninitialized.
     pub payload: UnsafeCell<MaybeUninit<T>>,
 }
 
