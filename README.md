@@ -237,7 +237,7 @@ In order of priority
   - similar to live executor, except it works by publishing messages from a log at some given speed multiplier
   - useful for development of viz tools
 - [x] add log replay task to simulation executor to run over logged data
-- [ ] allow for foreign subscribers/publishers such as iceoryx2
+- [x] allow for foreign subscribers/publishers such as iceoryx2
   - we should be able to swap out foreign/native impls per task at build/configuration time
   - arena configuration may be different per backing pub/sub system
   - the reason we'd do this instead of introducing another callback that publishes on a given channel is that another callback means we have another queue whose capacity we have to manage
@@ -263,7 +263,8 @@ In order of priority
   - not ideal, but we only track readiness on required inputs, optional ones are not tracked
 - [ ] log queue capacity shouldn't have a default value of 10, and we should have better configuration for per channel configuration
 - [x] register loggable types even without macro usage (use register_channels)
-- [ ] work in experimental mpsc queue
+- [ ] work on experimental mpsc queue
+  - honestly there's no chance of matching crossbeam. This is really just for fun
 - [x] interned channel names and callback names to avoid allocations
     - use arena type, maybe leak at startup?
     - we could write mapping of intern ID to values to disk at build time
