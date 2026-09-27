@@ -15,7 +15,7 @@ members = [
     "examples/fizz_buzz_application",
     "examples/iceoryx2_application",
     "examples/facet_serialization",
-    "examples/profiling",
+    "examples/profiling", "examples/in_place_init",
 ]
 resolver = "3"
 

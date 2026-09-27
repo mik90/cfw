@@ -1,0 +1,12 @@
+[package]
+name = "in_place_init"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pin-init = "0.2.0"
+task = { path = "../../task" }
+task_macros = { path = "../../task_macros" }
+
+[lints]
+workspace = true
