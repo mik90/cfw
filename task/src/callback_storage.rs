@@ -683,6 +683,7 @@ mod tests {
     fn state_machine_concurrent_hammer_does_not_panic() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        use std::sync::mpsc::{self, RecvTimeoutError};
         use std::thread;
 
         const TRIGGER_THREADS: usize = 4;
@@ -690,18 +691,32 @@ mod tests {
 
         let node = Arc::new(make_node());
         let done = Arc::new(AtomicBool::new(false));
+        let (work_tx, work_rx) = mpsc::channel::<()>();
 
-        // One worker: the work channel hands a given index to at most one
-        // worker, so two workers claiming the same node is not a scenario to
-        // provoke here.
+        // One worker consumes each scheduled execution, including reruns
+        // requested by triggers that arrive while it holds the node.
         let worker = {
             let node = Arc::clone(&node);
             let done = Arc::clone(&done);
+            let work_tx = work_tx.clone();
             thread::spawn(move || {
-                while !done.load(AtomicOrdering::Relaxed) {
-                    node.acquire_running();
-                    let _reenqueue = node.release_running();
-                    thread::yield_now();
+                loop {
+                    match work_rx.recv_timeout(Duration::from_millis(1)) {
+                        Ok(()) => {
+                            let (_, reenqueue) =
+                                node.execute(FrameworkTime::from_nanoseconds(0), |_| {
+                                    thread::yield_now();
+                                });
+                            if reenqueue {
+                                work_tx.send(()).unwrap();
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) if done.load(AtomicOrdering::Relaxed) => {
+                            break;
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => unreachable!(),
+                    }
                 }
             })
         };
@@ -709,9 +724,12 @@ mod tests {
         let mut triggers = Vec::new();
         for _ in 0..TRIGGER_THREADS {
             let node = Arc::clone(&node);
+            let work_tx = work_tx.clone();
             triggers.push(thread::spawn(move || {
                 for _ in 0..TRIGGER_ITERATIONS {
-                    let _ = node.trigger();
+                    if node.trigger() {
+                        work_tx.send(()).unwrap();
+                    }
                     thread::yield_now();
                 }
             }));
