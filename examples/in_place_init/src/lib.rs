@@ -9,6 +9,10 @@ pub struct LargeMessage {
 }
 
 impl Default for LargeMessage {
+    #[expect(
+        clippy::large_stack_frames,
+        reason = "TODO: Remove default() impl and allow in-place init"
+    )]
     fn default() -> Self {
         LargeMessage {
             value: [0; 100_000],
