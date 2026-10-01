@@ -11,11 +11,6 @@ pub struct ArenaPtr<T> {
     ptr: NonNull<ArenaSlot<T>>,
 }
 
-pub struct UninitArenaPtr<T> {
-    /// Holds a given slot in the arena, although the memory isn't initialized yet.
-    ptr: NonNull<ArenaSlot<T>>,
-}
-
 impl<T> ArenaPtr<T> {
     fn slot(&self) -> &ArenaSlot<T> {
         // SAFETY: the arena should always keep these alive, and pub-sub connections will be destroyed before
@@ -101,6 +96,27 @@ impl<T> Drop for ArenaPtr<T> {
 /// thread; `Sync` is required because cloned pointers permit concurrent
 /// immutable reads of the same published value.
 unsafe impl<T: Send + Sync> Send for ArenaPtr<T> {}
+
+pub struct ArenaPtrUninit<T> {
+    /// Holds a given slot in the arena, although the memory isn't initialized yet.
+    ptr: NonNull<ArenaSlot<T>>,
+}
+
+impl<T> ArenaPtrUninit<T> {
+    pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
+        // SAFETY: NonNull to ArenaSlot is valid and aligned, the payload is the item
+        // that's possibly uninit.
+        let slot_ptr_mut = unsafe { self.ptr.as_mut() };
+        slot_ptr_mut.payload.get_mut()
+    }
+
+    /// # Safety
+    ///
+    /// Ensure that the payload is fully initialized before calling this
+    pub unsafe fn assume_init(self) -> ArenaPtr<T> {
+        ArenaPtr { ptr: self.ptr }
+    }
+}
 
 /// Pointer to a message that we assume is read-only based on pub/sub invariants
 #[derive(Clone)]
@@ -200,7 +216,7 @@ impl<T> Arena<T> {
 
 impl<T> Arena<T> {
     /// Allocates a slot without initializing memory
-    pub fn try_allocate_uninit(&mut self) -> Option<UninitArenaPtr<T>> {
+    pub fn try_allocate_uninit(&mut self) -> Option<ArenaPtrUninit<T>> {
         for slot in self.storage.iter() {
             match slot.ref_count.compare_exchange(
                 0,
@@ -209,7 +225,7 @@ impl<T> Arena<T> {
                 atomic::Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    return Some(UninitArenaPtr {
+                    return Some(ArenaPtrUninit {
                         ptr: NonNull::from_ref(slot),
                     });
                 }
@@ -219,7 +235,7 @@ impl<T> Arena<T> {
         None
     }
 
-    pub fn allocate_uninit(&mut self) -> UninitArenaPtr<T> {
+    pub fn allocate_uninit(&mut self) -> ArenaPtrUninit<T> {
         match self.try_allocate_uninit() {
             Some(v) => v,
             None => {

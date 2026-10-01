@@ -1,8 +1,8 @@
 use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::GenericPublisher;
 use crate::message::Message;
-use crate::publisher::{ForwardingPublisher, Publisher};
-use base::arena::ArenaReaderPtr;
+use crate::publisher::{ForwardingPublisher, LoanedValue, Publisher};
+use base::arena::{ArenaPtrUninit, ArenaReaderPtr};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 
@@ -24,27 +24,20 @@ impl<'a, T: 'static, F: 'static> ForwardingOutput<'a, T, F> {
 }
 
 pub struct Output<'a, T> {
-    pub(crate) publisher: &'a mut Publisher<T>,
-    pub(crate) loaned_value_idx: usize,
+    pub(crate) loaned_value: &'a mut LoanedValue<T>,
 }
 
 impl<'a, T> Output<'a, T> {
     pub fn value(&self) -> &T {
-        self.publisher
-            .loaned_value_at(self.loaned_value_idx)
-            .payload()
+        self.loaned_value.payload()
     }
 
     pub fn value_mut(&mut self) -> &mut T {
-        self.publisher
-            .loaned_value_at_mut(self.loaned_value_idx)
-            .payload_mut()
+        self.loaned_value.payload_mut()
     }
 
     pub fn send(self) {
-        self.publisher
-            .loaned_value_at_mut(self.loaned_value_idx)
-            .sent = true;
+        self.loaned_value.sent = true;
     }
 
     pub(crate) fn new_with_factory(
@@ -55,8 +48,7 @@ impl<'a, T> Output<'a, T> {
             .loan_with(factory)
             .expect("We expect loans to always be available");
         Output {
-            publisher,
-            loaned_value_idx,
+            loaned_value: publisher.loaned_value_at_mut(loaned_value_idx),
         }
     }
 }
@@ -67,8 +59,7 @@ impl<'a, T: Default> Output<'a, T> {
             .loan_default()
             .expect("We expect loans to always be available");
         Output {
-            publisher,
-            loaned_value_idx,
+            loaned_value: publisher.loaned_value_at_mut(loaned_value_idx),
         }
     }
 }
@@ -92,6 +83,32 @@ impl<T> Deref for Output<'_, T> {
 impl<T> DerefMut for Output<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         self.value_mut()
+    }
+}
+
+pub struct OutputUninit<'a, T> {
+    loans: &'a mut Vec<LoanedValue<T>>,
+    ptr: ArenaPtrUninit<Message<T>>,
+}
+
+impl<'a, T> OutputUninit<'a, T> {
+    /// TODO Due to how the MaybeUninit is set up, we have to expose the MEssage even though we can assume
+    /// the header is default constructed to some dummy invalid values.
+    /// If a user modifies it, it'll be overwritten later.
+    pub fn value_uninit(&mut self) -> &mut MaybeUninit<Message<T>> {
+        self.ptr.payload_uninit()
+    }
+
+    /// # Safety
+    ///
+    /// Ensure that the 'T' is fully initialized before calling this
+    pub unsafe fn send_assume_init(self) {
+        let loans = self.loans;
+        loans.push(LoanedValue {
+            // SAFETY: The caller has to ensure that the value has to be initialized
+            ptr: unsafe { self.ptr.assume_init() },
+            sent: true,
+        });
     }
 }
 
@@ -185,8 +202,7 @@ impl<'a, T: Default, F> ForwardedOutput<'a, T, F> {
             .expect("We expect loans to always be available");
 
         let output = Output {
-            loaned_value_idx,
-            publisher: &mut publisher.inner,
+            loaned_value: publisher.inner.loaned_value_at_mut(loaned_value_idx),
         };
         ForwardedOutput { inner: output }
     }
