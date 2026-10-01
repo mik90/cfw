@@ -13,8 +13,14 @@ enum InputKind {
 
 #[derive(Clone)]
 enum OutputKind {
+    /// Default constructed
     Default,
-    Span,
+    /// Uninit
+    Uninit,
+    /// Span of default constructed
+    DefaultSpan,
+    /// Span of uninit
+    UninitSpan,
 }
 
 #[derive(Clone, PartialEq)]
@@ -376,9 +382,17 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
                 msg: get_message_type(pat_ty)?,
                 okind: OutputKind::Default,
             },
+            ("OutputUninit", TypeForm::Value) => PubOrSubKind::Pub {
+                msg: get_message_type(pat_ty)?,
+                okind: OutputKind::Uninit,
+            },
             ("OutputSpan", TypeForm::Value) => PubOrSubKind::Pub {
                 msg: get_message_type(pat_ty)?,
-                okind: OutputKind::Span,
+                okind: OutputKind::DefaultSpan,
+            },
+            ("OutputUninitSpan", TypeForm::Value) => PubOrSubKind::Pub {
+                msg: get_message_type(pat_ty)?,
+                okind: OutputKind::UninitSpan,
             },
             ("ForwardingOutput", TypeForm::Value) => {
                 let (user_data, forwarded) = get_two_message_types(pat_ty)?;
@@ -408,11 +422,30 @@ fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::E
             }
             ("Context", TypeForm::Ref) => PubOrSubKind::Context,
             _ => {
+                let possible_types = vec![
+                    "RequiredInput",
+                    "OptionalInput",
+                    "InputSpan",
+                    "ForwardableRequiredInput",
+                    "ForwardableOptionalInput",
+                    "ForwardableInputSpan",
+                    "Output",
+                    "OutputUninit",
+                    "OutputUninitSpan",
+                    "ForwardingOutput",
+                    "Iox2OptionalInput",
+                    "Iox2SpanInput",
+                    "Iox2Event",
+                    "Iox2Output",
+                    "Iox2NotifyOutput",
+                    "&Context",
+                ]
+                .join(",");
                 return Err(syn::Error::new_spanned(
                     &last.ident,
                     format!(
-                        "unknown callback argument type '{}'; expected RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan, Output, OutputSpan, ForwardingOutput, Iox2OptionalInput, Iox2SpanInput, Iox2Event, Iox2Output, Iox2NotifyOutput, or &Context",
-                        last.ident
+                        "unknown callback argument type '{}'; expected one of '{}'",
+                        last.ident, possible_types,
                     ),
                 ));
             }
@@ -578,12 +611,18 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 ));
             }
             PubOrSubKind::Pub { msg, okind } => {
-                let cfg: syn::Expr = match okind {
-                    OutputKind::Default => parse_quote!(task::callback::OutputKind::Default.into()),
-                    OutputKind::Span => parse_quote!(task::callback::OutputKind::Span.into()),
+                let publisher_config: syn::Expr = match okind {
+                    OutputKind::Default | OutputKind::Uninit => {
+                        // Single element configuration
+                        parse_quote!(task::callback::OutputKind::Default.into())
+                    }
+                    OutputKind::DefaultSpan | OutputKind::UninitSpan => {
+                        // Multi element configuration
+                        parse_quote!(task::callback::OutputKind::Span.into())
+                    }
                 };
                 let cfg = with_channel(
-                    cfg,
+                    publisher_config,
                     sig_arg.channel.as_ref(),
                     quote!(task::publisher::PublisherConfig),
                 );
@@ -595,7 +634,15 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     OutputKind::Default => {
                         parse_quote!(Output::new_default(&mut self.pub_or_subs.#fname))
                     }
-                    OutputKind::Span => parse_quote!(OutputSpan::new(&mut self.pub_or_subs.#fname)),
+                    OutputKind::Uninit => {
+                        parse_quote!(OutputUninit::new(&mut self.pub_or_subs.#fname))
+                    }
+                    OutputKind::DefaultSpan => {
+                        parse_quote!(OutputSpan::new(&mut self.pub_or_subs.#fname))
+                    }
+                    OutputKind::UninitSpan => {
+                        parse_quote!(OutputUninitSpan::new(&mut self.pub_or_subs.#fname))
+                    }
                 };
                 run_args.push(ctor);
 
