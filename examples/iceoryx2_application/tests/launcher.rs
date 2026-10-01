@@ -1,6 +1,7 @@
 use std::process::Command;
 
 #[test]
+#[cfg_attr(miri, ignore = "iceoryx2 IPC not guaranteed to work under Miri")]
 fn two_processes_print_every_value_and_final_metrics() {
     let output = Command::new(env!("CARGO_BIN_EXE_iceoryx2_application"))
         .args(["--count", "5"])
