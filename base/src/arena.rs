@@ -170,15 +170,6 @@ impl<T> ArenaSlot<T> {
     }
 }
 
-impl<T> Default for ArenaSlot<T> {
-    fn default() -> Self {
-        ArenaSlot {
-            ref_count: AtomicUsize::new(0),
-            payload: UnsafeCell::new(MaybeUninit::uninit()),
-        }
-    }
-}
-
 pub struct Arena<T> {
     // A vector of slots, where each slot can be updated but each value can be mutated too
     storage: Box<[ArenaSlot<T>]>,
@@ -206,9 +197,20 @@ impl<T> Arena<T> {
 
     /// Once the capacity is set, this allocates slots of uninitialized memory
     pub fn allocate_slots(&mut self) {
-        let mut vec_storage = Vec::with_capacity(self.capacity);
+        let mut vec_storage: Vec<ArenaSlot<T>> = Vec::with_capacity(self.capacity);
+
+        // Initialize each element
         for _ in 0..self.capacity {
-            vec_storage.push(ArenaSlot::<T>::default());
+            // SAFETY: We will initialize members of ArenaSlot that need to be initialized, so just the ref count
+            unsafe {
+                let vec_ptr = vec_storage.as_mut_ptr().add(vec_storage.len());
+                let uninit_ref_count = &raw mut (*vec_ptr).ref_count;
+                uninit_ref_count.write(AtomicUsize::new(0));
+            }
+            // SAFETY: We've just initialized a new entry
+            unsafe {
+                vec_storage.set_len(vec_storage.len() + 1);
+            }
         }
         self.storage = vec_storage.into_boxed_slice();
     }
@@ -286,7 +288,10 @@ mod tests {
 
     #[test]
     fn test_arena_ptr() {
-        let slot = ArenaSlot::<u32>::default();
+        let slot: ArenaSlot<i32> = ArenaSlot {
+            ref_count: AtomicUsize::new(0),
+            payload: UnsafeCell::new(MaybeUninit::uninit()),
+        };
 
         let maybe_ptr = ArenaPtr::try_new(&slot);
         assert!(maybe_ptr.is_some());
@@ -404,9 +409,10 @@ mod tests {
         }
     }
 
+    /// Ensures that we won't overflow the stack if we have a large type in our arena
     #[test]
     fn test_large_type_handling() {
-        const LARGE_SIZE: usize = 1_000_000;
+        const LARGE_SIZE: usize = 11_000_000;
 
         const ONE_MB_BYTES: usize = 1_000_000;
         const DEFAULT_STACK_HEIGHT_BYTES: usize = ONE_MB_BYTES * 11;
@@ -419,6 +425,18 @@ mod tests {
             if std::mem::size_of::<LargeMessage>() < DEFAULT_STACK_HEIGHT_BYTES {
                 panic!("LargeMessage isn't large enough");
             }
+        }
+
+        const CAPACITY: usize = 100;
+        let mut arena = Arena::<LargeMessage>::new(CAPACITY);
+        arena.allocate_slots();
+        for index in 0..CAPACITY {
+            let allocate_result = arena.try_allocate_uninit();
+            assert!(
+                allocate_result.is_some(),
+                "Could not allocate the entry index {}",
+                index
+            );
         }
     }
 }
