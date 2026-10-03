@@ -92,6 +92,17 @@ pub struct OutputUninit<'a, T> {
 }
 
 impl<'a, T> OutputUninit<'a, T> {
+    pub fn new(publisher: &'a mut Publisher<T>) -> Self {
+        let arena_ptr_uninit = publisher
+            .loan_uninit()
+            .expect("We expect loans to always be available");
+        let loaned_values = publisher.loaned_values_mut();
+        OutputUninit {
+            loans: loaned_values,
+            ptr: arena_ptr_uninit,
+        }
+    }
+
     /// TODO Due to how the MaybeUninit is set up, we have to expose the MEssage even though we can assume
     /// the header is default constructed to some dummy invalid values.
     /// If a user modifies it, it'll be overwritten later.

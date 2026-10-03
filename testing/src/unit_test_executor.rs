@@ -243,7 +243,7 @@ impl UnitTestExecutorBuilder {
     /// if a test pushes through more messages than that comfortably holds.
     // The fixture moves values/final drops between workers (`Send`), supports
     // shared reads (`Sync`), and may retain queued values (`'static`).
-    pub fn add_test_subscriber<T: Send + Sync + 'static + Clone>(
+    pub fn add_test_subscriber<T: Send + Sync + 'static>(
         &mut self,
         channel_name: &str,
     ) -> TestSubscriber<T> {
@@ -253,7 +253,7 @@ impl UnitTestExecutorBuilder {
     /// Like [`Self::add_test_subscriber`], but with a caller-chosen queue depth.
     // The fixture has the same `Send`, `Sync`, and `'static` channel boundary
     // described by `add_test_subscriber` above.
-    pub fn add_test_subscriber_with_capacity<T: Send + Sync + 'static + Clone>(
+    pub fn add_test_subscriber_with_capacity<T: Send + Sync + 'static>(
         &mut self,
         channel_name: &str,
         capacity: usize,

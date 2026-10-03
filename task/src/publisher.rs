@@ -8,7 +8,7 @@ use crate::pub_sub::ChannelName;
 use crate::scheduling::{NoopReadyNodeSink, ReadyNodeSink};
 use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
 use crate::time::FrameworkTime;
-use base::arena::{Arena, ArenaPtr, ArenaReaderPtr};
+use base::arena::{Arena, ArenaPtr, ArenaPtrUninit, ArenaReaderPtr};
 use base::double_buffer::WriteBufferHandle;
 use std::any::Any;
 use std::mem::MaybeUninit;
@@ -242,6 +242,27 @@ impl<T> Publisher<T> {
         &mut self.loaned_values[start_index..=end_index]
     }
 
+    pub(crate) fn loaned_values_mut(&mut self) -> &mut Vec<LoanedValue<T>> {
+        &mut self.loaned_values
+    }
+
+    pub(crate) fn loan_uninit(&mut self) -> Result<ArenaPtrUninit<Message<T>>, LoanError> {
+        if self.loaned_values.len() >= self.config.capacity {
+            return Err(LoanError::LoanCapacityReached);
+        }
+        let arena_ptr_uninit = match self.arena.try_allocate_uninit() {
+            Some(ptr) => ptr,
+            None => {
+                panic!(
+                    "Tried to allocate loan on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
+                    self.config.channel_name,
+                    self.arena.capacity()
+                );
+            }
+        };
+        Ok(arena_ptr_uninit)
+    }
+
     pub(crate) fn loan_with(
         &mut self,
         factory: impl FnOnce(&mut MaybeUninit<T>),
@@ -263,7 +284,7 @@ impl<T> Publisher<T> {
             Some(ptr) => ptr,
             None => {
                 panic!(
-                    "Tried to publish on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
+                    "Tried to allocate loan on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
                     self.config.channel_name,
                     self.arena.capacity()
                 );
