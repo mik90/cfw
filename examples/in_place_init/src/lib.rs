@@ -47,6 +47,7 @@ mod tests {
             .with_publisher_channels(&[large_message_channel])
             .build()
             .expect("Could not build callback");
+
         let mut builder = UnitTestExecutorBuilder::new(vec![my_task]);
 
         let mut large_message_subscriber =

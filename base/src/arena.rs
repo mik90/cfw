@@ -403,4 +403,22 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_large_type_handling() {
+        const LARGE_SIZE: usize = 1_000_000;
+
+        const ONE_MB_BYTES: usize = 1_000_000;
+        const DEFAULT_STACK_HEIGHT_BYTES: usize = ONE_MB_BYTES * 11;
+
+        // Should not be able to fit into stack
+        pub struct LargeMessage {
+            big_array: [u64; LARGE_SIZE],
+        }
+        const {
+            if std::mem::size_of::<LargeMessage>() < DEFAULT_STACK_HEIGHT_BYTES {
+                panic!("LargeMessage isn't large enough");
+            }
+        }
+    }
 }
