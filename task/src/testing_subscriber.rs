@@ -1,9 +1,7 @@
 use crate::{
-    callback::SubscriberReadiness,
-    generic_subscriber::QueueInfo,
     message::Message,
     pub_sub::ChannelName,
-    subscriber::{self, GenericSubscriber, Subscriber, SubscriberConfig},
+    subscriber::{GenericSubscriber, Subscriber, SubscriberConfig},
 };
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -104,11 +102,11 @@ impl<T: Clone> TestSubscriber<T> {
         subscriber_guard.drain_writer_to_reader();
         let messages = {
             let mut guard = subscriber_guard.read_buffer();
-            let messages = guard
+            
+            guard
                 .drain_contiguous()
                 .map(|ptr| Box::new((*ptr).clone()))
-                .collect();
-            messages
+                .collect()
         };
         let dropped = DroppedMessages {
             writer: subscriber_guard.writer_queue_drops(),

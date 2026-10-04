@@ -1,16 +1,11 @@
 use crate::{
-    generic_publisher::ConnectionTypeMismatch,
-    generic_subscriber::GenericSubscriber,
     output::Output,
-    pub_sub::ChannelName,
-    publisher::{GenericPublisher, Publisher, PublisherConfig},
-    subscriber::SubscriberConfig,
+    publisher::{GenericPublisher, Publisher},
     testing_time::TimeSource,
-    time::FrameworkTime,
 };
 
+use std::sync::MutexGuard;
 use std::sync::{Arc, Mutex};
-use std::{any::Any, sync::MutexGuard};
 
 /// Publisher that can send messages to a CallbackNode
 pub struct TestPublisher<T> {
@@ -21,7 +16,7 @@ pub struct TestPublisher<T> {
 }
 
 impl<T> TestPublisher<T> {
-    pub(crate) fn publisher_guard(&self) -> MutexGuard<Publisher<T>> {
+    pub(crate) fn publisher_guard<'a>(&'a self) -> MutexGuard<'a, Publisher<T>> {
         self.publisher.lock().expect("publisher lock failed")
     }
 }
