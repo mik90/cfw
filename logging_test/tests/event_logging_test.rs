@@ -2,8 +2,7 @@ use std::time::Duration;
 
 use logging::InMemoryWriter;
 use logging::log_task::{ChannelLogger, EVENT_CHANNEL, Event, EventLogTask};
-use task::testing_subscriber::TestSubscriber;
-use task::{CallbackBuilder, ChannelRegistry};
+use task::{CallbackBuilder, ChannelRegistry, Subscriber, SubscriberConfig};
 use testing::UnitTestExecutorBuilder;
 
 const LOG_DIAGNOSTIC_CHANNEL_NAME: &str = "log_diagnostics";
@@ -23,7 +22,13 @@ fn test_event_logging() {
 
     let writer = Box::new(InMemoryWriter::new());
     let logged_data = writer.logged_data();
-    let u32_subscriber = TestSubscriber::<u32>::new(channel_name.clone());
+    let u32_subscriber = Subscriber::<u32>::new(SubscriberConfig {
+        is_optional: true,
+        capacity: 2,
+        is_trigger: false,
+        keep_across_runs: true,
+        channel_name: channel_name.clone(),
+    });
 
     let event_logging_task = EventLogTask::new(
         writer,
