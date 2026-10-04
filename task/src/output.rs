@@ -103,20 +103,24 @@ impl<'a, T> OutputUninit<'a, T> {
         }
     }
 
-    /// TODO Due to how the MaybeUninit is set up, we have to expose the MEssage even though we can assume
-    /// the header is default constructed to some dummy invalid values.
-    /// If a user modifies it, it'll be overwritten later.
-    pub fn value_uninit(&mut self) -> &mut MaybeUninit<Message<T>> {
-        self.ptr.payload_uninit()
+    /// Provides exclusive access to the uninitialized payload storage.
+    /// The framework initializes and manages the message header.
+    pub fn value_uninit(&mut self) -> &mut MaybeUninit<T> {
+        let msg_ptr = self.ptr.payload_uninit().as_mut_ptr();
+        // SAFETY: The loan provides exclusive payload storage. MaybeUninit<T>
+        // has the same size and alignment as T; no initialized T reference is formed.
+        unsafe { &mut *(&raw mut (*msg_ptr).message).cast::<MaybeUninit<T>>() }
     }
 
     /// # Safety
     ///
-    /// Ensure that the 'T' is fully initialized before calling this
+    /// The payload T must be fully initialized before calling this.
+    /// The framework guarantees that the header is already initialized.
     pub unsafe fn send_assume_init(self) {
         let loans = self.loans;
         loans.push(LoanedValue {
-            // SAFETY: The caller has to ensure that the value has to be initialized
+            // SAFETY: The caller guarantees an initialized payload, and
+            // Publisher::loan_uninit initialized the header.
             ptr: unsafe { self.ptr.assume_init() },
             sent: true,
         });

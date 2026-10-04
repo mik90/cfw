@@ -246,11 +246,12 @@ impl<T> Publisher<T> {
         &mut self.loaned_values
     }
 
+    /// Acquires an exclusive loan with an initialized header and uninitialized payload.
     pub(crate) fn loan_uninit(&mut self) -> Result<ArenaPtrUninit<Message<T>>, LoanError> {
         if self.loaned_values.len() >= self.config.capacity {
             return Err(LoanError::LoanCapacityReached);
         }
-        let arena_ptr_uninit = match self.arena.try_allocate_uninit() {
+        let mut arena_ptr_uninit = match self.arena.try_allocate_uninit() {
             Some(ptr) => ptr,
             None => {
                 panic!(
@@ -260,6 +261,12 @@ impl<T> Publisher<T> {
                 );
             }
         };
+        let msg_ptr = arena_ptr_uninit.payload_uninit().as_mut_ptr();
+        // SAFETY: The loan owns exclusive storage for Message<T>. A raw field
+        // write initializes the header without referencing the uninitialized payload.
+        unsafe {
+            (&raw mut (*msg_ptr).header).write(MessageHeader::default());
+        }
         Ok(arena_ptr_uninit)
     }
 
@@ -267,29 +274,15 @@ impl<T> Publisher<T> {
         &mut self,
         factory: impl FnOnce(&mut MaybeUninit<T>),
     ) -> Result<usize, LoanError> {
-        if self.loaned_values.len() >= self.config.capacity {
-            return Err(LoanError::LoanCapacityReached);
-        }
-        let allocated_ptr = match self.arena.try_allocate_with(|slot| {
-            let msg_ptr = slot.as_mut_ptr();
-            // SAFETY: All fields of `Message<T>` are initialized before the slot is assumed init:
-            // header is written here; factory is responsible for fully initializing `message`.
-            unsafe {
-                let header = &raw mut (*msg_ptr).header;
-                let message = (&raw mut (*msg_ptr).message).cast::<MaybeUninit<T>>();
-                header.write(MessageHeader::default());
-                factory(&mut *message);
-            }
-        }) {
-            Some(ptr) => ptr,
-            None => {
-                panic!(
-                    "Tried to allocate loan on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
-                    self.config.channel_name,
-                    self.arena.capacity()
-                );
-            }
-        };
+        let mut loan = self.loan_uninit()?;
+        let msg_ptr = loan.payload_uninit().as_mut_ptr();
+        // SAFETY: The loan provides exclusive payload storage. MaybeUninit<T>
+        // has the same size and alignment as T; no initialized T reference is formed.
+        let payload = unsafe { &mut *(&raw mut (*msg_ptr).message).cast::<MaybeUninit<T>>() };
+        factory(payload);
+        // SAFETY: loan_uninit initialized the header, and the factory is
+        // responsible for fully initializing the payload before returning.
+        let allocated_ptr = unsafe { loan.assume_init() };
         self.loaned_values.push(LoanedValue::new(allocated_ptr));
         Ok(self.loaned_values.len() - 1)
     }
@@ -536,7 +529,7 @@ impl<T: Send + Sync + 'static, F: Send + Sync + 'static> GenericPublisher
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::Output;
+    use crate::output::{Output, OutputUninit};
     use crate::subscriber::Subscriber;
     use crate::time;
 
@@ -637,6 +630,39 @@ mod tests {
         // SAFETY: We assume that the header was default-initialized, and are testing that
         let message = unsafe { value.ptr.payload.get().read().assume_init() };
         assert_eq!(message.header.published_at, FrameworkTime::INVALID);
+    }
+
+    #[test]
+    fn uninit_output_reuses_abandoned_loan_and_initializes_header() {
+        let mut publisher = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "channel".into(),
+        });
+        publisher.allocate_arena();
+        drop(OutputUninit::new(&mut publisher));
+
+        let mut output = OutputUninit::new(&mut publisher);
+        output.value_uninit().write(42);
+        // SAFETY: The payload was fully initialized above.
+        unsafe { output.send_assume_init() };
+        let message = ArenaReaderPtr::new(publisher.loaned_value_at(0).ptr.clone());
+        assert_eq!(message.header.published_at, FrameworkTime::INVALID);
+        assert_eq!(message.message, 42);
+    }
+
+    #[test]
+    fn uninit_factory_panic_releases_publisher_loan() {
+        let mut publisher = Publisher::<u64>::new(PublisherConfig {
+            capacity: 1,
+            channel_name: "channel".into(),
+        });
+        publisher.allocate_arena();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            publisher.loan_with(|_| panic!("Factory failed")).unwrap();
+        }));
+        assert!(result.is_err());
+        assert_eq!(publisher.loaned_count(), 0);
+        assert!(publisher.loan_default().is_ok());
     }
 
     /// Arena capacity must cover the publisher's own loans (`config.capacity`)

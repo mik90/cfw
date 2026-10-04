@@ -16,15 +16,14 @@ impl MyTask {
         let large_message_uninit = output_uninit.value_uninit();
         let ptr = large_message_uninit.as_mut_ptr();
         // SAFETY: The loan provides exclusive access to this allocation. Raw
-        // writes initialize the header and every array element before assuming init.
+        // writes initialize every array element before assuming init.
         unsafe {
-            (&raw mut (*ptr).header).write(task::message::MessageHeader::default());
-            let elements = (&raw mut (*ptr).message.big_array).cast::<u64>();
+            let array_ptr = (&raw mut (*ptr).big_array).cast::<u64>();
             for index in 0..LARGE_SIZE {
-                elements.add(index).write(42);
+                array_ptr.add(index).write(42);
             }
         }
-        // SAFETY: The header and the whole LargeMessage have been initialized.
+        // SAFETY: The whole LargeMessage has been initialized.
         unsafe { output_uninit.send_assume_init() };
     }
 

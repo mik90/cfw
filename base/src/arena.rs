@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic;
@@ -97,12 +97,25 @@ impl<T> Drop for ArenaPtr<T> {
 /// immutable reads of the same published value.
 unsafe impl<T: Send + Sync> Send for ArenaPtr<T> {}
 
+/// An exclusive writer-side reservation. Dropping it releases the slot without
+/// dropping its possibly partially initialized payload.
 pub struct ArenaPtrUninit<T> {
     /// Holds a given slot in the arena, although the memory isn't initialized yet.
     ptr: NonNull<ArenaSlot<T>>,
 }
 
 impl<T> ArenaPtrUninit<T> {
+    fn try_new(slot: &ArenaSlot<T>) -> Option<Self> {
+        // Claim exclusive ownership: 0 → 1. Acquire pairs with the previous
+        // owner's Release when freeing the slot, including completion of any drop.
+        slot.ref_count
+            .compare_exchange(0, 1, atomic::Ordering::Acquire, atomic::Ordering::Relaxed)
+            .ok()?;
+        Some(Self {
+            ptr: NonNull::from_ref(slot),
+        })
+    }
+
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
         // SAFETY: NonNull to ArenaSlot is valid and aligned, the payload is the item
         // that's possibly uninit.
@@ -114,7 +127,18 @@ impl<T> ArenaPtrUninit<T> {
     ///
     /// Ensure that the payload is fully initialized before calling this
     pub unsafe fn assume_init(self) -> ArenaPtr<T> {
-        ArenaPtr { ptr: self.ptr }
+        let this = ManuallyDrop::new(self);
+        ArenaPtr { ptr: this.ptr }
+    }
+}
+
+impl<T> Drop for ArenaPtrUninit<T> {
+    fn drop(&mut self) {
+        // SAFETY: The arena keeps the slot alive, and this unpublished loan is
+        // its sole owner since uninitialized arena pointers are only usable on the writer side.
+        // The payload may be partially initialized, so do not drop T.
+        let slot = unsafe { self.ptr.as_ref() };
+        slot.ref_count.store(0, atomic::Ordering::Release);
     }
 }
 
@@ -219,22 +243,7 @@ impl<T> Arena<T> {
 impl<T> Arena<T> {
     /// Allocates a slot without initializing memory
     pub fn try_allocate_uninit(&mut self) -> Option<ArenaPtrUninit<T>> {
-        for slot in self.storage.iter() {
-            match slot.ref_count.compare_exchange(
-                0,
-                1,
-                atomic::Ordering::Acquire,
-                atomic::Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    return Some(ArenaPtrUninit {
-                        ptr: NonNull::from_ref(slot),
-                    });
-                }
-                Err(_) => continue,
-            }
-        }
-        None
+        self.storage.iter().find_map(ArenaPtrUninit::try_new)
     }
 
     pub fn allocate_uninit(&mut self) -> ArenaPtrUninit<T> {
@@ -255,22 +264,10 @@ impl<T> Arena<T> {
         &mut self,
         factory: impl FnOnce(&mut MaybeUninit<T>),
     ) -> Option<ArenaPtr<T>> {
-        let uninit_ptr = self.try_allocate_uninit()?;
-        // SAFETY: We know this is a properly allocated pointer to uninitialized memory
-        let slot = unsafe {
-            // Ideally we'd use `as_uninit_ref`, but that's not stable yet
-            uninit_ptr.ptr.as_ref()
-        };
-        // SAFETY: We know this is uninitialized since we just constructed it; the factory
-        // is responsible for fully initializing the MaybeUninit before returning.
-        unsafe {
-            factory(&mut *slot.payload.get());
-        }
-
-        // Now that we've initialized the ptr, we can launder it to the pre-initialized ArenaPtr variant
-        Some(ArenaPtr {
-            ptr: uninit_ptr.ptr,
-        })
+        let mut uninit_ptr = self.try_allocate_uninit()?;
+        factory(uninit_ptr.payload_uninit());
+        // SAFETY: The factory is responsible for fully initializing the payload.
+        Some(unsafe { uninit_ptr.assume_init() })
     }
 }
 
@@ -285,6 +282,68 @@ mod tests {
         }
     }
     use super::*;
+
+    struct DropCounter<'a>(&'a AtomicUsize);
+
+    impl Drop for DropCounter<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn uninit_drop_releases_slot_without_dropping_payload() {
+        let drops = AtomicUsize::new(0);
+        let mut arena = Arena::new(1);
+        arena.allocate_slots();
+        let mut loan = arena.try_allocate_uninit().unwrap();
+        assert_eq!(
+            arena.storage[0].ref_count.load(atomic::Ordering::Relaxed),
+            1
+        );
+        assert!(arena.try_allocate_uninit().is_none());
+        loan.payload_uninit().write(DropCounter(&drops));
+        drop(loan);
+
+        assert_eq!(drops.load(atomic::Ordering::Relaxed), 0);
+        assert!(arena.try_allocate_uninit().is_some());
+    }
+
+    #[test]
+    fn uninit_assume_init_transfers_ownership() {
+        let drops = AtomicUsize::new(0);
+        let mut arena = Arena::new(1);
+        arena.allocate_slots();
+        let mut loan = arena.try_allocate_uninit().unwrap();
+        loan.payload_uninit().write(DropCounter(&drops));
+        // SAFETY: The payload was fully initialized above.
+        let initialized = unsafe { loan.assume_init() };
+        assert!(arena.try_allocate_uninit().is_none());
+        assert_eq!(drops.load(atomic::Ordering::Relaxed), 0);
+        drop(initialized);
+
+        assert_eq!(drops.load(atomic::Ordering::Relaxed), 1);
+        assert!(arena.try_allocate_uninit().is_some());
+    }
+
+    #[test]
+    fn uninit_factory_panic_releases_slot() {
+        let mut arena = Arena::<u64>::new(1);
+        arena.allocate_slots();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            arena.try_allocate_with(|_| panic!("Factory failed"));
+        }));
+        assert!(result.is_err());
+
+        let initialized = arena
+            .try_allocate_with(|slot| {
+                slot.write(42);
+            })
+            .unwrap();
+        assert!(arena.try_allocate_uninit().is_none());
+        assert_eq!(*ArenaReaderPtr::new(initialized), 42);
+        assert!(arena.try_allocate_uninit().is_some());
+    }
 
     #[test]
     fn test_arena_ptr() {
