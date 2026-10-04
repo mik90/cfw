@@ -1,30 +1,43 @@
 use std::error::Error;
 use std::fmt;
 use std::num::Saturating;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use simulation_executor::SimulationConfig;
 use simulation_executor::state::{SimulationState, StepError};
 use task::callback::{CallbackNode, CallbackViews};
 use task::callback_storage::CallbackStorage;
 use task::executor::{ExecutorParams, ThreadPoolConfig};
-use task::generic_publisher::GenericPublisher;
 use task::pub_sub::CallbackNodeName;
-use task::subscriber::GenericSubscriber;
 use task::task_graph_builder::TaskGraphBuilder;
 use task::testing_publisher::TestPublisher;
 use task::testing_subscriber::{DEFAULT_TEST_SUBSCRIBER_CAPACITY, TestSubscriber};
 use task::testing_time::TimeSource;
 use task::time::FrameworkTime;
+use task::{
+    GenericPublisher, GenericSubscriber, Publisher, PublisherConfig, Subscriber, SubscriberConfig,
+};
 
 #[cfg(feature = "iceoryx2")]
 mod iox2;
 #[cfg(feature = "iceoryx2")]
 pub use iox2::{Iox2TestNotifier, Iox2TestPublisher, Iox2TestSubscriber};
 
+/// Internal storage for all graph components
+struct UnitTestGraph {
+    simulation_state: SimulationState,
+
+    execution_log_publishers:
+        Vec<task::publisher::Publisher<task::execution_log::ExecutionLogMessage>>,
+
+    /// Storage of test publishers and subscribers.
+    test_publishers: Vec<Arc<Mutex<dyn task::generic_publisher::GenericPublisher>>>,
+    test_subscribers: Vec<Arc<Mutex<dyn task::generic_subscriber::GenericSubscriber>>>,
+}
+
 /// Struct for running unit tests against callback nodes
 pub struct UnitTestExecutor {
-    simulation_state: SimulationState,
+    unit_test_graph: UnitTestGraph,
     /// Shared time cell updated at the end of every `try_step`. `TestPublisher`s
     /// created by the builder hold a clone so they timestamp messages with "now".
     time_source: Arc<TimeSource>,
@@ -32,9 +45,6 @@ pub struct UnitTestExecutor {
     iox2_fixtures: Vec<Box<dyn iox2::Iox2FixturePort>>,
     #[cfg(feature = "iceoryx2")]
     iox2_activation: iox2::ActivationCell,
-    /// Graph-owned arenas must outlive the simulation's subscriber cleanup.
-    _execution_log_publishers:
-        Vec<task::publisher::Publisher<task::execution_log::ExecutionLogMessage>>,
 }
 
 impl UnitTestExecutor {
@@ -60,23 +70,31 @@ impl UnitTestExecutor {
         let start_time = config.start_time;
         #[cfg(feature = "iceoryx2")]
         let iox2_activation = iox2::inactive_cell();
-        let mut task_test = Self {
-            simulation_state: SimulationState::new_with(SimulationConfig {
-                start_time: config.start_time,
-                executor_params: ExecutorParams::new(config.pools),
-                node_executor_thread_count: config.node_executor_thread_count,
-            }),
+
+        let simulation_state = SimulationState::new_with(SimulationConfig {
+            start_time: config.start_time,
+            executor_params: ExecutorParams::new(config.pools),
+            node_executor_thread_count: config.node_executor_thread_count,
+        });
+
+        let unit_test_graph = UnitTestGraph {
+            simulation_state,
+            test_publishers: Vec::new(),
+            test_subscribers: Vec::new(),
+            execution_log_publishers: Vec::new(),
+        };
+        let mut unit_test_executor = Self {
+            unit_test_graph,
             time_source: time_source.unwrap_or_else(|| Arc::new(TimeSource::new(start_time))),
             #[cfg(feature = "iceoryx2")]
             iox2_fixtures: Vec::new(),
             #[cfg(feature = "iceoryx2")]
             iox2_activation,
-            _execution_log_publishers: Vec::new(),
         };
-        task_test.simulation_state.start();
+        unit_test_executor.unit_test_graph.simulation_state.start();
         #[cfg(feature = "iceoryx2")]
-        iox2::activate(&task_test.iox2_activation);
-        task_test
+        iox2::activate(&unit_test_executor.iox2_activation);
+        unit_test_executor
     }
 
     /// Runs simulation, returning time before/after
@@ -88,19 +106,20 @@ impl UnitTestExecutor {
 
     /// Runs simulation, returning time before/after
     pub fn try_step(&mut self) -> Result<StepResult, StepError> {
-        let before = self.simulation_state.simulation_time();
-        self.simulation_state.step()?;
-        let after = self.simulation_state.simulation_time();
+        let simulation_state = &mut self.unit_test_graph.simulation_state;
+        let before = simulation_state.simulation_time();
+        simulation_state.step()?;
+        let after = simulation_state.simulation_time();
         self.time_source.set(after);
         Ok(StepResult { before, after })
     }
 
     pub fn step_count(&self) -> Saturating<usize> {
-        self.simulation_state.step_count()
+        self.unit_test_graph.simulation_state.step_count()
     }
 
     pub fn current_time(&self) -> FrameworkTime {
-        self.simulation_state.simulation_time()
+        self.unit_test_graph.simulation_state.simulation_time()
     }
 }
 
@@ -126,6 +145,9 @@ impl Drop for UnitTestExecutor {
 /// Iox2 input and event handles become usable after [`Self::build`] opens the graph services.
 pub struct UnitTestExecutorBuilder {
     nodes: Vec<CallbackNode>,
+    test_publishers: Vec<Arc<Mutex<dyn GenericPublisher>>>,
+    test_subscribers: Vec<Arc<Mutex<dyn GenericSubscriber>>>,
+
     start_time: FrameworkTime,
     /// Shared with every `TestPublisher` created via this builder, and later
     /// handed to the resulting `UnitTestExecutor` so both stay in sync.
@@ -141,6 +163,8 @@ impl UnitTestExecutorBuilder {
         let start_time = FrameworkTime::from_nanoseconds(0);
         UnitTestExecutorBuilder {
             nodes,
+            test_publishers: Vec::new(),
+            test_subscribers: Vec::new(),
             start_time,
             time_source: Arc::new(TimeSource::new(start_time)),
             #[cfg(feature = "iceoryx2")]
@@ -155,7 +179,7 @@ impl UnitTestExecutorBuilder {
         self
     }
 
-    /// Find all publishers on the given channel
+    /// Find all publishers on the given channel for the system under test
     fn find_publishers_mut(
         &mut self,
         channel_name: &str,
@@ -176,7 +200,7 @@ impl UnitTestExecutorBuilder {
             .collect()
     }
 
-    /// Find all publishers on the given channel
+    /// Find all publishers on the given channel for the system under test
     fn find_subscribers_mut(
         &mut self,
         channel_name: &str,
@@ -213,18 +237,17 @@ impl UnitTestExecutorBuilder {
             panic!("No subscriber for channel '{channel_name}'")
         }
 
+        // find capacity for our publisher
         let capacity_of_all_subscribers = subscribers
             .iter()
             .map(|(subscriber, _)| subscriber.config().capacity)
             .sum();
 
-        let mut publisher = TestPublisher::<T>::new(
-            channel_name.to_string(),
-            capacity_of_all_subscribers,
-            time_source,
-        );
+        let mut publisher = Publisher::<T>::new(PublisherConfig {
+            capacity: capacity_of_all_subscribers,
+            channel_name: channel_name.to_string(),
+        });
 
-        // find capacity for our publisher
         for (subscriber, node_name) in subscribers {
             publisher
             .connect_to_subscriber(subscriber)
@@ -235,7 +258,10 @@ impl UnitTestExecutorBuilder {
             });
         }
         publisher.allocate_arena();
-        publisher
+
+        let publisher_arc = Arc::new(Mutex::new(publisher));
+        self.test_publishers.push(publisher_arc.clone());
+        TestPublisher::new(publisher_arc, time_source)
     }
 
     /// Connects a `TestSubscriber<T>` to `channel_name`, capturing its output in isolation, with the default queue depth
@@ -263,7 +289,13 @@ impl UnitTestExecutorBuilder {
             panic!("No publisher for channel '{channel_name}'")
         }
 
-        let mut subscriber = TestSubscriber::<T>::with_capacity(channel_name.to_string(), capacity);
+        let mut subscriber = Subscriber::<T>::new(SubscriberConfig {
+            channel_name: channel_name.to_string(),
+            capacity,
+            is_optional: true,
+            is_trigger: false,
+            keep_across_runs: true,
+        });
 
         for (publisher, node_name) in publishers {
             publisher
@@ -273,7 +305,9 @@ impl UnitTestExecutorBuilder {
                 });
         }
 
-        subscriber
+        let subscriber_arc = Arc::new(Mutex::new(subscriber));
+        self.test_subscribers.push(subscriber_arc.clone());
+        TestSubscriber::new(subscriber_arc)
     }
 
     /// Wires up any remaining real connections (and allocates the callback nodes' own publisher
@@ -339,14 +373,20 @@ impl UnitTestExecutorBuilder {
         simulation_state.start();
         #[cfg(feature = "iceoryx2")]
         iox2::activate(&self.iox2_activation);
-        let executor = UnitTestExecutor {
+
+        let unit_test_graph = UnitTestGraph {
             simulation_state,
+            test_publishers: self.test_publishers,
+            test_subscribers: self.test_subscribers,
+            execution_log_publishers,
+        };
+        let executor = UnitTestExecutor {
+            unit_test_graph,
             time_source: self.time_source,
             #[cfg(feature = "iceoryx2")]
             iox2_fixtures: self.iox2_fixtures,
             #[cfg(feature = "iceoryx2")]
             iox2_activation: self.iox2_activation,
-            _execution_log_publishers: execution_log_publishers,
         };
         Ok(executor)
     }

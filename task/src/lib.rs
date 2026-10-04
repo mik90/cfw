@@ -34,6 +34,8 @@ pub use callback_builder::{CallbackBuildError, CallbackBuilder};
 pub use callback_storage::{CallbackStorage, SharedCallbackNode, WorkerNodes};
 pub use channel_registry::ChannelRegistry;
 pub use context::Context;
+pub use generic_publisher::GenericPublisher;
+pub use generic_subscriber::GenericSubscriber;
 pub use input::{InputSpan, OptionalInput, RequiredInput};
 pub use loggable::{DeserializeError, Loggable, SerializeError};
 pub use output::{Output, OutputSpan};

@@ -9,82 +9,31 @@ use crate::{
     time::FrameworkTime,
 };
 
-use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::{any::Any, sync::MutexGuard};
 
 /// Publisher that can send messages to a CallbackNode
 pub struct TestPublisher<T> {
-    publisher: Publisher<T>,
+    publisher: Arc<Mutex<Publisher<T>>>,
 
     /// Callback for getting time from the executor
     executor_time_source: Arc<TimeSource>,
 }
 
-// This real channel fixture moves values/final drops between workers (`Send`),
-// fans out immutable reads (`Sync`), and retains queued values (`'static`).
-impl<T: Send + Sync + 'static> TestPublisher<T> {
-    pub fn new(channel_name: ChannelName, capacity: usize, time_source: Arc<TimeSource>) -> Self {
-        TestPublisher {
-            publisher: Publisher::new(PublisherConfig {
-                capacity,
-                channel_name,
-            }),
-            executor_time_source: time_source,
-        }
+impl<T> TestPublisher<T> {
+    pub(crate) fn publisher_guard(&self) -> MutexGuard<Publisher<T>> {
+        self.publisher.lock().expect("publisher lock failed")
     }
 }
 
-// The erased fixture has the same cross-worker ownership (`Send`), shared-read
-// (`Sync`), and `Any`/queue-retention (`'static`) requirements as production.
-impl<T: Send + Sync + 'static> GenericPublisher for TestPublisher<T> {
-    fn as_any(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn config(&self) -> &PublisherConfig {
-        self.publisher.config()
-    }
-
-    fn config_mut(&mut self) -> &mut PublisherConfig {
-        self.publisher.config_mut()
-    }
-
-    fn forwarded_channels(&self) -> &[ChannelName] {
-        self.publisher.forwarded_channels()
-    }
-
-    fn flush_loaned_values(
-        &mut self,
-        timestamp: FrameworkTime,
-        sink: &mut dyn crate::scheduling::ReadyNodeSink,
-    ) {
-        GenericPublisher::flush_loaned_values(&mut self.publisher, timestamp, sink);
-    }
-
-    fn allocate_arena(&mut self) {
-        self.publisher.allocate_arena();
-    }
-
-    fn increase_arena_size(&mut self, additional_capacity: usize) {
-        self.publisher.increase_arena_size(additional_capacity);
-    }
-
-    fn connect_to_subscriber(
-        &mut self,
-        subscriber: &mut dyn GenericSubscriber,
-    ) -> Result<(), ConnectionTypeMismatch> {
-        self.publisher.connect_to_subscriber(subscriber)
-    }
-
-    fn build_matching_subscriber(
-        &self,
-        config: SubscriberConfig,
-    ) -> Option<Box<dyn GenericSubscriber>> {
-        self.publisher.build_matching_subscriber(config)
-    }
-
-    fn value_type_id(&self) -> std::any::TypeId {
-        self.publisher.value_type_id()
+// This real channel fixture moves values/final drops between workers (`Send`),
+// fans out immutable reads (`Sync`), and retains queued values (`'static`).
+impl<T: Send + Sync + 'static> TestPublisher<T> {
+    pub fn new(publisher: Arc<Mutex<Publisher<T>>>, time_source: Arc<TimeSource>) -> Self {
+        TestPublisher {
+            publisher,
+            executor_time_source: time_source,
+        }
     }
 }
 
@@ -93,16 +42,13 @@ impl<T: Send + Sync + 'static> GenericPublisher for TestPublisher<T> {
 impl<T: Default + Send + Sync + 'static> TestPublisher<T> {
     /// Sends a message, immediately flushing loaned values
     pub fn send(&mut self, message: T) {
-        let mut output = Output::new_default(&mut self.publisher);
+        let mut publisher_guard = self.publisher_guard();
+        let mut output = Output::new_default(&mut publisher_guard);
         *output = message;
         output.send();
 
-        self.flush_loaned_values();
-    }
-
-    fn flush_loaned_values(&mut self) {
         let timestamp = self.executor_time_source.get();
-        self.publisher.flush_loaned_values(timestamp);
+        publisher_guard.flush_loaned_values(timestamp);
     }
 }
 
@@ -112,10 +58,15 @@ impl<T: Default + Send + Sync + 'static + Clone> TestPublisher<T> {
     /// Sends a message, immediately flushing loaned values
     /// Avoids putting a large type on the heap.
     pub fn send_copied(&mut self, message: &T) {
-        let mut output = Output::new_default(&mut self.publisher);
+        let mut publisher_guard = self.publisher_guard();
+        // TODO: This still dumps a type on the stack. How can we use OutputUninit here?
+        // We should be able to clone the message into the OutputUninit.
+        // I think we need the message type to impl ToOwned!!! and not Clone
+        let mut output = Output::new_default(&mut publisher_guard);
         *output = message.clone();
         output.send();
 
-        self.flush_loaned_values();
+        let timestamp = self.executor_time_source.get();
+        publisher_guard.flush_loaned_values(timestamp);
     }
 }
