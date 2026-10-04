@@ -132,6 +132,11 @@ impl Drop for UnitTestExecutor {
                 fixture.close();
             }
         }
+
+        // Drop all subscribers before all publishers
+        self.unit_test_graph.test_subscribers.clear();
+        self.unit_test_graph.simulation_state.clear_subscribers();
+        self.unit_test_graph.test_publishers.clear();
     }
 }
 

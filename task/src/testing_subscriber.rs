@@ -1,7 +1,7 @@
 use crate::{
     message::Message,
     pub_sub::ChannelName,
-    subscriber::{GenericSubscriber, Subscriber, SubscriberConfig},
+    subscriber::{Subscriber, SubscriberConfig},
 };
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -102,7 +102,7 @@ impl<T: Clone> TestSubscriber<T> {
         subscriber_guard.drain_writer_to_reader();
         let messages = {
             let mut guard = subscriber_guard.read_buffer();
-            
+
             guard
                 .drain_contiguous()
                 .map(|ptr| Box::new((*ptr).clone()))

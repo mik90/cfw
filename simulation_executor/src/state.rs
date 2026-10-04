@@ -430,7 +430,7 @@ impl SimulationState {
         self.time
     }
 
-    pub fn cleanup(&mut self) {
+    pub fn clear_subscribers(&mut self) {
         self.nodes.cleanup_subscribers();
     }
 }
@@ -439,7 +439,7 @@ impl Drop for SimulationState {
     fn drop(&mut self) {
         // Make sure node executor threads exit even if stop() was never called.
         let _ = self.shutdown_node_executor_threads();
-        self.cleanup();
+        self.clear_subscribers();
     }
 }
 

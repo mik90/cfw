@@ -175,7 +175,7 @@ impl Executor for SimulationExecutor {
                     break;
                 }
             }
-            state.lock().unwrap().cleanup();
+            state.lock().unwrap().clear_subscribers();
         }));
     }
 

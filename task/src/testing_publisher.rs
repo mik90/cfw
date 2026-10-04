@@ -1,8 +1,4 @@
-use crate::{
-    output::Output,
-    publisher::{GenericPublisher, Publisher},
-    testing_time::TimeSource,
-};
+use crate::{output::Output, publisher::Publisher, testing_time::TimeSource};
 
 use std::sync::MutexGuard;
 use std::sync::{Arc, Mutex};
