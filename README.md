@@ -2,9 +2,9 @@
 
 **C**allback **f**rame**w**ork
 
-A testbed for how _I_ would like a robotics task framework to work.
+A testbed for some of my ideas about task frameworks in robotics.
 
-This is very much a work in progress, and I'll be changing things frequently since it's more of a test bed although things should still generally work.
+This is very much a work in progress, and I'm not sure what 'done' looks like.
 
 The goal is to make an integration-agnostic framework that can plug into a bunch of different ecosystems while providing
 - a featureful user-facing API for pub/sub that allows the framework to manage when a callback should run
@@ -15,7 +15,7 @@ The goal is to make an integration-agnostic framework that can plug into a bunch
 If you want a Rust task framework with actual integrations and meaningful support, you should use https://github.com/copper-project/copper-rs.
 
 This is a mix of human code and LLM-generated code depending on how much I wanted to build something out myself.
-However, this README is still human-maintained (although bots are able to check off TODO items).
+However, this README is still human-maintained so enjoy my typos.
 
 ## Overview
 
@@ -272,7 +272,7 @@ In order of priority
 
 ## Testing
 
-I started using `justfile`s to run some simple test commands.
+I started using `just` to run some simple test commands.
 
 Run just lints and `cargo check`
 
@@ -280,10 +280,16 @@ Run just lints and `cargo check`
 just test
 ```
 
-Run tests including linting and miri
+Run tests
 
 ```bash
-just lint test 
+just test 
+```
+
+Run miri
+
+```bash
+just miri
 ```
 
 ## Debugging tips
