@@ -2,11 +2,11 @@ module(
     name = "cfw",
 )
 
-bazel_dep(name = "rules_rs", version = "0.0.107")
-bazel_dep(name = "llvm", version = "0.8.18")
+bazel_dep(name = "rules_rs", version = "0.1.0")
+bazel_dep(name = "llvm", version = "0.8.24")
 bazel_dep(name = "platforms", version = "1.1.0")
 
-# Narrow upstream fixes for the experimental rules_rs 0.0.107 Miri rules:
+# Narrow upstream fixes for the experimental rules_rs Miri rules:
 # deduplicate build-script and proc-macro deps, propagate build-script OUT_DIR,
 # preserve host proc-macro providers, and expose CARGO_PKG_* to Miri tests.
 # See bazel/patches/rules_rs_miri.patch.
@@ -14,7 +14,7 @@ single_version_override(
     module_name = "rules_rs",
     patch_strip = 1,
     patches = ["//bazel/patches:rules_rs_miri.patch"],
-    version = "0.0.107",
+    version = "0.1.0",
 )
 
 # ---------------------------------------------------------------------------
