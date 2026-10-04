@@ -35,7 +35,8 @@ struct UnitTestGraph {
     test_subscribers: Vec<Arc<Mutex<dyn task::generic_subscriber::GenericSubscriber>>>,
 }
 
-/// Struct for running unit tests against callback nodes
+/// Struct for running unit tests against callback nodes.
+/// Dropping the executor clears queued native fixture messages before releasing their arenas.
 pub struct UnitTestExecutor {
     unit_test_graph: UnitTestGraph,
     /// Shared time cell updated at the end of every `try_step`. `TestPublisher`s
@@ -125,6 +126,11 @@ impl UnitTestExecutor {
 
 impl Drop for UnitTestExecutor {
     fn drop(&mut self) {
+        let _ = self
+            .unit_test_graph
+            .simulation_state
+            .shutdown_node_executor_threads();
+
         #[cfg(feature = "iceoryx2")]
         {
             iox2::closed(&self.iox2_activation);
@@ -133,7 +139,13 @@ impl Drop for UnitTestExecutor {
             }
         }
 
-        // Drop all subscribers before all publishers
+        // Fixture handles can retain subscribers after the executor's Arc is released.
+        for subscriber in &self.unit_test_graph.test_subscribers {
+            subscriber
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .cleanup_buffers();
+        }
         self.unit_test_graph.test_subscribers.clear();
         self.unit_test_graph.simulation_state.clear_subscribers();
         self.unit_test_graph.test_publishers.clear();
