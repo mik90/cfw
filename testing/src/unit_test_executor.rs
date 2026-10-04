@@ -765,9 +765,58 @@ mod tests {
         integer_publisher.send(15);
         executor.step();
 
-        let messages = string_subscriber.messages();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].message, "FizzBuzz");
+        let mut messages = Vec::new();
+        let count = string_subscriber.messages(|index, message| {
+            assert_eq!(index, messages.len());
+            messages.push(message.message.clone());
+        });
+        assert_eq!(count, 1);
+        assert_eq!(messages, ["FizzBuzz"]);
+    }
+
+    #[test]
+    fn native_messages_are_indexed_per_batch() {
+        let mut source = IncrementingIntegerPublisher::build_callback_node();
+        source.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
+        let mut builder = UnitTestExecutorBuilder::new(vec![source]);
+        let mut capture = builder.add_test_subscriber::<u64>("integer");
+        let mut executor = builder.build();
+        executor.step();
+        executor.step();
+
+        let count = capture.messages(|index, message| {
+            assert_eq!(message.message, index as u64);
+        });
+        assert_eq!(count, 2);
+
+        executor.step();
+        assert_eq!(
+            capture.messages(|index, message| {
+                assert_eq!(index, 0);
+                assert_eq!(message.message, 2);
+            }),
+            1
+        );
+        assert_eq!(capture.messages(|_, _| panic!("Batch should be empty")), 0);
+    }
+
+    #[test]
+    fn native_try_messages_reports_overflow() {
+        let mut source = IncrementingIntegerPublisher::build_callback_node();
+        source.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
+        let mut builder = UnitTestExecutorBuilder::new(vec![source]);
+        let mut capture = builder.add_test_subscriber_with_capacity::<u64>("integer", 1);
+        let mut executor = builder.build();
+        executor.step();
+        executor.step();
+
+        let (count, dropped) = capture.try_messages(|index, message| {
+            assert_eq!(index, 0);
+            assert_eq!(message.message, 1);
+        });
+        assert_eq!(count, 1);
+        assert_eq!(dropped.writer, 1);
+        assert_eq!(dropped.reader, 0);
     }
 
     #[test]

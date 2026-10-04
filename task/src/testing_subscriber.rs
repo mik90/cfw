@@ -58,17 +58,20 @@ impl<T> TestSubscriber<T> {
     fn subscriber_guard<'a>(&'a self) -> MutexGuard<'a, Subscriber<T>> {
         self.subscriber.lock().expect("subscriber lock failed")
     }
-}
 
-impl<T: Clone> TestSubscriber<T> {
-    /// Drains and returns all queued messages, cloned out as owned values.
+    /// Drains queued messages, inspecting each by reference, and returns the visited count.
+    ///
+    /// The callback receives a zero-based index in queue order, restarting at zero
+    /// for each call. Messages are not copied and references cannot escape the callback.
+    /// The subscriber mutex is held during inspection; callbacks must not re-enter
+    /// this subscriber or drop its executor.
     ///
     /// Panics if any messages were ever dropped due to the queue overflowing — that
     /// means the test capacity is too small for what was actually published. Use
     /// [`TestSubscriber::try_messages`] if dropped messages are expected and you'd
     /// rather inspect the situation than panic.
-    pub fn messages(&mut self) -> Vec<Box<Message<T>>> {
-        let (messages, dropped) = self.try_messages();
+    pub fn messages(&mut self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
+        let (count, dropped) = self.try_messages(inspect);
         let subscriber_guard = self.subscriber_guard();
         assert!(
             dropped.writer == 0,
@@ -90,29 +93,32 @@ impl<T: Clone> TestSubscriber<T> {
             dropped.reader,
             subscriber_guard.config().capacity,
         );
-        messages
+        count
     }
 
-    /// Like [`TestSubscriber::messages`], but never panics on drops — instead returns
-    /// the drained messages alongside counts of how many were ever displaced due to
+    /// Like [`TestSubscriber::messages`], but does not assert on drops — returns
+    /// the visited count alongside counts of how many were ever displaced due to
     /// overflow (split by which side of the buffer they were dropped on), for tests
     /// that want to assert on drop behavior directly.
-    pub fn try_messages(&mut self) -> (Vec<Box<Message<T>>>, DroppedMessages) {
+    pub fn try_messages(
+        &mut self,
+        mut inspect: impl FnMut(usize, &Message<T>),
+    ) -> (usize, DroppedMessages) {
         let subscriber_guard = self.subscriber_guard();
         subscriber_guard.drain_writer_to_reader();
-        let messages = {
+        let count = {
             let mut guard = subscriber_guard.read_buffer();
-
-            guard
-                .drain_contiguous()
-                .map(|ptr| Box::new((*ptr).clone()))
-                .collect()
+            let count = guard.len();
+            for (index, ptr) in guard.drain_contiguous().enumerate() {
+                inspect(index, &ptr);
+            }
+            count
         };
         let dropped = DroppedMessages {
             writer: subscriber_guard.writer_queue_drops(),
             reader: subscriber_guard.reader_queue_drops(),
         };
-        (messages, dropped)
+        (count, dropped)
     }
 }
 

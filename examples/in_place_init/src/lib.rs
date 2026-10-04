@@ -5,8 +5,6 @@ use task_macros::task_callback;
 pub struct MyTask {}
 const LARGE_SIZE: usize = 100_000;
 
-// Note: Clone can generate a method that overflows the stack since it returns self
-#[derive(Clone)]
 pub struct LargeMessage {
     big_array: [u64; LARGE_SIZE],
 }
@@ -15,17 +13,18 @@ pub struct LargeMessage {
 impl MyTask {
     fn run(&mut self, mut output_uninit: OutputUninit<LargeMessage>) {
         println!("MyTask run");
-        // Maybe need to iterate over elements and write them manually
         let large_message_uninit = output_uninit.value_uninit();
         let ptr = large_message_uninit.as_mut_ptr();
-        // SAFETY: We're going to initialize the single array in the message field
+        // SAFETY: The loan provides exclusive access to this allocation. Raw
+        // writes initialize the header and every array element before assuming init.
         unsafe {
-            let big_array = &mut (*ptr).message.big_array;
-            for element in big_array.iter_mut() {
-                *element = 42;
+            (&raw mut (*ptr).header).write(task::message::MessageHeader::default());
+            let elements = (&raw mut (*ptr).message.big_array).cast::<u64>();
+            for index in 0..LARGE_SIZE {
+                elements.add(index).write(42);
             }
         }
-        // SAFETY: We initialized the whole LargeMessage
+        // SAFETY: The header and the whole LargeMessage have been initialized.
         unsafe { output_uninit.send_assume_init() };
     }
 
@@ -59,13 +58,16 @@ mod tests {
 
         test_executor.step();
 
-        /*
-        let messages = large_message_subscriber.messages();
-        assert_eq!(messages.len(), 1);
-        let first_message = messages.first().unwrap();
-        for (index, element) in first_message.message.big_array.iter().enumerate() {
-            assert_eq!(*element, 42, "Index {} was not 42", index);
-        }
-        */
+        let count = large_message_subscriber.messages(|index, message| {
+            assert_eq!(index, 0);
+            assert_eq!(
+                message.header.published_at,
+                task::time::FrameworkTime::from_nanoseconds(0)
+            );
+            for (index, element) in message.message.big_array.iter().enumerate() {
+                assert_eq!(*element, 42, "Index {} was not 42", index);
+            }
+        });
+        assert_eq!(count, 1);
     }
 }
