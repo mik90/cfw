@@ -117,10 +117,12 @@ impl<T> ArenaPtrUninit<T> {
     }
 
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
-        // SAFETY: NonNull to ArenaSlot is valid and aligned, the payload is the item
-        // that's possibly uninit.
-        let slot_ptr_mut = unsafe { self.ptr.as_mut() };
-        slot_ptr_mut.payload.get_mut()
+        // SAFETY: The arena keeps this slot alive and aligned. Retain shared
+        // access to the slot; mutable access is confined to its UnsafeCell.
+        let slot = unsafe { self.ptr.as_ref() };
+        // SAFETY: This unpublished loan exclusively owns the payload, and
+        // &mut self ties the returned borrow to exclusive access to the loan.
+        unsafe { &mut *slot.payload.get() }
     }
 
     /// # Safety
