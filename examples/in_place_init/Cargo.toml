@@ -7,6 +7,8 @@ edition = "2024"
 #pin-init = "0.2.0"
 task = { path = "../../task", default-features = false }
 task_macros = { path = "../../task_macros" }
+
+[dev-dependencies]
 testing = { path = "../../testing" }
 
 [lints]
