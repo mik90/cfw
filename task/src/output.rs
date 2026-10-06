@@ -1,6 +1,6 @@
 use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::GenericPublisher;
-use crate::message::Message;
+use crate::message::{Message, MessageHeader};
 use crate::publisher::{ForwardingPublisher, LoanedValue, Publisher};
 use base::arena::{Arena, ArenaPtrUninit, ArenaReaderPtr};
 use std::cell::Cell;
@@ -244,7 +244,7 @@ pub struct OutputUninitSpan<'publisher, T> {
 
 impl<'publisher, T> OutputUninitSpan<'publisher, T> {
     pub fn new(publisher: &'publisher mut Publisher<T>) -> Self {
-        let remaining_loans = publisher.config().capacity;
+        let remaining_loans = publisher.config().capacity - publisher.loaned_count();
         let (loan_vec, arena) = publisher.uninit_loan_parts();
         OutputUninitSpan {
             arena,
@@ -259,13 +259,34 @@ pub struct OutputUninitSpanIterator<'iter, 'publisher, T> {
     staging: &'iter UninitLoanSink<'publisher, T>,
     remaining_loans: &'iter mut usize,
 }
-impl<'iter, 'publisher, T> OutputUninitSpanIterator<'iter, 'publisher, T> {}
+
+impl<'iter, 'publisher, T> OutputUninitSpanIterator<'iter, 'publisher, T> {
+    pub fn new(
+        span: &'iter mut OutputUninitSpan<'publisher, T>,
+    ) -> OutputUninitSpanIterator<'iter, 'publisher, T> {
+        Self {
+            arena: &mut *span.arena,
+            staging: &span.staging,
+            remaining_loans: &mut span.remaining_loans,
+        }
+    }
+}
 
 impl<'iter, 'publisher, T> Iterator for OutputUninitSpanIterator<'iter, 'publisher, T> {
     type Item = OutputUninit<'iter, 'publisher, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let arena_ptr_uninit = self.arena.try_allocate_uninit()?;
+        if *self.remaining_loans == 0 {
+            return None;
+        }
+
+        let mut arena_ptr_uninit = self.arena.try_allocate_uninit()?;
+        let msg_ptr = arena_ptr_uninit.payload_uninit().as_mut_ptr();
+        // SAFETY: The reservation owns exclusive storage for Message<T>.
+        // Initialize only the header without referencing the uninitialized payload.
+        unsafe {
+            (&raw mut (*msg_ptr).header).write(MessageHeader::default());
+        }
         *self.remaining_loans -= 1;
 
         Some(OutputUninit {
@@ -356,4 +377,213 @@ impl<'a, T: Default, F> ForwardedOutputSpan<'a, T, F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publisher::PublisherConfig;
+    use crate::subscriber::{Subscriber, SubscriberConfig};
+    use crate::time::FrameworkTime;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn publisher<T: Send + Sync + 'static>(capacity: usize) -> Publisher<T> {
+        let mut publisher = Publisher::new(PublisherConfig {
+            capacity,
+            channel_name: "channel".into(),
+        });
+        publisher.allocate_arena();
+        publisher
+    }
+
+    #[test]
+    fn uninit_span_stops_at_budget_even_with_free_arena_slots() {
+        for capacity in [0, 2] {
+            let mut publisher = publisher::<u64>(capacity);
+            publisher.increase_arena_size(3);
+            publisher.allocate_arena();
+
+            let mut span = OutputUninitSpan::new(&mut publisher);
+            let mut outputs = OutputUninitSpanIterator::new(&mut span);
+            for _ in 0..capacity {
+                // Abandoning an output releases storage, but consumes an iteration item.
+                drop(
+                    outputs
+                        .next()
+                        .expect("configured output should be available"),
+                );
+            }
+            assert!(outputs.next().is_none());
+            assert!(outputs.next().is_none());
+        }
+    }
+
+    #[test]
+    fn uninit_span_supports_live_outputs_after_iterator_drop_and_publishes_in_send_order() {
+        struct Packet {
+            sequence: u64,
+            words: [u32; 4],
+        }
+
+        let mut publisher = publisher::<Packet>(3);
+        let mut subscriber = Subscriber::new(SubscriberConfig {
+            is_optional: false,
+            capacity: 3,
+            is_trigger: true,
+            keep_across_runs: true,
+            channel_name: "uninit_span".into(),
+        });
+        publisher.add_typed_subscriber(&mut subscriber);
+        publisher.allocate_arena();
+
+        {
+            let mut span = OutputUninitSpan::new(&mut publisher);
+            let mut outputs: Vec<_> = OutputUninitSpanIterator::new(&mut span).collect();
+            assert_eq!(outputs.len(), 3);
+
+            for (index, output) in outputs.iter_mut().enumerate() {
+                let sequence = index as u64 + 1;
+                let ptr = output.value_uninit().as_mut_ptr();
+                // SAFETY: Each output exclusively owns its reservation. These raw
+                // field writes fully initialize Packet without constructing a &mut Packet.
+                unsafe {
+                    (&raw mut (*ptr).sequence).write(sequence);
+                    (&raw mut (*ptr).words).write([sequence as u32; 4]);
+                }
+            }
+
+            for output in outputs.into_iter().rev() {
+                // SAFETY: Both fields of every Packet were initialized above.
+                unsafe { output.send_assume_init() };
+            }
+        }
+
+        assert_eq!(publisher.loaned_count(), 3);
+        subscriber.drain_writer_to_reader();
+        assert!(subscriber.read_buffer().is_empty());
+
+        let timestamp = FrameworkTime::from_nanoseconds(42);
+        publisher.flush_loaned_values(timestamp);
+        assert_eq!(publisher.loaned_count(), 0);
+        subscriber.drain_writer_to_reader();
+        {
+            let mut messages = subscriber.read_buffer();
+            assert_eq!(messages.len(), 3);
+            for (message, sequence) in messages.as_slice().zip([3, 2, 1]) {
+                assert_eq!(message.header.published_at, timestamp);
+                assert_eq!(message.message.sequence, sequence);
+                assert_eq!(message.message.words, [sequence as u32; 4]);
+            }
+        }
+        subscriber.cleanup_buffers();
+    }
+
+    struct TrackedPayload {
+        value: u64,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for TrackedPayload {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn uninit_span_abandonment_releases_reserved_and_unrequested_capacity() {
+        let mut publisher = publisher::<TrackedPayload>(2);
+        {
+            let mut span = OutputUninitSpan::new(&mut publisher);
+            let mut output = OutputUninitSpanIterator::new(&mut span).next().unwrap();
+            let ptr = output.value_uninit().as_mut_ptr();
+            // SAFETY: The reservation owns this field. Leave the Arc field
+            // uninitialized; abandoning the output must not run TrackedPayload::drop.
+            unsafe { (&raw mut (*ptr).value).write(99) };
+        }
+        assert_eq!(publisher.loaned_count(), 0);
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        {
+            let mut span = OutputUninitSpan::new(&mut publisher);
+            let outputs: Vec<_> = OutputUninitSpanIterator::new(&mut span).collect();
+            assert_eq!(outputs.len(), 2);
+            for mut output in outputs {
+                output.value_uninit().write(TrackedPayload {
+                    value: 42,
+                    drops: Arc::clone(&drops),
+                });
+                // SAFETY: Both fields of TrackedPayload were written above.
+                unsafe { output.send_assume_init() };
+            }
+        }
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        publisher.flush_loaned_values(FrameworkTime::from_nanoseconds(1));
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+        drop(publisher);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn uninit_span_unwind_restores_sent_loans_and_releases_partial_reservations() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut publisher = publisher::<TrackedPayload>(2);
+        let allocation = publisher.loaned_values_mut().as_ptr();
+        let capacity = publisher.loaned_values_mut().capacity();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut span = OutputUninitSpan::new(&mut publisher);
+            let mut outputs = OutputUninitSpanIterator::new(&mut span);
+            let mut sent = outputs.next().unwrap();
+            let mut partial = outputs.next().unwrap();
+
+            sent.value_uninit().write(TrackedPayload {
+                value: 7,
+                drops: Arc::clone(&drops),
+            });
+            // SAFETY: Both fields of TrackedPayload were written above.
+            unsafe { sent.send_assume_init() };
+
+            let ptr = partial.value_uninit().as_mut_ptr();
+            // SAFETY: The reservation owns this field. The Arc remains uninitialized.
+            unsafe { (&raw mut (*ptr).value).write(99) };
+            panic!("initialization failed");
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(publisher.loaned_count(), 1);
+        assert_eq!(publisher.loaned_value_at(0).payload().value, 7);
+        assert!(publisher.loaned_value_at(0).sent);
+        assert_eq!(publisher.loaned_values_mut().as_ptr(), allocation);
+        assert_eq!(publisher.loaned_values_mut().capacity(), capacity);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(
+            publisher
+                .loan_uninit()
+                .expect("partial reservation was released"),
+        );
+
+        publisher.flush_loaned_values(FrameworkTime::from_nanoseconds(1));
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        drop(publisher);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn uninit_span_failed_arena_reservation_does_not_consume_budget() {
+        let mut publisher = publisher::<u64>(1);
+        let held = publisher.loan_uninit().unwrap();
+
+        {
+            let mut span = OutputUninitSpan::new(&mut publisher);
+            assert!(OutputUninitSpanIterator::new(&mut span).next().is_none());
+            assert_eq!(span.remaining_loans, 1);
+
+            drop(held);
+            drop(
+                OutputUninitSpanIterator::new(&mut span)
+                    .next()
+                    .expect("released slot is available"),
+            );
+            assert_eq!(span.remaining_loans, 0);
+        }
+        assert_eq!(publisher.loaned_count(), 0);
+        assert!(publisher.loan_uninit().is_ok());
+    }
 }
