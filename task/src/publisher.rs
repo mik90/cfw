@@ -246,6 +246,13 @@ impl<T> Publisher<T> {
         &mut self.loaned_values
     }
 
+    /// Helper to allow borrwing of the loan vec and the arena at the same time
+    pub(crate) fn uninit_loan_parts(
+        &mut self,
+    ) -> (&mut Vec<LoanedValue<T>>, &mut Arena<Message<T>>) {
+        (&mut self.loaned_values, &mut self.arena)
+    }
+
     /// Acquires an exclusive loan with an initialized header and uninitialized payload.
     pub(crate) fn loan_uninit(&mut self) -> Result<ArenaPtrUninit<Message<T>>, LoanError> {
         if self.loaned_values.len() >= self.config.capacity {

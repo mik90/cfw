@@ -2,7 +2,8 @@ use crate::forwarded_message::ForwardedMessage;
 use crate::generic_publisher::GenericPublisher;
 use crate::message::Message;
 use crate::publisher::{ForwardingPublisher, LoanedValue, Publisher};
-use base::arena::{ArenaPtrUninit, ArenaReaderPtr};
+use base::arena::{Arena, ArenaPtrUninit, ArenaReaderPtr};
+use std::cell::Cell;
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 
@@ -86,19 +87,67 @@ impl<T> DerefMut for Output<'_, T> {
     }
 }
 
-pub struct OutputUninit<'a, T> {
-    loans: &'a mut Vec<LoanedValue<T>>,
+struct UninitLoanSink<'publisher, T> {
+    // We'll swap this out once we're done
+    destination: &'publisher mut Vec<LoanedValue<T>>,
+    // Staged loans that'll be given to the publisher on drop
+    pending: Cell<Vec<LoanedValue<T>>>,
+}
+
+impl<'publisher, T> UninitLoanSink<'publisher, T> {
+    fn new(destination: &'publisher mut Vec<LoanedValue<T>>, loan_count: usize) -> Self {
+        if loan_count > (destination.capacity() - destination.len()) {
+            panic!(
+                "Not enough loans are left: {} > ({} - {})",
+                loan_count,
+                destination.capacity(),
+                destination.len()
+            );
+        }
+
+        let pending = Cell::new(std::mem::take(destination));
+
+        Self {
+            destination,
+            pending,
+        }
+    }
+
+    fn push(&self, loan: LoanedValue<T>) {
+        let mut pending = self.pending.take();
+        // We check that loans will be less than capacity in new() to avoid allocations here
+        pending.push(loan);
+        self.pending.set(pending);
+    }
+}
+
+impl<T> Drop for UninitLoanSink<'_, T> {
+    /// Swap the pending loans back into the publisher's vec
+    fn drop(&mut self) {
+        *self.destination = std::mem::take(self.pending.get_mut());
+    }
+}
+
+enum LoanRouter<'output, 'publisher, T> {
+    /// Directly modified loan value vec on publisher
+    Direct(&'output mut Vec<LoanedValue<T>>),
+    /// Staging area for uninit spans
+    Staged(&'output UninitLoanSink<'publisher, T>),
+}
+
+pub struct OutputUninit<'output, 'publisher, T> {
+    destination: LoanRouter<'output, 'publisher, T>,
     ptr: ArenaPtrUninit<Message<T>>,
 }
 
-impl<'a, T> OutputUninit<'a, T> {
-    pub fn new(publisher: &'a mut Publisher<T>) -> Self {
+impl<'output, 'publisher, T> OutputUninit<'output, 'publisher, T> {
+    pub fn new(publisher: &'publisher mut Publisher<T>) -> Self {
         let arena_ptr_uninit = publisher
             .loan_uninit()
             .expect("We expect loans to always be available");
         let loaned_values = publisher.loaned_values_mut();
         OutputUninit {
-            loans: loaned_values,
+            destination: LoanRouter::Direct(loaned_values),
             ptr: arena_ptr_uninit,
         }
     }
@@ -117,13 +166,16 @@ impl<'a, T> OutputUninit<'a, T> {
     /// The payload T must be fully initialized before calling this.
     /// The framework guarantees that the header is already initialized.
     pub unsafe fn send_assume_init(self) {
-        let loans = self.loans;
-        loans.push(LoanedValue {
+        let loaned_value = LoanedValue {
             // SAFETY: The caller guarantees an initialized payload, and
             // Publisher::loan_uninit initialized the header.
             ptr: unsafe { self.ptr.assume_init() },
             sent: true,
-        });
+        };
+        match self.destination {
+            LoanRouter::Direct(v) => v.push(loaned_value),
+            LoanRouter::Staged(s) => s.push(loaned_value),
+        }
     }
 }
 
@@ -172,7 +224,7 @@ impl<'a, T> OutputSpan<'a, T> {
 }
 
 impl<'a, T: Default> OutputSpan<'a, T> {
-    pub fn new(publisher: &'a mut Publisher<T>) -> Self {
+    pub fn new_default(publisher: &'a mut Publisher<T>) -> Self {
         for _ in 0..publisher.config().capacity {
             publisher.loan_default().unwrap();
         }
@@ -184,11 +236,42 @@ impl<'a, T: Default> OutputSpan<'a, T> {
     }
 }
 
-// `new_downcasted` uses `Any`; only `'static` is needed for that type check.
-impl<'a, T: Default + 'static> OutputSpan<'a, T> {
-    pub fn new_downcasted(publisher: &'a mut dyn GenericPublisher) -> OutputSpan<'a, T> {
-        let typed_publisher = publisher.as_any().downcast_mut::<Publisher<T>>();
-        OutputSpan::new(typed_publisher.expect("Expected proc macro to use the correct types"))
+pub struct OutputUninitSpan<'publisher, T> {
+    arena: &'publisher mut Arena<Message<T>>,
+    staging: UninitLoanSink<'publisher, T>,
+    remaining_loans: usize,
+}
+
+impl<'publisher, T> OutputUninitSpan<'publisher, T> {
+    pub fn new(publisher: &'publisher mut Publisher<T>) -> Self {
+        let remaining_loans = publisher.config().capacity;
+        let (loan_vec, arena) = publisher.uninit_loan_parts();
+        OutputUninitSpan {
+            arena,
+            staging: UninitLoanSink::new(loan_vec, remaining_loans),
+            remaining_loans,
+        }
+    }
+}
+
+pub struct OutputUninitSpanIterator<'iter, 'publisher, T> {
+    arena: &'iter mut Arena<Message<T>>,
+    staging: &'iter UninitLoanSink<'publisher, T>,
+    remaining_loans: &'iter mut usize,
+}
+impl<'iter, 'publisher, T> OutputUninitSpanIterator<'iter, 'publisher, T> {}
+
+impl<'iter, 'publisher, T> Iterator for OutputUninitSpanIterator<'iter, 'publisher, T> {
+    type Item = OutputUninit<'iter, 'publisher, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let arena_ptr_uninit = self.arena.try_allocate_uninit()?;
+        *self.remaining_loans -= 1;
+
+        Some(OutputUninit {
+            destination: LoanRouter::Staged(self.staging),
+            ptr: arena_ptr_uninit,
+        })
     }
 }
 
@@ -268,4 +351,9 @@ impl<'a, T: Default, F> ForwardedOutputSpan<'a, T, F> {
     pub fn outputs_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.inner.outputs_mut().map(|fwd| &mut fwd.message)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 }

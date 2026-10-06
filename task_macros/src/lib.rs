@@ -638,7 +638,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         parse_quote!(OutputUninit::new(&mut self.pub_or_subs.#fname))
                     }
                     OutputKind::DefaultSpan => {
-                        parse_quote!(OutputSpan::new(&mut self.pub_or_subs.#fname))
+                        parse_quote!(OutputSpan::new_default(&mut self.pub_or_subs.#fname))
                     }
                     OutputKind::UninitSpan => {
                         parse_quote!(OutputUninitSpan::new(&mut self.pub_or_subs.#fname))
