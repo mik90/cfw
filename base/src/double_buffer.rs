@@ -4,17 +4,17 @@ use std::cell::{RefCell, RefMut};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-pub(crate) struct Buffer<T> {
-    pub storage: VecDeque<ArenaPtr<T>>,
+pub(crate) struct Buffer<'arena, T> {
+    pub storage: VecDeque<ArenaPtr<'arena, T>>,
     pub drops: usize,
 }
 
-pub struct WriteBufferHandle<T> {
-    queue: Arc<MpscQueue<ArenaPtr<T>>>,
+pub struct WriteBufferHandle<'arena, T> {
+    queue: Arc<MpscQueue<ArenaPtr<'arena, T>>>,
 }
 
-impl<T> WriteBufferHandle<T> {
-    pub fn write(&self, element: ArenaPtr<T>) {
+impl<'arena, T> WriteBufferHandle<'arena, T> {
+    pub fn write(&self, element: ArenaPtr<'arena, T>) {
         self.queue.push(element);
     }
 
@@ -27,17 +27,17 @@ impl<T> WriteBufferHandle<T> {
     }
 }
 
-pub struct ReadBufferGuard<'a, T> {
-    buffer: RefMut<'a, Buffer<T>>,
+pub struct ReadBufferGuard<'a, 'arena, T> {
+    buffer: RefMut<'a, Buffer<'arena, T>>,
 }
 
 // TODO should this be partially specialized on MaybeUninit and auto-handle safety?
-impl<'a, T> ReadBufferGuard<'a, T> {
+impl<'a, 'arena, T> ReadBufferGuard<'a, 'arena, T> {
     pub fn pop_front(&mut self) {
         self.buffer.storage.pop_front();
     }
 
-    pub fn pop_front_ptr(&mut self) -> Option<ArenaPtr<T>> {
+    pub fn pop_front_ptr(&mut self) -> Option<ArenaPtr<'arena, T>> {
         self.buffer.storage.pop_front()
     }
 
@@ -65,7 +65,7 @@ impl<'a, T> ReadBufferGuard<'a, T> {
     }
 
     /// Mut because it makes the slice contiguous
-    pub fn drain_contiguous(&mut self) -> impl Iterator<Item = ArenaReaderPtr<T>> {
+    pub fn drain_contiguous(&mut self) -> impl Iterator<Item = ArenaReaderPtr<'arena, T>> {
         // Shuffle to get things in order before we give everything to the consumer
         self.buffer.storage.make_contiguous();
 
@@ -86,14 +86,14 @@ impl<'a, T> ReadBufferGuard<'a, T> {
     }
 }
 
-pub struct DoubleBuffer<T> {
-    write_queue: Arc<MpscQueue<ArenaPtr<T>>>,
+pub struct DoubleBuffer<'arena, T> {
+    write_queue: Arc<MpscQueue<ArenaPtr<'arena, T>>>,
     // No lock needed: read_buffer is only accessed during drain (before task runs)
     // or by the task itself — never concurrently.
-    read_buffer: RefCell<Buffer<T>>,
+    read_buffer: RefCell<Buffer<'arena, T>>,
 }
 
-impl<T> DoubleBuffer<T> {
+impl<'arena, T> DoubleBuffer<'arena, T> {
     pub fn new(capacity: usize) -> Self {
         DoubleBuffer {
             write_queue: Arc::new(MpscQueue::new(capacity)),
@@ -110,13 +110,13 @@ impl<T> DoubleBuffer<T> {
         self.write_queue.dropped()
     }
 
-    pub fn write_buffer(&self) -> WriteBufferHandle<T> {
+    pub fn write_buffer(&self) -> WriteBufferHandle<'arena, T> {
         WriteBufferHandle {
             queue: self.write_queue.clone(),
         }
     }
 
-    pub fn read_buffer(&self) -> ReadBufferGuard<'_, T> {
+    pub fn read_buffer(&self) -> ReadBufferGuard<'_, 'arena, T> {
         ReadBufferGuard {
             buffer: self.read_buffer.borrow_mut(),
         }

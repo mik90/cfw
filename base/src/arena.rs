@@ -1,3 +1,4 @@
+use crossbeam_queue::ArrayQueue;
 use std::cell::UnsafeCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::Deref;
@@ -6,12 +7,15 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
 use std::vec::Vec;
 
-pub struct ArenaPtr<T> {
+pub struct ArenaPtr<'arena, T> {
     /// Holds a given slot in the arena with pre-initialized data.
     ptr: NonNull<ArenaSlot<T>>,
+
+    /// Freelist owned by the arena
+    free_list: &'arena ArrayQueue<usize>,
 }
 
-impl<T> ArenaPtr<T> {
+impl<'arena, T> ArenaPtr<'arena, T> {
     fn slot(&self) -> &ArenaSlot<T> {
         // SAFETY: the arena should always keep these alive, and pub-sub connections will be destroyed before
         // the arenas go away
@@ -20,8 +24,11 @@ impl<T> ArenaPtr<T> {
     // TODO impl non-default try_new which allows you to forward args
 }
 
-impl<T: Default> ArenaPtr<T> {
-    fn try_new(slot: &ArenaSlot<T>) -> Option<ArenaPtr<T>> {
+impl<'arena, T: Default> ArenaPtr<'arena, T> {
+    fn try_new(
+        slot: &ArenaSlot<T>,
+        free_list: &'arena ArrayQueue<usize>,
+    ) -> Option<ArenaPtr<'arena, T>> {
         // Atomically claim the slot: 0 → 1. Fails if live refs or TOMBSTONE exist.
         // Acquire syncs with the Release store that cleared a previous TOMBSTONE,
         // ensuring a prior T's destructor fully completed before we write a new one.
@@ -36,11 +43,12 @@ impl<T: Default> ArenaPtr<T> {
         }
         Some(ArenaPtr {
             ptr: NonNull::from_ref(slot),
+            free_list,
         })
     }
 }
 
-impl<T> Clone for ArenaPtr<T> {
+impl<'arena, T> Clone for ArenaPtr<'arena, T> {
     fn clone(&self) -> Self {
         if self
             .slot()
@@ -50,18 +58,21 @@ impl<T> Clone for ArenaPtr<T> {
         {
             panic!("Reached the max amount of ArenaPtrs per process");
         }
-        ArenaPtr { ptr: self.ptr }
+        ArenaPtr {
+            ptr: self.ptr,
+            free_list: self.free_list,
+        }
     }
 }
 
-impl<T> Deref for ArenaPtr<T> {
+impl<'arena, T> Deref for ArenaPtr<'arena, T> {
     type Target = ArenaSlot<T>;
     fn deref(&self) -> &Self::Target {
         self.slot()
     }
 }
 
-impl<T> Drop for ArenaPtr<T> {
+impl<'arena, T> Drop for ArenaPtr<'arena, T> {
     fn drop(&mut self) {
         let slot = self.slot();
         let mut current = slot.ref_count.load(atomic::Ordering::Relaxed);
@@ -95,17 +106,20 @@ impl<T> Drop for ArenaPtr<T> {
 /// SAFETY: `Send` permits ownership and the final drop to occur on another
 /// thread; `Sync` is required because cloned pointers permit concurrent
 /// immutable reads of the same published value.
-unsafe impl<T: Send + Sync> Send for ArenaPtr<T> {}
+unsafe impl<'arena, T: Send + Sync> Send for ArenaPtr<'arena, T> {}
 
 /// An exclusive writer-side reservation. Dropping it releases the slot without
 /// dropping its possibly partially initialized payload.
-pub struct ArenaPtrUninit<T> {
+pub struct ArenaPtrUninit<'arena, T> {
     /// Holds a given slot in the arena, although the memory isn't initialized yet.
     ptr: NonNull<ArenaSlot<T>>,
+
+    /// Freelist owned by the arena
+    free_list: &'arena ArrayQueue<usize>,
 }
 
-impl<T> ArenaPtrUninit<T> {
-    fn try_new(slot: &ArenaSlot<T>) -> Option<Self> {
+impl<'arena, T> ArenaPtrUninit<'arena, T> {
+    fn try_new(slot: &ArenaSlot<T>, free_list: &'arena ArrayQueue<usize>) -> Option<Self> {
         // Claim exclusive ownership: 0 → 1. Acquire pairs with the previous
         // owner's Release when freeing the slot, including completion of any drop.
         slot.ref_count
@@ -113,6 +127,7 @@ impl<T> ArenaPtrUninit<T> {
             .ok()?;
         Some(Self {
             ptr: NonNull::from_ref(slot),
+            free_list,
         })
     }
 
@@ -128,13 +143,17 @@ impl<T> ArenaPtrUninit<T> {
     /// # Safety
     ///
     /// Ensure that the payload is fully initialized before calling this
-    pub unsafe fn assume_init(self) -> ArenaPtr<T> {
+    pub unsafe fn assume_init(self) -> ArenaPtr<'arena, T> {
+        let free_list = self.free_list;
         let this = ManuallyDrop::new(self);
-        ArenaPtr { ptr: this.ptr }
+        ArenaPtr {
+            ptr: this.ptr,
+            free_list,
+        }
     }
 }
 
-impl<T> Drop for ArenaPtrUninit<T> {
+impl<'arena, T> Drop for ArenaPtrUninit<'arena, T> {
     fn drop(&mut self) {
         // SAFETY: The arena keeps the slot alive, and this unpublished loan is
         // its sole owner since uninitialized arena pointers are only usable on the writer side.
@@ -146,26 +165,26 @@ impl<T> Drop for ArenaPtrUninit<T> {
 
 /// Pointer to a message that we assume is read-only based on pub/sub invariants
 #[derive(Clone)]
-pub struct ArenaReaderPtr<T> {
+pub struct ArenaReaderPtr<'arena, T> {
     /// Holds a normal ArenaPtr, just marked as read-only
-    ptr: ArenaPtr<T>,
+    ptr: ArenaPtr<'arena, T>,
 }
 
-impl<T> ArenaReaderPtr<T> {
+impl<'arena, T> ArenaReaderPtr<'arena, T> {
     /// This should only be created on already-published ptrs
-    pub fn new(ptr: ArenaPtr<T>) -> Self {
+    pub fn new(ptr: ArenaPtr<'arena, T>) -> Self {
         Self { ptr }
     }
 }
 
 /// This should only be created on already-published ptrs
-impl<T> From<ArenaPtr<T>> for ArenaReaderPtr<T> {
-    fn from(ptr: ArenaPtr<T>) -> Self {
+impl<'arena, T> From<ArenaPtr<'arena, T>> for ArenaReaderPtr<'arena, T> {
+    fn from(ptr: ArenaPtr<'arena, T>) -> Self {
         Self { ptr }
     }
 }
 
-impl<T> Deref for ArenaReaderPtr<T> {
+impl<'arena, T> Deref for ArenaReaderPtr<'arena, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -197,19 +216,26 @@ impl<T> ArenaSlot<T> {
 }
 
 pub struct Arena<T> {
+    capacity: usize,
     // A vector of slots, where each slot can be updated but each value can be mutated too
     storage: Box<[ArenaSlot<T>]>,
-    capacity: usize,
+    /// MPSC queue (although it can handle MPMC) where pub/sub publishers consume entires off the freelist to publish
+    /// data, and subscribers produce freelist entries as they become done with slots. Publishers can also return slots
+    /// although they have exclusive ownership at that point.
+    free_list: ArrayQueue<usize>,
 }
 
 impl<T> Arena<T> {
     /// Sets initial capacity, although these pointers may be cleared out once slots are re-allocated
     pub fn new(capacity: usize) -> Self {
-        Arena {
+        let mut arena = Arena {
             // Basically empty storage until we call allocate_slots()
             storage: vec![].into_boxed_slice(),
             capacity,
-        }
+            free_list: ArrayQueue::new(capacity),
+        };
+        arena.reallocate_slots();
+        arena
     }
 
     pub fn capacity(&self) -> usize {
@@ -221,12 +247,16 @@ impl<T> Arena<T> {
         self.capacity = new_capacity;
     }
 
+    /// This runs over all the storage and populates the freelist.
+    /// Only meant to be run on construction or allocation, before arena is actually uysed.
+    fn populate_free_list(&mut self) {}
+
     /// Once the capacity is set, this allocates slots of uninitialized memory
-    pub fn allocate_slots(&mut self) {
+    pub fn reallocate_slots<'arena>(&'arena mut self) {
         let mut vec_storage: Vec<ArenaSlot<T>> = Vec::with_capacity(self.capacity);
 
         // Initialize each element
-        for _ in 0..self.capacity {
+        for _ in 0..vec_storage.capacity() {
             // SAFETY: We will initialize members of ArenaSlot that need to be initialized, so just the ref count
             unsafe {
                 let vec_ptr = vec_storage.as_mut_ptr().add(vec_storage.len());
@@ -239,16 +269,25 @@ impl<T> Arena<T> {
             }
         }
         self.storage = vec_storage.into_boxed_slice();
+
+        self.free_list = ArrayQueue::new(self.capacity);
+        for (index, slot) in self.storage.iter().enumerate() {
+            if slot.ref_count.load(atomic::Ordering::Relaxed) == 0 {
+                self.free_list.force_push(index);
+            }
+        }
     }
 }
 
 impl<T> Arena<T> {
     /// Allocates a slot without initializing memory
-    pub fn try_allocate_uninit(&mut self) -> Option<ArenaPtrUninit<T>> {
-        self.storage.iter().find_map(ArenaPtrUninit::try_new)
+    pub fn try_allocate_uninit<'arena>(&'arena self) -> Option<ArenaPtrUninit<'arena, T>> {
+        self.storage
+            .iter()
+            .find_map(|slot| ArenaPtrUninit::try_new(slot, &self.free_list))
     }
 
-    pub fn allocate_uninit(&mut self) -> ArenaPtrUninit<T> {
+    pub fn allocate_uninit<'arena>(&'arena self) -> ArenaPtrUninit<'arena, T> {
         match self.try_allocate_uninit() {
             Some(v) => v,
             None => {
@@ -262,10 +301,10 @@ impl<T> Arena<T> {
         }
     }
 
-    pub fn try_allocate_with(
-        &mut self,
+    pub fn try_allocate_with<'arena>(
+        &'arena self,
         factory: impl FnOnce(&mut MaybeUninit<T>),
-    ) -> Option<ArenaPtr<T>> {
+    ) -> Option<ArenaPtr<'arena, T>> {
         let mut uninit_ptr = self.try_allocate_uninit()?;
         factory(uninit_ptr.payload_uninit());
         // SAFETY: The factory is responsible for fully initializing the payload.
@@ -277,7 +316,7 @@ impl<T> Arena<T> {
 mod tests {
 
     impl<T: Default> Arena<T> {
-        pub fn try_allocate_default(&mut self) -> Option<ArenaPtr<T>> {
+        pub fn try_allocate_default<'arena>(&'arena self) -> Option<ArenaPtr<'arena, T>> {
             self.try_allocate_with(|slot| {
                 slot.write(T::default());
             })
@@ -297,7 +336,7 @@ mod tests {
     fn uninit_drop_releases_slot_without_dropping_payload() {
         let drops = AtomicUsize::new(0);
         let mut arena = Arena::new(1);
-        arena.allocate_slots();
+        arena.reallocate_slots();
         let mut loan = arena.try_allocate_uninit().unwrap();
         assert_eq!(
             arena.storage[0].ref_count.load(atomic::Ordering::Relaxed),
@@ -315,7 +354,7 @@ mod tests {
     fn uninit_assume_init_transfers_ownership() {
         let drops = AtomicUsize::new(0);
         let mut arena = Arena::new(1);
-        arena.allocate_slots();
+        arena.reallocate_slots();
         let mut loan = arena.try_allocate_uninit().unwrap();
         loan.payload_uninit().write(DropCounter(&drops));
         // SAFETY: The payload was fully initialized above.
@@ -331,7 +370,7 @@ mod tests {
     #[test]
     fn uninit_factory_panic_releases_slot() {
         let mut arena = Arena::<u64>::new(1);
-        arena.allocate_slots();
+        arena.reallocate_slots();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             arena.try_allocate_with(|_| panic!("Factory failed"));
         }));
@@ -353,8 +392,10 @@ mod tests {
             ref_count: AtomicUsize::new(0),
             payload: UnsafeCell::new(MaybeUninit::uninit()),
         };
+        let free_list = ArrayQueue::new(1);
+        free_list.force_push(0);
 
-        let maybe_ptr = ArenaPtr::try_new(&slot);
+        let maybe_ptr = ArenaPtr::try_new(&slot, &free_list);
         assert!(maybe_ptr.is_some());
 
         let ptr = maybe_ptr.unwrap();
@@ -408,36 +449,38 @@ mod tests {
         }
 
         let mut arena: Arena<SlowDrop> = Arena::new(1);
-        arena.allocate_slots();
+        arena.reallocate_slots();
         let ptr = arena.try_allocate_default().unwrap();
 
         // Thread A: drop the last ArenaPtr. Its destructor will signal and spin.
-        let handle = thread::spawn(move || {
-            drop(ptr);
+        thread::scope(|scope| {
+            let thread_handle = scope.spawn(move || {
+                drop(ptr);
+            });
+
+            // Wait until the tombstone is set but assume_init_drop hasn't finished.
+            while !DROP_STARTED.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+
+            // try_new only claims when count == 0. While SlowDrop::drop runs, count is
+            // still 1 (we store 0 only after assume_init_drop returns), so try_new skips it.
+            let second_ptr = arena.try_allocate_default();
+
+            DROP_CAN_FINISH.store(true, Ordering::Release);
+            thread_handle.join().unwrap();
+
+            assert!(
+                second_ptr.is_none(),
+                "try_new should have seen count == 1 (not 0) and skipped the slot"
+            );
         });
-
-        // Wait until the tombstone is set but assume_init_drop hasn't finished.
-        while !DROP_STARTED.load(Ordering::Acquire) {
-            std::hint::spin_loop();
-        }
-
-        // try_new only claims when count == 0. While SlowDrop::drop runs, count is
-        // still 1 (we store 0 only after assume_init_drop returns), so try_new skips it.
-        let second_ptr = arena.try_allocate_default();
-
-        DROP_CAN_FINISH.store(true, Ordering::Release);
-        handle.join().unwrap();
-
-        assert!(
-            second_ptr.is_none(),
-            "try_new should have seen count == 1 (not 0) and skipped the slot"
-        );
     }
 
     #[test]
     fn test_arena_allocation() {
         let mut arena: Arena<u32> = Arena::new(2);
-        arena.allocate_slots();
+        arena.reallocate_slots();
         assert_eq!(arena.storage.len(), 2);
 
         let maybe_ptr1 = arena.try_allocate_default();
@@ -490,7 +533,7 @@ mod tests {
 
         const CAPACITY: usize = 100;
         let mut arena = Arena::<LargeMessage>::new(CAPACITY);
-        arena.allocate_slots();
+        arena.reallocate_slots();
         for index in 0..CAPACITY {
             let allocate_result = arena.try_allocate_uninit();
             assert!(

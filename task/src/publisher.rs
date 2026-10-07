@@ -114,7 +114,7 @@ impl<T: 'static + Send + Sync> GenericPublisher for Publisher<T> {
     }
 
     fn allocate_arena(&mut self) {
-        self.arena.allocate_slots();
+        self.arena.reallocate_slots();
     }
 
     fn for_each_pending_output(&self, f: &mut dyn FnMut(&MessageHeader, &dyn Any)) {
