@@ -1,0 +1,18 @@
+[package]
+name = "borrowed-task"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+serde = ["dep:serde"]
+iceoryx2 = ["dep:iceoryx2"]
+
+[dependencies]
+base = { path = "../../base" }
+libc = "0.2"
+serde = { workspace = true, optional = true }
+iceoryx2 = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -2,14 +2,14 @@ use crossbeam_queue::ArrayQueue;
 use std::cell::UnsafeCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::Deref;
-use std::ptr::NonNull;
 use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
 use std::vec::Vec;
 
 pub struct ArenaPtr<'arena, T> {
     /// Holds a given slot in the arena with pre-initialized data.
-    ptr: NonNull<ArenaSlot<T>>,
+    ptr: &'arena ArenaSlot<T>,
+    index: usize,
 
     /// Freelist owned by the arena
     free_list: &'arena ArrayQueue<usize>,
@@ -17,34 +17,21 @@ pub struct ArenaPtr<'arena, T> {
 
 impl<'arena, T> ArenaPtr<'arena, T> {
     fn slot(&self) -> &ArenaSlot<T> {
-        // SAFETY: the arena should always keep these alive, and pub-sub connections will be destroyed before
-        // the arenas go away
-        unsafe { self.ptr.as_ref() }
+        self.ptr
     }
     // TODO impl non-default try_new which allows you to forward args
 }
 
+#[cfg(test)]
 impl<'arena, T: Default> ArenaPtr<'arena, T> {
     fn try_new(
-        slot: &ArenaSlot<T>,
+        storage: &'arena [ArenaSlot<T>],
         free_list: &'arena ArrayQueue<usize>,
     ) -> Option<ArenaPtr<'arena, T>> {
-        // Atomically claim the slot: 0 → 1. Fails if live refs or TOMBSTONE exist.
-        // Acquire syncs with the Release store that cleared a previous TOMBSTONE,
-        // ensuring a prior T's destructor fully completed before we write a new one.
-        slot.ref_count
-            .compare_exchange(0, 1, atomic::Ordering::Acquire, atomic::Ordering::Relaxed)
-            .ok()?;
-
-        // SAFETY: We have exclusive write access — the CAS guarantees no other thread
-        // holds a reference (count was 0) and no destructor is running (TOMBSTONE != 0).
-        unsafe {
-            (*slot.payload.get()).write(T::default());
-        }
-        Some(ArenaPtr {
-            ptr: NonNull::from_ref(slot),
-            free_list,
-        })
+        let mut loan = ArenaPtrUninit::try_new(storage, free_list)?;
+        loan.payload_uninit().write(T::default());
+        // SAFETY: The default value fully initialized the payload.
+        Some(unsafe { loan.assume_init() })
     }
 }
 
@@ -60,6 +47,7 @@ impl<'arena, T> Clone for ArenaPtr<'arena, T> {
         }
         ArenaPtr {
             ptr: self.ptr,
+            index: self.index,
             free_list: self.free_list,
         }
     }
@@ -79,13 +67,15 @@ impl<'arena, T> Drop for ArenaPtr<'arena, T> {
         loop {
             if current == 1 {
                 // We're the last ArenaPtr. No other ArenaPtr exists so no concurrent
-                // clone is possible, and try_new only claims slots at count 0 so it
-                // won't race with us here. Destroy before storing 0 so the slot is
-                // never visible as available while the destructor is still running.
+                // clone is possible. Destroy before returning the index so the slot
+                // is never available while the destructor is still running.
                 atomic::fence(atomic::Ordering::Acquire);
                 // SAFETY: count == 1 guarantees exclusive access to the payload.
                 unsafe { (*slot.payload.get()).assume_init_drop() }
                 slot.ref_count.store(0, atomic::Ordering::Release);
+                self.free_list
+                    .push(self.index)
+                    .expect("slot returned twice");
                 return;
             }
             // Keep trying to decrease ref count and stick in the loop if we haven't decreased it
@@ -112,29 +102,34 @@ unsafe impl<'arena, T: Send + Sync> Send for ArenaPtr<'arena, T> {}
 /// dropping its possibly partially initialized payload.
 pub struct ArenaPtrUninit<'arena, T> {
     /// Holds a given slot in the arena, although the memory isn't initialized yet.
-    ptr: NonNull<ArenaSlot<T>>,
+    ptr: &'arena ArenaSlot<T>,
+    index: usize,
 
     /// Freelist owned by the arena
     free_list: &'arena ArrayQueue<usize>,
 }
 
 impl<'arena, T> ArenaPtrUninit<'arena, T> {
-    fn try_new(slot: &ArenaSlot<T>, free_list: &'arena ArrayQueue<usize>) -> Option<Self> {
-        // Claim exclusive ownership: 0 → 1. Acquire pairs with the previous
-        // owner's Release when freeing the slot, including completion of any drop.
-        slot.ref_count
-            .compare_exchange(0, 1, atomic::Ordering::Acquire, atomic::Ordering::Relaxed)
-            .ok()?;
+    fn try_new(
+        storage: &'arena [ArenaSlot<T>],
+        free_list: &'arena ArrayQueue<usize>,
+    ) -> Option<Self> {
+        let index = free_list.pop()?;
+        let slot = &storage[index];
+        // A queued index exclusively reserves a free slot. Acquire also pairs
+        // with the previous owner's Release after its destructor completed.
+        assert_eq!(slot.ref_count.swap(1, atomic::Ordering::Acquire), 0);
         Some(Self {
-            ptr: NonNull::from_ref(slot),
+            ptr: slot,
+            index,
             free_list,
         })
     }
 
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
-        // SAFETY: The arena keeps this slot alive and aligned. Retain shared
+        // The arena keeps this slot alive and aligned. Retain shared
         // access to the slot; mutable access is confined to its UnsafeCell.
-        let slot = unsafe { self.ptr.as_ref() };
+        let slot = self.ptr;
         // SAFETY: This unpublished loan exclusively owns the payload, and
         // &mut self ties the returned borrow to exclusive access to the loan.
         unsafe { &mut *slot.payload.get() }
@@ -148,6 +143,7 @@ impl<'arena, T> ArenaPtrUninit<'arena, T> {
         let this = ManuallyDrop::new(self);
         ArenaPtr {
             ptr: this.ptr,
+            index: this.index,
             free_list,
         }
     }
@@ -155,11 +151,14 @@ impl<'arena, T> ArenaPtrUninit<'arena, T> {
 
 impl<'arena, T> Drop for ArenaPtrUninit<'arena, T> {
     fn drop(&mut self) {
-        // SAFETY: The arena keeps the slot alive, and this unpublished loan is
+        // The arena keeps the slot alive, and this unpublished loan is
         // its sole owner since uninitialized arena pointers are only usable on the writer side.
         // The payload may be partially initialized, so do not drop T.
-        let slot = unsafe { self.ptr.as_ref() };
+        let slot = self.ptr;
         slot.ref_count.store(0, atomic::Ordering::Release);
+        self.free_list
+            .push(self.index)
+            .expect("slot returned twice");
     }
 }
 
@@ -169,6 +168,12 @@ pub struct ArenaReaderPtr<'arena, T> {
     /// Holds a normal ArenaPtr, just marked as read-only
     ptr: ArenaPtr<'arena, T>,
 }
+
+// SAFETY: This wrapper exposes only immutable payload references. Its inner
+// pointer is private, and concurrent clones/drops synchronize via the slot's
+// atomic ref count. Sync permits shared reads; Send permits eventual destruction
+// on a different thread, including when this reader is a forwarded payload.
+unsafe impl<T: Send + Sync> Sync for ArenaReaderPtr<'_, T> {}
 
 impl<'arena, T> ArenaReaderPtr<'arena, T> {
     /// This should only be created on already-published ptrs
@@ -215,6 +220,25 @@ impl<T> ArenaSlot<T> {
     }
 }
 
+/// Owns storage borrowed by allocated messages.
+///
+/// A message cannot outlive its arena:
+/// ```compile_fail
+/// use base::arena::Arena;
+/// let message = {
+///     let arena = Arena::<u64>::new(1);
+///     arena.allocate_uninit()
+/// };
+/// drop(message);
+/// ```
+/// Storage cannot be reallocated while a message still borrows it:
+/// ```compile_fail
+/// use base::arena::Arena;
+/// let mut arena = Arena::<u64>::new(1);
+/// let message = arena.allocate_uninit();
+/// arena.reallocate_slots();
+/// drop(message);
+/// ```
 pub struct Arena<T> {
     capacity: usize,
     // A vector of slots, where each slot can be updated but each value can be mutated too
@@ -225,14 +249,43 @@ pub struct Arena<T> {
     free_list: ArrayQueue<usize>,
 }
 
+/// A movable allocation capability borrowing fixed arena storage.
+///
+/// This handle exposes reservations, not direct access to the arena's slots or
+/// permission to reallocate storage. Each reservation exclusively owns a slot.
+pub struct ArenaAllocator<'arena, T> {
+    arena: &'arena Arena<T>,
+}
+
+impl<'arena, T> ArenaAllocator<'arena, T> {
+    pub fn try_allocate_uninit(&self) -> Option<ArenaPtrUninit<'arena, T>> {
+        self.arena.try_allocate_uninit()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.arena.capacity()
+    }
+}
+
+// SAFETY: The borrowed arena cannot move or reallocate while this handle lives.
+// Allocation exclusively claims an index from the synchronized free list before
+// touching its payload. Final drops return indices only after destruction.
+// No shared payload access is exposed by this handle. Send + Sync bounds match
+// ArenaPtr's cross-thread ownership and shared-reader requirements.
+unsafe impl<T: Send + Sync> Send for ArenaAllocator<'_, T> {}
+
 impl<T> Arena<T> {
+    pub fn allocator(&self) -> ArenaAllocator<'_, T> {
+        ArenaAllocator { arena: self }
+    }
+
     /// Sets initial capacity, although these pointers may be cleared out once slots are re-allocated
     pub fn new(capacity: usize) -> Self {
         let mut arena = Arena {
             // Basically empty storage until we call allocate_slots()
             storage: vec![].into_boxed_slice(),
             capacity,
-            free_list: ArrayQueue::new(capacity),
+            free_list: ArrayQueue::new(capacity.max(1)),
         };
         arena.reallocate_slots();
         arena
@@ -242,21 +295,17 @@ impl<T> Arena<T> {
         self.capacity
     }
 
-    /// This will invalidate all ArenaPtrs
+    /// Sets the capacity used by the next reallocation. Requires exclusive access.
     pub fn update_capacity(&mut self, new_capacity: usize) {
         self.capacity = new_capacity;
     }
 
-    /// This runs over all the storage and populates the freelist.
-    /// Only meant to be run on construction or allocation, before arena is actually uysed.
-    fn populate_free_list(&mut self) {}
-
     /// Once the capacity is set, this allocates slots of uninitialized memory
-    pub fn reallocate_slots<'arena>(&'arena mut self) {
+    pub fn reallocate_slots(&mut self) {
         let mut vec_storage: Vec<ArenaSlot<T>> = Vec::with_capacity(self.capacity);
 
         // Initialize each element
-        for _ in 0..vec_storage.capacity() {
+        for _ in 0..self.capacity {
             // SAFETY: We will initialize members of ArenaSlot that need to be initialized, so just the ref count
             unsafe {
                 let vec_ptr = vec_storage.as_mut_ptr().add(vec_storage.len());
@@ -270,11 +319,11 @@ impl<T> Arena<T> {
         }
         self.storage = vec_storage.into_boxed_slice();
 
-        self.free_list = ArrayQueue::new(self.capacity);
-        for (index, slot) in self.storage.iter().enumerate() {
-            if slot.ref_count.load(atomic::Ordering::Relaxed) == 0 {
-                self.free_list.force_push(index);
-            }
+        self.free_list = ArrayQueue::new(self.capacity.max(1));
+        for index in 0..self.storage.len() {
+            self.free_list
+                .push(index)
+                .expect("free list capacity matches storage");
         }
     }
 }
@@ -282,9 +331,7 @@ impl<T> Arena<T> {
 impl<T> Arena<T> {
     /// Allocates a slot without initializing memory
     pub fn try_allocate_uninit<'arena>(&'arena self) -> Option<ArenaPtrUninit<'arena, T>> {
-        self.storage
-            .iter()
-            .find_map(|slot| ArenaPtrUninit::try_new(slot, &self.free_list))
+        ArenaPtrUninit::try_new(&self.storage, &self.free_list)
     }
 
     pub fn allocate_uninit<'arena>(&'arena self) -> ArenaPtrUninit<'arena, T> {
@@ -301,7 +348,12 @@ impl<T> Arena<T> {
         }
     }
 
-    pub fn try_allocate_with<'arena>(
+    /// Reserves a slot and initializes its payload in place.
+    ///
+    /// # Safety
+    /// The factory must fully initialize the payload before returning normally.
+    /// If it panics, the reservation is released without dropping the payload.
+    pub unsafe fn try_allocate_with<'arena>(
         &'arena self,
         factory: impl FnOnce(&mut MaybeUninit<T>),
     ) -> Option<ArenaPtr<'arena, T>> {
@@ -317,9 +369,7 @@ mod tests {
 
     impl<T: Default> Arena<T> {
         pub fn try_allocate_default<'arena>(&'arena self) -> Option<ArenaPtr<'arena, T>> {
-            self.try_allocate_with(|slot| {
-                slot.write(T::default());
-            })
+            ArenaPtr::try_new(&self.storage, &self.free_list)
         }
     }
     use super::*;
@@ -372,15 +422,18 @@ mod tests {
         let mut arena = Arena::<u64>::new(1);
         arena.reallocate_slots();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            arena.try_allocate_with(|_| panic!("Factory failed"));
+            // SAFETY: This factory never returns normally.
+            unsafe { arena.try_allocate_with(|_| panic!("Factory failed")) };
         }));
         assert!(result.is_err());
 
-        let initialized = arena
-            .try_allocate_with(|slot| {
+        // SAFETY: The factory writes a fully initialized u64.
+        let initialized = unsafe {
+            arena.try_allocate_with(|slot| {
                 slot.write(42);
             })
-            .unwrap();
+        }
+        .unwrap();
         assert!(arena.try_allocate_uninit().is_none());
         assert_eq!(*ArenaReaderPtr::new(initialized), 42);
         assert!(arena.try_allocate_uninit().is_some());
@@ -395,7 +448,7 @@ mod tests {
         let free_list = ArrayQueue::new(1);
         free_list.force_push(0);
 
-        let maybe_ptr = ArenaPtr::try_new(&slot, &free_list);
+        let maybe_ptr = ArenaPtr::try_new(std::slice::from_ref(&slot), &free_list);
         assert!(maybe_ptr.is_some());
 
         let ptr = maybe_ptr.unwrap();
@@ -406,11 +459,7 @@ mod tests {
         assert_eq!(ptr.ref_count.load(atomic::Ordering::Relaxed), 1);
     }
 
-    // Demonstrates the drop/try_new race: if an ArenaPtr is dropped on thread A
-    // while thread B (the arena owner) calls try_allocate_default concurrently,
-    // try_new can see ref_count == 0 and begin writing T::default() to the slot
-    // while thread A's destructor is still running. Run with MIRI or ThreadSanitizer
-    // to observe this as a reported data race.
+    // A slot must remain unavailable until its payload destructor completes.
     #[test]
     fn test_drop_reuse_race() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -437,13 +486,12 @@ mod tests {
 
         impl Drop for SlowDrop {
             fn drop(&mut self) {
-                // Pause here so the race window stays open after ref_count hits 0.
+                // Pause while the payload is still being destroyed.
                 DROP_STARTED.store(true, Ordering::Release);
                 while !DROP_CAN_FINISH.load(Ordering::Acquire) {
                     std::hint::spin_loop();
                 }
-                // Reading self.value here races with try_new's write of T::default()
-                // to the same memory — TSAN/MIRI will flag this.
+                // Reusing this slot prematurely would race with this read.
                 let _ = std::hint::black_box(self.value);
             }
         }
@@ -458,13 +506,12 @@ mod tests {
                 drop(ptr);
             });
 
-            // Wait until the tombstone is set but assume_init_drop hasn't finished.
+            // Wait until assume_init_drop has started but hasn't finished.
             while !DROP_STARTED.load(Ordering::Acquire) {
                 std::hint::spin_loop();
             }
 
-            // try_new only claims when count == 0. While SlowDrop::drop runs, count is
-            // still 1 (we store 0 only after assume_init_drop returns), so try_new skips it.
+            // The slot's index is not queued until its destructor completes.
             let second_ptr = arena.try_allocate_default();
 
             DROP_CAN_FINISH.store(true, Ordering::Release);
@@ -472,9 +519,49 @@ mod tests {
 
             assert!(
                 second_ptr.is_none(),
-                "try_new should have seen count == 1 (not 0) and skipped the slot"
+                "a slot cannot be reused during payload destruction"
             );
+            assert!(arena.try_allocate_default().is_some());
         });
+    }
+
+    #[test]
+    fn clones_return_each_slot_only_once() {
+        let drops = AtomicUsize::new(0);
+        let arena = Arena::new(2);
+        let mut loan = arena.allocate_uninit();
+        loan.payload_uninit().write(DropCounter(&drops));
+        // SAFETY: The payload is fully initialized above.
+        let ptr = unsafe { loan.assume_init() };
+        let clone = ptr.clone();
+        let other = arena.allocate_uninit();
+        drop(ptr);
+        assert!(arena.try_allocate_uninit().is_none());
+        assert_eq!(drops.load(atomic::Ordering::Relaxed), 0);
+        drop(clone);
+        assert_eq!(drops.load(atomic::Ordering::Relaxed), 1);
+        let reused = arena.allocate_uninit();
+        assert!(arena.try_allocate_uninit().is_none());
+        drop(other);
+        drop(reused);
+        assert_eq!(arena.free_list.len(), 2);
+    }
+
+    #[test]
+    fn empty_arena_and_reallocation_rebuild_free_list() {
+        let mut arena = Arena::<u64>::new(0);
+        assert!(arena.try_allocate_uninit().is_none());
+        arena.update_capacity(3);
+        arena.reallocate_slots();
+        let loans: Vec<_> = (0..3).map(|_| arena.allocate_uninit()).collect();
+        assert!(arena.try_allocate_uninit().is_none());
+        drop(loans);
+        arena.update_capacity(1);
+        arena.reallocate_slots();
+        let loan = arena.allocate_uninit();
+        assert!(arena.try_allocate_uninit().is_none());
+        drop(loan);
+        assert_eq!(arena.free_list.len(), 1);
     }
 
     #[test]

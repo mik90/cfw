@@ -4,6 +4,7 @@ members = [
     "exact_replay_executor",
     "simulation_executor",
     "task",
+    "task/borrowed",
     "task_macros",
     "test_tasks",
     "live_executor",
