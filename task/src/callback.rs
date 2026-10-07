@@ -4,6 +4,8 @@ use crate::{Context, LoanError, Publisher, Subscriber};
 /// Callback body and IO lifecycle, shared by live and deterministic executors.
 /// Executors invoke `execute_callback` rather than calling `run` directly.
 pub trait Callback: Send {
+    // TODO(port-execution-logging): Restore execution-log hooks and replay metadata
+    // for inputs, committed outputs, and events within the split callback lifecycle.
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         Vec::new()
@@ -34,6 +36,8 @@ where
 /// Update inputs, check required inputs, execute, and publish successful outputs.
 /// Returns false when required inputs are missing. Error/panic paths discard
 /// pending outputs. Publications from earlier callbacks remain committed.
+// TODO(port-deferred-commit): Separate preparation/run from output commit so simulation
+// can commit completed batches in deterministic order; retain error/panic loan cleanup.
 pub fn execute_callback(callback: &mut dyn Callback, context: &Context) -> Result<bool, LoanError> {
     struct Invocation<'a>(&'a mut dyn Callback);
     impl Drop for Invocation<'_> {

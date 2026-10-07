@@ -1,3 +1,5 @@
+// TODO(port-callback-surface): Audit remaining callback conveniences and timing/input
+// policies; migrate test_tasks and remaining examples to declarations and factories.
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::visit_mut::VisitMut;

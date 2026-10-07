@@ -155,9 +155,13 @@ impl<'storage> BuiltGraph<'storage> {
     }
 }
 
+// TODO(port-timing): Add modeled execution duration and custom next-run timing for
+// simulated busy-until times and virtual-pool occupancy, with explicit timestamp rules.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CallbackSchedule {
     pub pool: usize,
+    // TODO(port-startup-policy): Honor this flag consistently in live and simulation;
+    // test explicit startup execution independently of the first periodic deadline.
     pub run_on_start: bool,
     pub period: Option<Duration>,
 }

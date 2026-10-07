@@ -1,4 +1,7 @@
 //! Typed iceoryx2 channels. All processes must agree on service-wide settings.
+// TODO(port-iox2-simulation): Restore timestamped input/event injection and listener
+// polling at deterministic simulation boundaries, without live-thread ordering or
+// duplicate notifications during replay injection.
 use crate::{
     EndpointError, LoanError, StorageError, StorageLayout,
     message::{Message, MessageHeader},

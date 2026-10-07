@@ -6,6 +6,8 @@ use crate::wake::{WakeHandle, WakeRegistration};
 use std::sync::{Arc, OnceLock};
 
 /// A typed subscriber retaining messages for the storage lifetime.
+// TODO(port-input-policy): Restore trigger/non-trigger and keep-across-runs options
+// through declarations/macros; preserve pending triggers while required inputs are missing.
 pub struct Subscriber<'storage, T> {
     buffer: DoubleBuffer<'storage, Message<T>>,
     channel: String,

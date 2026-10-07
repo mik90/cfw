@@ -35,6 +35,9 @@ pub use iox2::Iox2InputError;
 #[cfg(feature = "iceoryx2")]
 use iox2::Iox2SimulationState;
 
+// TODO(port-simulation): Borrow graph storage and scope real workers while preserving
+// virtual pools, durations, deterministic batch commits, and next-event time advancement.
+// Port the unit-test executor and retained-fixture regressions against this scheduler.
 pub struct SimulationState {
     /// Storage of all callback nodes. A node's index into this vec is used to index into other Vecs.
     /// Each node is guarded by the atomic run-state protocol of
