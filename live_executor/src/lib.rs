@@ -1,11 +1,10 @@
 pub mod error;
 pub mod executor;
-pub mod periodic;
-pub mod pool_state;
+mod periodic;
+mod pool_state;
 pub mod stop_signal;
-pub mod worker_logger;
 
-pub use error::{LiveExecutorError, LiveExecutorStartError};
+pub use error::{LiveExecutorError, LiveExecutorStartError, ThreadFailure};
 pub use executor::LiveExecutor;
 pub use stop_signal::StopSignal;
 

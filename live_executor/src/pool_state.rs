@@ -1,128 +1,184 @@
-use crossbeam::channel::{Receiver, Sender};
-use std::fmt;
-use std::fmt::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use task::callback_storage::CallbackStorage;
-use task::scheduling::{CallbackNodeId, ReadyNodeSink};
-use task::string_interner::{CallbackNameTag, ChannelNameTag, StringInterner};
-use task::time::FrameworkTime;
+use crossbeam::channel::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use task::CallbackSchedule;
+use task::wake::{Wake, WakeHandle};
 
-#[derive(Clone, Copy)]
-pub(crate) struct TimeTriggeredNode {
-    pub(crate) index: usize,
-    pub(crate) requested_exec_time: FrameworkTime,
-}
+const IDLE: u8 = 0;
+const QUEUED: u8 = 1;
+const RUNNING: u8 = 2;
+const RETRIGGERED: u8 = 3;
 
 pub(crate) struct PoolState {
-    pub(crate) thread_count: usize,
-    pub(crate) work_tx: Sender<usize>,
-    pub(crate) work_rx: Receiver<usize>,
+    pub thread_count: usize,
+    work_tx: Sender<usize>,
+    pub work_rx: Receiver<usize>,
 }
 
-/// Work-queue bookkeeping shared between trigger sources and worker threads.
-///
-/// Deduplication ("a node's index is in its pool's channel at most once")
-/// lives in each node's atomic run state (see [`SharedCallbackNode::trigger`]
-/// ), not in a side-table: a node is only sent to the channel on the
-/// `Idle → Enqueued` transition, and a trigger during a run is remembered as
-/// `RunningTriggered` and re-enqueued by the worker when it releases the node.
-pub(crate) struct WorkRouter {
-    pub(crate) pools: Vec<Arc<PoolState>>,
-    pub(crate) node_to_pool: Vec<usize>,
+struct NodeState {
+    state: AtomicU8,
+    pool: usize,
 }
 
-impl WorkRouter {
-    /// Send an already-enqueued node ID to its assigned pool. This serves both
-    /// the initial `Idle → Enqueued` transition and worker re-enqueues.
-    pub(crate) fn send_enqueued(&self, node: CallbackNodeId) {
-        let pool = &self.pools[self.node_to_pool[node.0]];
-        let _ = pool.work_tx.send(node.0);
+/// Scheduling metadata only: this may outlive a run, but owns no borrowed nodes.
+pub(crate) struct Scheduler {
+    pub pools: Vec<PoolState>,
+    nodes: Vec<NodeState>,
+    stopped: AtomicBool,
+    stop_tx: Mutex<Option<Sender<()>>>,
+    pub stop_rx: Receiver<()>,
+}
+
+impl Scheduler {
+    pub fn new(schedules: &[CallbackSchedule], workers: &[usize]) -> Arc<Self> {
+        let pools = workers
+            .iter()
+            .enumerate()
+            .map(|(pool, &thread_count)| {
+                let capacity = schedules.iter().filter(|s| s.pool == pool).count().max(1);
+                let (work_tx, work_rx) = channel::bounded(capacity);
+                PoolState {
+                    thread_count,
+                    work_tx,
+                    work_rx,
+                }
+            })
+            .collect();
+        let (stop_tx, stop_rx) = channel::bounded(0);
+        Arc::new(Self {
+            pools,
+            nodes: schedules
+                .iter()
+                .map(|s| NodeState {
+                    state: AtomicU8::new(IDLE),
+                    pool: s.pool,
+                })
+                .collect(),
+            stopped: AtomicBool::new(false),
+            stop_tx: Mutex::new(Some(stop_tx)),
+            stop_rx,
+        })
     }
-}
 
-pub(crate) struct LiveReadyNodeSink<'a> {
-    pub(crate) nodes: &'a [Arc<task::callback_storage::SharedCallbackNode>],
-    pub(crate) router: &'a WorkRouter,
-}
-
-impl ReadyNodeSink for LiveReadyNodeSink<'_> {
-    fn schedule(&mut self, node: CallbackNodeId) {
-        if self.nodes[node.0].trigger() {
-            self.router.send_enqueued(node);
-        }
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
     }
-}
 
-pub(crate) struct SharedThreadPoolState {
-    pub(crate) work_router: Arc<WorkRouter>,
-    pub(crate) periodic_mutex: Mutex<()>,
-    pub(crate) periodic_cond_var: Condvar,
-    pub(crate) should_run: AtomicBool,
-    pub(crate) worker_count: usize,
-    pub(crate) barrier_count: AtomicUsize,
-    pub(crate) cleanup_done: AtomicBool,
-    pub(crate) shutdown_mutex: Mutex<()>,
-    pub(crate) shutdown_cv: Condvar,
-    /// Interned callback names for use by tasks
-    pub(crate) callback_interner: StringInterner<CallbackNameTag>,
-    /// Interned channel names for use by tasks
-    pub(crate) channel_interner: StringInterner<ChannelNameTag>,
-}
-
-impl SharedThreadPoolState {
-    pub(crate) fn request_stop(&self) {
-        let _guard = self
-            .periodic_mutex
+    pub fn request_stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        // Disconnecting the sole sender wakes every worker, scheduler, and waiter.
+        self.stop_tx
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.should_run.store(false, Ordering::Release);
-        self.periodic_cond_var.notify_all();
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
     }
-    /// Dump the executor's state for diagnostics. The node storage is passed
-    /// in because it is owned by the executor's main thread, not by this
-    /// shared state (worker threads only hold `clone_shared()` clones).
-    pub(crate) fn fmt_nodes(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        nodes: &CallbackStorage,
-    ) -> fmt::Result {
-        writeln!(f, "Should run: {}", self.should_run.load(Ordering::Relaxed))?;
-        writeln!(f, "All callback nodes:")?;
-        for (index, node) in nodes.iter_shared().enumerate() {
-            let Some(details) = node.try_access(|node| {
-                let mut out = String::new();
-                let _ = writeln!(out, "\t ----------------------------------");
-                let _ = writeln!(
-                    out,
-                    "\t Index:{}, Name: {}, Pool: {}",
-                    index,
-                    node.name(),
-                    self.work_router.node_to_pool[index]
-                );
-                let _ = writeln!(out, "\t Able to run: {}", node.able_to_run());
-                let _ = writeln!(
-                    out,
-                    "\t Subscribers request execution: {}",
-                    node.subscribers_request_execution()
-                );
-                let _ = writeln!(out, "\t Subscribers");
-                node.callback().for_each_subscriber(&mut |s| {
-                    let _ = writeln!(out, "\t\t Channel: {}", s.config().channel_name);
-                    let queue_info = s.queue_info();
-                    let _ = writeln!(
-                        out,
-                        "\t\t Reader queue size: {}, writer_queue size: {}",
-                        queue_info.reader_size, queue_info.writer_size
-                    );
-                });
-                let _ = writeln!(out, "\t ----------------------------------");
-                out
-            }) else {
-                continue;
-            };
-            write!(f, "{details}")?;
+
+    pub fn waker(self: &Arc<Self>, node: usize) -> WakeHandle {
+        Arc::new(NodeWake {
+            scheduler: Arc::downgrade(self),
+            node,
+        })
+    }
+
+    pub fn trigger(&self, node: usize) {
+        if self.is_stopped() {
+            return;
         }
-        Ok(())
+        let state = &self.nodes[node].state;
+        let mut current = state.load(Ordering::Acquire);
+        loop {
+            // Even a coalesced notification performs a release RMW. This both
+            // verifies the node has not changed state and publishes the queue
+            // write to the worker's acquire claim of this node.
+            let next = match current {
+                IDLE => QUEUED,
+                RUNNING => RETRIGGERED,
+                QUEUED | RETRIGGERED => current,
+                _ => unreachable!(),
+            };
+            match state.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => {
+                    if current == IDLE {
+                        self.enqueue(node);
+                    }
+                    return;
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn enqueue(&self, node: usize) {
+        // At most one queue entry per node. Running nodes do not occupy the
+        // queue, so a queue sized for its pool's node count cannot overflow.
+        self.pools[self.nodes[node].pool]
+            .work_tx
+            .try_send(node)
+            .expect("duplicate node scheduling");
+    }
+
+    pub fn claim(&self, node: usize) {
+        assert_eq!(
+            self.nodes[node].state.swap(RUNNING, Ordering::AcqRel),
+            QUEUED
+        );
+    }
+
+    pub fn finish(&self, node: usize) {
+        match self.nodes[node].state.compare_exchange(
+            RUNNING,
+            IDLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(RETRIGGERED) => {
+                // Acquire every retrigger's publication before handing the node
+                // to its next worker; a plain store would break that handoff.
+                assert_eq!(
+                    self.nodes[node].state.swap(QUEUED, Ordering::AcqRel),
+                    RETRIGGERED
+                );
+                self.enqueue(node);
+            }
+            Err(_) => unreachable!("node must be running when released"),
+        }
+    }
+}
+
+struct NodeWake {
+    scheduler: Weak<Scheduler>,
+    node: usize,
+}
+impl Wake for NodeWake {
+    fn wake(&self) {
+        if let Some(scheduler) = self.scheduler.upgrade() {
+            scheduler.trigger(self.node);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn repeated_triggers_coalesce_without_hot_path_allocation() {
+        let scheduler = Scheduler::new(&[CallbackSchedule::default()], &[2]);
+        let wake = scheduler.waker(0);
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..100 {
+                wake.wake();
+                wake.wake();
+                let node = scheduler.pools[0].work_rx.try_recv().unwrap();
+                scheduler.claim(node);
+                wake.wake();
+                wake.wake();
+                scheduler.finish(node);
+                let node = scheduler.pools[0].work_rx.try_recv().unwrap();
+                scheduler.claim(node);
+                scheduler.finish(node);
+                assert!(scheduler.pools[0].work_rx.is_empty());
+            }
+        });
     }
 }

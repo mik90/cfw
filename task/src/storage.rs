@@ -1,5 +1,7 @@
+use crate::string_interner::ChannelNameInterner;
 use std::collections::HashSet;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use base::arena::Arena;
 
@@ -90,9 +92,18 @@ impl<L: StorageLayout> GraphPlan<L> {
     /// Validate the entire layout, then consume it to allocate fixed storage.
     pub fn allocate(self) -> Result<GraphStorage<L::Storage>, StorageError> {
         self.layout.validate()?;
-        self.layout.validate_channel_names(&mut HashSet::new())?;
+        let mut names = HashSet::new();
+        self.layout.validate_channel_names(&mut names)?;
+        let mut names: Vec<_> = names.into_iter().collect();
+        names.sort();
+        let mut channel_names = ChannelNameInterner::new();
+        for name in names {
+            channel_names.intern(&name);
+        }
+        channel_names.shrink_to_fit();
         Ok(GraphStorage {
             channels: self.layout.allocate(),
+            channel_names: Arc::new(channel_names),
         })
     }
 }
@@ -105,7 +116,7 @@ impl<L: StorageLayout> GraphPlan<L> {
 /// one owner without storing Rust references in the owner's structural fields.
 ///
 /// ```
-/// use borrowed_task::{ChannelPlan, GraphPlan};
+/// use task::{ChannelPlan, GraphPlan};
 /// let mut counter = ChannelPlan::<u64>::new("counter");
 /// let counter_pub = counter.publisher(1);
 /// let counter_sub = counter.subscriber(2);
@@ -121,8 +132,8 @@ impl<L: StorageLayout> GraphPlan<L> {
 ///
 /// A retained message prevents destruction of the storage owner:
 /// ```compile_fail
-/// use borrowed_task::{PublisherStoragePlan, GraphPlan};
-/// use borrowed_task::time::FrameworkTime;
+/// use task::{PublisherStoragePlan, GraphPlan};
+/// use task::time::FrameworkTime;
 /// let storage = GraphPlan::new(PublisherStoragePlan::<u64>::new(1).with_subscriber(1))
 ///     .allocate().unwrap();
 /// let mut endpoints = storage.channels().build();
@@ -136,9 +147,13 @@ impl<L: StorageLayout> GraphPlan<L> {
 /// ```
 pub struct GraphStorage<S> {
     channels: S,
+    channel_names: Arc<ChannelNameInterner>,
 }
 
 impl<S> GraphStorage<S> {
+    pub fn channel_names(&self) -> &Arc<ChannelNameInterner> {
+        &self.channel_names
+    }
     pub fn channels(&self) -> &S {
         &self.channels
     }

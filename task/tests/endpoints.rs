@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use base::arena::Arena;
-use borrowed_task::message::Message;
-use borrowed_task::time::FrameworkTime;
-use borrowed_task::{
+use task::message::Message;
+use task::time::FrameworkTime;
+use task::{
     ForwardedMessage, LoanError, Publisher, PublisherOps, ReplayError, ReplayPublisher, Subscriber,
 };
 

@@ -1,782 +1,196 @@
-use crate::callback::SubscriberReadiness;
-use crate::forwarded_message::ForwardedMessage;
-use crate::generic_publisher::ConnectionTypeMismatch;
-pub use crate::generic_publisher::GenericPublisher;
-use crate::generic_subscriber::GenericSubscriber;
-use crate::message::{Message, MessageHeader};
-use crate::pub_sub::ChannelName;
-use crate::scheduling::{NoopReadyNodeSink, ReadyNodeSink};
-use crate::subscriber::{ForwardableSubscriber, Subscriber, SubscriberConfig};
-use crate::time::FrameworkTime;
-use base::arena::{Arena, ArenaPtr, ArenaPtrUninit, ArenaReaderPtr};
-use base::double_buffer::WriteBufferHandle;
 use std::any::Any;
 use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
 
-#[derive(Debug)]
+use crate::subscriber::SubscriberWriter;
+use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
+
+use super::Subscriber;
+use crate::message::{Message, MessageHeader};
+use crate::time::FrameworkTime;
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum LoanError {
     LoanCapacityReached,
+    ArenaExhausted,
 }
 
-#[derive(Debug)]
-pub struct SendError;
-
-pub struct PublisherConfig {
-    pub capacity: usize,
-    pub channel_name: ChannelName,
+/// A typed publisher borrowing storage allocated before connection/execution.
+/// Connection does not resize its arena: the graph plan owns capacity decisions.
+pub struct Publisher<'storage, T> {
+    allocator: ArenaAllocator<'storage, Message<T>>,
+    loan_capacity: usize,
+    pending: Vec<ArenaPtr<'storage, Message<T>>>,
+    subscribers: Vec<SubscriberWriter<'storage, T>>,
+    channel: String,
 }
 
-pub(crate) struct LoanedValue<T> {
-    pub ptr: ArenaPtr<Message<T>>,
-    pub sent: bool,
-}
-
-impl<T> LoanedValue<T> {
-    fn new(ptr: ArenaPtr<Message<T>>) -> Self {
-        LoanedValue { ptr, sent: false }
+impl<'storage, T> Publisher<'storage, T> {
+    pub fn new(allocator: ArenaAllocator<'storage, Message<T>>, loan_capacity: usize) -> Self {
+        Self {
+            allocator,
+            loan_capacity,
+            pending: Vec::with_capacity(loan_capacity),
+            subscribers: Vec::new(),
+            channel: String::new(),
+        }
     }
 
-    pub(crate) fn payload(&self) -> &T {
-        // SAFETY: For a loaned value to have been created, the message should have been initialized
+    pub(crate) fn set_channel_name(&mut self, name: &str) {
+        self.channel = name.into();
+    }
+    pub fn channel_name(&self) -> &str {
+        &self.channel
+    }
+
+    pub fn connect(&mut self, subscriber: &Subscriber<'storage, T>) {
+        self.subscribers.push(subscriber.writer());
+    }
+
+    pub fn loan_uninit(&mut self) -> Result<OutputUninit<'_, 'storage, T>, LoanError> {
+        if self.pending.len() >= self.loan_capacity {
+            return Err(LoanError::LoanCapacityReached);
+        }
+        let mut ptr = self
+            .allocator
+            .try_allocate_uninit()
+            .ok_or(LoanError::ArenaExhausted)?;
+        let message = ptr.payload_uninit().as_mut_ptr();
+        // SAFETY: This reservation exclusively owns storage. Raw field writes
+        // initialize the header without creating a reference to uninitialized T.
+        unsafe { (&raw mut (*message).header).write(MessageHeader::default()) };
+        Ok(OutputUninit {
+            publisher: self,
+            ptr,
+        })
+    }
+
+    pub fn loan(&mut self, value: T) -> Result<Output<'_, 'storage, T>, LoanError> {
+        self.loan_uninit().map(|loan| loan.write(value))
+    }
+
+    pub fn publish(&mut self, value: T) -> Result<(), LoanError> {
+        self.loan(value)?.send();
+        Ok(())
+    }
+
+    /// Release sent-but-unpublished outputs after a failed callback.
+    pub fn discard_pending(&mut self) {
+        self.pending.clear();
+    }
+
+    /// Publish a fully initialized batch at an executor-provided timestamp.
+    /// Unsent outputs are released when their output handle is dropped.
+    pub fn flush(&mut self, timestamp: FrameworkTime) {
+        for ptr in self.pending.drain(..) {
+            // SAFETY: Pending pointers are initialized and exclusively owned;
+            // no clones are exposed before the header is stamped.
+            unsafe { (*ptr.payload.get()).assume_init_mut().header.published_at = timestamp };
+            for subscriber in &self.subscribers {
+                subscriber.write(ptr.clone());
+            }
+        }
+    }
+}
+
+/// Exclusive in-place output reservation. A normal drop releases the slot
+/// without dropping a potentially partially initialized payload.
+pub struct OutputUninit<'output, 'storage, T> {
+    publisher: &'output mut Publisher<'storage, T>,
+    ptr: ArenaPtrUninit<'storage, Message<T>>,
+}
+
+impl<'output, 'storage, T> OutputUninit<'output, 'storage, T> {
+    pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
+        let message = self.ptr.payload_uninit().as_mut_ptr();
+        // SAFETY: The loan exclusively owns Message<T>. MaybeUninit has T's
+        // layout and does not require the payload field to be initialized.
+        unsafe { &mut *(&raw mut (*message).message).cast::<MaybeUninit<T>>() }
+    }
+
+    pub fn write(mut self, value: T) -> Output<'output, 'storage, T> {
+        self.payload_uninit().write(value);
+        // SAFETY: write initialized T and loan_uninit initialized the header.
+        unsafe { self.assume_init() }
+    }
+
+    /// # Safety
+    /// The payload must be fully initialized.
+    pub unsafe fn assume_init(self) -> Output<'output, 'storage, T> {
+        Output {
+            publisher: self.publisher,
+            // SAFETY: The caller initialized T; loan_uninit initialized the header.
+            ptr: unsafe { self.ptr.assume_init() },
+        }
+    }
+}
+
+/// Exclusive initialized output. Sending transfers it into the pending batch;
+/// dropping without sending destroys the payload and releases its slot.
+pub struct Output<'output, 'storage, T> {
+    publisher: &'output mut Publisher<'storage, T>,
+    ptr: ArenaPtr<'storage, Message<T>>,
+}
+
+impl<T> Output<'_, '_, T> {
+    pub fn send(self) {
+        self.publisher.pending.push(self.ptr);
+    }
+}
+
+impl<T> Deref for Output<'_, '_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: Output contains a fully initialized, exclusively owned payload.
         &unsafe { (*self.ptr.payload.get()).assume_init_ref() }.message
     }
+}
 
-    /// Borrow the payload (`Message<T>::message`) of this loan mutably.
-    pub(crate) fn payload_mut(&mut self) -> &mut T {
-        // SAFETY: For a loaned value to have been created, the message should have been initialized
+impl<T> DerefMut for Output<'_, '_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: No pointer clones are exposed until send followed by flush,
+        // both of which end access through this exclusive output handle.
         &mut unsafe { (*self.ptr.payload.get()).assume_init_mut() }.message
     }
 }
 
-struct SubscriberBuffer<T> {
-    buffer: WriteBufferHandle<Message<T>>,
-    subscriber_config: SubscriberConfig,
-    /// Readiness role for the target CallbackNode: a gating bit to set for
-    /// required inputs, or a bit-less handle to nudge for optional+trigger
-    /// inputs (set during connection).
-    readiness: Option<SubscriberReadiness>,
+/// Executor operations erase the message type without requiring Any on endpoints.
+/// Store these as `Box<dyn PublisherOps + 'storage>` for heterogeneous graphs.
+pub trait PublisherOps: Send {
+    fn flush(&mut self, timestamp: FrameworkTime);
 }
 
-pub struct Publisher<T> {
-    config: PublisherConfig,
-    /// Drop ordering is relevant here, arena must be dropped last since loaned values are pointers into the arena
-    loaned_values: Vec<LoanedValue<T>>,
-    subscriber_write_buffers: Vec<SubscriberBuffer<T>>,
-    arena: Arena<Message<T>>,
-    /// This _could_ be part of the publisher config but it's something tied to `T` so it's better to keep it outside of a
-    /// user-configurable thing like publisher config (probably).
-    forwarded_channels: Vec<ChannelName>,
-}
-
-// Erased publishers move payload ownership and final drops between workers
-// (`Send`), fan out shared immutable values (`Sync`), and use `Any`/`TypeId`
-// while queues may retain values beyond caller borrows (`'static`).
-impl<T: 'static + Send + Sync> GenericPublisher for Publisher<T> {
-    fn iox2_find_endpoints(
-        &self,
-        add: &mut dyn FnMut(
-            crate::pub_sub_factory::Iox2EndpointInfo,
-        ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError>,
-    ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError> {
-        add(crate::pub_sub_factory::Iox2EndpointInfo {
-            channel: self.config.channel_name.clone(),
-            kind: crate::pub_sub_factory::EndpointKind::NativePub,
-            payload_type: Some(std::any::TypeId::of::<T>()),
-        })
-    }
-    fn as_any(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn config(&self) -> &PublisherConfig {
-        &self.config
-    }
-
-    fn config_mut(&mut self) -> &mut PublisherConfig {
-        &mut self.config
-    }
-
-    fn forwarded_channels(&self) -> &[ChannelName] {
-        self.forwarded_channels.as_slice()
-    }
-
-    fn flush_loaned_values(&mut self, timestamp: FrameworkTime, sink: &mut dyn ReadyNodeSink) {
-        self.flush_loaned_values_with(timestamp, sink, &mut |_header| {});
-    }
-
-    fn flush_loaned_values_logged(
-        &mut self,
-        timestamp: FrameworkTime,
-        sink: &mut dyn ReadyNodeSink,
-        hook: &mut dyn FnMut(&MessageHeader),
-    ) {
-        self.flush_loaned_values_with(timestamp, sink, hook);
-    }
-
-    fn allocate_arena(&mut self) {
-        self.arena.reallocate_slots();
-    }
-
-    fn for_each_pending_output(&self, f: &mut dyn FnMut(&MessageHeader, &dyn Any)) {
-        for loaned in self.loaned_values.iter().filter(|lv| lv.sent) {
-            // SAFETY: Publisher guarantees the value has been initialized on loan.
-            let value: &Message<T> = unsafe { (*loaned.ptr.payload.get()).assume_init_ref() };
-            f(&value.header, &value.message as &dyn Any);
-        }
-    }
-
-    fn increase_arena_size(&mut self, additional_capacity: usize) {
-        let starting_capacity = self.arena.capacity();
-        self.arena
-            .update_capacity(starting_capacity + additional_capacity);
-    }
-
-    fn connect_to_subscriber(
-        &mut self,
-        subscriber: &mut dyn GenericSubscriber,
-    ) -> Result<(), ConnectionTypeMismatch> {
-        if let Some(typed) = subscriber
-            .as_any()
-            .downcast_mut::<crate::subscriber::Subscriber<T>>()
-        {
-            self.add_typed_subscriber(typed);
-            return Ok(());
-        }
-        if let Some(typed) = subscriber
-            .as_any()
-            .downcast_mut::<ForwardableSubscriber<T>>()
-        {
-            self.add_typed_forwarded_subscriber(typed);
-            return Ok(());
-        }
-        Err(ConnectionTypeMismatch::new(
-            self.config.channel_name.clone(),
-            "native",
-            "unknown",
-        ))
-    }
-
-    fn build_matching_subscriber(
-        &self,
-        config: SubscriberConfig,
-    ) -> Option<Box<dyn GenericSubscriber>> {
-        Some(Box::new(Subscriber::<T>::new(config)))
-    }
-
-    fn value_type_id(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<T>()
+impl<T: Send + Sync> PublisherOps for Publisher<'_, T> {
+    fn flush(&mut self, timestamp: FrameworkTime) {
+        Publisher::flush(self, timestamp);
     }
 }
 
-impl<T> Publisher<T> {
-    pub fn new(config: PublisherConfig) -> Self {
-        let capacity = config.capacity;
-        Publisher {
-            config,
-            // Arena will be resized to allow for enough data for subscribers
-            arena: Arena::new(capacity),
-            subscriber_write_buffers: vec![],
-            loaned_values: Vec::with_capacity(capacity),
-            forwarded_channels: vec![],
-        }
-    }
+/// Replay errors return ownership of the input so callers can retry capacity errors.
+pub enum ReplayError {
+    TypeMismatch(Box<dyn Any + Send>),
+    Loan {
+        reason: LoanError,
+        value: Box<dyn Any + Send>,
+    },
+}
 
-    pub fn new_with_forwards(
-        config: PublisherConfig,
-        forwarded_channels: Vec<ChannelName>,
-    ) -> Self {
-        let capacity = config.capacity;
-        Publisher {
-            config,
-            // Arena will be resized to allow for enough data for subscribers
-            arena: Arena::new(capacity),
-            subscriber_write_buffers: vec![],
-            loaned_values: Vec::with_capacity(capacity),
-            forwarded_channels,
-        }
-    }
+/// Replay erases owned payloads, not the borrowed publisher containing them.
+/// Borrowed forwarded payloads use typed publishing instead of this interface.
+pub trait ReplayPublisher: PublisherOps {
+    fn publish_boxed(&mut self, value: Box<dyn Any + Send>) -> Result<(), ReplayError>;
+}
 
-    pub fn config(&self) -> &PublisherConfig {
-        &self.config
-    }
-
-    pub(crate) fn loaned_count(&self) -> usize {
-        self.loaned_values.len()
-    }
-
-    pub(crate) fn loaned_value_at(&self, index: usize) -> &LoanedValue<T> {
-        &self.loaned_values[index]
-    }
-
-    pub(crate) fn loaned_value_at_mut(&mut self, index: usize) -> &mut LoanedValue<T> {
-        &mut self.loaned_values[index]
-    }
-
-    /// Mutably borrow the payload (`Message<T>::message`) of an outstanding
-    /// loan by index. Lets a long-lived loan be mutated in place across
-    /// several writes before being sent — used by executors that fill an
-    /// execution-log message over multiple executions before flushing it.
-    pub fn loaned_payload_mut(&mut self, index: usize) -> &mut T {
-        self.loaned_value_at_mut(index).payload_mut()
-    }
-
-    /// Mark an outstanding loan as sent so a subsequent `flush_loaned_values`
-    /// will publish it. Paired with [`loan_default`] / [`loaned_payload_mut`].
-    pub fn mark_loan_sent(&mut self, index: usize) {
-        self.loaned_value_at_mut(index).sent = true;
-    }
-
-    pub(crate) fn loaned_values_at(
-        &self,
-        start_index: usize,
-        end_index: usize,
-    ) -> &[LoanedValue<T>] {
-        &self.loaned_values[start_index..=end_index]
-    }
-
-    pub(crate) fn loaned_values_at_mut(
-        &mut self,
-        start_index: usize,
-        end_index: usize,
-    ) -> &mut [LoanedValue<T>] {
-        &mut self.loaned_values[start_index..=end_index]
-    }
-
-    pub(crate) fn loaned_values_mut(&mut self) -> &mut Vec<LoanedValue<T>> {
-        &mut self.loaned_values
-    }
-
-    /// Helper to allow borrwing of the loan vec and the arena at the same time
-    pub(crate) fn uninit_loan_parts(
-        &mut self,
-    ) -> (&mut Vec<LoanedValue<T>>, &mut Arena<Message<T>>) {
-        (&mut self.loaned_values, &mut self.arena)
-    }
-
-    /// Acquires an exclusive loan with an initialized header and uninitialized payload.
-    pub(crate) fn loan_uninit(&mut self) -> Result<ArenaPtrUninit<Message<T>>, LoanError> {
-        if self.loaned_values.len() >= self.config.capacity {
-            return Err(LoanError::LoanCapacityReached);
-        }
-        let mut arena_ptr_uninit = match self.arena.try_allocate_uninit() {
-            Some(ptr) => ptr,
-            None => {
-                panic!(
-                    "Tried to allocate loan on channel {}. Expected pub-sub system to allocate correct arena sizes but we used all {} slots!",
-                    self.config.channel_name,
-                    self.arena.capacity()
-                );
+impl<T: Send + Sync + 'static> ReplayPublisher for Publisher<'_, T> {
+    fn publish_boxed(&mut self, value: Box<dyn Any + Send>) -> Result<(), ReplayError> {
+        let value = value.downcast::<T>().map_err(ReplayError::TypeMismatch)?;
+        match self.loan_uninit() {
+            Ok(loan) => {
+                loan.write(*value).send();
+                Ok(())
             }
-        };
-        let msg_ptr = arena_ptr_uninit.payload_uninit().as_mut_ptr();
-        // SAFETY: The loan owns exclusive storage for Message<T>. A raw field
-        // write initializes the header without referencing the uninitialized payload.
-        unsafe {
-            (&raw mut (*msg_ptr).header).write(MessageHeader::default());
+            Err(reason) => Err(ReplayError::Loan { reason, value }),
         }
-        Ok(arena_ptr_uninit)
-    }
-
-    pub(crate) fn loan_with(
-        &mut self,
-        factory: impl FnOnce(&mut MaybeUninit<T>),
-    ) -> Result<usize, LoanError> {
-        let mut loan = self.loan_uninit()?;
-        let msg_ptr = loan.payload_uninit().as_mut_ptr();
-        // SAFETY: The loan provides exclusive payload storage. MaybeUninit<T>
-        // has the same size and alignment as T; no initialized T reference is formed.
-        let payload = unsafe { &mut *(&raw mut (*msg_ptr).message).cast::<MaybeUninit<T>>() };
-        factory(payload);
-        // SAFETY: loan_uninit initialized the header, and the factory is
-        // responsible for fully initializing the payload before returning.
-        let allocated_ptr = unsafe { loan.assume_init() };
-        self.loaned_values.push(LoanedValue::new(allocated_ptr));
-        Ok(self.loaned_values.len() - 1)
-    }
-
-    pub fn loan_and_init(
-        &mut self,
-        initializer: impl FnOnce(&mut MaybeUninit<T>),
-    ) -> Result<usize, LoanError> {
-        self.loan_with(initializer)
-    }
-}
-
-// Public channel construction and flushing move payload ownership/final drops
-// between workers (`Send`), fan out immutable references (`Sync`), and may
-// retain queued values beyond caller borrows (`'static`).
-impl<T: Send + Sync + 'static> Publisher<T> {
-    pub fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
-        let mut sink = NoopReadyNodeSink;
-        self.flush_loaned_values_with(timestamp, &mut sink, &mut |_header| {});
-    }
-    /// Shared flush implementation: stamp each sent loan with `timestamp`,
-    /// fan it out to subscriber write buffers, and invoke `hook` with each
-    /// published header. Used by both the plain and logged flush paths.
-    fn flush_loaned_values_with(
-        &mut self,
-        timestamp: FrameworkTime,
-        sink: &mut dyn ReadyNodeSink,
-        hook: &mut dyn FnMut(&MessageHeader),
-    ) {
-        for loaned_value in self.loaned_values.drain(..) {
-            if loaned_value.sent {
-                let header = MessageHeader {
-                    published_at: timestamp,
-                };
-                // SAFETY: The loaned value was initialized on loan and `loaned_value` is
-                // the only ArenaPtr to this slot at this point — clones haven't been
-                // handed to subscribers yet (that happens in the loop below). Using
-                // UnsafeCell::get() instead of DerefMut avoids creating an aliasing
-                // &mut ArenaSlot<T>, which would be UB once clones exist.
-                unsafe {
-                    (*loaned_value.ptr.payload.get()).assume_init_mut().header = header;
-                }
-
-                hook(&header);
-
-                for subscriber_buffer in &mut self.subscriber_write_buffers {
-                    // Copy the arena pointer to each subscriber buffer
-                    subscriber_buffer.buffer.write(loaned_value.ptr.clone());
-
-                    // Notify the target CallbackNode's readiness: set the
-                    // gating bit for required inputs, nudge the node for
-                    // optional+trigger inputs (it enqueues if the required
-                    // inputs are ready).
-                    match &subscriber_buffer.readiness {
-                        Some(SubscriberReadiness::Gating(readiness, bit_index)) => {
-                            if let Some(node) = readiness.gating_input_arrived(*bit_index) {
-                                sink.schedule(node);
-                            }
-                        }
-                        Some(SubscriberReadiness::OptionalTrigger(readiness)) => {
-                            if let Some(node) = readiness.optional_trigger_arrived() {
-                                sink.schedule(node);
-                            }
-                        }
-                        None => {}
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn add_typed_subscriber(&mut self, typed_subscriber: &mut Subscriber<T>) {
-        let buffer_guard = typed_subscriber.write_guard();
-        let config = typed_subscriber.config().clone();
-
-        // Take over whatever readiness role the subscriber's node injected:
-        // a gating bit for required inputs, a nudge handle for
-        // optional+trigger inputs, or nothing for optional non-trigger
-        // inputs (their data arrival never affects scheduling).
-        let readiness = typed_subscriber.readiness_state();
-
-        self.subscriber_write_buffers.push(SubscriberBuffer {
-            buffer: buffer_guard,
-            subscriber_config: config,
-            readiness,
-        });
-        // Grow the arena to cover messages this subscriber may hold
-        // simultaneously: up to `capacity` in its write queue, up to
-        // `capacity` in its read buffer (the previous message can still be
-        // live when the publisher publishes again before the next drain),
-        // and one more for the pointer in flight between the two queues
-        // during a drain. Without this, a back-to-back publisher run
-        // exhausts the arena slots and panics — which, because
-        // cleanup_buffers runs *after* thread joins, also surfaces as a
-        // use-after-free under Miri when the panicked worker leaves ArenaPtrs
-        // in the subscriber queue and the owning arena is dropped first.
-        self.increase_arena_size(typed_subscriber.config().arena_footprint());
-    }
-
-    pub fn add_typed_forwarded_subscriber(
-        &mut self,
-        forwardable_subscriber: &mut ForwardableSubscriber<T>,
-    ) {
-        self.add_typed_subscriber(&mut forwardable_subscriber.subscriber)
-    }
-}
-
-impl<T: Default> Publisher<T> {
-    pub fn loan_default(&mut self) -> Result<usize, LoanError> {
-        self.loan_with(|slot| {
-            slot.write(T::default());
-        })
-    }
-}
-
-impl<T: Default, F> Publisher<ForwardedMessage<T, F>> {
-    pub fn loan_forwarded(
-        &mut self,
-        forwarded_ptr: ArenaReaderPtr<Message<F>>,
-    ) -> Result<usize, LoanError> {
-        self.loan_with(|slot| {
-            slot.write(ForwardedMessage::new_with_forward(forwarded_ptr));
-        })
-    }
-}
-
-pub struct ForwardingPublisher<T, F> {
-    pub(crate) inner: Publisher<ForwardedMessage<T, F>>,
-}
-
-impl<T, F> ForwardingPublisher<T, F> {
-    pub fn forwarded_channels(&self) -> &[ChannelName] {
-        self.inner.forwarded_channels.as_slice()
-    }
-}
-
-// This downcast uses `Any`, so both component types must be `'static`.
-impl<T: 'static, F: 'static> ForwardingPublisher<T, F> {
-    pub fn new_downcasted(publisher: &mut dyn GenericPublisher) -> &mut Self {
-        publisher
-            .as_any()
-            .downcast_mut::<ForwardingPublisher<T, F>>()
-            .expect("Expected proc macro to use the correct types")
-    }
-}
-
-// Forwarding channels move both payload components and their final drops
-// between workers (`Send`), expose immutable values concurrently (`Sync`), and
-// may retain them beyond caller borrows (`'static`).
-impl<T: Send + Sync + 'static, F: Send + Sync + 'static> ForwardingPublisher<T, F> {
-    pub fn new(config: PublisherConfig, forwarded_channels: Vec<ChannelName>) -> Self {
-        Self {
-            inner: Publisher::new_with_forwards(config, forwarded_channels),
-        }
-    }
-
-    pub fn add_typed_subscriber(&mut self, subscriber: &mut Subscriber<ForwardedMessage<T, F>>) {
-        self.inner.add_typed_subscriber(subscriber);
-    }
-
-    pub fn allocate_arena(&mut self) {
-        self.inner.allocate_arena();
-    }
-
-    pub fn flush_loaned_values(&mut self, timestamp: FrameworkTime) {
-        self.inner.flush_loaned_values(timestamp);
-    }
-}
-
-// Erased forwarding publishers move both payload components and final drops
-// between workers (`Send`), expose shared immutable values (`Sync`), and use
-// `Any`/`TypeId` while queues retain values (`'static`).
-impl<T: Send + Sync + 'static, F: Send + Sync + 'static> GenericPublisher
-    for ForwardingPublisher<T, F>
-{
-    fn iox2_find_endpoints(
-        &self,
-        add: &mut dyn FnMut(
-            crate::pub_sub_factory::Iox2EndpointInfo,
-        ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError>,
-    ) -> Result<(), crate::task_graph_builder::TaskGraphBuildError> {
-        add(crate::pub_sub_factory::Iox2EndpointInfo {
-            channel: self.inner.config.channel_name.clone(),
-            kind: crate::pub_sub_factory::EndpointKind::NativeForwardingPub,
-            payload_type: Some(std::any::TypeId::of::<ForwardedMessage<T, F>>()),
-        })
-    }
-    fn as_any(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn config(&self) -> &PublisherConfig {
-        self.inner.config()
-    }
-
-    fn config_mut(&mut self) -> &mut PublisherConfig {
-        self.inner.config_mut()
-    }
-
-    fn forwarded_channels(&self) -> &[ChannelName] {
-        GenericPublisher::forwarded_channels(&self.inner)
-    }
-
-    fn flush_loaned_values(&mut self, timestamp: FrameworkTime, sink: &mut dyn ReadyNodeSink) {
-        GenericPublisher::flush_loaned_values(&mut self.inner, timestamp, sink);
-    }
-
-    fn flush_loaned_values_logged(
-        &mut self,
-        timestamp: FrameworkTime,
-        sink: &mut dyn ReadyNodeSink,
-        hook: &mut dyn FnMut(&MessageHeader),
-    ) {
-        self.inner.flush_loaned_values_with(timestamp, sink, hook);
-    }
-
-    fn allocate_arena(&mut self) {
-        self.inner.allocate_arena();
-    }
-
-    fn increase_arena_size(&mut self, additional_capacity: usize) {
-        self.inner.increase_arena_size(additional_capacity);
-    }
-
-    fn connect_to_subscriber(
-        &mut self,
-        subscriber: &mut dyn GenericSubscriber,
-    ) -> Result<(), ConnectionTypeMismatch> {
-        self.inner.connect_to_subscriber(subscriber)
-    }
-
-    fn build_matching_subscriber(
-        &self,
-        config: SubscriberConfig,
-    ) -> Option<Box<dyn GenericSubscriber>> {
-        Some(Box::new(Subscriber::<ForwardedMessage<T, F>>::new(config)))
-    }
-
-    fn value_type_id(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<ForwardedMessage<T, F>>()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::output::{Output, OutputUninit};
-    use crate::subscriber::Subscriber;
-    use crate::time;
-
-    #[test]
-    fn one_allocation() {
-        let mut publisher = Publisher::<i32>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "channel".into(),
-        });
-        publisher.allocate_arena();
-        assert!(publisher.loan_default().is_ok());
-        assert!(publisher.loan_default().is_err());
-    }
-
-    #[test]
-    fn multi_allocation() {
-        let config = PublisherConfig {
-            capacity: 3,
-            channel_name: "channel".into(),
-        };
-        let mut publisher = Publisher::<i32>::new(config);
-        publisher.allocate_arena();
-        assert!(publisher.loan_default().is_ok());
-        assert!(publisher.loan_default().is_ok());
-        assert!(publisher.loan_default().is_ok());
-        assert!(publisher.loan_default().is_err());
-    }
-
-    #[test]
-    fn send() {
-        let mut publisher = Publisher::<i32>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "channel".into(),
-        });
-        publisher.allocate_arena();
-        let mut output = Output::new_default(&mut publisher);
-        *output = 42;
-        output.send();
-    }
-
-    #[test]
-    fn send_to_subscriber() {
-        let mut publisher = Publisher::<i32>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "channel".into(),
-        });
-
-        let mut subscriber = Subscriber::<i32>::new(SubscriberConfig {
-            is_optional: false,
-            capacity: 1,
-            is_trigger: true,
-            keep_across_runs: true,
-            channel_name: "channel".into(),
-        });
-        publisher.add_typed_subscriber(&mut subscriber);
-        publisher.allocate_arena();
-        assert!(!subscriber.able_to_run());
-        assert!(!subscriber.requests_execution());
-        let mut output = Output::new_default(&mut publisher);
-        *output = 42;
-        output.send();
-
-        publisher.flush_loaned_values(time::FrameworkTime::from_nanoseconds(99));
-
-        assert!(subscriber.queue_info().writer_size == 1);
-        assert!(subscriber.queue_info().reader_size == 0);
-
-        assert!(subscriber.requests_execution());
-
-        subscriber.drain_writer_to_reader();
-
-        assert!(subscriber.able_to_run());
-
-        assert!(subscriber.queue_info().writer_size == 0);
-        assert!(subscriber.queue_info().reader_size == 1);
-
-        let read_buffer = subscriber.read_buffer();
-        assert_eq!(read_buffer.len(), 1);
-        let front = read_buffer.front();
-        assert!(front.is_some());
-        let front_message = front.unwrap();
-        assert_eq!(
-            front_message.header.published_at,
-            time::FrameworkTime::from_nanoseconds(99)
-        );
-        assert_eq!(front_message.message, 42);
-    }
-
-    #[test]
-    fn default_allocation_of_header() {
-        let mut publisher = Publisher::<i32>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "channel".into(),
-        });
-        publisher.allocate_arena();
-        assert!(publisher.loan_default().is_ok());
-        let value = publisher.loaned_value_at(0);
-        // SAFETY: We assume that the header was default-initialized, and are testing that
-        let message = unsafe { value.ptr.payload.get().read().assume_init() };
-        assert_eq!(message.header.published_at, FrameworkTime::INVALID);
-    }
-
-    #[test]
-    fn uninit_output_reuses_abandoned_loan_and_initializes_header() {
-        let mut publisher = Publisher::<u64>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "channel".into(),
-        });
-        publisher.allocate_arena();
-        drop(OutputUninit::new(&mut publisher));
-
-        let mut output = OutputUninit::new(&mut publisher);
-        output.value_uninit().write(42);
-        // SAFETY: The payload was fully initialized above.
-        unsafe { output.send_assume_init() };
-        let message = ArenaReaderPtr::new(publisher.loaned_value_at(0).ptr.clone());
-        assert_eq!(message.header.published_at, FrameworkTime::INVALID);
-        assert_eq!(message.message, 42);
-    }
-
-    #[test]
-    fn uninit_factory_panic_releases_publisher_loan() {
-        let mut publisher = Publisher::<u64>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "channel".into(),
-        });
-        publisher.allocate_arena();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            publisher.loan_with(|_| panic!("Factory failed")).unwrap();
-        }));
-        assert!(result.is_err());
-        assert_eq!(publisher.loaned_count(), 0);
-        assert!(publisher.loan_default().is_ok());
-    }
-
-    /// Arena capacity must cover the publisher's own loans (`config.capacity`)
-    /// plus `2 * capacity` for each subscriber: one set held in the subscriber's
-    /// write queue and one held in its read buffer (the previous message can
-    /// still be live when the publisher publishes again before the next drain).
-    /// Otherwise a back-to-back publisher run exhausts the arena and panics.
-    #[test]
-    fn add_typed_subscriber_sizes_arena_for_write_and_read_buffers() {
-        let mut publisher = Publisher::<u32>::new(PublisherConfig {
-            capacity: 2,
-            channel_name: "ch".into(),
-        });
-        assert_eq!(
-            publisher.arena.capacity(),
-            2,
-            "arena starts sized for the publisher's own loan capacity"
-        );
-
-        let mut subscriber = Subscriber::<u32>::new(SubscriberConfig {
-            is_optional: false,
-            capacity: 4,
-            is_trigger: true,
-            keep_across_runs: true,
-            channel_name: "ch".into(),
-        });
-        publisher.add_typed_subscriber(&mut subscriber);
-        assert_eq!(
-            publisher.arena.capacity(),
-            2 + 2 * 4 + 1,
-            "subscriber must bump arena by 2 * capacity + 1 (write + read buffers, plus the in-flight pointer during drain)"
-        );
-
-        let mut second_subscriber = Subscriber::<u32>::new(SubscriberConfig {
-            is_optional: true,
-            capacity: 3,
-            is_trigger: true,
-            keep_across_runs: true,
-            channel_name: "ch".into(),
-        });
-        publisher.add_typed_subscriber(&mut second_subscriber);
-        assert_eq!(
-            publisher.arena.capacity(),
-            2 + 2 * 4 + 1 + 2 * 3 + 1,
-            "each additional subscriber adds another 2 * capacity + 1"
-        );
-    }
-
-    #[test]
-    fn back_to_back_publish_does_not_exhaust_arena() {
-        const PUB_CAPACITY: usize = 1;
-        const SUB_CAPACITY: usize = 1;
-
-        let mut publisher = Publisher::<u32>::new(PublisherConfig {
-            capacity: PUB_CAPACITY,
-            channel_name: "ch".into(),
-        });
-
-        let mut subscriber = Subscriber::<u32>::new(SubscriberConfig {
-            is_optional: false,
-            capacity: SUB_CAPACITY,
-            is_trigger: true,
-            keep_across_runs: true,
-            channel_name: "ch".into(),
-        });
-        publisher.add_typed_subscriber(&mut subscriber);
-        publisher.allocate_arena();
-        // Sizing: publisher's own loan capacity + 2 * subscriber capacity
-        // (clone in write queue + clone in read buffer) + 1 for the pointer
-        // in flight between the queues during drain.
-        assert_eq!(
-            publisher.arena.capacity(),
-            PUB_CAPACITY + 2 * SUB_CAPACITY + 1
-        );
-
-        let time = time::FrameworkTime::from_nanoseconds(0);
-
-        // Cycle 1: publish msg1 and drain it into the subscriber's read buffer.
-        {
-            let mut out = Output::new_default(&mut publisher);
-            *out = 10;
-            out.send();
-        }
-        publisher.flush_loaned_values(time);
-        subscriber.drain_writer_to_reader();
-        assert_eq!(subscriber.queue_info().reader_size, 1);
-
-        // Cycle 2: publish msg2 *without* draining. The subscriber still holds
-        // msg1 in its read buffer, so msg2 must occupy a different arena slot.
-        {
-            let mut out = Output::new_default(&mut publisher);
-            *out = 20;
-            out.send();
-        }
-        publisher.flush_loaned_values(time);
-        assert_eq!(subscriber.queue_info().writer_size, 1);
-        assert_eq!(subscriber.queue_info().reader_size, 1);
-
-        // Cycle 3: publish msg3 *without* draining since cycle 2. The
-        // subscriber simultaneously holds msg1 (read buffer) and msg2 (write
-        // queue). With the old `1 * capacity` arena sizing (cap 2), this loan
-        // would have no free slot and `Arena::allocate_with` would panic.
-        {
-            let mut out = Output::new_default(&mut publisher);
-            *out = 30;
-            out.send();
-        }
-        publisher.flush_loaned_values(time);
     }
 }

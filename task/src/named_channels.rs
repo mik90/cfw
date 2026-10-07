@@ -191,13 +191,18 @@ impl<T> ChannelStorage<T> {
         let subscribers: Vec<_> = self
             .subscribers
             .iter()
-            .map(|spec| Subscriber::new(spec.capacity))
+            .map(|spec| {
+                let mut subscriber = Subscriber::new(spec.capacity);
+                subscriber.set_channel_name(&self.name);
+                subscriber
+            })
             .collect();
         let publishers = self
             .publishers
             .iter()
             .map(|storage| {
                 let mut publisher = storage.publisher();
+                publisher.set_channel_name(&self.name);
                 for subscriber in &subscribers {
                     publisher.connect(subscriber);
                 }
@@ -220,6 +225,25 @@ pub enum EndpointError {
     WrongChannel,
     AlreadyTaken,
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DeclarationError {
+    pub field: &'static str,
+    pub expected: String,
+    pub actual: String,
+}
+
+impl std::fmt::Display for DeclarationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "endpoint '{}' expects channel '{}', got '{}'",
+            self.field, self.expected, self.actual
+        )
+    }
+}
+
+impl std::error::Error for DeclarationError {}
 
 impl std::fmt::Display for EndpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

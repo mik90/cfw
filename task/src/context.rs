@@ -1,38 +1,33 @@
-use crate::string_interner::{CallbackNameTag, ChannelNameTag, StringInterner};
+use crate::string_interner::{CallbackNameInterner, ChannelNameInterner};
 use crate::time::FrameworkTime;
 
+/// Executor-provided time for one callback invocation.
 #[derive(Clone, Debug)]
-pub struct Context<'a> {
-    /// Current framework time, frozen at time of execution
+pub struct Context<'execution> {
     pub now: FrameworkTime,
-    /// Interned channel names, frozen at graph build time
-    pub channel_names: &'a StringInterner<ChannelNameTag>,
-    /// Interned callback names, frozen at graph build time
-    pub callback_names: &'a StringInterner<CallbackNameTag>,
+    pub channel_names: &'execution ChannelNameInterner,
+    pub callback_names: &'execution CallbackNameInterner,
 }
 
-impl<'a> Context<'a> {
+impl<'execution> Context<'execution> {
     pub fn new(
         now: FrameworkTime,
-        channel_names: &'a StringInterner<ChannelNameTag>,
-        callback_names: &'a StringInterner<CallbackNameTag>,
+        channel_names: &'execution ChannelNameInterner,
+        callback_names: &'execution CallbackNameInterner,
     ) -> Self {
-        Context {
+        Self {
             now,
             channel_names,
             callback_names,
         }
     }
-
     pub fn now(&self) -> FrameworkTime {
         self.now
     }
-
-    pub fn channel_names(&'a self) -> &'a StringInterner<ChannelNameTag> {
+    pub fn channel_names(&self) -> &ChannelNameInterner {
         self.channel_names
     }
-
-    pub fn callback_names(&'a self) -> &'a StringInterner<CallbackNameTag> {
+    pub fn callback_names(&self) -> &CallbackNameInterner {
         self.callback_names
     }
 }

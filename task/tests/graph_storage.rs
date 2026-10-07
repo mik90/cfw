@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use borrowed_task::time::FrameworkTime;
-use borrowed_task::{
+use task::time::FrameworkTime;
+use task::{
     ChannelEndpoints, ForwardedMessage, GraphPlan, GraphStorage, LoanError, PublisherStorage,
     PublisherStoragePlan, StorageError,
 };

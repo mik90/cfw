@@ -1,51 +1,42 @@
-#[cfg(test)]
-mod tests {
-    use task::generic_publisher::*;
-    use task::generic_subscriber::*;
-    use task::input::*;
-    use task::output::*;
-    use task::publisher::*;
-    use task::subscriber::*;
-    use task::time::FrameworkTime;
+use task::time::FrameworkTime;
+use task::{CallbackNode, ChannelPlan, Context, GraphBuilder, GraphPlan, Publisher, Subscriber};
 
-    #[test]
-    fn pub_sub() {
-        let mut publisher: Publisher<u32> = Publisher::new(PublisherConfig {
-            capacity: 1,
-            channel_name: "channel".into(),
-        });
-
-        let mut subscriber: Subscriber<u32> = Subscriber::new(SubscriberConfig {
-            is_optional: true,
-            capacity: 2,
-            is_trigger: true,
-            keep_across_runs: true,
-            channel_name: "channel".into(),
-        });
-
-        publisher.add_typed_subscriber(&mut subscriber);
-        publisher.increase_arena_size(subscriber.config().capacity);
-        publisher.allocate_arena();
-
-        assert!(
-            subscriber.able_to_run(),
-            "Optional inputs should allow execution even when empty"
-        );
-
-        {
-            let mut output = Output::new_default(&mut publisher);
-            *output = 42;
-            output.send();
-        }
-
-        let timestamp = FrameworkTime::from_nanoseconds(42);
-        publisher.flush_loaned_values(timestamp);
-        subscriber.drain_writer_to_reader();
-
-        {
-            let input = OptionalInput::new(&subscriber);
-            assert!(input.value().is_some());
-            assert_eq!(*input.value().unwrap(), 42);
-        }
-    }
+#[test]
+fn executor_updates_inputs_and_flushes_hand_written_callback_outputs() {
+    let mut source = ChannelPlan::<u32>::new("source");
+    let source_pub = source.publisher(1);
+    let source_sub = source.subscriber(1);
+    let mut output = ChannelPlan::<u32>::new("output");
+    let output_pub = output.publisher(1);
+    let output_sub = output.subscriber(1);
+    let storage = GraphPlan::new((source, output)).allocate().unwrap();
+    let source = storage.channels().0.build();
+    let output = storage.channels().1.build();
+    let mut fixture = source.take_publisher(&source_pub).unwrap();
+    let capture = output.take_subscriber(&output_sub).unwrap();
+    let mut builder = GraphBuilder::new();
+    builder.add_callback("increment", || {
+        Ok(CallbackNode::new(
+            source.take_subscriber(&source_sub)?,
+            output.take_publisher(&output_pub)?,
+            |input: &Subscriber<'_, u32>, output: &mut Publisher<'_, u32>, _ctx: &Context| {
+                if let Some(value) = input.input().pop() {
+                    output.publish(value.message + 1)?;
+                }
+                Ok(())
+            },
+        ))
+    });
+    let mut graph = builder.build().unwrap();
+    fixture.publish(41).unwrap();
+    fixture.flush(FrameworkTime::from_nanoseconds(1));
+    graph.step(FrameworkTime::from_nanoseconds(2)).unwrap();
+    capture.update();
+    let retained = capture.input().pop().unwrap();
+    drop((graph, source, output, fixture, capture));
+    assert_eq!(retained.message, 42);
+    assert_eq!(
+        retained.header.published_at,
+        FrameworkTime::from_nanoseconds(2)
+    );
 }

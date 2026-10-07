@@ -15,7 +15,7 @@ crossbeam = "0.8"
 iceoryx2 = { workspace = true, optional = true }
 
 [dev-dependencies]
-test_tasks = { path = "../test_tasks" }
+task_macros = { path = "../task_macros" }
 task = { path = "../task", features = ["testing"] }
 
 [dev-dependencies.assert_no_alloc]

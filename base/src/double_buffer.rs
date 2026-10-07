@@ -128,7 +128,7 @@ impl<'a, 'arena, T> ReadBufferGuard<'a, 'arena, T> {
         self.buffer.storage.pop_back();
     }
 
-    pub fn front(&'a self) -> Option<&'a T> {
+    pub fn front(&self) -> Option<&T> {
         self.buffer.storage.front().map(|ptr|
             // SAFETY: We can assume that read buffers are only viewing already-initialized data
             unsafe {

@@ -1,973 +1,367 @@
-extern crate proc_macro;
-
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{FnArg, Ident, ItemImpl, PatType, parse_macro_input, parse_quote};
+use quote::{format_ident, quote};
+use syn::visit_mut::VisitMut;
+use syn::{
+    FnArg, GenericArgument, ItemImpl, Pat, PathArguments, ReturnType, Type, parse_macro_input,
+    parse_quote,
+};
 
-#[derive(Clone)]
-enum InputKind {
+/// Generate typed endpoint declarations and storage-borrowing callback construction.
+/// `Task::declare(plans...)` creates keys before allocation; `task.bind(
+/// declaration, bindings...)` creates the callback afterward. Use `Declaration::from_keys`
+/// when several ports share a channel plan. The executor manages update/flush.
+#[proc_macro_attribute]
+pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as ItemImpl);
+    expand(item)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+#[derive(Clone, Copy)]
+enum PortKind {
+    Input,
     Required,
-    Optional,
-    Span,
-}
-
-#[derive(Clone)]
-enum OutputKind {
-    /// Default constructed
-    Default,
-    /// Uninit
+    Output,
     Uninit,
-    /// Span of default constructed
-    DefaultSpan,
-    /// Span of uninit
-    UninitSpan,
+    Publisher,
 }
 
-#[derive(Clone, PartialEq)]
-enum TypeForm {
-    Value,
-    RefMut,
-    Ref,
-}
-
-#[derive(Clone)]
-enum PubOrSubKind {
-    Sub { msg: Ident, ikind: InputKind },
-    ForwardableSub { msg: Ident, ikind: InputKind },
-    Pub { msg: Ident, okind: OutputKind },
-    ForwardingPub { user_data: Ident, forwarded: Ident },
-    Iox2Sub { msg: Ident, span: bool },
-    Iox2Event,
-    Iox2Pub { msg: Ident },
-    Iox2Notifier,
-    Context,
-}
-
-fn iox2_message_type(pat_ty: &PatType, type_name: &str) -> Result<Ident, syn::Error> {
-    let syn::Type::Path(path) = pat_ty.ty.as_ref() else {
-        return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type"));
-    };
-    let segment = path.path.segments.last().expect("path has segment");
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return Err(syn::Error::new_spanned(
-            &pat_ty.ty,
-            format!("`{type_name}` takes exactly one payload type argument"),
-        ));
-    };
-    if args.args.len() != 1 {
-        return Err(syn::Error::new_spanned(
-            &pat_ty.ty,
-            format!("`{type_name}` takes exactly one payload type argument"),
-        ));
-    }
-    match args.args.first().unwrap() {
-        syn::GenericArgument::Type(syn::Type::Path(ty)) => {
-            ty.path.get_ident().cloned().ok_or_else(|| {
-                syn::Error::new_spanned(&pat_ty.ty, "payload type must be a simple identifier")
-            })
-        }
-        _ => Err(syn::Error::new_spanned(
-            &pat_ty.ty,
-            "payload type must be a simple identifier",
-        )),
-    }
-}
-
-fn iox2_no_arguments(pat_ty: &PatType, type_name: &str) -> Result<(), syn::Error> {
-    let syn::Type::Path(path) = pat_ty.ty.as_ref() else {
-        return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type"));
-    };
-    let segment = path.path.segments.last().expect("path has segment");
-    if !matches!(segment.arguments, syn::PathArguments::None) {
-        return Err(syn::Error::new_spanned(
-            &pat_ty.ty,
-            format!("`{type_name}` takes no type arguments"),
-        ));
-    }
-    Ok(())
-}
-
-#[derive(Clone)]
-struct SigArg {
-    pub_or_sub_kind: PubOrSubKind,
-    field_name: Ident,
-    /// Channel name expression from an optional `#[channel(...)]` attribute.
+struct Port {
+    name: syn::Ident,
+    payload: Type,
+    kind: PortKind,
     channel: Option<syn::Expr>,
+    capacity: syn::Expr,
 }
 
-#[derive(Clone)]
-struct MacroCallbackSignature {
-    pub callback_type: Ident,
-    pub arguments: Vec<SigArg>,
-}
-
-fn extract_two_idents_from_path(
-    type_path: &syn::TypePath,
-    span_ty: &syn::Type,
-) -> Result<(Ident, Ident), syn::Error> {
-    let last =
-        type_path.path.segments.last().ok_or_else(|| {
-            syn::Error::new_spanned(span_ty, "expected at least one path segment")
-        })?;
-    let angle_args = match &last.arguments {
-        syn::PathArguments::AngleBracketed(a) => a,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                span_ty,
-                "expected angle-bracket generics (e.g. ForwardingOutput<A, B>)",
-            ));
+struct StorageLifetimes;
+impl VisitMut for StorageLifetimes {
+    fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+        if lifetime.ident != "static" {
+            *lifetime = parse_quote!('storage);
         }
-    };
-    let args: Vec<_> = angle_args.args.iter().collect();
-    if args.len() < 2 {
+    }
+}
+
+fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
+    if item.trait_.is_some() || !item.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
-            span_ty,
-            "expected two generic type arguments",
+            &item,
+            "task_callback requires a non-generic inherent impl",
         ));
     }
-    let to_ident = |arg: &&syn::GenericArgument| -> Result<Ident, syn::Error> {
-        if let syn::GenericArgument::Type(syn::Type::Path(p)) = arg {
-            p.path.get_ident().cloned().ok_or_else(|| {
-                syn::Error::new_spanned(span_ty, "type argument must be a simple identifier")
-            })
-        } else {
-            Err(syn::Error::new_spanned(
-                span_ty,
-                "type argument must be a simple type path",
-            ))
-        }
-    };
-    Ok((to_ident(&args[0])?, to_ident(&args[1])?))
-}
-
-fn get_two_message_types(pat_ty: &PatType) -> Result<(Ident, Ident), syn::Error> {
-    let type_path = match pat_ty.ty.as_ref() {
-        syn::Type::Path(p) => p,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &pat_ty.ty,
-                "expected a path type (e.g. ForwardingOutput<A, B>)",
-            ));
-        }
-    };
-    extract_two_idents_from_path(type_path, &pat_ty.ty)
-}
-
-fn get_message_type(pat_ty: &PatType) -> Result<Ident, syn::Error> {
-    let type_path = match pat_ty.ty.as_ref() {
-        syn::Type::Path(p) => p,
-        _ => return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type")),
-    };
-    let last =
-        type_path.path.segments.last().ok_or_else(|| {
-            syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment")
-        })?;
-    let angle_args = match &last.arguments {
-        syn::PathArguments::AngleBracketed(a) => a,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &pat_ty.ty,
-                "expected angle-bracket generic (e.g. RequiredInput<MyType>)",
-            ));
-        }
-    };
-    let last_arg = angle_args.args.last().ok_or_else(|| {
-        syn::Error::new_spanned(&pat_ty.ty, "expected at least one generic argument")
-    })?;
-    match last_arg {
-        syn::GenericArgument::Type(syn::Type::Path(p)) => {
-            p.path.get_ident().cloned().ok_or_else(|| {
-                syn::Error::new_spanned(&pat_ty.ty, "message type must be a simple identifier")
-            })
-        }
-        _ => Err(syn::Error::new_spanned(
-            &pat_ty.ty,
-            "generic argument must be a simple type path",
-        )),
-    }
-}
-
-fn field_name(pat_ty: &PatType) -> Result<Ident, syn::Error> {
-    if let syn::Pat::Ident(pat_ident) = pat_ty.pat.as_ref() {
-        Ok(pat_ident.ident.clone())
-    } else {
-        Err(syn::Error::new_spanned(
-            &pat_ty.pat,
-            "argument pattern must be a simple identifier",
-        ))
-    }
-}
-
-/// Extract the channel-name expression from an optional `#[channel(...)]`
-/// attribute on a run argument. Returns `Ok(None)` when the attribute is
-/// absent, and an error when it's malformed or appears on a `Context` arg.
-fn channel_expr(pat_ty: &PatType, is_context: bool) -> Result<Option<syn::Expr>, syn::Error> {
-    let attr = match pat_ty.attrs.iter().find(|a| a.path().is_ident("channel")) {
-        Some(a) => a,
-        None => return Ok(None),
-    };
-    if is_context {
+    let Type::Path(self_ty) = item.self_ty.as_ref() else {
         return Err(syn::Error::new_spanned(
-            attr,
-            "`#[channel(...)]` is not valid on a `Context` argument",
+            &item.self_ty,
+            "expected a task type",
         ));
-    }
-    match attr.parse_args::<syn::Expr>() {
-        Ok(expr) => Ok(Some(expr)),
-        Err(_) => Err(syn::Error::new_spanned(
-            attr,
-            "`#[channel(...)]` expects an expression that converts into a channel name, e.g. \
-             `#[channel(\"custom_data\")]` or `#[channel(SOURCE_CHANNEL)]`",
-        )),
-    }
-}
-
-/// Clone `item_impl` with the `#[channel(...)]` attributes stripped from the
-/// `run` function's arguments. The attribute is a macro-internal marker: the
-/// emitted impl must not carry it (rustc would reject the unknown attribute).
-fn sanitize_impl(item_impl: &ItemImpl) -> ItemImpl {
-    let mut sanitized = item_impl.clone();
-    for item in &mut sanitized.items {
-        if let syn::ImplItem::Fn(f) = item
-            && f.sig.ident == "run"
-        {
-            for input in f.sig.inputs.iter_mut() {
-                if let FnArg::Typed(pat_ty) = input {
-                    pat_ty.attrs.retain(|a| !a.path().is_ident("channel"));
-                }
-            }
-        }
-    }
-    sanitized
-}
-
-/// Wrap a pub or sub's default config expression so it carries the `#[channel(...)]`
-/// name, e.g. `{ let mut __cfg: SubscriberConfig = ...; __cfg.channel_name = "x".into(); __cfg }`.
-/// Returns the expression unchanged when no channel was declared.
-fn with_channel(
-    cfg: syn::Expr,
-    channel: Option<&syn::Expr>,
-    config_ty: proc_macro2::TokenStream,
-) -> syn::Expr {
-    match channel {
-        None => cfg,
-        Some(channel) => syn::parse_quote!({
-            let mut __cfg: #config_ty = #cfg;
-            __cfg.channel_name = (#channel).into();
-            __cfg
-        }),
-    }
-}
-
-fn find_signature(item_impl: &ItemImpl) -> Result<MacroCallbackSignature, syn::Error> {
-    let struct_ident = match item_impl.self_ty.as_ref() {
-        syn::Type::Path(p) => p
-            .path
-            .get_ident()
-            .ok_or_else(|| {
-                syn::Error::new_spanned(&item_impl.self_ty, "expected a simple struct identifier")
-            })?
-            .clone(),
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &item_impl.self_ty,
-                "expected a path for the impl type",
-            ));
-        }
     };
-
-    let run_fn = item_impl
+    let Some(task_name) = self_ty.path.get_ident().cloned() else {
+        return Err(syn::Error::new_spanned(
+            self_ty,
+            "expected a simple task type",
+        ));
+    };
+    let declaration = format_ident!("{}Declaration", task_name);
+    let callback = format_ident!("{}Callback", task_name);
+    let run = item
         .items
-        .iter()
-        .find_map(|item| {
-            if let syn::ImplItem::Fn(f) = item {
-                if f.sig.ident == "run" { Some(f) } else { None }
-            } else {
-                None
-            }
+        .iter_mut()
+        .find_map(|item| match item {
+            syn::ImplItem::Fn(method) if method.sig.ident == "run" => Some(method),
+            _ => None,
         })
-        .ok_or_else(|| {
-            syn::Error::new_spanned(item_impl, "impl block must contain a run() function")
-        })?;
-
-    // `callback_builder` is the user-owned construction entry point: it's what
-    // gets unit-tested, so it must be declared explicitly rather than generated.
-    let has_callback_builder = item_impl.items.iter().any(|item| {
-        matches!(
-            item,
-            syn::ImplItem::Fn(f) if f.sig.ident == "callback_builder"
-        )
-    });
-    if !has_callback_builder {
+        .ok_or_else(|| syn::Error::new_spanned(&task_name, "expected a run method"))?;
+    if run.sig.asyncness.is_some()
+        || run.sig.unsafety.is_some()
+        || run.sig.generics.type_params().next().is_some()
+        || run.sig.generics.const_params().next().is_some()
+    {
         return Err(syn::Error::new_spanned(
-            item_impl,
-            "`#[task_callback]` requires a user-defined `callback_builder` method that returns a \
-             `CallbackBuilder`, e.g.\n\n\
-             \x20   impl MyTask {\n\
-             \x20       fn callback_builder(self) -> task::callback_builder::CallbackBuilder {\n\
-             \x20           self.builder()\n\
-             \x20               .with_execution_duration_callback(|| Duration::from_micros(100))\n\
-             \x20               .with_periodic_execution(Duration::from_millis(100))\n\
-             \x20       }\n\
-             \x20   }",
+            &run.sig,
+            "run must be synchronous, safe, and have no type or const parameters",
+        ));
+    }
+    if !matches!(run.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_some()) {
+        return Err(syn::Error::new_spanned(
+            &run.sig,
+            "run must take &self or &mut self",
         ));
     }
 
+    let mut ports = Vec::new();
     let mut arguments = Vec::new();
-    for arg in run_fn.sig.inputs.iter() {
-        let pat_ty = match arg {
-            FnArg::Typed(t) => t,
-            FnArg::Receiver(_) => continue,
+    for arg in run.sig.inputs.iter_mut().skip(1) {
+        let FnArg::Typed(arg) = arg else {
+            unreachable!()
         };
-
-        let fname = field_name(pat_ty)?;
-
-        let (type_path, form) = match pat_ty.ty.as_ref() {
-            syn::Type::Path(p) => (p, TypeForm::Value),
-            syn::Type::Reference(r) => {
-                if r.mutability.is_some() {
-                    match r.elem.as_ref() {
-                        syn::Type::Path(p) => (p, TypeForm::RefMut),
-                        _ => {
-                            return Err(syn::Error::new_spanned(
-                                &pat_ty.ty,
-                                "expected a path type inside &mut reference",
-                            ));
-                        }
-                    }
-                } else {
-                    match r.elem.as_ref() {
-                        syn::Type::Path(p) => (p, TypeForm::Ref),
-                        _ => {
-                            return Err(syn::Error::new_spanned(
-                                &pat_ty.ty,
-                                "expected a path type inside & reference",
-                            ));
-                        }
-                    }
-                }
-            }
-            _ => return Err(syn::Error::new_spanned(&pat_ty.ty, "expected a path type")),
+        let Pat::Ident(pattern) = arg.pat.as_ref() else {
+            return Err(syn::Error::new_spanned(
+                &arg.pat,
+                "endpoint argument must have a name",
+            ));
         };
-        let last = type_path.path.segments.last().ok_or_else(|| {
-            syn::Error::new_spanned(&pat_ty.ty, "expected at least one path segment")
-        })?;
-
-        let pub_or_sub_kind = match (last.ident.to_string().as_str(), &form) {
-            ("RequiredInput", TypeForm::Value) => PubOrSubKind::Sub {
-                msg: get_message_type(pat_ty)?,
-                ikind: InputKind::Required,
-            },
-            ("OptionalInput", TypeForm::Value) => PubOrSubKind::Sub {
-                msg: get_message_type(pat_ty)?,
-                ikind: InputKind::Optional,
-            },
-            ("InputSpan", TypeForm::Value) => PubOrSubKind::Sub {
-                msg: get_message_type(pat_ty)?,
-                ikind: InputKind::Span,
-            },
-            ("ForwardableRequiredInput", TypeForm::Value) => PubOrSubKind::ForwardableSub {
-                msg: get_message_type(pat_ty)?,
-                ikind: InputKind::Required,
-            },
-            ("ForwardableOptionalInput", TypeForm::Value) => PubOrSubKind::ForwardableSub {
-                msg: get_message_type(pat_ty)?,
-                ikind: InputKind::Optional,
-            },
-            ("ForwardableInputSpan", TypeForm::Value) => PubOrSubKind::ForwardableSub {
-                msg: get_message_type(pat_ty)?,
-                ikind: InputKind::Span,
-            },
-            ("Output", TypeForm::Value) => PubOrSubKind::Pub {
-                msg: get_message_type(pat_ty)?,
-                okind: OutputKind::Default,
-            },
-            ("OutputUninit", TypeForm::Value) => PubOrSubKind::Pub {
-                msg: get_message_type(pat_ty)?,
-                okind: OutputKind::Uninit,
-            },
-            ("OutputSpan", TypeForm::Value) => PubOrSubKind::Pub {
-                msg: get_message_type(pat_ty)?,
-                okind: OutputKind::DefaultSpan,
-            },
-            ("OutputUninitSpan", TypeForm::Value) => PubOrSubKind::Pub {
-                msg: get_message_type(pat_ty)?,
-                okind: OutputKind::UninitSpan,
-            },
-            ("ForwardingOutput", TypeForm::Value) => {
-                let (user_data, forwarded) = get_two_message_types(pat_ty)?;
-                PubOrSubKind::ForwardingPub {
-                    user_data,
-                    forwarded,
-                }
+        let name = pattern.ident.clone();
+        if name.to_string().starts_with("__cfw_") {
+            return Err(syn::Error::new_spanned(
+                name,
+                "endpoint names beginning with __cfw_ are reserved",
+            ));
+        }
+        let (ty, reference) = match arg.ty.as_ref() {
+            Type::Reference(r) => (r.elem.as_ref(), Some(r)),
+            ty => (ty, None),
+        };
+        let Type::Path(path) = ty else {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "expected a typed input or output port",
+            ));
+        };
+        let segment = path.path.segments.last().unwrap();
+        if segment.ident == "Context" {
+            if !matches!(reference, Some(r) if r.mutability.is_none()) {
+                return Err(syn::Error::new_spanned(&arg.ty, "context must be &Context"));
             }
-            ("Iox2OptionalInput", TypeForm::Value) => PubOrSubKind::Iox2Sub {
-                msg: iox2_message_type(pat_ty, "Iox2OptionalInput")?,
-                span: false,
-            },
-            ("Iox2SpanInput", TypeForm::Value) => PubOrSubKind::Iox2Sub {
-                msg: iox2_message_type(pat_ty, "Iox2SpanInput")?,
-                span: true,
-            },
-            ("Iox2Event", TypeForm::Value) => {
-                iox2_no_arguments(pat_ty, "Iox2Event")?;
-                PubOrSubKind::Iox2Event
-            }
-            ("Iox2Output", TypeForm::Value) => PubOrSubKind::Iox2Pub {
-                msg: iox2_message_type(pat_ty, "Iox2Output")?,
-            },
-            ("Iox2NotifyOutput", TypeForm::Value) => {
-                iox2_no_arguments(pat_ty, "Iox2NotifyOutput")?;
-                PubOrSubKind::Iox2Notifier
-            }
-            ("Context", TypeForm::Ref) => PubOrSubKind::Context,
-            _ => {
-                let possible_types = vec![
-                    "RequiredInput",
-                    "OptionalInput",
-                    "InputSpan",
-                    "ForwardableRequiredInput",
-                    "ForwardableOptionalInput",
-                    "ForwardableInputSpan",
-                    "Output",
-                    "OutputUninit",
-                    "OutputUninitSpan",
-                    "ForwardingOutput",
-                    "Iox2OptionalInput",
-                    "Iox2SpanInput",
-                    "Iox2Event",
-                    "Iox2Output",
-                    "Iox2NotifyOutput",
-                    "&Context",
-                ]
-                .join(",");
+            if arg
+                .attrs
+                .iter()
+                .any(|a| a.path().is_ident("channel") || a.path().is_ident("capacity"))
+            {
                 return Err(syn::Error::new_spanned(
-                    &last.ident,
-                    format!(
-                        "unknown callback argument type '{}'; expected one of '{}'",
-                        last.ident, possible_types,
-                    ),
+                    arg,
+                    "context is not a channel endpoint",
+                ));
+            }
+            arguments.push(quote!(__cfw_context));
+            continue;
+        }
+        let kind = match segment.ident.to_string().as_str() {
+            "Input" | "OptionalInput" | "InputSpan" if reference.is_none() => PortKind::Input,
+            "RequiredInput" if reference.is_none() => PortKind::Required,
+            "Output" if reference.is_none() => PortKind::Output,
+            "OutputUninit" if reference.is_none() => PortKind::Uninit,
+            "Publisher" if matches!(reference, Some(r) if r.mutability.is_some()) => {
+                PortKind::Publisher
+            }
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &arg.ty,
+                    "expected Input, RequiredInput, OptionalInput, InputSpan, Output, OutputUninit, &mut Publisher, or &Context",
                 ));
             }
         };
-        let is_context = matches!(pub_or_sub_kind, PubOrSubKind::Context);
-        let channel = channel_expr(pat_ty, is_context)?;
-        arguments.push(SigArg {
-            pub_or_sub_kind,
-            field_name: fname,
+        let PathArguments::AngleBracketed(generics) = &segment.arguments else {
+            return Err(syn::Error::new_spanned(
+                &arg.ty,
+                "endpoint requires one payload type",
+            ));
+        };
+        let payloads: Vec<_> = generics
+            .args
+            .iter()
+            .filter_map(|a| match a {
+                GenericArgument::Type(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        if payloads.len() != 1 {
+            return Err(syn::Error::new_spanned(
+                &arg.ty,
+                "endpoint requires one payload type",
+            ));
+        }
+        let mut payload = payloads[0].clone();
+        StorageLifetimes.visit_type_mut(&mut payload);
+        let mut channel = None;
+        let mut capacity = None;
+        for attr in &arg.attrs {
+            let destination = if attr.path().is_ident("channel") {
+                &mut channel
+            } else if attr.path().is_ident("capacity") {
+                &mut capacity
+            } else {
+                continue;
+            };
+            if destination.is_some() {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "duplicate endpoint attribute",
+                ));
+            }
+            *destination = Some(attr.parse_args::<syn::Expr>()?);
+        }
+        arg.attrs
+            .retain(|a| !a.path().is_ident("channel") && !a.path().is_ident("capacity"));
+        let capacity = capacity.unwrap_or_else(|| {
+            if segment.ident == "InputSpan" {
+                parse_quote!(4)
+            } else {
+                parse_quote!(1)
+            }
+        });
+        arguments.push(match kind {
+            PortKind::Input => quote!(self.#name.input()),
+            PortKind::Required => quote!(::task::RequiredInput::new(&self.#name)),
+            PortKind::Output => quote!(self.#name.loan(::core::default::Default::default())?),
+            PortKind::Uninit => quote!(self.#name.loan_uninit()?),
+            PortKind::Publisher => quote!(&mut self.#name),
+        });
+        ports.push(Port {
+            name,
+            payload,
+            kind,
             channel,
+            capacity,
         });
     }
+    let fallible = match &run.sig.output {
+        ReturnType::Default => false,
+        ReturnType::Type(_, ty) if matches!(ty.as_ref(), Type::Tuple(t) if t.elems.is_empty()) => {
+            false
+        }
+        ReturnType::Type(_, ty) => {
+            let Type::Path(path) = ty.as_ref() else {
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    "run must return () or Result<(), LoanError>",
+                ));
+            };
+            if path.path.segments.last().unwrap().ident != "Result" {
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    "run must return () or Result<(), LoanError>",
+                ));
+            }
+            true
+        }
+    };
 
-    Ok(MacroCallbackSignature {
-        callback_type: struct_ident,
-        arguments,
+    let mut key_fields = Vec::new();
+    let mut key_params = Vec::new();
+    let mut plan_params = Vec::new();
+    let mut validation = Vec::new();
+    let mut registration = Vec::new();
+    let mut binding_params = Vec::new();
+    let mut construction = Vec::new();
+    let mut endpoint_fields = Vec::new();
+    let mut updates = Vec::new();
+    let mut wake = Vec::new();
+    let mut pending = Vec::new();
+    let mut channel_names = Vec::new();
+    let mut ready = Vec::new();
+    let mut flush = Vec::new();
+    let mut discard = Vec::new();
+    let mut names = Vec::new();
+    for port in ports {
+        let Port {
+            name,
+            payload,
+            kind,
+            channel,
+            capacity,
+        } = port;
+        let input = matches!(kind, PortKind::Input | PortKind::Required);
+        channel_names.push(quote!(visit(self.#name.channel_name());));
+        let key = if input {
+            quote!(::task::SubscriberKey<#payload>)
+        } else {
+            quote!(::task::PublisherKey<#payload>)
+        };
+        key_fields.push(quote!(#name: #key));
+        key_params.push(quote!(#name: #key));
+        plan_params.push(quote!(#name: &mut ::task::ChannelPlan<#payload>));
+        binding_params.push(quote!(#name: &::task::EndpointBindings<'storage, #payload>));
+        if let Some(channel) = channel {
+            validation.push(quote! {
+                {
+                    let expected_value = #channel;
+                    let expected: &str = ::core::convert::AsRef::<str>::as_ref(&expected_value);
+                    if #name.name() != expected {
+                        return Err(::task::DeclarationError { field: stringify!(#name), expected: expected.into(), actual: #name.name().into() });
+                    }
+                }
+            });
+        }
+        if input {
+            registration.push(quote!(#name: #name.subscriber(#capacity)));
+            construction.push(quote!(#name: #name.take_subscriber(&self.#name)?));
+            endpoint_fields.push(quote!(#name: ::task::Subscriber<'storage, #payload>));
+            updates.push(quote!(self.#name.update();));
+            wake.push(quote!(self.#name.set_waker(wake.clone());));
+            pending.push(quote!(self.#name.has_pending()));
+            if matches!(kind, PortKind::Required) {
+                ready.push(quote!(!self.#name.is_empty()));
+            }
+        } else {
+            registration.push(quote!(#name: #name.publisher(#capacity)));
+            construction.push(quote!(#name: #name.take_publisher(&self.#name)?));
+            endpoint_fields.push(quote!(#name: ::task::Publisher<'storage, #payload>));
+            flush.push(quote!(self.#name.flush(timestamp);));
+            discard.push(quote!(self.#name.discard_pending();));
+        }
+        names.push(name);
+    }
+    let result = if fallible {
+        quote!(self.__cfw_user.run(#(#arguments),*))
+    } else {
+        quote! { self.__cfw_user.run(#(#arguments),*); Ok(()) }
+    };
+    Ok(quote! {
+        #item
+
+        pub struct #declaration<'storage> {
+            #(#key_fields,)*
+            __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
+        }
+        pub struct #callback<'storage> {
+            __cfw_user: #task_name,
+            #(#endpoint_fields,)*
+            __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
+        }
+        impl #task_name {
+            pub fn declare<'storage>(#(#plan_params),*) -> Result<#declaration<'storage>, ::task::DeclarationError> {
+                #(#validation)*
+                Ok(#declaration { #(#registration,)* __cfw_lifetime: ::core::marker::PhantomData })
+            }
+            pub fn bind<'storage>(self, __cfw_declaration: #declaration<'storage>, #(#binding_params),*) -> Result<#callback<'storage>, ::task::EndpointError> {
+                __cfw_declaration.build(self, #(#names),*)
+            }
+        }
+        impl<'storage> #declaration<'storage> {
+            pub fn from_keys(#(#key_params),*) -> Self {
+                Self { #(#names,)* __cfw_lifetime: ::core::marker::PhantomData }
+            }
+            fn build(self, __cfw_user: #task_name, #(#binding_params),*) -> Result<#callback<'storage>, ::task::EndpointError> {
+                Ok(#callback { __cfw_user, #(#construction,)* __cfw_lifetime: ::core::marker::PhantomData })
+            }
+        }
+        impl<'storage> ::task::Callback for #callback<'storage> {
+            fn set_waker(&mut self, wake: ::task::wake::WakeHandle) { #(#wake)* }
+            fn has_pending_inputs(&self) -> bool { false #(|| #pending)* }
+            fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) { #(#channel_names)* }
+            fn update_inputs(&mut self) { #(#updates)* }
+            fn required_inputs_ready(&self) -> bool { true #(&& #ready)* }
+            fn run(&mut self, __cfw_context: &::task::Context) -> Result<(), ::task::LoanError> { #result }
+            fn flush_outputs(&mut self, timestamp: ::task::time::FrameworkTime) { #(#flush)* }
+            fn discard_outputs(&mut self) { #(#discard)* }
+        }
     })
 }
 
-#[proc_macro_attribute]
-pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let item_impl = parse_macro_input!(item as ItemImpl);
-
-    let sig = match find_signature(&item_impl) {
-        Ok(s) => s,
-        Err(e) => return e.to_compile_error().into(),
-    };
-
-    let struct_name = &sig.callback_type;
-    let pub_or_subs_name = Ident::new(&format!("{}PubOrSubs", struct_name), struct_name.span());
-    let callback_name = Ident::new(&format!("{}Callback", struct_name), struct_name.span());
-
-    // ── Per-field code bits ──
-    let mut field_defs: Vec<syn::Field> = Vec::new();
-    let mut field_ctors: Vec<syn::FieldValue> = Vec::new(); // for pub_or_subs_name constructor
-    let mut run_args: Vec<syn::Expr> = Vec::new();
-    let mut pub_or_sub_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut pub_or_sub_mut_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut drain_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut flush_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut flush_logged_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut sub_exec_terms: Vec<syn::Expr> = Vec::new();
-    let mut able_terms: Vec<syn::Expr> = Vec::new();
-    let mut input_ready_terms: Vec<syn::Expr> = Vec::new();
-    let mut register_stmts: Vec<syn::Stmt> = Vec::new();
-    let mut drop_stmts: Vec<syn::Stmt> = Vec::new();
-
-    for sig_arg in sig.arguments.iter() {
-        let fname = &sig_arg.field_name;
-        match &sig_arg.pub_or_sub_kind {
-            PubOrSubKind::Sub { msg, ikind } => {
-                let cfg: syn::Expr = match ikind {
-                    InputKind::Required => parse_quote!(task::callback::InputKind::Required.into()),
-                    InputKind::Optional => parse_quote!(task::callback::InputKind::Optional.into()),
-                    InputKind::Span => parse_quote!(task::callback::InputKind::Span.into()),
-                };
-                let cfg = with_channel(
-                    cfg,
-                    sig_arg.channel.as_ref(),
-                    quote!(task::subscriber::SubscriberConfig),
-                );
-                field_defs.push(parse_quote!(pub #fname: task::subscriber::Subscriber<#msg>));
-                field_ctors
-                    .push(parse_quote!(#fname: task::subscriber::Subscriber::<#msg>::new(#cfg)));
-
-                let ctor: syn::Expr = match ikind {
-                    InputKind::Required => {
-                        parse_quote!(RequiredInput::new(&self.pub_or_subs.#fname))
-                    }
-                    InputKind::Optional => {
-                        parse_quote!(OptionalInput::new(&self.pub_or_subs.#fname))
-                    }
-                    InputKind::Span => parse_quote!(InputSpan::new(&self.pub_or_subs.#fname)),
-                };
-                run_args.push(ctor);
-
-                pub_or_sub_stmts.push(
-                    parse_quote!(f(task::callback::PubOrSub::Subscriber(&self.pub_or_subs.#fname));),
-                );
-                pub_or_sub_mut_stmts.push(parse_quote!(
-                    f(task::callback::PubOrSubMut::Subscriber(&mut self.pub_or_subs.#fname));
-                ));
-                drain_stmts.push(
-                    parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.pub_or_subs.#fname);),
-                );
-                sub_exec_terms.push(
-                    parse_quote!(GenericSubscriber::requests_execution(&self.pub_or_subs.#fname)),
-                );
-                able_terms
-                    .push(parse_quote!(GenericSubscriber::able_to_run(&self.pub_or_subs.#fname)));
-                input_ready_terms.push(parse_quote!(
-                    self.pub_or_subs.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.pub_or_subs.#fname)
-                ));
-                register_stmts.push(parse_quote!(
-                    task::channel_registry::Probe::<#msg>::new().try_register(registry);
-                ));
-                register_stmts.push(parse_quote!(
-                    task::channel_registry::Probe::<#msg>::new().try_register_channel(
-                        registry,
-                        self.pub_or_subs.#fname.config().channel_name.clone(),
-                    );
-                ));
-                drop_stmts.push(parse_quote!(
-                    GenericSubscriber::cleanup_buffers(&self.pub_or_subs.#fname);
-                ));
-            }
-            PubOrSubKind::ForwardableSub { msg, ikind } => {
-                let cfg: syn::Expr = match ikind {
-                    InputKind::Required => parse_quote!(task::callback::InputKind::Required.into()),
-                    InputKind::Optional => parse_quote!(task::callback::InputKind::Optional.into()),
-                    InputKind::Span => parse_quote!(task::callback::InputKind::Span.into()),
-                };
-                field_defs
-                    .push(parse_quote!(pub #fname: task::subscriber::ForwardableSubscriber<#msg>));
-                let cfg = with_channel(
-                    cfg,
-                    sig_arg.channel.as_ref(),
-                    quote!(task::subscriber::SubscriberConfig),
-                );
-                field_ctors.push(parse_quote!(#fname: task::subscriber::ForwardableSubscriber::<#msg>::new(#cfg)));
-
-                let ctor: syn::Expr = match ikind {
-                    InputKind::Required => {
-                        parse_quote!(ForwardableRequiredInput::new(&self.pub_or_subs.#fname))
-                    }
-                    InputKind::Optional => {
-                        parse_quote!(ForwardableOptionalInput::new(&self.pub_or_subs.#fname))
-                    }
-                    InputKind::Span => {
-                        parse_quote!(ForwardableInputSpan::new(&self.pub_or_subs.#fname))
-                    }
-                };
-                run_args.push(ctor);
-
-                pub_or_sub_stmts.push(
-                    parse_quote!(f(task::callback::PubOrSub::Subscriber(&self.pub_or_subs.#fname));),
-                );
-                pub_or_sub_mut_stmts.push(parse_quote!(
-                    f(task::callback::PubOrSubMut::Subscriber(&mut self.pub_or_subs.#fname));
-                ));
-                drain_stmts.push(
-                    parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.pub_or_subs.#fname);),
-                );
-                sub_exec_terms.push(
-                    parse_quote!(GenericSubscriber::requests_execution(&self.pub_or_subs.#fname)),
-                );
-                able_terms
-                    .push(parse_quote!(GenericSubscriber::able_to_run(&self.pub_or_subs.#fname)));
-                input_ready_terms.push(parse_quote!(
-                    self.pub_or_subs.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.pub_or_subs.#fname)
-                ));
-                register_stmts.push(parse_quote!(
-                    task::channel_registry::Probe::<#msg>::new().try_register(registry);
-                ));
-                register_stmts.push(parse_quote!(
-                    task::channel_registry::Probe::<#msg>::new().try_register_channel(
-                        registry,
-                        self.pub_or_subs.#fname.config().channel_name.clone(),
-                    );
-                ));
-                drop_stmts.push(parse_quote!(
-                    GenericSubscriber::cleanup_buffers(&self.pub_or_subs.#fname);
-                ));
-            }
-            PubOrSubKind::Pub { msg, okind } => {
-                let publisher_config: syn::Expr = match okind {
-                    OutputKind::Default | OutputKind::Uninit => {
-                        // Single element configuration
-                        parse_quote!(task::callback::OutputKind::Default.into())
-                    }
-                    OutputKind::DefaultSpan | OutputKind::UninitSpan => {
-                        // Multi element configuration
-                        parse_quote!(task::callback::OutputKind::Span.into())
-                    }
-                };
-                let cfg = with_channel(
-                    publisher_config,
-                    sig_arg.channel.as_ref(),
-                    quote!(task::publisher::PublisherConfig),
-                );
-                field_defs.push(parse_quote!(pub #fname: task::publisher::Publisher<#msg>));
-                field_ctors
-                    .push(parse_quote!(#fname: task::publisher::Publisher::<#msg>::new(#cfg)));
-
-                let ctor: syn::Expr = match okind {
-                    OutputKind::Default => {
-                        parse_quote!(Output::new_default(&mut self.pub_or_subs.#fname))
-                    }
-                    OutputKind::Uninit => {
-                        parse_quote!(OutputUninit::new(&mut self.pub_or_subs.#fname))
-                    }
-                    OutputKind::DefaultSpan => {
-                        parse_quote!(OutputSpan::new_default(&mut self.pub_or_subs.#fname))
-                    }
-                    OutputKind::UninitSpan => {
-                        parse_quote!(OutputUninitSpan::new(&mut self.pub_or_subs.#fname))
-                    }
-                };
-                run_args.push(ctor);
-
-                pub_or_sub_stmts.push(
-                    parse_quote!(f(task::callback::PubOrSub::Publisher(&self.pub_or_subs.#fname));),
-                );
-                pub_or_sub_mut_stmts.push(parse_quote!(
-                    f(task::callback::PubOrSubMut::Publisher(&mut self.pub_or_subs.#fname));
-                ));
-                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.pub_or_subs.#fname, timestamp, sink);));
-                flush_logged_stmts.push(parse_quote!(
-                    GenericPublisher::flush_loaned_values_logged(&mut self.pub_or_subs.#fname, timestamp, sink, &mut |h| hook(ordinal, h));
-                ));
-                flush_logged_stmts.push(parse_quote!(ordinal += 1;));
-                register_stmts.push(parse_quote!(
-                    task::channel_registry::Probe::<#msg>::new().try_register(registry);
-                ));
-                register_stmts.push(parse_quote!(
-                    task::channel_registry::Probe::<#msg>::new().try_register_channel(
-                        registry,
-                        self.pub_or_subs.#fname.config().channel_name.clone(),
-                    );
-                ));
-            }
-            PubOrSubKind::ForwardingPub {
-                user_data,
-                forwarded,
-            } => {
-                field_defs.push(parse_quote!(pub #fname: task::publisher::ForwardingPublisher<#user_data, #forwarded>));
-                let cfg = with_channel(
-                    parse_quote!(task::callback::OutputKind::Default.into()),
-                    sig_arg.channel.as_ref(),
-                    quote!(task::publisher::PublisherConfig),
-                );
-                field_ctors.push(parse_quote!(#fname: task::publisher::ForwardingPublisher::<#user_data, #forwarded>::new(
-                    #cfg, vec![]
-                )));
-
-                run_args.push(parse_quote!(ForwardingOutput::new(&mut self.pub_or_subs.#fname)));
-
-                pub_or_sub_stmts.push(
-                    parse_quote!(f(task::callback::PubOrSub::Publisher(&self.pub_or_subs.#fname));),
-                );
-                pub_or_sub_mut_stmts.push(parse_quote!(
-                    f(task::callback::PubOrSubMut::Publisher(&mut self.pub_or_subs.#fname));
-                ));
-                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.pub_or_subs.#fname, timestamp, sink);));
-                flush_logged_stmts.push(parse_quote!(
-                    GenericPublisher::flush_loaned_values_logged(&mut self.pub_or_subs.#fname, timestamp, sink, &mut |h| hook(ordinal, h));
-                ));
-                flush_logged_stmts.push(parse_quote!(ordinal += 1;));
-                register_stmts.push(parse_quote!(
-                    task::channel_registry::Probe::<
-                        task::forwarded_message::ForwardedMessage<#user_data, #forwarded>
-                    >::new().try_register(registry);
-                ));
-                register_stmts.push(parse_quote!(
-                    task::channel_registry::Probe::<
-                        task::forwarded_message::ForwardedMessage<#user_data, #forwarded>
-                    >::new().try_register_channel(
-                        registry,
-                        self.pub_or_subs.#fname.config().channel_name.clone(),
-                    );
-                ));
-            }
-            PubOrSubKind::Iox2Sub { msg, span } => {
-                let capacity = if *span { 4usize } else { 1usize };
-                let cfg = with_channel(
-                    parse_quote!(task::subscriber::SubscriberConfig {
-                        is_optional: true, capacity: #capacity, is_trigger: false,
-                        keep_across_runs: true, channel_name: String::new(),
-                    }),
-                    sig_arg.channel.as_ref(),
-                    quote!(task::subscriber::SubscriberConfig),
-                );
-                field_defs.push(parse_quote!(pub #fname: task::iox2::Iox2Subscriber<#msg>));
-                field_ctors
-                    .push(parse_quote!(#fname: task::iox2::Iox2Subscriber::<#msg>::new(#cfg)));
-                let ctor = if *span {
-                    parse_quote!(task::iox2::Iox2SpanInput::new(&self.pub_or_subs.#fname))
-                } else {
-                    parse_quote!(task::iox2::Iox2OptionalInput::new(&self.pub_or_subs.#fname))
-                };
-                run_args.push(ctor);
-                pub_or_sub_stmts.push(parse_quote!(f(task::callback::PubOrSub::Subscriber(&self.pub_or_subs.#fname));));
-                pub_or_sub_mut_stmts.push(parse_quote!(f(task::callback::PubOrSubMut::Subscriber(&mut self.pub_or_subs.#fname));));
-                drain_stmts.push(parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.pub_or_subs.#fname);));
-                sub_exec_terms.push(
-                    parse_quote!(GenericSubscriber::requests_execution(&self.pub_or_subs.#fname)),
-                );
-                able_terms
-                    .push(parse_quote!(GenericSubscriber::able_to_run(&self.pub_or_subs.#fname)));
-                input_ready_terms.push(parse_quote!(self.pub_or_subs.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.pub_or_subs.#fname)));
-                register_stmts.push(parse_quote!(task::channel_registry::Probe::<#msg>::new().try_register(registry);));
-                register_stmts.push(parse_quote!(task::channel_registry::Probe::<#msg>::new().try_register_channel(registry, self.pub_or_subs.#fname.config().channel_name.clone());));
-                drop_stmts.push(
-                    parse_quote!(GenericSubscriber::cleanup_buffers(&self.pub_or_subs.#fname);),
-                );
-            }
-            PubOrSubKind::Iox2Event => {
-                let cfg = with_channel(
-                    parse_quote!(task::subscriber::SubscriberConfig {
-                        is_optional: true,
-                        capacity: 1,
-                        is_trigger: true,
-                        keep_across_runs: true,
-                        channel_name: String::new(),
-                    }),
-                    sig_arg.channel.as_ref(),
-                    quote!(task::subscriber::SubscriberConfig),
-                );
-                field_defs.push(parse_quote!(pub #fname: task::iox2::Iox2EventSubscriber));
-                field_ctors.push(parse_quote!(#fname: task::iox2::Iox2EventSubscriber::new(#cfg)));
-                run_args.push(parse_quote!(task::iox2::Iox2Event::new(&self.pub_or_subs.#fname)));
-                pub_or_sub_stmts.push(parse_quote!(f(task::callback::PubOrSub::Subscriber(&self.pub_or_subs.#fname));));
-                pub_or_sub_mut_stmts.push(parse_quote!(f(task::callback::PubOrSubMut::Subscriber(&mut self.pub_or_subs.#fname));));
-                drain_stmts.push(parse_quote!(GenericSubscriber::drain_writer_to_reader(&self.pub_or_subs.#fname);));
-                sub_exec_terms.push(
-                    parse_quote!(GenericSubscriber::requests_execution(&self.pub_or_subs.#fname)),
-                );
-                able_terms
-                    .push(parse_quote!(GenericSubscriber::able_to_run(&self.pub_or_subs.#fname)));
-                input_ready_terms.push(parse_quote!(self.pub_or_subs.#fname.config().is_optional || GenericSubscriber::has_data_available(&self.pub_or_subs.#fname)));
-                drop_stmts.push(
-                    parse_quote!(GenericSubscriber::cleanup_buffers(&self.pub_or_subs.#fname);),
-                );
-            }
-            PubOrSubKind::Iox2Pub { msg } => {
-                let cfg = with_channel(
-                    parse_quote!(task::publisher::PublisherConfig {
-                        capacity: 1,
-                        channel_name: String::new()
-                    }),
-                    sig_arg.channel.as_ref(),
-                    quote!(task::publisher::PublisherConfig),
-                );
-                field_defs.push(parse_quote!(pub #fname: task::iox2::Iox2Publisher<#msg>));
-                field_ctors
-                    .push(parse_quote!(#fname: task::iox2::Iox2Publisher::<#msg>::new(#cfg)));
-                run_args.push(
-                    parse_quote!(task::iox2::Iox2Output::new_default(&mut self.pub_or_subs.#fname)),
-                );
-                pub_or_sub_stmts.push(
-                    parse_quote!(f(task::callback::PubOrSub::Publisher(&self.pub_or_subs.#fname));),
-                );
-                pub_or_sub_mut_stmts.push(parse_quote!(f(task::callback::PubOrSubMut::Publisher(&mut self.pub_or_subs.#fname));));
-                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.pub_or_subs.#fname, timestamp, sink);));
-                flush_logged_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values_logged(&mut self.pub_or_subs.#fname, timestamp, sink, &mut |h| hook(ordinal, h));));
-                flush_logged_stmts.push(parse_quote!(ordinal += 1;));
-                register_stmts.push(parse_quote!(task::channel_registry::Probe::<#msg>::new().try_register(registry);));
-                register_stmts.push(parse_quote!(task::channel_registry::Probe::<#msg>::new().try_register_channel(registry, self.pub_or_subs.#fname.config().channel_name.clone());));
-            }
-            PubOrSubKind::Iox2Notifier => {
-                let cfg = with_channel(
-                    parse_quote!(task::publisher::PublisherConfig {
-                        capacity: 1,
-                        channel_name: String::new()
-                    }),
-                    sig_arg.channel.as_ref(),
-                    quote!(task::publisher::PublisherConfig),
-                );
-                field_defs.push(parse_quote!(pub #fname: task::iox2::Iox2Notifier));
-                field_ctors.push(parse_quote!(#fname: task::iox2::Iox2Notifier::new(#cfg)));
-                run_args.push(
-                    parse_quote!(task::iox2::Iox2NotifyOutput::new(&mut self.pub_or_subs.#fname)),
-                );
-                pub_or_sub_stmts.push(
-                    parse_quote!(f(task::callback::PubOrSub::Publisher(&self.pub_or_subs.#fname));),
-                );
-                pub_or_sub_mut_stmts.push(parse_quote!(f(task::callback::PubOrSubMut::Publisher(&mut self.pub_or_subs.#fname));));
-                flush_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values(&mut self.pub_or_subs.#fname, timestamp, sink);));
-                flush_logged_stmts.push(parse_quote!(GenericPublisher::flush_loaned_values_logged(&mut self.pub_or_subs.#fname, timestamp, sink, &mut |h| hook(ordinal, h));));
-                flush_logged_stmts.push(parse_quote!(ordinal += 1;));
-            }
-            PubOrSubKind::Context => {
-                run_args.push(parse_quote!(ctx));
-            }
-        }
-    }
-
-    let flush_logged_body: syn::Block = {
-        let mut stmts: Vec<syn::Stmt> = Vec::new();
-        stmts.push(parse_quote!(let mut ordinal = 0usize;));
-        stmts.extend(flush_logged_stmts);
-        parse_quote!({ #(#stmts)* })
-    };
-
-    let sub_exec_body: syn::Block = {
-        if sub_exec_terms.is_empty() {
-            parse_quote!({ false })
-        } else {
-            parse_quote!({ false #( || #sub_exec_terms )* })
-        }
-    };
-    let able_body: syn::Block = {
-        if able_terms.is_empty() {
-            parse_quote!({ true })
-        } else {
-            parse_quote!({ true #( && #able_terms )* })
-        }
-    };
-    let input_ready_body: syn::Block = {
-        if input_ready_terms.is_empty() {
-            parse_quote!({ true })
-        } else {
-            parse_quote!({ true #( && #input_ready_terms )* })
-        }
-    };
-
-    let sanitized_impl = sanitize_impl(&item_impl);
-
-    let tokens = quote! {
-        #sanitized_impl
-
-        #[allow(non_camel_case_types)]
-        pub struct #pub_or_subs_name {
-            #(#field_defs,)*
-        }
-
-        pub struct #callback_name {
-            user: #struct_name,
-            pub_or_subs: #pub_or_subs_name,
-        }
-
-        impl #struct_name {
-            /// Wrap this task in a [`CallbackBuilder`](task::callback_builder::CallbackBuilder)
-            /// named after the type, with channels taken from any
-            /// `#[channel(...)]` annotations on the run arguments. Users must
-            /// declare their own `callback_builder` method that calls this and
-            /// adds timing/name configuration.
-            pub fn builder(self) -> task::callback_builder::CallbackBuilder {
-                task::callback_builder::CallbackBuilder::new(
-                    stringify!(#struct_name).into(),
-                    Box::new(#callback_name {
-                        user: self,
-                        pub_or_subs: #pub_or_subs_name {
-                            #(#field_ctors,)*
-                        },
-                    }),
-                )
-            }
-        }
-
-        const _: () = {
-            use task::callback::Callback;
-            use task::generic_subscriber::GenericSubscriber;
-            use task::generic_publisher::GenericPublisher;
-            use task::input::{RequiredInput, OptionalInput, InputSpan, ForwardableRequiredInput, ForwardableOptionalInput, ForwardableInputSpan};
-            use task::output::{Output, OutputSpan, ForwardingOutput};
-            use task::iox2::{Iox2OptionalInput, Iox2SpanInput, Iox2Event, Iox2Output, Iox2NotifyOutput};
-
-            impl Callback for #callback_name {
-                fn run(&mut self, ctx: &task::context::Context) {
-                    self.user.run(#(#run_args),*);
-                }
-
-                fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(task::callback::PubOrSub<'a>)) {
-                    #(#pub_or_sub_stmts)*
-                }
-                fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(task::callback::PubOrSubMut<'a>)) {
-                    #(#pub_or_sub_mut_stmts)*
-                }
-
-                fn drain_subscribers(&self) {
-                    #(#drain_stmts)*
-                }
-                fn flush_publishers(&mut self, timestamp: task::time::FrameworkTime, sink: &mut dyn task::scheduling::ReadyNodeSink) {
-                    #(#flush_stmts)*
-                }
-                fn flush_publishers_logged(&mut self, timestamp: task::time::FrameworkTime, sink: &mut dyn task::scheduling::ReadyNodeSink, hook: &mut dyn FnMut(usize, &task::message::MessageHeader)) #flush_logged_body
-                fn subscribers_request_execution(&self) -> bool #sub_exec_body
-                fn able_to_run(&self) -> bool #able_body
-                fn required_inputs_ready(&self) -> bool #input_ready_body
-
-                fn register_channels(&self, registry: &mut task::channel_registry::ChannelRegistry) {
-                    use task::channel_registry::MaybeRegister as _;
-                    #(#register_stmts)*
-                }
-            }
-
-            impl Drop for #callback_name {
-                fn drop(&mut self) {
-                    #(#drop_stmts)*
-                }
-            }
-        };
-    };
-
-    TokenStream::from(tokens)
-}
-
 #[cfg(test)]
-mod macro_validation_tests {
+mod tests {
     use super::*;
 
-    // Manual consumer feature check: with `task = { default-features = false }`,
-    // `fn run(&mut self, event: Iox2Event) {}` expands to `task::iox2::Iox2Event`
-    // and rustc reports `could not find iox2 in task` (the module is cfg-gated).
-
-    fn signature_for(argument: &str) -> Result<MacroCallbackSignature, syn::Error> {
-        let source = format!(
-            "impl Example {{ fn run(&mut self, value: {argument}) {{}} fn callback_builder(self) {{}} }}"
-        );
-        let item = syn::parse_str::<ItemImpl>(&source).unwrap();
-        find_signature(&item)
-    }
-
     #[test]
-    fn iox2_event_type_arguments_have_a_direct_diagnostic() {
-        let error = signature_for("Iox2Event<u64>").err().unwrap().to_string();
-        assert!(
-            error.contains("Iox2Event` takes no type arguments"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn iox2_payload_views_require_one_argument() {
-        let error = signature_for("Iox2OptionalInput")
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(
-            error.contains("Iox2OptionalInput` takes exactly one payload type argument"),
-            "{error}"
-        );
+    fn rejects_unsupported_ports_and_duplicate_attributes() {
+        for source in [
+            "impl Task { fn run(&mut self, input: Unsupported<u64>) {} }",
+            "impl Task { fn run(&mut self, #[capacity(1)] #[capacity(2)] input: Input<u64>) {} }",
+            "impl Task { fn run(&mut self, input: Input<u64, u32>) {} }",
+        ] {
+            assert!(expand(syn::parse_str(source).unwrap()).is_err());
+        }
     }
 }
