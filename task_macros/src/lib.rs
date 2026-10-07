@@ -25,6 +25,11 @@ enum PortKind {
     Output,
     Uninit,
     Publisher,
+    IoxInput,
+    IoxSpan,
+    IoxOutput,
+    IoxEvent,
+    IoxNotifier,
 }
 
 struct Port {
@@ -142,6 +147,11 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             "RequiredInput" if reference.is_none() => PortKind::Required,
             "Output" if reference.is_none() => PortKind::Output,
             "OutputUninit" if reference.is_none() => PortKind::Uninit,
+            "Iox2OptionalInput" if reference.is_none() => PortKind::IoxInput,
+            "Iox2SpanInput" if reference.is_none() => PortKind::IoxSpan,
+            "Iox2Output" if reference.is_none() => PortKind::IoxOutput,
+            "Iox2Event" if reference.is_none() => PortKind::IoxEvent,
+            "Iox2NotifyOutput" if reference.is_none() => PortKind::IoxNotifier,
             "Publisher" if matches!(reference, Some(r) if r.mutability.is_some()) => {
                 PortKind::Publisher
             }
@@ -152,27 +162,42 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
                 ));
             }
         };
-        let PathArguments::AngleBracketed(generics) = &segment.arguments else {
-            return Err(syn::Error::new_spanned(
-                &arg.ty,
-                "endpoint requires one payload type",
-            ));
+        let mut payload = if matches!(kind, PortKind::IoxEvent | PortKind::IoxNotifier) {
+            if let PathArguments::AngleBracketed(args) = &segment.arguments
+                && args
+                    .args
+                    .iter()
+                    .any(|a| !matches!(a, GenericArgument::Lifetime(_)))
+            {
+                return Err(syn::Error::new_spanned(
+                    &arg.ty,
+                    "event ports take no payload type",
+                ));
+            }
+            parse_quote!(())
+        } else {
+            let PathArguments::AngleBracketed(generics) = &segment.arguments else {
+                return Err(syn::Error::new_spanned(
+                    &arg.ty,
+                    "endpoint requires one payload type",
+                ));
+            };
+            let payloads: Vec<_> = generics
+                .args
+                .iter()
+                .filter_map(|a| match a {
+                    GenericArgument::Type(t) => Some(t),
+                    _ => None,
+                })
+                .collect();
+            if payloads.len() != 1 {
+                return Err(syn::Error::new_spanned(
+                    &arg.ty,
+                    "endpoint requires one payload type",
+                ));
+            }
+            payloads[0].clone()
         };
-        let payloads: Vec<_> = generics
-            .args
-            .iter()
-            .filter_map(|a| match a {
-                GenericArgument::Type(t) => Some(t),
-                _ => None,
-            })
-            .collect();
-        if payloads.len() != 1 {
-            return Err(syn::Error::new_spanned(
-                &arg.ty,
-                "endpoint requires one payload type",
-            ));
-        }
-        let mut payload = payloads[0].clone();
         StorageLifetimes.visit_type_mut(&mut payload);
         let mut channel = None;
         let mut capacity = None;
@@ -195,7 +220,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         arg.attrs
             .retain(|a| !a.path().is_ident("channel") && !a.path().is_ident("capacity"));
         let capacity = capacity.unwrap_or_else(|| {
-            if segment.ident == "InputSpan" {
+            if segment.ident == "InputSpan" || segment.ident == "Iox2SpanInput" {
                 parse_quote!(4)
             } else {
                 parse_quote!(1)
@@ -207,6 +232,11 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             PortKind::Output => quote!(self.#name.loan(::core::default::Default::default())?),
             PortKind::Uninit => quote!(self.#name.loan_uninit()?),
             PortKind::Publisher => quote!(&mut self.#name),
+            PortKind::IoxInput => quote!(::task::iox2::Iox2OptionalInput::new(&self.#name)),
+            PortKind::IoxSpan => quote!(::task::iox2::Iox2SpanInput::new(&self.#name)),
+            PortKind::IoxEvent => quote!(::task::iox2::Iox2Event::new(&self.#name)),
+            PortKind::IoxOutput => quote!(::task::iox2::Iox2Output::new_default(&mut self.#name)?),
+            PortKind::IoxNotifier => quote!(::task::iox2::Iox2NotifyOutput::new(&mut self.#name)),
         });
         ports.push(Port {
             name,
@@ -254,6 +284,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let mut flush = Vec::new();
     let mut discard = Vec::new();
     let mut names = Vec::new();
+    let mut events = Vec::new();
     for port in ports {
         let Port {
             name,
@@ -264,15 +295,41 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         } = port;
         let input = matches!(kind, PortKind::Input | PortKind::Required);
         channel_names.push(quote!(visit(self.#name.channel_name());));
-        let key = if input {
-            quote!(::task::SubscriberKey<#payload>)
-        } else {
-            quote!(::task::PublisherKey<#payload>)
+        let (key, plan, bindings) = match kind {
+            PortKind::IoxInput | PortKind::IoxSpan => (
+                quote!(::task::iox2::Iox2SubscriberKey<#payload>),
+                quote!(&mut ::task::iox2::Iox2ChannelPlan<#payload>),
+                quote!(&::task::iox2::Iox2Bindings<#payload>),
+            ),
+            PortKind::IoxOutput => (
+                quote!(::task::iox2::Iox2PublisherKey<#payload>),
+                quote!(&mut ::task::iox2::Iox2ChannelPlan<#payload>),
+                quote!(&::task::iox2::Iox2Bindings<#payload>),
+            ),
+            PortKind::IoxEvent => (
+                quote!(::task::iox2::Iox2EventKey),
+                quote!(&mut dyn ::task::iox2::Iox2EventPlan),
+                quote!(&dyn ::task::iox2::Iox2EventBindings),
+            ),
+            PortKind::IoxNotifier => (
+                quote!(::task::iox2::Iox2NotifierKey),
+                quote!(&mut dyn ::task::iox2::Iox2EventPlan),
+                quote!(&dyn ::task::iox2::Iox2EventBindings),
+            ),
+            _ => (
+                if input {
+                    quote!(::task::SubscriberKey<#payload>)
+                } else {
+                    quote!(::task::PublisherKey<#payload>)
+                },
+                quote!(&mut ::task::ChannelPlan<#payload>),
+                quote!(&::task::EndpointBindings<'storage, #payload>),
+            ),
         };
         key_fields.push(quote!(#name: #key));
         key_params.push(quote!(#name: #key));
-        plan_params.push(quote!(#name: &mut ::task::ChannelPlan<#payload>));
-        binding_params.push(quote!(#name: &::task::EndpointBindings<'storage, #payload>));
+        plan_params.push(quote!(#name: #plan));
+        binding_params.push(quote!(#name: #bindings));
         if let Some(channel) = channel {
             validation.push(quote! {
                 {
@@ -284,7 +341,32 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
                 }
             });
         }
-        if input {
+        if matches!(kind, PortKind::IoxEvent) {
+            registration.push(quote!(#name: #name.events(#capacity)));
+            construction.push(quote!(#name: #name.take_event(&self.#name)?));
+            endpoint_fields.push(quote!(#name: ::task::iox2::Iox2EventSubscriber));
+            updates.push(quote!(self.#name.update();));
+            wake.push(quote!(self.#name.set_waker(wake.clone());));
+            pending.push(quote!(self.#name.has_pending()));
+            events.push(quote!(if let Some(event) = self.#name.take_registration() { registrations.push(event); }));
+        } else if matches!(kind, PortKind::IoxNotifier) {
+            registration.push(quote!(#name: #name.notifier()));
+            construction.push(quote!(#name: #name.take_notifier(&self.#name)?));
+            endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Notifier));
+            flush.push(quote!(self.#name.flush(timestamp);));
+            discard.push(quote!(self.#name.discard_pending();));
+        } else if matches!(kind, PortKind::IoxInput | PortKind::IoxSpan) {
+            registration.push(quote!(#name: #name.subscriber(#capacity)));
+            construction.push(quote!(#name: #name.take_subscriber(&self.#name)?));
+            endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Subscriber<#payload>));
+            updates.push(quote!(self.#name.update();));
+        } else if matches!(kind, PortKind::IoxOutput) {
+            registration.push(quote!(#name: #name.publisher(#capacity)));
+            construction.push(quote!(#name: #name.take_publisher(&self.#name)?));
+            endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Publisher<#payload>));
+            flush.push(quote!(self.#name.flush(timestamp);));
+            discard.push(quote!(self.#name.discard_pending();));
+        } else if input {
             registration.push(quote!(#name: #name.subscriber(#capacity)));
             construction.push(quote!(#name: #name.take_subscriber(&self.#name)?));
             endpoint_fields.push(quote!(#name: ::task::Subscriber<'storage, #payload>));
@@ -307,6 +389,15 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         quote!(self.__cfw_user.run(#(#arguments),*))
     } else {
         quote! { self.__cfw_user.run(#(#arguments),*); Ok(()) }
+    };
+    let event_method = if events.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn take_iox2_events(&mut self) -> Vec<::task::iox2::Iox2EventRegistration> {
+                let mut registrations = Vec::new(); #(#events)* registrations
+            }
+        }
     };
     Ok(quote! {
         #item
@@ -338,6 +429,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         }
         impl<'storage> ::task::Callback for #callback<'storage> {
+            #event_method
             fn set_waker(&mut self, wake: ::task::wake::WakeHandle) { #(#wake)* }
             fn has_pending_inputs(&self) -> bool { false #(|| #pending)* }
             fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) { #(#channel_names)* }

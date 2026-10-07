@@ -15,6 +15,7 @@ pub enum StorageError {
     CapacityOverflow,
     ForeignPublisherKey,
     DuplicateChannel(String),
+    Transport(String),
 }
 
 /// Storage requirements for one publisher and its subscribers.
@@ -102,7 +103,7 @@ impl<L: StorageLayout> GraphPlan<L> {
         }
         channel_names.shrink_to_fit();
         Ok(GraphStorage {
-            channels: self.layout.allocate(),
+            channels: self.layout.allocate()?,
             channel_names: Arc::new(channel_names),
         })
     }
@@ -216,7 +217,7 @@ pub trait StorageLayout: private::Sealed {
         Ok(())
     }
     #[doc(hidden)]
-    fn allocate(self) -> Self::Storage;
+    fn allocate(self) -> Result<Self::Storage, StorageError>;
 }
 
 impl<T> private::Sealed for PublisherStoragePlan<T> {}
@@ -228,12 +229,12 @@ impl<T> StorageLayout for PublisherStoragePlan<T> {
         self.capacity().map(|_| ())
     }
 
-    fn allocate(self) -> Self::Storage {
-        PublisherStorage {
+    fn allocate(self) -> Result<Self::Storage, StorageError> {
+        Ok(PublisherStorage {
             arena: Arena::new(self.capacity().expect("storage plan must be validated")),
             loan_capacity: self.loan_capacity,
             subscribers: self.subscribers,
-        }
+        })
     }
 }
 
@@ -245,7 +246,9 @@ impl StorageLayout for () {
     fn validate(&self) -> Result<(), StorageError> {
         Ok(())
     }
-    fn allocate(self) -> Self::Storage {}
+    fn allocate(self) -> Result<Self::Storage, StorageError> {
+        Ok(())
+    }
 }
 
 impl<L: StorageLayout, R: StorageLayout> private::Sealed for (L, R) {}
@@ -258,8 +261,8 @@ impl<L: StorageLayout, R: StorageLayout> StorageLayout for (L, R) {
         self.1.validate()
     }
 
-    fn allocate(self) -> Self::Storage {
-        (self.0.allocate(), self.1.allocate())
+    fn allocate(self) -> Result<Self::Storage, StorageError> {
+        Ok((self.0.allocate()?, self.1.allocate()?))
     }
 
     fn validate_channel_names(&self, names: &mut HashSet<String>) -> Result<(), StorageError> {

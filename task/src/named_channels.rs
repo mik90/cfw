@@ -159,18 +159,18 @@ impl<T> StorageLayout for ChannelPlan<T> {
         Ok(())
     }
 
-    fn allocate(self) -> Self::Storage {
+    fn allocate(self) -> Result<Self::Storage, StorageError> {
         let publishers = self
             .publishers
             .iter()
             .map(|spec| self.publisher_plan(spec).allocate())
-            .collect();
-        ChannelStorage {
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ChannelStorage {
             name: self.name,
             identity: self.identity,
             publishers,
             subscribers: self.subscribers,
-        }
+        })
     }
 }
 

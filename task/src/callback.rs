@@ -4,6 +4,10 @@ use crate::{Context, LoanError, Publisher, Subscriber};
 /// Callback body and IO lifecycle, shared by live and deterministic executors.
 /// Executors invoke `execute_callback` rather than calling `run` directly.
 pub trait Callback: Send {
+    #[cfg(feature = "iceoryx2")]
+    fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
+        Vec::new()
+    }
     fn set_waker(&mut self, _wake: crate::wake::WakeHandle) {}
     fn has_pending_inputs(&self) -> bool {
         false

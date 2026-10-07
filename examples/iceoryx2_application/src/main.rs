@@ -5,9 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
-use iceoryx2_application::{PUBLISH_PERIOD, buzzer_graph, fizzer_graph};
+use iceoryx2_application::{PUBLISH_PERIOD, with_buzzer_graph, with_fizzer_graph};
 use live_executor::LiveExecutor;
-use task::executor::ExecutorParams;
 
 const READY: &str = "IOX2_BUZZER_READY";
 
@@ -50,58 +49,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn executor_params(graph: &mut task::task_graph_builder::BuiltTaskGraph) -> ExecutorParams {
-    ExecutorParams::new(std::mem::take(&mut graph.pools))
-        .with_iox2_context(graph.iox2_context.take())
-}
-
 fn run_fizzer(count: usize, channel: &str) -> Result<(), Box<dyn std::error::Error>> {
     let published = Arc::new(AtomicUsize::new(0));
-    let mut graph =
-        fizzer_graph(channel, count, Arc::clone(&published)).map_err(|error| error.to_string())?;
-    let mut executor = LiveExecutor::new_multi_pool(executor_params(&mut graph));
-    executor.try_start_threads()?;
-
-    // Keep the publisher's iceoryx2 node and service alive until the buzzer
-    // has consumed the final sample. The launcher closes stdin at that point.
-    io::copy(&mut io::stdin(), &mut io::sink())?;
-    executor
-        .stop_threads()
-        .map_err(|errors| format!("could not stop fizzer workers: {errors:?}"))?;
+    with_fizzer_graph(
+        channel,
+        count,
+        published,
+        |graph| -> Result<(), Box<dyn std::error::Error>> {
+            let executor = LiveExecutor::new(1, graph)?;
+            // The launcher closes stdin after the buzzer consumes the final sample.
+            executor.run_with(|_| io::copy(&mut io::stdin(), &mut io::sink()))??;
+            Ok(())
+        },
+    )??;
     Ok(())
 }
 
 fn run_buzzer(count: usize, channel: &str) -> Result<(), Box<dyn std::error::Error>> {
     let complete = Arc::new(AtomicBool::new(false));
     let printed = Arc::new(AtomicUsize::new(0));
-    let mut graph = buzzer_graph(channel, count, Arc::clone(&complete), Arc::clone(&printed))
-        .map_err(|error| error.to_string())?;
-    let mut executor = LiveExecutor::new_multi_pool(executor_params(&mut graph));
-    executor.try_start_threads()?;
-    println!("{READY}");
-    io::stdout().flush()?;
+    with_buzzer_graph(
+        channel,
+        count,
+        Arc::clone(&complete),
+        Arc::clone(&printed),
+        |graph| -> Result<(), Box<dyn std::error::Error>> {
+            let executor = LiveExecutor::new(1, graph)?;
+            executor.run_with(|stop| -> Result<(), Box<dyn std::error::Error>> {
+                // run_with begins only after the readiness waitset has attached its listeners.
+                println!("{READY}");
+                io::stdout().flush()?;
+                let deadline = Instant::now()
+                    + PUBLISH_PERIOD.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
+                    + Duration::from_secs(10);
+                loop {
+                    if printed.load(Ordering::Acquire) >= count && complete.load(Ordering::Acquire)
+                    {
+                        break;
+                    }
+                    if stop.is_stopped() {
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "timed out: printed {} of {count} results (final metrics: {})",
+                            printed.load(Ordering::Acquire),
+                            complete.load(Ordering::Acquire)
+                        )
+                        .into());
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
 
-    let deadline = Instant::now()
-        + PUBLISH_PERIOD.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
-        + Duration::from_secs(10);
-    loop {
-        if printed.load(Ordering::Acquire) >= count && complete.load(Ordering::Acquire) {
-            break;
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "timed out: printed {} of {count} results (final metrics: {})",
-                printed.load(Ordering::Acquire),
-                complete.load(Ordering::Acquire)
-            )
-            .into());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    executor
-        .stop_threads()
-        .map_err(|errors| format!("could not stop buzzer workers: {errors:?}"))?;
+                Ok(())
+            })??;
+            Ok(())
+        },
+    )??;
     Ok(())
 }
 

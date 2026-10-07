@@ -4,6 +4,8 @@ pub mod executor;
 pub mod forwarded_message;
 pub mod graph;
 pub mod input;
+#[cfg(feature = "iceoryx2")]
+pub mod iox2;
 pub mod message;
 pub mod named_channels;
 pub mod output;

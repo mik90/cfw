@@ -102,6 +102,8 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
         let _stop_on_exit = StopOnExit(stop.clone());
         let started = Instant::now();
         let mut periodic = Vec::new();
+        #[cfg(feature = "iceoryx2")]
+        let mut registrations = Vec::new();
         for (index, node) in nodes.iter_mut().enumerate() {
             if let Some(period) = node.schedule.period {
                 let next = started.checked_add(period).ok_or_else(|| {
@@ -116,7 +118,21 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
                 });
             }
             node.callback.set_waker(scheduler.waker(index));
+            #[cfg(feature = "iceoryx2")]
+            registrations.extend(node.callback.take_iox2_events());
         }
+        #[cfg(feature = "iceoryx2")]
+        let shutdown = if registrations.is_empty() {
+            None
+        } else {
+            let shutdown = task::iox2::Iox2Shutdown::new().map_err(|error| {
+                LiveExecutorError::Start(LiveExecutorStartError {
+                    reason: format!("{error:?}"),
+                })
+            })?;
+            scheduler.set_external_stop(shutdown.wake.clone());
+            Some(shutdown)
+        };
         let initial: Vec<_> = nodes
             .iter()
             .enumerate()
@@ -133,31 +149,60 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
             let mut handles = Vec::new();
             let mut spawn_index = 0;
             let mut startup_error = None;
-            'pools: for (pool_index, pool) in scheduler.pools.iter().enumerate() {
-                for worker_index in 0..pool.thread_count {
-                    let name = format!("cfw_pool_{pool_index}_t_{worker_index}");
-                    let id = spawn_index;
-                    let stop = stop.clone();
-                    let nodes = &nodes;
-                    let metadata = &metadata;
-                    let clock = &clock;
-                    let scheduler = &scheduler;
-                    let spawn = before_spawn(spawn_index).and_then(|()| {
-                        thread::Builder::new()
-                            .name(name.clone())
-                            .spawn_scoped(scope, move || {
-                                let _stop_on_exit = StopOnExit(stop);
-                                worker(id, pool, scheduler, nodes, metadata, clock)
-                            })
-                    });
-                    match spawn {
-                        Ok(handle) => handles.push((name, handle)),
-                        Err(error) => {
-                            startup_error = Some(error);
-                            break 'pools;
+            #[cfg(feature = "iceoryx2")]
+            if let Some(shutdown) = shutdown {
+                let (ready, attached) = crossbeam::channel::bounded(1);
+                let stop = stop.clone();
+                let scheduler = &scheduler;
+                let spawn = before_spawn(spawn_index).and_then(|()| {
+                    thread::Builder::new()
+                        .name("cfw_iox2_readiness".into())
+                        .spawn_scoped(scope, move || {
+                            let _stop_on_exit = StopOnExit(stop);
+                            crate::readiness::run(registrations, shutdown, scheduler, ready)
+                        })
+                });
+                match spawn {
+                    Ok(handle) => {
+                        handles.push(("cfw_iox2_readiness".into(), handle));
+                        match attached.recv() {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => startup_error = Some(std::io::Error::other(error)),
+                            Err(error) => startup_error = Some(std::io::Error::other(error)),
                         }
                     }
-                    spawn_index += 1;
+                    Err(error) => startup_error = Some(error),
+                }
+                spawn_index += 1;
+            }
+            if startup_error.is_none() {
+                'pools: for (pool_index, pool) in scheduler.pools.iter().enumerate() {
+                    for worker_index in 0..pool.thread_count {
+                        let name = format!("cfw_pool_{pool_index}_t_{worker_index}");
+                        let id = spawn_index;
+                        let stop = stop.clone();
+                        let nodes = &nodes;
+                        let metadata = &metadata;
+                        let clock = &clock;
+                        let scheduler = &scheduler;
+                        let spawn = before_spawn(spawn_index).and_then(|()| {
+                            thread::Builder::new().name(name.clone()).spawn_scoped(
+                                scope,
+                                move || {
+                                    let _stop_on_exit = StopOnExit(stop);
+                                    worker(id, pool, scheduler, nodes, metadata, clock)
+                                },
+                            )
+                        });
+                        match spawn {
+                            Ok(handle) => handles.push((name, handle)),
+                            Err(error) => {
+                                startup_error = Some(error);
+                                break 'pools;
+                            }
+                        }
+                        spawn_index += 1;
+                    }
                 }
             }
             if startup_error.is_none() && !periodic.is_empty() {
@@ -262,6 +307,53 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    #[cfg(feature = "iceoryx2")]
+    #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
+    fn worker_spawn_failure_joins_already_attached_readiness_thread() {
+        use task::iox2::{Iox2ChannelPlan, Iox2EventBindings, Iox2EventSubscriber, Iox2Runtime};
+        struct EventCallback(Iox2EventSubscriber);
+        impl task::Callback for EventCallback {
+            fn set_waker(&mut self, wake: task::wake::WakeHandle) {
+                self.0.set_waker(wake);
+            }
+            fn take_iox2_events(&mut self) -> Vec<task::iox2::Iox2EventRegistration> {
+                self.0.take_registration().into_iter().collect()
+            }
+            fn run(&mut self, _: &task::Context) -> Result<(), task::LoanError> {
+                Ok(())
+            }
+        }
+        let runtime = Iox2Runtime::new().unwrap();
+        let mut plan = Iox2ChannelPlan::<u64>::new(
+            format!("cfw_startup_ipc_{}", std::process::id()),
+            &runtime,
+        );
+        let event = plan.events(1);
+        let storage = task::GraphPlan::new(plan).allocate().unwrap();
+        let bindings = storage.channels().build().unwrap();
+        let mut builder = GraphBuilder::new();
+        builder.add_callback("events", || Ok(EventCallback(bindings.take_event(&event)?)));
+        let executor =
+            LiveExecutor::new_multi_pool_with_time(vec![1], builder.build().unwrap(), Clock)
+                .unwrap();
+        let stop = executor.stop_signal();
+        let result = executor.run_checked(
+            |_| panic!("startup should have failed"),
+            |index| {
+                if index == 1 {
+                    Err(std::io::Error::other(
+                        "worker spawn failed after readiness attached",
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(result, Err(LiveExecutorError::Start(_))));
+        assert!(stop.is_stopped());
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::time::FrameworkTime;
 pub enum LoanError {
     LoanCapacityReached,
     ArenaExhausted,
+    Transport(String),
 }
 
 /// A typed publisher borrowing storage allocated before connection/execution.

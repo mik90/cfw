@@ -22,6 +22,8 @@ struct NodeState {
 
 /// Scheduling metadata only: this may outlive a run, but owns no borrowed nodes.
 pub(crate) struct Scheduler {
+    #[cfg(feature = "iceoryx2")]
+    external_stop: std::sync::OnceLock<WakeHandle>,
     pub pools: Vec<PoolState>,
     nodes: Vec<NodeState>,
     stopped: AtomicBool,
@@ -46,6 +48,8 @@ impl Scheduler {
             .collect();
         let (stop_tx, stop_rx) = channel::bounded(0);
         Arc::new(Self {
+            #[cfg(feature = "iceoryx2")]
+            external_stop: std::sync::OnceLock::new(),
             pools,
             nodes: schedules
                 .iter()
@@ -71,6 +75,18 @@ impl Scheduler {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
+        #[cfg(feature = "iceoryx2")]
+        if let Some(wake) = self.external_stop.get() {
+            wake.wake();
+        }
+    }
+
+    #[cfg(feature = "iceoryx2")]
+    pub fn set_external_stop(&self, wake: WakeHandle) {
+        assert!(self.external_stop.set(wake).is_ok());
+        if self.is_stopped() {
+            self.external_stop.get().unwrap().wake();
+        }
     }
 
     pub fn waker(self: &Arc<Self>, node: usize) -> WakeHandle {

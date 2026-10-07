@@ -7,6 +7,9 @@ pub struct LiveExecutorStartError {
 
 #[derive(Debug)]
 pub enum ThreadFailure {
+    Readiness {
+        reason: String,
+    },
     Callback {
         worker: usize,
         callback: String,

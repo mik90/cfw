@@ -4,18 +4,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use task::callback_builder::CallbackBuilder;
 use task::input::{InputSpan, OptionalInput, RequiredInput};
-use task::iox2::{Iox2Event, Iox2OptionalInput, Iox2Output};
+use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
 use task::output::Output;
-use task::task_graph_builder::{BuiltTaskGraph, TaskGraphBuildError, TaskGraphBuilder};
+use task::{BuiltGraph, CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan};
 use task_macros::task_callback;
 
 const RESULT_CHANNEL: &str = "fizz_buzz_result";
 const METRICS_CHANNEL: &str = "fizz_buzz_metrics";
 
 pub const PUBLISH_PERIOD: Duration = Duration::from_millis(200);
-const METRICS_PERIOD: Duration = Duration::from_millis(100);
 
 pub struct Fizzer {
     next: u64,
@@ -52,12 +50,6 @@ impl Fizzer {
         integer.send();
         self.published.fetch_add(1, Ordering::Release);
     }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_periodic_execution(PUBLISH_PERIOD)
-            .with_execution_duration_callback(|| Duration::ZERO)
-    }
 }
 
 pub struct Calculator {
@@ -84,12 +76,6 @@ impl Calculator {
         result.send();
         *acknowledgment = value;
         acknowledgment.send();
-    }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_periodic_execution(Duration::from_millis(50))
-            .with_execution_duration_callback(|| Duration::ZERO)
     }
 }
 
@@ -133,7 +119,7 @@ pub struct MetricsRecorder {
 impl MetricsRecorder {
     fn run(&mut self, mut results: InputSpan<String>, mut snapshot: Output<Metrics>) {
         let mut changed = false;
-        for result in results.drain_inputs() {
+        for result in results.drain() {
             self.metrics.record(&result.message);
             changed = true;
         }
@@ -141,12 +127,6 @@ impl MetricsRecorder {
             *snapshot = self.metrics;
             snapshot.send();
         }
-    }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_periodic_execution(METRICS_PERIOD)
-            .with_execution_duration_callback(|| Duration::ZERO)
     }
 }
 
@@ -170,11 +150,6 @@ impl MetricsSummary {
             self.complete.store(true, Ordering::Release);
         }
     }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_execution_duration_callback(|| Duration::ZERO)
-    }
 }
 
 pub struct Printer {
@@ -183,7 +158,7 @@ pub struct Printer {
 
 #[task_callback]
 impl Printer {
-    fn run(&mut self, result: RequiredInput<String>, metrics: OptionalInput<Metrics>) {
+    fn run(&mut self, mut result: RequiredInput<String>, metrics: OptionalInput<Metrics>) {
         if let Some(metrics) = metrics.value() {
             println!(
                 "{} (fizz={}, buzz={}, fizzbuzz={}, numbers={})",
@@ -193,70 +168,104 @@ impl Printer {
             println!("{}", *result);
         }
         self.printed.fetch_add(1, Ordering::Release);
-    }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_execution_duration_callback(|| Duration::ZERO)
+        result.clear();
     }
 }
 
-pub fn fizzer_graph(
+pub fn with_fizzer_graph<R>(
     channel: &str,
     count: usize,
     published: Arc<AtomicUsize>,
-) -> Result<BuiltTaskGraph, TaskGraphBuildError> {
+    run: impl for<'storage> FnOnce(BuiltGraph<'storage>) -> R,
+) -> Result<R, Box<dyn std::error::Error>> {
     let acknowledgment = format!("{channel}_ack");
-    TaskGraphBuilder::new()
-        .add_pool(1, |pool| {
-            pool.add_callback_builder(
-                Fizzer {
-                    next: 1,
-                    count,
-                    published,
-                    last_sent_at: None,
-                }
-                .callback_builder()
-                .with_subscriber_channels(&[&acknowledgment, &acknowledgment])
-                .with_publisher_channels(&[channel]),
-            )
-        })
-        .build()
+    let runtime = Iox2Runtime::new().map_err(|e| format!("{e:?}"))?;
+    let mut integers = Iox2ChannelPlan::<u64>::new(channel, &runtime);
+    let mut acknowledgments = Iox2ChannelPlan::<u64>::new(acknowledgment, &runtime);
+    let declaration = FizzerDeclaration::from_keys(
+        acknowledgments.subscriber(1),
+        acknowledgments.events(1),
+        integers.publisher(1),
+    );
+    let storage = GraphPlan::new((integers, acknowledgments))
+        .allocate()
+        .map_err(|e| format!("{e:?}"))?;
+    let integers = storage.channels().0.build().map_err(|e| format!("{e:?}"))?;
+    let acknowledgments = storage.channels().1.build().map_err(|e| format!("{e:?}"))?;
+    let mut builder = GraphBuilder::with_storage(&storage);
+    builder.add_scheduled_callback("fizzer", CallbackSchedule::periodic(PUBLISH_PERIOD), || {
+        Ok(Fizzer {
+            next: 1,
+            count,
+            published,
+            last_sent_at: None,
+        }
+        .bind(declaration, &acknowledgments, &acknowledgments, &integers)?)
+    });
+    Ok(run(builder.build().map_err(|e| format!("{e:?}"))?))
 }
 
-pub fn buzzer_graph(
+pub fn with_buzzer_graph<R>(
     channel: &str,
     count: usize,
     complete: Arc<AtomicBool>,
     printed: Arc<AtomicUsize>,
-) -> Result<BuiltTaskGraph, TaskGraphBuildError> {
+    run: impl for<'storage> FnOnce(BuiltGraph<'storage>) -> R,
+) -> Result<R, Box<dyn std::error::Error>> {
     let acknowledgment = format!("{channel}_ack");
-    TaskGraphBuilder::new()
-        .add_pool(1, |pool| {
-            pool.add_callback_builder(
-                Calculator { last_value: 0 }
-                    .callback_builder()
-                    .with_subscriber_channels(&[channel, channel])
-                    .with_publisher_channels(&[RESULT_CHANNEL, &acknowledgment]),
-            )
-            .add_callback_builder(
-                MetricsRecorder {
-                    metrics: Metrics::default(),
-                }
-                .callback_builder()
-                .with_subscriber_channels(&[RESULT_CHANNEL])
-                .with_publisher_channels(&[METRICS_CHANNEL]),
-            )
-            .add_callback_builder(
-                MetricsSummary { count, complete }
-                    .callback_builder()
-                    .with_subscriber_channels(&[METRICS_CHANNEL]),
-            )
-            .add_callback_builder(
-                Printer { printed }
-                    .callback_builder()
-                    .with_subscriber_channels(&[RESULT_CHANNEL, METRICS_CHANNEL]),
-            )
-        })
+    let runtime = Iox2Runtime::new().map_err(|e| format!("{e:?}"))?;
+    let mut integers = Iox2ChannelPlan::<u64>::new(channel, &runtime);
+    let mut acknowledgments = Iox2ChannelPlan::<u64>::new(acknowledgment, &runtime);
+    let mut results = ChannelPlan::<String>::new(RESULT_CHANNEL);
+    let mut metrics = ChannelPlan::<Metrics>::new(METRICS_CHANNEL);
+    let calculator = CalculatorDeclaration::from_keys(
+        integers.subscriber(1),
+        integers.events(1),
+        results.publisher(1),
+        acknowledgments.publisher(1),
+    );
+    let recorder = MetricsRecorder::declare(&mut results, &mut metrics)?;
+    let summary = MetricsSummary::declare(&mut metrics)?;
+    let printer = Printer::declare(&mut results, &mut metrics)?;
+    let storage = GraphPlan::new(((integers, acknowledgments), (results, metrics)))
+        .allocate()
+        .map_err(|e| format!("{e:?}"))?;
+    let integers = storage
+        .channels()
+        .0
+        .0
         .build()
+        .map_err(|e| format!("{e:?}"))?;
+    let acknowledgments = storage
+        .channels()
+        .0
+        .1
+        .build()
+        .map_err(|e| format!("{e:?}"))?;
+    let results = storage.channels().1.0.build();
+    let metrics = storage.channels().1.1.build();
+    let mut builder = GraphBuilder::with_storage(&storage);
+    // Calculator has no periodic fallback: IPC notifications drive execution.
+    builder.add_callback("calculator", || {
+        Ok(Calculator { last_value: 0 }.bind(
+            calculator,
+            &integers,
+            &integers,
+            &results,
+            &acknowledgments,
+        )?)
+    });
+    builder.add_callback("metrics", || {
+        Ok(MetricsRecorder {
+            metrics: Metrics::default(),
+        }
+        .bind(recorder, &results, &metrics)?)
+    });
+    builder.add_callback("summary", || {
+        Ok(MetricsSummary { count, complete }.bind(summary, &metrics)?)
+    });
+    builder.add_callback("printer", || {
+        Ok(Printer { printed }.bind(printer, &results, &metrics)?)
+    });
+    Ok(run(builder.build().map_err(|e| format!("{e:?}"))?))
 }
