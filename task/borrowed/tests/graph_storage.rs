@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use borrowed_task::time::FrameworkTime;
 use borrowed_task::{
-    ChannelEndpoints, ChannelPlan, ChannelStorage, ForwardedMessage, GraphPlan, GraphStorage,
-    LoanError, StorageError,
+    ChannelEndpoints, ForwardedMessage, GraphPlan, GraphStorage, LoanError, PublisherStorage,
+    PublisherStoragePlan, StorageError,
 };
 
 fn timestamp() -> FrameworkTime {
@@ -13,7 +13,7 @@ fn timestamp() -> FrameworkTime {
 
 type Forwarded<'storage> = ForwardedMessage<'storage, bool, u64>;
 type ForwardingStorage<'storage> =
-    GraphStorage<(ChannelStorage<Forwarded<'storage>>, ChannelStorage<u64>)>;
+    GraphStorage<(PublisherStorage<Forwarded<'storage>>, PublisherStorage<u64>)>;
 
 struct ForwardingGraph<'storage> {
     source: ChannelEndpoints<'storage, u64>,
@@ -44,8 +44,8 @@ impl<'storage> ForwardingGraph<'storage> {
 
 #[test]
 fn source_and_forwarding_arenas_share_one_owner() {
-    let forwarding = ChannelPlan::new(1).with_subscriber(1);
-    let source = ChannelPlan::new(1)
+    let forwarding = PublisherStoragePlan::new(1).with_subscriber(1);
+    let source = PublisherStoragePlan::new(1)
         .with_subscriber(1)
         .with_retained_capacity(forwarding.capacity().unwrap());
     // Destination storage precedes source storage: no drop-order dependency.
@@ -68,18 +68,21 @@ fn source_and_forwarding_arenas_share_one_owner() {
 
 #[test]
 fn nested_forwarding_and_unrelated_channels_share_storage() {
-    let last = ChannelPlan::new(1).with_subscriber(1);
-    let middle = ChannelPlan::new(1)
+    let last = PublisherStoragePlan::new(1).with_subscriber(1);
+    let middle = PublisherStoragePlan::new(1)
         .with_subscriber(1)
         .with_retained_capacity(last.capacity().unwrap());
-    let source = ChannelPlan::new(1)
+    let source = PublisherStoragePlan::new(1)
         .with_subscriber(1)
         .with_retained_capacity(middle.capacity().unwrap());
     let storage = GraphPlan::new((
         source,
         (
             middle,
-            (last, ChannelPlan::<String>::new(1).with_subscriber(1)),
+            (
+                last,
+                PublisherStoragePlan::<String>::new(1).with_subscriber(1),
+            ),
         ),
     ))
     .allocate()
@@ -123,7 +126,7 @@ fn nested_forwarding_and_unrelated_channels_share_storage() {
 
 #[test]
 fn planned_capacity_covers_pending_and_both_subscriber_buffers() {
-    let plan = ChannelPlan::<u64>::new(2).with_subscriber(2);
+    let plan = PublisherStoragePlan::<u64>::new(2).with_subscriber(2);
     assert_eq!(plan.capacity().unwrap(), 7);
     let storage = GraphPlan::new(plan).allocate().unwrap();
     assert_eq!(storage.channels().capacity(), 7);
@@ -167,7 +170,7 @@ fn planned_capacity_covers_pending_and_both_subscriber_buffers() {
 #[test]
 fn retained_messages_exhaust_budget_without_becoming_invalid() {
     let storage = GraphPlan::new(
-        ChannelPlan::<u64>::new(1)
+        PublisherStoragePlan::<u64>::new(1)
             .with_subscriber(1)
             .with_retained_capacity(2),
     )
@@ -200,13 +203,13 @@ fn retained_messages_exhaust_budget_without_becoming_invalid() {
 #[test]
 fn invalid_layouts_are_rejected_before_allocating_any_channel() {
     assert!(matches!(
-        GraphPlan::new(ChannelPlan::<u64>::new(1).with_subscriber(0)).allocate(),
+        GraphPlan::new(PublisherStoragePlan::<u64>::new(1).with_subscriber(0)).allocate(),
         Err(StorageError::ZeroSubscriberCapacity)
     ));
     for plan in [
-        ChannelPlan::<u64>::new(usize::MAX).with_retained_capacity(1),
-        ChannelPlan::<u64>::new(1).with_subscriber(usize::MAX),
-        ChannelPlan::<u64>::new(usize::MAX).with_subscriber(1),
+        PublisherStoragePlan::<u64>::new(usize::MAX).with_retained_capacity(1),
+        PublisherStoragePlan::<u64>::new(1).with_subscriber(usize::MAX),
+        PublisherStoragePlan::<u64>::new(usize::MAX).with_subscriber(1),
     ] {
         assert!(matches!(
             GraphPlan::new(plan).allocate(),
@@ -216,8 +219,8 @@ fn invalid_layouts_are_rejected_before_allocating_any_channel() {
     // If allocation begins before whole-layout validation, this first channel
     // would attempt an impossible allocation instead of reporting the second's error.
     let invalid = (
-        ChannelPlan::<u64>::new(usize::MAX),
-        ChannelPlan::<u64>::new(1).with_subscriber(0),
+        PublisherStoragePlan::<u64>::new(usize::MAX),
+        PublisherStoragePlan::<u64>::new(1).with_subscriber(0),
     );
     assert!(matches!(
         GraphPlan::new(invalid).allocate(),
@@ -237,9 +240,12 @@ impl Drop for Counted {
 #[test]
 fn graph_construction_unwind_releases_loans_and_allows_rebuild() {
     let drops = Arc::new(AtomicUsize::new(0));
-    let storage = GraphPlan::new((ChannelPlan::<Counted>::new(1), ChannelPlan::<u64>::new(1)))
-        .allocate()
-        .unwrap();
+    let storage = GraphPlan::new((
+        PublisherStoragePlan::<Counted>::new(1),
+        PublisherStoragePlan::<u64>::new(1),
+    ))
+    .allocate()
+    .unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut partially_built = storage.channels().0.build();
         partially_built

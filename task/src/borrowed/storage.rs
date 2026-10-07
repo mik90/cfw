@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::marker::PhantomData;
 
 use base::arena::Arena;
@@ -6,24 +7,26 @@ use super::{Publisher, Subscriber};
 use crate::message::Message;
 
 /// Capacity errors are detected before allocating any arena in a graph layout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageError {
     ZeroSubscriberCapacity,
     CapacityOverflow,
+    ForeignPublisherKey,
+    DuplicateChannel(String),
 }
 
 /// Storage requirements for one publisher and its subscribers.
 ///
 /// `T` can contain borrowed forwarded messages; no `Any` or `'static` bound is
 /// required. Planning neither allocates arenas nor borrows their storage.
-pub struct ChannelPlan<T> {
+pub struct PublisherStoragePlan<T> {
     loan_capacity: usize,
     subscribers: Vec<usize>,
     retained_capacity: usize,
     payload: PhantomData<fn() -> T>,
 }
 
-impl<T> ChannelPlan<T> {
+impl<T> PublisherStoragePlan<T> {
     pub fn new(loan_capacity: usize) -> Self {
         Self {
             loan_capacity,
@@ -73,8 +76,8 @@ impl<T> ChannelPlan<T> {
     }
 }
 
-/// A typed graph layout before storage allocation. Pairs compose recursively, so
-/// layouts can contain arbitrary numbers of differently typed channels.
+/// A typed graph layout before storage allocation. Pairs compose recursively;
+/// multiple named channels may use the same payload type.
 pub struct GraphPlan<L> {
     layout: L,
 }
@@ -87,6 +90,7 @@ impl<L: StorageLayout> GraphPlan<L> {
     /// Validate the entire layout, then consume it to allocate fixed storage.
     pub fn allocate(self) -> Result<GraphStorage<L::Storage>, StorageError> {
         self.layout.validate()?;
+        self.layout.validate_channel_names(&mut HashSet::new())?;
         Ok(GraphStorage {
             channels: self.layout.allocate(),
         })
@@ -102,19 +106,24 @@ impl<L: StorageLayout> GraphPlan<L> {
 ///
 /// ```
 /// use borrowed_task::{ChannelPlan, GraphPlan};
-/// let storage = GraphPlan::new((
-///     ChannelPlan::<u64>::new(1).with_subscriber(2),
-///     ChannelPlan::<String>::new(1).with_subscriber(1),
-/// )).allocate().unwrap();
-/// let numbers = storage.channels().0.build();
-/// let strings = storage.channels().1.build();
+/// let mut counter = ChannelPlan::<u64>::new("counter");
+/// let counter_pub = counter.publisher(1);
+/// let counter_sub = counter.subscriber(2);
+/// let mut processed = ChannelPlan::<u64>::new("processed");
+/// let processed_pub = processed.publisher(1);
+/// let processed_sub = processed.subscriber(1);
+/// let storage = GraphPlan::new((counter, processed)).allocate().unwrap();
+/// let counter = storage.channels().0.build();
+/// let processed = storage.channels().1.build();
+/// let publisher = counter.take_publisher(&counter_pub).unwrap();
+/// let subscriber = processed.take_subscriber(&processed_sub).unwrap();
 /// ```
 ///
 /// A retained message prevents destruction of the storage owner:
 /// ```compile_fail
-/// use borrowed_task::{ChannelPlan, GraphPlan};
+/// use borrowed_task::{PublisherStoragePlan, GraphPlan};
 /// use borrowed_task::time::FrameworkTime;
-/// let storage = GraphPlan::new(ChannelPlan::<u64>::new(1).with_subscriber(1))
+/// let storage = GraphPlan::new(PublisherStoragePlan::<u64>::new(1).with_subscriber(1))
 ///     .allocate().unwrap();
 /// let mut endpoints = storage.channels().build();
 /// endpoints.publisher.publish(42).unwrap();
@@ -135,15 +144,19 @@ impl<S> GraphStorage<S> {
     }
 }
 
-/// Frozen per-channel allocation. All builds share this channel's fixed budget.
+/// Frozen per-publisher allocation. All builds share this publisher's fixed budget.
 /// A fresh build does not reset or reclaim messages retained from a prior build.
-pub struct ChannelStorage<T> {
+pub struct PublisherStorage<T> {
     arena: Arena<Message<T>>,
     loan_capacity: usize,
     subscribers: Vec<usize>,
 }
 
-impl<T> ChannelStorage<T> {
+impl<T> PublisherStorage<T> {
+    pub(crate) fn publisher(&self) -> Publisher<'_, T> {
+        Publisher::new(self.arena.allocator(), self.loan_capacity)
+    }
+
     pub fn capacity(&self) -> usize {
         self.arena.capacity()
     }
@@ -156,7 +169,7 @@ impl<T> ChannelStorage<T> {
             .iter()
             .map(|&capacity| Subscriber::new(capacity))
             .collect();
-        let mut publisher = Publisher::new(self.arena.allocator(), self.loan_capacity);
+        let mut publisher = self.publisher();
         for subscriber in &subscribers {
             publisher.connect(subscriber);
         }
@@ -172,11 +185,11 @@ pub struct ChannelEndpoints<'storage, T> {
     pub subscribers: Vec<Subscriber<'storage, T>>,
 }
 
-mod private {
+pub(super) mod private {
     pub trait Sealed {}
 }
 
-/// A channel plan, an empty layout, or a pair of layouts.
+/// A publisher storage plan, a named channel plan, an empty layout, or a pair of layouts.
 /// Sealed so validation and allocation cannot disagree in external implementations.
 pub trait StorageLayout: private::Sealed {
     type Storage;
@@ -184,20 +197,24 @@ pub trait StorageLayout: private::Sealed {
     #[doc(hidden)]
     fn validate(&self) -> Result<(), StorageError>;
     #[doc(hidden)]
+    fn validate_channel_names(&self, _names: &mut HashSet<String>) -> Result<(), StorageError> {
+        Ok(())
+    }
+    #[doc(hidden)]
     fn allocate(self) -> Self::Storage;
 }
 
-impl<T> private::Sealed for ChannelPlan<T> {}
+impl<T> private::Sealed for PublisherStoragePlan<T> {}
 
-impl<T> StorageLayout for ChannelPlan<T> {
-    type Storage = ChannelStorage<T>;
+impl<T> StorageLayout for PublisherStoragePlan<T> {
+    type Storage = PublisherStorage<T>;
 
     fn validate(&self) -> Result<(), StorageError> {
         self.capacity().map(|_| ())
     }
 
     fn allocate(self) -> Self::Storage {
-        ChannelStorage {
+        PublisherStorage {
             arena: Arena::new(self.capacity().expect("storage plan must be validated")),
             loan_capacity: self.loan_capacity,
             subscribers: self.subscribers,
@@ -228,5 +245,10 @@ impl<L: StorageLayout, R: StorageLayout> StorageLayout for (L, R) {
 
     fn allocate(self) -> Self::Storage {
         (self.0.allocate(), self.1.allocate())
+    }
+
+    fn validate_channel_names(&self, names: &mut HashSet<String>) -> Result<(), StorageError> {
+        self.0.validate_channel_names(names)?;
+        self.1.validate_channel_names(names)
     }
 }

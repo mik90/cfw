@@ -5,16 +5,22 @@
 //! Endpoint type erasure preserves storage lifetimes and exposes operations;
 //! only owned replay payloads are downcast through `Any`.
 
+mod graph;
+mod named_channels;
 mod publisher;
 mod storage;
 mod subscriber;
 
+pub use graph::{BuiltGraph, FactoryError, GraphBuildError, GraphBuilder, GraphStepError};
+pub use named_channels::{
+    ChannelPlan, ChannelStorage, EndpointBindings, EndpointError, PublisherKey, SubscriberKey,
+};
 pub use publisher::{
     LoanError, Output, OutputUninit, Publisher, PublisherOps, ReplayError, ReplayPublisher,
 };
 pub use storage::{
-    ChannelEndpoints, ChannelPlan, ChannelStorage, GraphPlan, GraphStorage, StorageError,
-    StorageLayout,
+    ChannelEndpoints, GraphPlan, GraphStorage, PublisherStorage, PublisherStoragePlan,
+    StorageError, StorageLayout,
 };
 pub use subscriber::{Input, Subscriber};
 
