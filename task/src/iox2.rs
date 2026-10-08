@@ -500,6 +500,14 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
     pub fn receive_errors(&self) -> usize {
         self.receive_errors.load(Ordering::Relaxed)
     }
+    /// Inspect and consume the prepared batch without requiring Clone. References
+    /// cannot escape the visitor, and unwinding releases all remaining samples.
+    pub fn inspect_messages(&self, mut inspect: impl FnMut(usize, &Message<T>)) -> usize {
+        let batch = std::mem::take(&mut *self.read.borrow_mut());
+        let count = batch.len();
+        for (index, sample) in batch.into_iter().enumerate() { inspect(index, &sample); }
+        count
+    }
     pub fn update(&self) {
         let mut read = self.read.borrow_mut();
         for _ in 0..self.capacity {

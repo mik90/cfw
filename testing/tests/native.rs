@@ -9,7 +9,7 @@ use task::{
     time::FrameworkTime,
 };
 use task_macros::task_callback;
-use testing::{UnitTestExecutorBuilder, UnitTestExecutorConfig};
+use testing::{BoundUnitTestExecutorBuilder as UnitTestExecutorBuilder, UnitTestExecutorConfig};
 
 fn at(n: i64) -> FrameworkTime {
     FrameworkTime::from_nanoseconds(n)

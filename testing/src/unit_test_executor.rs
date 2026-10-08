@@ -17,18 +17,21 @@ pub use iox2::{Iox2TestNotifier, Iox2TestPublisher, Iox2TestSubscriber};
 /// Fixtures and retained native messages can outlive this executor, but not storage.
 pub struct UnitTestExecutor<'storage> {
     simulation: SimulationState<'storage>,
-    time: Arc<TimeSource>,
+    pub(crate) time: Arc<TimeSource>,
+    pub(crate) inputs: Vec<Box<dyn crate::builder::InputPump + 'storage>>,
+    pub(crate) captures: Vec<Box<dyn crate::builder::Capture + 'storage>>,
+    pub(crate) session: Option<crate::builder::SessionGuard>,
     failed: bool,
     #[cfg(feature = "iceoryx2")]
-    events: iox2::PendingEvents,
+    pub(crate) events: iox2::PendingEvents,
 }
 
 impl<'storage> UnitTestExecutor<'storage> {
     pub fn new(graph: BuiltGraph<'storage>) -> Self {
-        UnitTestExecutorBuilder::new(graph).build()
+        BoundUnitTestExecutorBuilder::new(graph).build()
     }
     pub fn new_with(graph: BuiltGraph<'storage>, config: UnitTestExecutorConfig) -> Self {
-        UnitTestExecutorBuilder::with_config(graph, config).build()
+        BoundUnitTestExecutorBuilder::with_config(graph, config).build()
     }
     pub fn step(&mut self) -> StepResult {
         self.try_step().expect("could not step unit test executor")
@@ -43,6 +46,9 @@ impl<'storage> UnitTestExecutor<'storage> {
         result
     }
     fn step_inner(&mut self) -> Result<StepResult, StepError> {
+        for input in &mut self.inputs {
+            input.flush().map_err(|e| StepError::Action(format!("test input: {e:?}")))?;
+        }
         #[cfg(feature = "iceoryx2")]
         for (channel, id, count) in std::mem::take(&mut *self.events.lock().unwrap()) {
             self.simulation
@@ -60,14 +66,14 @@ impl<'storage> UnitTestExecutor<'storage> {
 
 /// Wrap a built graph and its already-bound fixture endpoints. Typed keys enforce
 /// channel identity, payload type and single endpoint ownership during binding.
-pub struct UnitTestExecutorBuilder<'storage> {
+pub struct BoundUnitTestExecutorBuilder<'storage> {
     graph: BuiltGraph<'storage>,
     config: UnitTestExecutorConfig,
     time: Arc<TimeSource>,
     #[cfg(feature = "iceoryx2")]
     events: iox2::PendingEvents,
 }
-impl<'storage> UnitTestExecutorBuilder<'storage> {
+impl<'storage> BoundUnitTestExecutorBuilder<'storage> {
     pub fn new(graph: BuiltGraph<'storage>) -> Self {
         Self::with_config(graph, UnitTestExecutorConfig::default())
     }
@@ -101,6 +107,9 @@ impl<'storage> UnitTestExecutorBuilder<'storage> {
             simulation: SimulationState::with_config(self.graph, self.config)?,
             time: self.time,
             failed: false,
+            inputs: Vec::new(),
+            captures: Vec::new(),
+            session: None,
             #[cfg(feature = "iceoryx2")]
             events: self.events,
         })

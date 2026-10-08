@@ -49,6 +49,15 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
         }
     }
 
+    pub(crate) fn with_channel_names(channel_names: Arc<ChannelNameInterner>) -> Self {
+        Self { factories: Vec::new(), channel_names }
+    }
+
+    pub fn add_boxed_callback<F>(&mut self, name: impl Into<String>, schedule: CallbackSchedule, factory: F)
+    where F: FnOnce() -> Result<Box<dyn Callback + 'storage>, FactoryError> + 'build {
+        self.factories.push((name.into(), schedule, Box::new(factory)));
+    }
+
     /// Retain the finalized channel interner, including fixture-only channels.
     pub fn with_storage<S>(storage: &crate::GraphStorage<S>) -> Self {
         Self {

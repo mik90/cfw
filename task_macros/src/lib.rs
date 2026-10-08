@@ -291,6 +291,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
+    let automatic = automatic_registration(&task_name, &declaration, &ports);
     let mut key_fields = Vec::new();
     let mut key_params = Vec::new();
     let mut plan_params = Vec::new();
@@ -430,6 +431,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     };
     Ok(quote! {
         #item
+        #automatic
 
         pub struct #declaration<'storage> {
             #(#key_fields,)*
@@ -471,6 +473,63 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             fn discard_outputs(&mut self) { #(#discard)* }
         }
     })
+}
+
+fn automatic_registration(task: &syn::Ident, declaration: &syn::Ident, ports: &[Port]) -> proc_macro2::TokenStream {
+    struct Borrowed(bool);
+    impl VisitMut for Borrowed {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            self.0 |= lifetime.ident != "static";
+        }
+    }
+    let mut borrowed = Borrowed(false);
+    for port in ports { borrowed.visit_type_mut(&mut port.payload.clone()); }
+    if borrowed.0 {
+        return quote!();
+    }
+    let factory = format_ident!("{}AutomaticFactory", task);
+    let mut channel_names = Vec::new();
+    let mut keys = Vec::new();
+    let mut bindings = Vec::new();
+    for (index, port) in ports.iter().enumerate() {
+        let Port { name, payload, capacity, trigger, keep, .. } = port;
+        let channel = port.channel.as_ref().map(|c| quote!(#c)).unwrap_or_else(|| quote!(stringify!(#name)));
+        channel_names.push(quote!({ let value = #channel; ::core::convert::AsRef::<str>::as_ref(&value).to_owned() }));
+        let (key, binding) = match port.kind {
+            PortKind::IoxInput | PortKind::IoxSpan => (
+                quote!(__cfw_plan.ipc_subscriber::<#payload>(&__cfw_names[#index], #capacity)?),
+                quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
+            ),
+            PortKind::IoxOutput => (
+                quote!(__cfw_plan.ipc_publisher::<#payload>(&__cfw_names[#index], #capacity)?),
+                quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
+            ),
+            PortKind::IoxEvent => (quote!(__cfw_plan.event(&__cfw_names[#index], #capacity)?), quote!(__cfw_bindings.events(&self.names[#index])?)),
+            PortKind::IoxNotifier => (quote!(__cfw_plan.notifier(&__cfw_names[#index])?), quote!(__cfw_bindings.events(&self.names[#index])?)),
+            PortKind::Input | PortKind::Required => (
+                quote!(__cfw_plan.subscriber::<#payload>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })?),
+                quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
+            ),
+            _ => (quote!(__cfw_plan.publisher::<#payload>(&__cfw_names[#index], #capacity)?), quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?)),
+        };
+        keys.push(key);
+        bindings.push(binding);
+    }
+    quote! {
+        struct #factory { user: #task, declaration: #declaration<'static>, names: Vec<String> }
+        impl ::task::automatic::Task for #task {
+            fn register(self: Box<Self>, __cfw_plan: &mut ::task::automatic::NamedPlan) -> Result<Box<dyn ::task::automatic::TaskFactory>, ::task::automatic::BuildError> {
+                let __cfw_names: Vec<String> = vec![#(#channel_names),*];
+                let declaration = #declaration::from_keys(#(#keys),*);
+                Ok(Box::new(#factory { user: *self, declaration, names: __cfw_names }))
+            }
+        }
+        impl ::task::automatic::TaskFactory for #factory {
+            fn build<'storage>(self: Box<Self>, __cfw_bindings: &::task::automatic::NamedBindings<'storage>) -> Result<Box<dyn ::task::Callback + 'storage>, ::task::automatic::BuildError> {
+                Ok(Box::new(self.user.bind(self.declaration, #(#bindings),*)?))
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
 use task::{ChannelPlan, Context, GraphBuilder, GraphPlan, RequiredInput};
 use task_macros::task_callback;
-use testing::UnitTestExecutorBuilder;
+use testing::BoundUnitTestExecutorBuilder as UnitTestExecutorBuilder;
 
 type Observations = Arc<Mutex<Vec<(i64, u64, Vec<(usize, u64)>)>>>;
 struct Observe {

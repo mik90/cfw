@@ -1,4 +1,4 @@
-use super::UnitTestExecutorBuilder;
+use super::BoundUnitTestExecutorBuilder;
 use iceoryx2::prelude::{EventId, ZeroCopySend};
 use std::{
     fmt::Debug,
@@ -83,7 +83,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + Clone + 'static> Iox2TestSubscriber
     }
 }
 
-impl UnitTestExecutorBuilder<'_> {
+impl BoundUnitTestExecutorBuilder<'_> {
     pub fn add_iox2_test_publisher<T: Debug + ZeroCopySend + Send + Sync + 'static>(
         &self,
         publisher: Iox2Publisher<T>,
