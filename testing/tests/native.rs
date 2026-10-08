@@ -35,9 +35,11 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
     let input = input.build();
     let output = output.build();
     let mut graph = GraphBuilder::with_storage(&storage);
-    graph.add_callback("double", || {
-        Ok(Double.bind(declaration, &input, &output)?)
-    });
+    graph.add_scheduled_callback(
+        "double",
+        CallbackSchedule::default().with_execution_duration(Duration::ZERO),
+        || Ok(Double.bind(declaration, &input, &output)?),
+    );
     let builder = UnitTestExecutorBuilder::with_config(
         graph.build().unwrap(),
         UnitTestExecutorConfig {
@@ -84,7 +86,9 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
     let mut graph = GraphBuilder::with_storage(&storage);
     graph.add_scheduled_callback(
         "tick",
-        CallbackSchedule::periodic(Duration::from_nanos(10)).in_pool(1),
+        CallbackSchedule::periodic(Duration::from_nanos(10))
+            .in_pool(1)
+            .with_execution_duration(Duration::ZERO),
         || Ok(Tick.bind(Tick::declare()?)?),
     );
     let builder = UnitTestExecutorBuilder::with_config(
@@ -186,7 +190,8 @@ fn failed_step_cancels_capture_and_poisons_executor() {
     let mut graph = GraphBuilder::with_storage(&storage);
     graph.add_scheduled_callback(
         "fails",
-        CallbackSchedule::periodic(Duration::from_nanos(10)),
+        CallbackSchedule::periodic(Duration::from_nanos(10))
+            .with_execution_duration(Duration::ZERO),
         || Ok(Fails.bind(declaration, &bindings)?),
     );
     let builder = UnitTestExecutorBuilder::new(graph.build().unwrap());

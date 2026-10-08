@@ -122,6 +122,12 @@ impl<'storage> SimulationState<'storage> {
             events: Vec::new(),
         };
         for mut node in callbacks {
+            if !node.schedule.has_execution_duration() {
+                return Err(StepError::Timing {
+                    callback: node.name,
+                    source: TimingError::MissingDuration,
+                });
+            }
             if node.schedule.pool >= state.config.virtual_pool_threads.len() {
                 return Err(StepError::InvalidConfig(format!(
                     "callback '{}' references missing pool {}",
@@ -365,7 +371,12 @@ impl<'storage> SimulationState<'storage> {
                 for &index in executed {
                     let finish = self
                         .time
-                        .checked_add_duration(self.schedules[index].duration())
+                        .checked_add_duration(self.schedules[index].duration().map_err(
+                            |source| StepError::Timing {
+                                callback: self.names[index].clone(),
+                                source,
+                            },
+                        )?)
                         .ok_or_else(|| StepError::Timing {
                             callback: self.names[index].clone(),
                             source: TimingError::Overflow,

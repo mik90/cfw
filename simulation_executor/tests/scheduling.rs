@@ -20,6 +20,23 @@ fn ns(n: u64) -> Duration {
     Duration::from_nanos(n)
 }
 
+#[test]
+fn simulation_requires_an_explicit_execution_duration() {
+    let mut graph = GraphBuilder::new();
+    graph.add_callback("unspecified", || Ok(|_| Ok(())));
+    assert!(matches!(SimulationState::new(graph.build().unwrap()),
+        Err(StepError::Timing { callback, source: task::TimingError::MissingDuration }) if callback == "unspecified"));
+
+    let mut graph = GraphBuilder::new();
+    graph.add_scheduled_callback(
+        "explicit_zero",
+        CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
+        || Ok(|_| Ok(())),
+    );
+    let mut simulation = SimulationState::new(graph.build().unwrap()).unwrap();
+    assert_eq!(simulation.step().unwrap().executed, [0]);
+}
+
 struct OrderedSource {
     value: u64,
     barrier: Arc<Barrier>,
@@ -57,24 +74,32 @@ fn parallel_bodies_commit_in_scheduling_order_and_retained_messages_outlive_simu
     let released = Arc::new(AtomicUsize::new(0));
     let order = Arc::new(Mutex::new(Vec::new()));
     let mut graph = GraphBuilder::with_storage(&storage);
-    graph.add_scheduled_callback("first", CallbackSchedule::on_start(), || {
-        Ok(OrderedSource {
-            value: 1,
-            barrier: barrier.clone(),
-            released: released.clone(),
-            order: order.clone(),
-        }
-        .bind(first, &bindings)?)
-    });
-    graph.add_scheduled_callback("second", CallbackSchedule::on_start(), || {
-        Ok(OrderedSource {
-            value: 2,
-            barrier: barrier.clone(),
-            released: released.clone(),
-            order: order.clone(),
-        }
-        .bind(second, &bindings)?)
-    });
+    graph.add_scheduled_callback(
+        "first",
+        CallbackSchedule::on_start().with_execution_duration(ns(0)),
+        || {
+            Ok(OrderedSource {
+                value: 1,
+                barrier: barrier.clone(),
+                released: released.clone(),
+                order: order.clone(),
+            }
+            .bind(first, &bindings)?)
+        },
+    );
+    graph.add_scheduled_callback(
+        "second",
+        CallbackSchedule::on_start().with_execution_duration(ns(0)),
+        || {
+            Ok(OrderedSource {
+                value: 2,
+                barrier: barrier.clone(),
+                released: released.clone(),
+                order: order.clone(),
+            }
+            .bind(second, &bindings)?)
+        },
+    );
     let config = SimulationConfig {
         virtual_pool_threads: vec![2],
         node_executor_thread_count: 2,
@@ -126,15 +151,21 @@ fn whole_batch_reads_precommit_inputs_then_new_work_runs_at_same_simulated_time(
     let bindings = storage.channels().build();
     let observations = Arc::new(Mutex::new(Vec::new()));
     let mut builder = GraphBuilder::new();
-    builder.add_scheduled_callback("source", CallbackSchedule::on_start(), || {
-        Ok(Source.bind(source, &bindings)?)
-    });
-    builder.add_scheduled_callback("observe", CallbackSchedule::on_start(), || {
-        Ok(Observe {
-            observations: observations.clone(),
-        }
-        .bind(observe, &bindings)?)
-    });
+    builder.add_scheduled_callback(
+        "source",
+        CallbackSchedule::on_start().with_execution_duration(ns(0)),
+        || Ok(Source.bind(source, &bindings)?),
+    );
+    builder.add_scheduled_callback(
+        "observe",
+        CallbackSchedule::on_start().with_execution_duration(ns(0)),
+        || {
+            Ok(Observe {
+                observations: observations.clone(),
+            }
+            .bind(observe, &bindings)?)
+        },
+    );
     let mut simulation = SimulationState::with_config(
         builder.build().unwrap(),
         SimulationConfig {
@@ -242,7 +273,7 @@ fn periodic_startup_is_explicit_instead_of_implicit() {
     for startup in [false, true] {
         let times = Arc::new(Mutex::new(Vec::new()));
         let observed = times.clone();
-        let mut schedule = CallbackSchedule::periodic(ns(5));
+        let mut schedule = CallbackSchedule::periodic(ns(5)).with_execution_duration(ns(0));
         schedule.run_on_start = startup;
         let mut builder = GraphBuilder::new();
         builder.add_scheduled_callback("periodic", schedule, move || {
@@ -301,12 +332,16 @@ fn nontrigger_input_resumes_pending_request_and_input_retention_is_respected() {
     let cached_source = Arc::new(Mutex::new(cached.take_publisher(&cached_key).unwrap()));
     let trace = Arc::new(Mutex::new(Vec::new()));
     let mut builder = GraphBuilder::new();
-    builder.add_callback("gated", || {
-        Ok(Gated {
-            trace: trace.clone(),
-        }
-        .bind(declaration, &trigger, &cached)?)
-    });
+    builder.add_scheduled_callback(
+        "gated",
+        CallbackSchedule::default().with_execution_duration(ns(0)),
+        || {
+            Ok(Gated {
+                trace: trace.clone(),
+            }
+            .bind(declaration, &trigger, &cached)?)
+        },
+    );
     let mut simulation = SimulationState::new(builder.build().unwrap()).unwrap();
     for (time, publisher, value) in [
         (0, trigger_source.clone(), 1),
@@ -341,9 +376,11 @@ fn invalid_configs_past_actions_and_infinite_schedules_report_errors() {
         Err(StepError::InvalidConfig(_))
     ));
     let mut builder = GraphBuilder::new();
-    builder.add_scheduled_callback("forever", CallbackSchedule::periodic(ns(1)), || {
-        Ok(|_| Ok(()))
-    });
+    builder.add_scheduled_callback(
+        "forever",
+        CallbackSchedule::periodic(ns(1)).with_execution_duration(ns(0)),
+        || Ok(|_| Ok(())),
+    );
     let mut simulation = SimulationState::new(builder.build().unwrap()).unwrap();
     assert!(matches!(
         simulation.schedule_at(at(-1), |_| Ok(())),

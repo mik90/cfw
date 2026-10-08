@@ -1,3 +1,4 @@
+pub use crate::builder::UnitTestExecutorBuilder;
 pub use simulation_executor::{SimulationConfig as UnitTestExecutorConfig, StepResult};
 use simulation_executor::{SimulationState, StepError};
 use std::{num::Saturating, sync::Arc};
@@ -43,11 +44,18 @@ impl<'storage> UnitTestExecutor<'storage> {
         let result = self.step_inner();
         self.time.set(self.simulation.current_time());
         self.failed = result.is_err();
+        if self.failed
+            && let Some(session) = &self.session
+        {
+            session.close();
+        }
         result
     }
     fn step_inner(&mut self) -> Result<StepResult, StepError> {
         for input in &mut self.inputs {
-            input.flush().map_err(|e| StepError::Action(format!("test input: {e:?}")))?;
+            input
+                .flush()
+                .map_err(|e| StepError::Action(format!("test input: {e:?}")))?;
         }
         #[cfg(feature = "iceoryx2")]
         for (channel, id, count) in std::mem::take(&mut *self.events.lock().unwrap()) {
@@ -61,6 +69,14 @@ impl<'storage> UnitTestExecutor<'storage> {
     }
     pub fn current_time(&self) -> FrameworkTime {
         self.simulation.current_time()
+    }
+}
+
+impl Drop for UnitTestExecutor<'_> {
+    fn drop(&mut self) {
+        if let Some(session) = &self.session {
+            session.close();
+        }
     }
 }
 

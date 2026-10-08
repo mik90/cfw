@@ -475,7 +475,11 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-fn automatic_registration(task: &syn::Ident, declaration: &syn::Ident, ports: &[Port]) -> proc_macro2::TokenStream {
+fn automatic_registration(
+    task: &syn::Ident,
+    declaration: &syn::Ident,
+    ports: &[Port],
+) -> proc_macro2::TokenStream {
     struct Borrowed(bool);
     impl VisitMut for Borrowed {
         fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
@@ -483,7 +487,9 @@ fn automatic_registration(task: &syn::Ident, declaration: &syn::Ident, ports: &[
         }
     }
     let mut borrowed = Borrowed(false);
-    for port in ports { borrowed.visit_type_mut(&mut port.payload.clone()); }
+    for port in ports {
+        borrowed.visit_type_mut(&mut port.payload.clone());
+    }
     if borrowed.0 {
         return quote!();
     }
@@ -492,8 +498,19 @@ fn automatic_registration(task: &syn::Ident, declaration: &syn::Ident, ports: &[
     let mut keys = Vec::new();
     let mut bindings = Vec::new();
     for (index, port) in ports.iter().enumerate() {
-        let Port { name, payload, capacity, trigger, keep, .. } = port;
-        let channel = port.channel.as_ref().map(|c| quote!(#c)).unwrap_or_else(|| quote!(stringify!(#name)));
+        let Port {
+            name,
+            payload,
+            capacity,
+            trigger,
+            keep,
+            ..
+        } = port;
+        let channel = port
+            .channel
+            .as_ref()
+            .map(|c| quote!(#c))
+            .unwrap_or_else(|| quote!(stringify!(#name)));
         channel_names.push(quote!({ let value = #channel; ::core::convert::AsRef::<str>::as_ref(&value).to_owned() }));
         let (key, binding) = match port.kind {
             PortKind::IoxInput | PortKind::IoxSpan => (
@@ -504,13 +521,22 @@ fn automatic_registration(task: &syn::Ident, declaration: &syn::Ident, ports: &[
                 quote!(__cfw_plan.ipc_publisher::<#payload>(&__cfw_names[#index], #capacity)?),
                 quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
             ),
-            PortKind::IoxEvent => (quote!(__cfw_plan.event(&__cfw_names[#index], #capacity)?), quote!(__cfw_bindings.events(&self.names[#index])?)),
-            PortKind::IoxNotifier => (quote!(__cfw_plan.notifier(&__cfw_names[#index])?), quote!(__cfw_bindings.events(&self.names[#index])?)),
+            PortKind::IoxEvent => (
+                quote!(__cfw_plan.event(&__cfw_names[#index], #capacity)?),
+                quote!(__cfw_bindings.events(&self.names[#index])?),
+            ),
+            PortKind::IoxNotifier => (
+                quote!(__cfw_plan.notifier(&__cfw_names[#index])?),
+                quote!(__cfw_bindings.events(&self.names[#index])?),
+            ),
             PortKind::Input | PortKind::Required => (
                 quote!(__cfw_plan.subscriber::<#payload>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })?),
                 quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
             ),
-            _ => (quote!(__cfw_plan.publisher::<#payload>(&__cfw_names[#index], #capacity)?), quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?)),
+            _ => (
+                quote!(__cfw_plan.publisher::<#payload>(&__cfw_names[#index], #capacity)?),
+                quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
+            ),
         };
         keys.push(key);
         bindings.push(binding);

@@ -1,33 +1,54 @@
 //! Named construction for tasks with owned (`'static`) payload types.
 //! Storage remains externally owned; only the construction metadata is erased.
-use std::{any::{Any, TypeId}, collections::BTreeMap, sync::Arc};
-use crate::{Callback, ChannelPlan, ChannelStorage, EndpointBindings, GraphBuilder, StorageLayout, SubscriberPolicy};
+use crate::{
+    Callback, ChannelPlan, ChannelStorage, EndpointBindings, GraphBuilder, StorageLayout,
+    SubscriberPolicy,
+};
+use std::{
+    any::{Any, TypeId},
+    collections::BTreeMap,
+    sync::Arc,
+};
 
 #[derive(Debug)]
 pub struct BuildError(pub String);
 impl std::fmt::Display for BuildError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 impl std::error::Error for BuildError {}
 impl From<crate::EndpointError> for BuildError {
-    fn from(e: crate::EndpointError) -> Self { Self(e.to_string()) }
+    fn from(e: crate::EndpointError) -> Self {
+        Self(e.to_string())
+    }
 }
 impl From<crate::StorageError> for BuildError {
-    fn from(e: crate::StorageError) -> Self { Self(format!("{e:?}")) }
+    fn from(e: crate::StorageError) -> Self {
+        Self(format!("{e:?}"))
+    }
 }
 
 pub trait Task {
-    fn register(self: Box<Self>, channels: &mut NamedPlan) -> Result<Box<dyn TaskFactory>, BuildError>;
+    fn register(
+        self: Box<Self>,
+        channels: &mut NamedPlan,
+    ) -> Result<Box<dyn TaskFactory>, BuildError>;
 }
 pub trait TaskFactory {
-    fn build<'a>(self: Box<Self>, bindings: &NamedBindings<'a>) -> Result<Box<dyn Callback + 'a>, BuildError>;
+    fn build<'a>(
+        self: Box<Self>,
+        bindings: &NamedBindings<'a>,
+    ) -> Result<Box<dyn Callback + 'a>, BuildError>;
 }
 
 trait Plan {
     fn any_mut(&mut self) -> &mut dyn Any;
     fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError>;
     #[cfg(feature = "iceoryx2")]
-    fn is_ipc(&self) -> bool { false }
+    fn is_ipc(&self) -> bool {
+        false
+    }
 }
 trait Stored {
     fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError>;
@@ -36,23 +57,35 @@ trait Stored {
 // used for payload identity, never for borrowed endpoints or lifetime extension.
 trait Binding<'a> {
     fn payload(&self) -> TypeId;
-    fn pointer(&self) -> Option<*const ()> { None }
+    fn pointer(&self) -> Option<*const ()> {
+        None
+    }
     #[cfg(feature = "iceoryx2")]
-    fn ipc_any(&self) -> Option<&dyn Any> { None }
+    fn ipc_any(&self) -> Option<&dyn Any> {
+        None
+    }
 }
 impl<T: Send + Sync + 'static> Plan for ChannelPlan<T> {
-    fn any_mut(&mut self) -> &mut dyn Any { self }
+    fn any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError> {
         self.validate()?;
         Ok(Box::new(StorageLayout::allocate(*self)?))
     }
 }
 impl<T: Send + Sync + 'static> Stored for ChannelStorage<T> {
-    fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError> { Ok(Box::new(self.build())) }
+    fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError> {
+        Ok(Box::new(self.build()))
+    }
 }
 impl<'a, T: 'static> Binding<'a> for EndpointBindings<'a, T> {
-    fn payload(&self) -> TypeId { TypeId::of::<T>() }
-    fn pointer(&self) -> Option<*const ()> { Some((self as *const Self).cast()) }
+    fn payload(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+    fn pointer(&self) -> Option<*const ()> {
+        Some((self as *const Self).cast())
+    }
 }
 
 struct Channel {
@@ -69,27 +102,65 @@ pub struct NamedPlan {
     runtime: Option<Arc<crate::iox2::Iox2Runtime>>,
 }
 impl NamedPlan {
-    pub fn native<T: Send + Sync + 'static>(&mut self, name: &str) -> Result<&mut ChannelPlan<T>, BuildError> {
+    pub fn native<T: Send + Sync + 'static>(
+        &mut self,
+        name: &str,
+    ) -> Result<&mut ChannelPlan<T>, BuildError> {
         #[cfg(feature = "iceoryx2")]
-        if self.events.contains_key(name) { return Err(BuildError(format!("channel '{name}': mixes native and IPC transports"))); }
+        if self.events.contains_key(name) {
+            return Err(BuildError(format!(
+                "channel '{name}': mixes native and IPC transports"
+            )));
+        }
         let entry = self.channels.entry(name.into()).or_insert_with(|| Channel {
-            plan: Box::new(ChannelPlan::<T>::new(name)), publishers: 0, subscribers: 0,
+            plan: Box::new(ChannelPlan::<T>::new(name)),
+            publishers: 0,
+            subscribers: 0,
         });
-        entry.plan.any_mut().downcast_mut().ok_or_else(|| BuildError(format!("channel '{name}': incompatible payload type or transport (requested {})", std::any::type_name::<T>())))
+        entry.plan.any_mut().downcast_mut().ok_or_else(|| {
+            BuildError(format!(
+                "channel '{name}': incompatible payload type or transport (requested {})",
+                std::any::type_name::<T>()
+            ))
+        })
     }
-    pub fn publisher<T: Send + Sync + 'static>(&mut self, name: &str, capacity: usize) -> Result<crate::PublisherKey<T>, BuildError> {
+    pub fn publisher<T: Send + Sync + 'static>(
+        &mut self,
+        name: &str,
+        capacity: usize,
+    ) -> Result<crate::PublisherKey<T>, BuildError> {
         let key = self.native::<T>(name)?.publisher(capacity);
         self.channels.get_mut(name).unwrap().publishers += 1;
         Ok(key)
     }
-    pub fn subscriber<T: Send + Sync + 'static>(&mut self, name: &str, capacity: usize, policy: SubscriberPolicy) -> Result<crate::SubscriberKey<T>, BuildError> {
-        let key = self.native::<T>(name)?.subscriber_with_policy(capacity, policy);
+    pub fn subscriber<T: Send + Sync + 'static>(
+        &mut self,
+        name: &str,
+        capacity: usize,
+        policy: SubscriberPolicy,
+    ) -> Result<crate::SubscriberKey<T>, BuildError> {
+        let key = self
+            .native::<T>(name)?
+            .subscriber_with_policy(capacity, policy);
         self.channels.get_mut(name).unwrap().subscribers += 1;
         Ok(key)
     }
     pub fn require(&self, name: &str, publisher: bool) -> Result<(), BuildError> {
-        let found = self.channels.get(name).is_some_and(|c| if publisher { c.publishers > 0 } else { c.subscribers > 0 });
-        if found { Ok(()) } else { Err(BuildError(format!("channel '{name}': no task {}", if publisher { "publisher" } else { "subscriber" }))) }
+        let found = self.channels.get(name).is_some_and(|c| {
+            if publisher {
+                c.publishers > 0
+            } else {
+                c.subscribers > 0
+            }
+        });
+        if found {
+            Ok(())
+        } else {
+            Err(BuildError(format!(
+                "channel '{name}': no task {}",
+                if publisher { "publisher" } else { "subscriber" }
+            )))
+        }
     }
     pub fn allocate(self) -> Result<NamedStorage, BuildError> {
         let mut names = crate::string_interner::ChannelNameInterner::new();
@@ -99,11 +170,20 @@ impl NamedPlan {
             channels.insert(name, channel.plan.allocate()?);
         }
         #[cfg(feature = "iceoryx2")]
-        let events = self.events.into_iter().map(|(name, (plan, _))| {
-            names.intern(&name);
-            Ok((name, Box::new(plan).allocate()?))
-        }).collect::<Result<_, BuildError>>()?;
-        Ok(NamedStorage { channels, names: Arc::new(names), #[cfg(feature = "iceoryx2")] events })
+        let events = self
+            .events
+            .into_iter()
+            .map(|(name, (plan, _))| {
+                names.intern(&name);
+                Ok((name, Box::new(plan).allocate()?))
+            })
+            .collect::<Result<_, BuildError>>()?;
+        Ok(NamedStorage {
+            channels,
+            names: Arc::new(names),
+            #[cfg(feature = "iceoryx2")]
+            events,
+        })
     }
 }
 pub struct NamedStorage {
@@ -115,9 +195,17 @@ pub struct NamedStorage {
 impl NamedStorage {
     pub fn bind(&self) -> Result<NamedBindings<'_>, BuildError> {
         Ok(NamedBindings {
-            channels: self.channels.iter().map(|(name, storage)| Ok((name.clone(), storage.bind()?))).collect::<Result<_, BuildError>>()?,
+            channels: self
+                .channels
+                .iter()
+                .map(|(name, storage)| Ok((name.clone(), storage.bind()?)))
+                .collect::<Result<_, BuildError>>()?,
             #[cfg(feature = "iceoryx2")]
-            events: self.events.iter().map(|(name, storage)| Ok((name.clone(), storage.bind()?))).collect::<Result<_, BuildError>>()?,
+            events: self
+                .events
+                .iter()
+                .map(|(name, storage)| Ok((name.clone(), storage.bind()?)))
+                .collect::<Result<_, BuildError>>()?,
         })
     }
     pub fn graph_builder<'build, 'storage>(&self) -> GraphBuilder<'build, 'storage> {
@@ -131,9 +219,16 @@ pub struct NamedBindings<'a> {
 }
 impl<'a> NamedBindings<'a> {
     pub fn native<T: 'static>(&self, name: &str) -> Result<&EndpointBindings<'a, T>, BuildError> {
-        let binding = self.channels.get(name).ok_or_else(|| BuildError(format!("unknown channel '{name}'")))?;
-        if binding.payload() != TypeId::of::<T>() { return Err(BuildError(format!("channel '{name}': payload mismatch"))); }
-        let pointer = binding.pointer().ok_or_else(|| BuildError(format!("channel '{name}': expected native transport")))?;
+        let binding = self
+            .channels
+            .get(name)
+            .ok_or_else(|| BuildError(format!("unknown channel '{name}'")))?;
+        if binding.payload() != TypeId::of::<T>() {
+            return Err(BuildError(format!("channel '{name}': payload mismatch")));
+        }
+        let pointer = binding
+            .pointer()
+            .ok_or_else(|| BuildError(format!("channel '{name}': expected native transport")))?;
         // SAFETY: Binding is private and native entries are exclusively constructed
         // from EndpointBindings<'a, T>. The checked TypeId establishes T. The map
         // owns the boxed value, and this reference borrows the map. 'a is preserved
@@ -145,69 +240,131 @@ impl<'a> NamedBindings<'a> {
 #[cfg(feature = "iceoryx2")]
 mod ipc {
     use super::*;
-    use std::fmt::Debug;
-    use iceoryx2::prelude::ZeroCopySend;
     use crate::iox2::*;
+    use iceoryx2::prelude::ZeroCopySend;
+    use std::fmt::Debug;
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Plan for Iox2ChannelPlan<T> {
-        fn any_mut(&mut self) -> &mut dyn Any { self }
-        fn is_ipc(&self) -> bool { true }
+        fn any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+        fn is_ipc(&self) -> bool {
+            true
+        }
         fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError> {
             self.validate()?;
             Ok(Box::new(StorageLayout::allocate(*self)?))
         }
     }
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Stored for Iox2ChannelStorage<T> {
-        fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError> { Ok(Box::new(self.build()?)) }
+        fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError> {
+            Ok(Box::new(self.build()?))
+        }
     }
     impl<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> Binding<'a> for Iox2Bindings<T> {
-        fn payload(&self) -> TypeId { TypeId::of::<T>() }
-        fn ipc_any(&self) -> Option<&dyn Any> { Some(self) }
+        fn payload(&self) -> TypeId {
+            TypeId::of::<T>()
+        }
+        fn ipc_any(&self) -> Option<&dyn Any> {
+            Some(self)
+        }
     }
     impl NamedPlan {
-        pub fn with_iox2_runtime(runtime: Arc<Iox2Runtime>) -> Self { Self { runtime: Some(runtime), ..Self::default() } }
+        pub fn with_iox2_runtime(runtime: Arc<Iox2Runtime>) -> Self {
+            Self {
+                runtime: Some(runtime),
+                ..Self::default()
+            }
+        }
         fn runtime(&mut self) -> Result<Arc<Iox2Runtime>, BuildError> {
-            if self.runtime.is_none() { self.runtime = Some(Iox2Runtime::new()?); }
+            if self.runtime.is_none() {
+                self.runtime = Some(Iox2Runtime::new()?);
+            }
             Ok(self.runtime.as_ref().unwrap().clone())
         }
-        pub fn ipc<T: Debug + ZeroCopySend + Send + Sync + 'static>(&mut self, name: &str) -> Result<&mut Iox2ChannelPlan<T>, BuildError> {
+        pub fn ipc<T: Debug + ZeroCopySend + Send + Sync + 'static>(
+            &mut self,
+            name: &str,
+        ) -> Result<&mut Iox2ChannelPlan<T>, BuildError> {
             let runtime = self.runtime()?;
             let channel = self.channels.entry(name.into()).or_insert_with(|| Channel {
-                plan: Box::new(Iox2ChannelPlan::<T>::new(name, &runtime)), publishers: 0, subscribers: 0,
+                plan: Box::new(Iox2ChannelPlan::<T>::new(name, &runtime)),
+                publishers: 0,
+                subscribers: 0,
             });
-            channel.plan.any_mut().downcast_mut().ok_or_else(|| BuildError(format!("channel '{name}': incompatible payload type or transport")))
+            channel.plan.any_mut().downcast_mut().ok_or_else(|| {
+                BuildError(format!(
+                    "channel '{name}': incompatible payload type or transport"
+                ))
+            })
         }
-        pub fn ipc_publisher<T: Debug + ZeroCopySend + Send + Sync + 'static>(&mut self, name: &str, capacity: usize) -> Result<Iox2PublisherKey<T>, BuildError> {
+        pub fn ipc_publisher<T: Debug + ZeroCopySend + Send + Sync + 'static>(
+            &mut self,
+            name: &str,
+            capacity: usize,
+        ) -> Result<Iox2PublisherKey<T>, BuildError> {
             let key = self.ipc::<T>(name)?.publisher(capacity);
             self.channels.get_mut(name).unwrap().publishers += 1;
             Ok(key)
         }
-        pub fn ipc_subscriber<T: Debug + ZeroCopySend + Send + Sync + 'static>(&mut self, name: &str, capacity: usize) -> Result<Iox2SubscriberKey<T>, BuildError> {
+        pub fn ipc_subscriber<T: Debug + ZeroCopySend + Send + Sync + 'static>(
+            &mut self,
+            name: &str,
+            capacity: usize,
+        ) -> Result<Iox2SubscriberKey<T>, BuildError> {
             let key = self.ipc::<T>(name)?.subscriber(capacity);
             self.channels.get_mut(name).unwrap().subscribers += 1;
             Ok(key)
         }
-        fn event_plan(&mut self, name: &str) -> Result<&mut (Iox2ChannelPlan<()>, usize), BuildError> {
-            if self.channels.get(name).is_some_and(|c| !c.plan.is_ipc()) { return Err(BuildError(format!("channel '{name}': mixes native and IPC transports"))); }
+        fn event_plan(
+            &mut self,
+            name: &str,
+        ) -> Result<&mut (Iox2ChannelPlan<()>, usize), BuildError> {
+            if self.channels.get(name).is_some_and(|c| !c.plan.is_ipc()) {
+                return Err(BuildError(format!(
+                    "channel '{name}': mixes native and IPC transports"
+                )));
+            }
             let runtime = self.runtime()?;
-            Ok(self.events.entry(name.into()).or_insert_with(|| (Iox2ChannelPlan::new(name, &runtime), 0)))
+            Ok(self
+                .events
+                .entry(name.into())
+                .or_insert_with(|| (Iox2ChannelPlan::new(name, &runtime), 0)))
         }
         pub fn event(&mut self, name: &str, capacity: usize) -> Result<Iox2EventKey, BuildError> {
             let entry = self.event_plan(name)?;
             entry.1 += 1;
             Ok(entry.0.events(capacity))
         }
-        pub fn notifier(&mut self, name: &str) -> Result<Iox2NotifierKey, BuildError> { Ok(self.event_plan(name)?.0.notifier()) }
+        pub fn notifier(&mut self, name: &str) -> Result<Iox2NotifierKey, BuildError> {
+            Ok(self.event_plan(name)?.0.notifier())
+        }
         pub fn require_event(&self, name: &str) -> Result<(), BuildError> {
-            if self.events.get(name).is_some_and(|(_, count)| *count > 0) { Ok(()) }
-            else { Err(BuildError(format!("channel '{name}': no task event subscriber"))) }
+            if self.events.get(name).is_some_and(|(_, count)| *count > 0) {
+                Ok(())
+            } else {
+                Err(BuildError(format!(
+                    "channel '{name}': no task event subscriber"
+                )))
+            }
         }
     }
     impl NamedBindings<'_> {
-        pub fn ipc<T: Debug + ZeroCopySend + Send + Sync + 'static>(&self, name: &str) -> Result<&Iox2Bindings<T>, BuildError> {
-            self.channels.get(name).and_then(|b| b.ipc_any()).and_then(|a| a.downcast_ref()).ok_or_else(|| BuildError(format!("channel '{name}': IPC type/transport mismatch")))
+        pub fn ipc<T: Debug + ZeroCopySend + Send + Sync + 'static>(
+            &self,
+            name: &str,
+        ) -> Result<&Iox2Bindings<T>, BuildError> {
+            self.channels
+                .get(name)
+                .and_then(|b| b.ipc_any())
+                .and_then(|a| a.downcast_ref())
+                .ok_or_else(|| BuildError(format!("channel '{name}': IPC type/transport mismatch")))
         }
         pub fn events(&self, name: &str) -> Result<&Iox2Bindings<()>, BuildError> {
-            self.events.get(name).and_then(|b| b.ipc_any()).and_then(|a| a.downcast_ref()).ok_or_else(|| BuildError(format!("channel '{name}': no event bindings")))
+            self.events
+                .get(name)
+                .and_then(|b| b.ipc_any())
+                .and_then(|a| a.downcast_ref())
+                .ok_or_else(|| BuildError(format!("channel '{name}': no event bindings")))
         }
     }
 }

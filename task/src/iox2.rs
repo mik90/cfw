@@ -505,7 +505,9 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
     pub fn inspect_messages(&self, mut inspect: impl FnMut(usize, &Message<T>)) -> usize {
         let batch = std::mem::take(&mut *self.read.borrow_mut());
         let count = batch.len();
-        for (index, sample) in batch.into_iter().enumerate() { inspect(index, &sample); }
+        for (index, sample) in batch.into_iter().enumerate() {
+            inspect(index, &sample);
+        }
         count
     }
     pub fn update(&self) {

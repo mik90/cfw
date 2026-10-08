@@ -59,12 +59,16 @@ fn counted_events_survive_native_gating_and_capture_outlives_executor() {
     let gate = storage.channels().1.1.build();
     let observations = Arc::new(Mutex::new(Vec::new()));
     let mut graph = GraphBuilder::with_storage(&storage);
-    graph.add_callback("observe", || {
-        Ok(Observe {
-            observations: observations.clone(),
-        }
-        .bind(declaration, &input, &input, &gate, &output)?)
-    });
+    graph.add_scheduled_callback(
+        "observe",
+        task::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
+        || {
+            Ok(Observe {
+                observations: observations.clone(),
+            }
+            .bind(declaration, &input, &input, &gate, &output)?)
+        },
+    );
     let builder = UnitTestExecutorBuilder::new(graph.build().unwrap());
     let sender = builder.add_iox2_test_publisher(input.take_publisher(&input_key).unwrap());
     let events = builder.add_iox2_test_notifier(&channel);

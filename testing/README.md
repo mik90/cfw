@@ -1,11 +1,12 @@
 # Callback unit testing
 
-`UnitTestExecutor` runs a borrowed callback graph using deterministic simulation.
-Declare fixture endpoints alongside task endpoints before allocating graph storage,
-then pass their typed bindings to `UnitTestExecutorBuilder`.
+Register tasks and named fixtures, then run a deterministic simulation. Every task
+requires an explicit execution duration. Fixtures and storage are cleaned up on
+scope exit, including when an assertion panics.
 
 ```rust
-use task::{ChannelPlan, GraphPlan, GraphBuilder, RequiredInput, Publisher, LoanError};
+use std::time::Duration;
+use task::{RequiredInput, Publisher, LoanError};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
@@ -17,43 +18,55 @@ impl Double {
     }
 }
 
-let mut input = ChannelPlan::new("input");
-let mut output = ChannelPlan::new("output");
-let declaration = Double::declare(&mut input, &mut output).unwrap();
-let send_key = input.publisher(1);
-let capture_key = output.subscriber(2);
-let storage = GraphPlan::new((input, output)).allocate().unwrap();
-let input = storage.channels().0.build();
-let output = storage.channels().1.build();
-let mut graph = GraphBuilder::with_storage(&storage);
-graph.add_callback("double", || Ok(Double.bind(declaration, &input, &output)?));
+let mut builder = UnitTestExecutorBuilder::new();
+builder.add_task("double", Double, Duration::from_micros(100));
+let mut input = builder.add_test_publisher::<u64>("input");
+let output = builder.add_test_subscriber::<u64>("output");
 
-let builder = UnitTestExecutorBuilder::new(graph.build().unwrap());
-let mut sender = builder.add_test_publisher(input.take_publisher(&send_key).unwrap());
-let mut capture = builder.add_test_subscriber(output.take_subscriber(&capture_key).unwrap());
-let mut executor = builder.build();
-sender.send(21);
-assert_eq!(executor.step().executed, [0]);
-drop(executor);
-let retained = capture.take_messages();
-drop((sender, capture));
-assert_eq!(retained[0].message, 42);
+builder.run(|mut executor| {
+    input.send(21);
+    executor.step();
+    assert_eq!(output.messages(&mut executor, |index, message| {
+        assert_eq!(index, 0);
+        assert_eq!(message.message, 42);
+    }), 1);
+});
 ```
 
-- `with_config` accepts `UnitTestExecutorConfig` (the simulation configuration),
-  including start time, virtual pools and real worker count. Callback schedules
-  are set on `GraphBuilder`.
-- `step` returns before/after time, executed callback indices and idle status.
-  `try_step` reports failures and poisons the session after an error.
-- Native fixture sends use the current simulated time. Captures drain in queue
-  order; `try_messages` and `try_take_messages` report cumulative overflow counts.
-  Retaining messages consumes arena capacity; reserve extra retained capacity on
-  the channel plan when needed. `try_send` reports arena exhaustion.
-- Fixture ports are usable once bound, including before executor construction.
-  Native handles and retained messages borrow storage, not the executor. After
-  execution ends, publishers retain the last simulated timestamp.
-- With `iceoryx2`, bind IPC publisher/subscriber fixtures from an `Iox2ChannelPlan`.
-  Data sends are silent; `add_iox2_test_notifier(channel)` stages counted events
-  for the next step. Unknown event channels are reported by `try_step`. Notifier
-  handles close when the builder/executor is dropped. IPC capture drains into
-  owned messages and its bound middleware port can outlive execution.
+For ordinary control flow outside a closure, keep the allocated setup in scope:
+
+```text
+let setup = builder.allocate();
+let mut executor = setup.build();
+
+input.send(21);
+executor.step();
+output.messages(&mut executor, |_, message| assert_eq!(message.message, 42));
+```
+
+- Channels default to callback argument names; `#[channel("name")]` overrides
+  them. Matching task ports and fixtures are connected automatically. Named
+  construction supports owned (`'static`) payload types without requiring Clone.
+- Input handles can be captured individually or in collections. Sends queue owned
+  values at the current simulated timestamp. Each step drains fixtures in
+  registration order, FIFO within each fixture, before running callbacks.
+- Output inspection is synchronous and borrowed. Each call drains a batch and
+  restarts its index at zero. Native captures default to capacity 10; use
+  `add_test_subscriber_with_capacity` to change it and `try_messages` to inspect
+  cumulative overflow counts instead of asserting that no messages were dropped.
+- `add_scheduled_task(name, task, duration, schedule)` accepts a `CallbackSchedule`
+  for periods, virtual pools, startup and custom next deadlines. The required
+  duration may be a `Duration` or `ExecutionDuration::dynamic(...)`. Explicit zero
+  is allowed. Publications use invocation time; modeled durations occupy pools
+  and affect simulated time advancement. `with_config` configures start time,
+  virtual pool sizes and real worker count.
+- `allocate`, `build`, `run`, and `step` panic on failure; their `try_` variants
+  return errors. `run` returns the closure's result and propagates assertion
+  panics. A setup builds one executor. Input handles close on executor destruction
+  or failed execution; output inspection remains available after a failed step.
+- IPC equivalents are `add_iox2_test_publisher`, `add_iox2_test_subscriber`, and
+  `add_iox2_test_notifier`. IPC data sends are silent; counted notifications are
+  injected separately. IPC output inspection also supports non-Clone payloads;
+  middleware overflow counts are not exposed by this capture API.
+- `BoundUnitTestExecutorBuilder` supports explicitly bound endpoint fixtures for
+  low-level storage/lifetime tests and payload types containing storage borrows.

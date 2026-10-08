@@ -3,6 +3,10 @@
 //! Modeled durations occupy virtual pool slots; output timestamps are invocation
 //! times. Ready work runs before advancing to the next future event.
 //!
+//! Every callback must explicitly configure its modeled execution duration, using
+//! `CallbackSchedule::with_execution_duration` or a duration callback. Construction
+//! rejects missing durations; explicitly selected zero durations are supported.
+//!
 //! Real worker batches are scoped to individual steps. A single real worker runs
 //! inline, independently of how many virtual threads the simulation models.
 pub mod executor;

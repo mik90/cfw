@@ -50,12 +50,22 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
     }
 
     pub(crate) fn with_channel_names(channel_names: Arc<ChannelNameInterner>) -> Self {
-        Self { factories: Vec::new(), channel_names }
+        Self {
+            factories: Vec::new(),
+            channel_names,
+        }
     }
 
-    pub fn add_boxed_callback<F>(&mut self, name: impl Into<String>, schedule: CallbackSchedule, factory: F)
-    where F: FnOnce() -> Result<Box<dyn Callback + 'storage>, FactoryError> + 'build {
-        self.factories.push((name.into(), schedule, Box::new(factory)));
+    pub fn add_boxed_callback<F>(
+        &mut self,
+        name: impl Into<String>,
+        schedule: CallbackSchedule,
+        factory: F,
+    ) where
+        F: FnOnce() -> Result<Box<dyn Callback + 'storage>, FactoryError> + 'build,
+    {
+        self.factories
+            .push((name.into(), schedule, Box::new(factory)));
     }
 
     /// Retain the finalized channel interner, including fixture-only channels.
@@ -169,8 +179,9 @@ pub struct CallbackSchedule {
     pub pool: usize,
     pub run_on_start: bool,
     pub period: Option<Duration>,
-    /// Simulated pool occupancy. Publication timestamps remain invocation time.
-    pub execution_duration: Duration,
+    /// Explicit simulated pool occupancy. Simulation rejects an unspecified
+    /// duration; live execution measures actual completion instead.
+    pub execution_duration: Option<Duration>,
     pub execution_duration_callback: Option<Arc<dyn Fn() -> Duration + Send + Sync>>,
     pub next_execution_time_callback:
         Option<Arc<dyn Fn(FrameworkTime) -> Option<FrameworkTime> + Send + Sync>>,
@@ -197,13 +208,14 @@ impl std::fmt::Debug for CallbackSchedule {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimingError {
+    MissingDuration,
     Overflow,
     PastDeadline,
 }
 
 impl CallbackSchedule {
     pub fn with_execution_duration(mut self, duration: Duration) -> Self {
-        self.execution_duration = duration;
+        self.execution_duration = Some(duration);
         self.execution_duration_callback = None;
         self
     }
@@ -222,10 +234,15 @@ impl CallbackSchedule {
         self.period = None;
         self
     }
-    pub fn duration(&self) -> Duration {
+    pub fn has_execution_duration(&self) -> bool {
+        self.execution_duration.is_some() || self.execution_duration_callback.is_some()
+    }
+    pub fn duration(&self) -> Result<Duration, TimingError> {
         self.execution_duration_callback
             .as_ref()
-            .map_or(self.execution_duration, |duration| duration())
+            .map(|duration| duration())
+            .or(self.execution_duration)
+            .ok_or(TimingError::MissingDuration)
     }
     pub fn is_timed(&self) -> bool {
         self.period.is_some() || self.next_execution_time_callback.is_some()

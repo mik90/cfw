@@ -35,12 +35,16 @@ fn timestamped_data_and_counted_events_are_injected_without_duplicate_notificati
     let publisher = Arc::new(Mutex::new(bindings.take_publisher(&publisher).unwrap()));
     let samples = Arc::new(Mutex::new(Vec::new()));
     let mut builder = GraphBuilder::with_storage(&storage);
-    builder.add_callback("observe", || {
-        Ok(Observe {
-            samples: samples.clone(),
-        }
-        .bind(declaration, &bindings, &bindings)?)
-    });
+    builder.add_scheduled_callback(
+        "observe",
+        task::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
+        || {
+            Ok(Observe {
+                samples: samples.clone(),
+            }
+            .bind(declaration, &bindings, &bindings)?)
+        },
+    );
     let mut simulation = SimulationState::new(builder.build().unwrap()).unwrap();
     for (time, value, count) in [(10, 42, 3), (20, 84, 2)] {
         let time = FrameworkTime::from_nanoseconds(time);

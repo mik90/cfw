@@ -41,17 +41,21 @@ fn body_error_panic_and_post_execution_timing_failure_cancel_the_whole_batch() {
         let bindings = storage.channels().build();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
         let mut builder = GraphBuilder::new();
-        builder.add_scheduled_callback("first", CallbackSchedule::on_start(), || {
-            Ok(Sender {
-                drops: drops.clone(),
-                fail: 0,
-            }
-            .bind(first, &bindings)?)
-        });
+        builder.add_scheduled_callback(
+            "first",
+            CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
+            || {
+                Ok(Sender {
+                    drops: drops.clone(),
+                    fail: 0,
+                }
+                .bind(first, &bindings)?)
+            },
+        );
         let schedule = if fail == 3 {
             CallbackSchedule::on_start().with_execution_duration(Duration::MAX)
         } else {
-            CallbackSchedule::on_start()
+            CallbackSchedule::on_start().with_execution_duration(Duration::ZERO)
         };
         builder.add_scheduled_callback("second", schedule, || {
             Ok(Sender {
@@ -102,19 +106,27 @@ fn panic_during_commit_preserves_already_published_messages_and_cancels_remainin
     let bindings = storage.channels().build();
     let capture = bindings.take_subscriber(&capture_key).unwrap();
     let mut builder = GraphBuilder::new();
-    builder.add_scheduled_callback("first", CallbackSchedule::on_start(), || {
-        Ok(Sender {
-            drops: drops.clone(),
-            fail: 0,
-        }
-        .bind(first, &bindings)?)
-    });
-    builder.add_scheduled_callback("second", CallbackSchedule::on_start(), || {
-        Ok(CommitPanic(
-            bindings.take_publisher(&second)?,
-            drops.clone(),
-        ))
-    });
+    builder.add_scheduled_callback(
+        "first",
+        CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
+        || {
+            Ok(Sender {
+                drops: drops.clone(),
+                fail: 0,
+            }
+            .bind(first, &bindings)?)
+        },
+    );
+    builder.add_scheduled_callback(
+        "second",
+        CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
+        || {
+            Ok(CommitPanic(
+                bindings.take_publisher(&second)?,
+                drops.clone(),
+            ))
+        },
+    );
     let mut simulation = SimulationState::with_config(
         builder.build().unwrap(),
         SimulationConfig {
