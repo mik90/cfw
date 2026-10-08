@@ -1,249 +1,61 @@
-use crate::{
-    message::Message,
-    pub_sub::ChannelName,
-    subscriber::{Subscriber, SubscriberConfig},
-};
-use std::sync::{Arc, Mutex, MutexGuard};
+use crate::{Subscriber, message::Message};
+use base::arena::ArenaReaderPtr;
 
-/// Queue depth used when no explicit capacity is given — generous enough for typical
-/// single-step unit tests without forcing every test to think about sizing.
 pub const DEFAULT_TEST_SUBSCRIBER_CAPACITY: usize = 10;
 
-/// Counts of messages displaced due to overflow on either side of a subscriber's
-/// double buffer — i.e. messages that arrived but were silently dropped to make room.
+/// Cumulative overflow counts on each side of the subscriber's double buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DroppedMessages {
-    /// Displaced from the write queue before ever reaching the read buffer — the
-    /// subscriber wasn't drained often enough to keep up with what was published.
     pub writer: usize,
-    /// Displaced from the read buffer after draining — more messages arrived than
-    /// `capacity` allows before being consumed via `messages`/`try_messages`.
     pub reader: usize,
 }
-
 impl DroppedMessages {
-    /// Whether any drops occurred on either side. Note `writer` and `reader` counts
-    /// are deliberately not summed — they describe distinct failure modes (the
-    /// subscriber falling behind the publisher vs. the test falling behind the
-    /// subscriber) and a combined number wouldn't mean anything useful.
     pub fn any(&self) -> bool {
         self.writer > 0 || self.reader > 0
     }
 }
 
-fn make_test_config(channel: ChannelName, capacity: usize) -> SubscriberConfig {
-    SubscriberConfig {
-        is_optional: true,
-        capacity,
-        is_trigger: false,
-        keep_across_runs: true,
-        channel_name: channel,
-    }
+/// Capture endpoint whose messages may outlive both the fixture and executor.
+/// The application must retain graph storage until all messages are dropped.
+pub struct TestSubscriber<'storage, T> {
+    subscriber: Subscriber<'storage, T>,
 }
-
-/// Subscriber that captures messages published on a channel for inspection in tests.
-/// Wraps a real `Subscriber<T>` — connecting to a publisher works exactly like any
-/// other internal subscriber, so there's no special-casing anywhere in `Publisher<T>`.
-pub struct TestSubscriber<T> {
-    subscriber: Arc<Mutex<Subscriber<T>>>,
-}
-
-// This real channel endpoint moves queued values/final drops between workers
-// (`Send`), reads shared published values (`Sync`), and retains them (`'static`).
-impl<T> TestSubscriber<T> {
-    pub fn new(subscriber: Arc<Mutex<Subscriber<T>>>) -> Self {
+impl<'storage, T> TestSubscriber<'storage, T> {
+    pub fn new(subscriber: Subscriber<'storage, T>) -> Self {
         Self { subscriber }
     }
 
-    fn subscriber_guard<'a>(&'a self) -> MutexGuard<'a, Subscriber<T>> {
-        self.subscriber.lock().expect("subscriber lock failed")
-    }
-
-    /// Drains queued messages, inspecting each by reference, and returns the visited count.
-    ///
-    /// The callback receives a zero-based index in queue order, restarting at zero
-    /// for each call. Messages are not copied and references cannot escape the callback.
-    /// The subscriber mutex is held during inspection; callbacks must not re-enter
-    /// this subscriber or drop its executor.
-    ///
-    /// Panics if any messages were ever dropped due to the queue overflowing — that
-    /// means the test capacity is too small for what was actually published. Use
-    /// [`TestSubscriber::try_messages`] if dropped messages are expected and you'd
-    /// rather inspect the situation than panic.
-    pub fn messages(&mut self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
-        let (count, dropped) = self.try_messages(inspect);
-        let subscriber_guard = self.subscriber_guard();
-        assert!(
-            dropped.writer == 0,
-            "TestSubscriber on channel '{}' dropped {} message(s) before they were ever drained \
-             — the subscriber fell behind the publisher; queue capacity ({}) was exceeded. Use \
-             `with_capacity` to size it for what this test actually sends, or call \
-             `try_messages` if drops are expected",
-            subscriber_guard.config().channel_name,
-            dropped.writer,
-            subscriber_guard.config().capacity,
-        );
-        assert!(
-            dropped.reader == 0,
-            "TestSubscriber on channel '{}' dropped {} message(s) after draining but before \
-             being read — the test fell behind the subscriber; queue capacity ({}) was \
-             exceeded. Use `with_capacity` to size it for what this test actually sends, or \
-             call `try_messages` if drops are expected",
-            subscriber_guard.config().channel_name,
-            dropped.reader,
-            subscriber_guard.config().capacity,
-        );
-        count
-    }
-
-    /// Like [`TestSubscriber::messages`], but does not assert on drops — returns
-    /// the visited count alongside counts of how many were ever displaced due to
-    /// overflow (split by which side of the buffer they were dropped on), for tests
-    /// that want to assert on drop behavior directly.
     pub fn try_messages(
         &mut self,
         mut inspect: impl FnMut(usize, &Message<T>),
     ) -> (usize, DroppedMessages) {
-        let subscriber_guard = self.subscriber_guard();
-        subscriber_guard.drain_writer_to_reader();
-        let count = {
-            let mut guard = subscriber_guard.read_buffer();
-            let count = guard.len();
-            for (index, ptr) in guard.drain_contiguous().enumerate() {
-                inspect(index, &ptr);
-            }
-            count
-        };
+        let (messages, dropped) = self.try_take_messages();
+        for (index, message) in messages.iter().enumerate() {
+            inspect(index, message);
+        }
+        (messages.len(), dropped)
+    }
+
+    pub fn messages(&mut self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
+        let (count, dropped) = self.try_messages(inspect);
+        assert!(!dropped.any(), "test subscriber overflow: {dropped:?}");
+        count
+    }
+
+    pub fn try_take_messages(
+        &mut self,
+    ) -> (Vec<ArenaReaderPtr<'storage, Message<T>>>, DroppedMessages) {
+        self.subscriber.update();
         let dropped = DroppedMessages {
-            writer: subscriber_guard.writer_queue_drops(),
-            reader: subscriber_guard.reader_queue_drops(),
+            writer: self.subscriber.writer_drops(),
+            reader: self.subscriber.reader_drops(),
         };
-        (count, dropped)
+        (self.subscriber.input().drain().collect(), dropped)
+    }
+
+    pub fn take_messages(&mut self) -> Vec<ArenaReaderPtr<'storage, Message<T>>> {
+        let (messages, dropped) = self.try_take_messages();
+        assert!(!dropped.any(), "test subscriber overflow: {dropped:?}");
+        messages
     }
 }
-
-/*
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        generic_publisher::GenericPublisher,
-        output::Output,
-        publisher::{Publisher, PublisherConfig},
-        time::FrameworkTime,
-    };
-
-    fn connected_publisher(
-        channel: &str,
-        test_subscriber: &mut TestSubscriber<i32>,
-    ) -> Publisher<i32> {
-        let mut publisher = Publisher::<i32>::new(PublisherConfig {
-            capacity: 1,
-            channel_name: channel.into(),
-        });
-
-        let mut subscriber_guard = test_subscriber.subscriber_guard();
-        assert!(
-            publisher
-                .connect_to_subscriber(&mut subscriber_guard)
-                .is_ok()
-        );
-        publisher.allocate_arena();
-        publisher
-    }
-
-    fn send(publisher: &mut Publisher<i32>, value: i32, at: i64) {
-        let mut output = Output::new_default(publisher);
-        *output = value;
-        output.send();
-        publisher.flush_loaned_values(FrameworkTime::from_nanoseconds(at));
-    }
-
-    #[test]
-    fn connects_like_a_normal_subscriber_and_receives_messages() {
-        let mut subscriber = TestSubscriber::<i32>::new("channel".into());
-        let mut publisher = connected_publisher("channel", &mut subscriber);
-
-        send(&mut publisher, 42, 99);
-
-        let messages = subscriber.messages();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].message, 42);
-        assert_eq!(
-            messages[0].header.published_at,
-            FrameworkTime::from_nanoseconds(99)
-        );
-    }
-
-    #[test]
-    fn default_capacity_matches_constant() {
-        let subscriber = TestSubscriber::<i32>::new("channel".into());
-        assert_eq!(
-            subscriber.config().capacity,
-            DEFAULT_TEST_SUBSCRIBER_CAPACITY
-        );
-    }
-
-    #[test]
-    fn with_capacity_overrides_default() {
-        let subscriber = TestSubscriber::<i32>::with_capacity("channel".into(), 2);
-        assert_eq!(subscriber.config().capacity, 2);
-    }
-
-    #[test]
-    #[should_panic(expected = "dropped 1 message")]
-    fn messages_panics_on_reader_side_overflow() {
-        let mut subscriber = TestSubscriber::<i32>::with_capacity("channel".into(), 1);
-        let mut publisher = connected_publisher("channel", &mut subscriber);
-
-        send(&mut publisher, 1, 1);
-        subscriber.drain_writer_to_reader();
-        send(&mut publisher, 2, 2);
-
-        subscriber.messages();
-    }
-
-    #[test]
-    fn try_messages_reports_reader_side_drops_without_panicking() {
-        let mut subscriber = TestSubscriber::<i32>::with_capacity("channel".into(), 1);
-        let mut publisher = connected_publisher("channel", &mut subscriber);
-
-        send(&mut publisher, 1, 1);
-        subscriber.drain_writer_to_reader();
-        send(&mut publisher, 2, 2);
-
-        let (messages, dropped) = subscriber.try_messages();
-        assert_eq!(
-            dropped,
-            DroppedMessages {
-                writer: 0,
-                reader: 1
-            }
-        );
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].message, 2);
-    }
-
-    #[test]
-    fn try_messages_reports_writer_side_drops_without_panicking() {
-        let mut subscriber = TestSubscriber::<i32>::with_capacity("channel".into(), 1);
-        let mut publisher = connected_publisher("channel", &mut subscriber);
-
-        // Two sends without an intervening drain — the second displaces the first
-        // from the *write* queue, before it ever reaches the read buffer.
-        send(&mut publisher, 1, 1);
-        send(&mut publisher, 2, 2);
-
-        let (messages, dropped) = subscriber.try_messages();
-        assert_eq!(
-            dropped,
-            DroppedMessages {
-                writer: 1,
-                reader: 0
-            }
-        );
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].message, 2);
-    }
-}
-*/

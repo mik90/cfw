@@ -95,6 +95,10 @@ impl<'storage, T> Subscriber<'storage, T> {
     pub fn writer_drops(&self) -> usize {
         self.buffer.writer_drops()
     }
+
+    pub fn reader_drops(&self) -> usize {
+        self.buffer.read_buffer().drops()
+    }
 }
 
 pub(crate) struct SubscriberWriter<'storage, T> {

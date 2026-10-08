@@ -1569,7 +1569,7 @@ dependencies = [
  "iceoryx2",
  "simulation_executor",
  "task",
- "test_tasks",
+ "task_macros",
 ]
 
 [[package]]

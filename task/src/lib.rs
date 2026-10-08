@@ -13,6 +13,12 @@ pub mod publisher;
 pub mod storage;
 pub mod string_interner;
 pub mod subscriber;
+#[cfg(feature = "testing")]
+pub mod testing_publisher;
+#[cfg(feature = "testing")]
+pub mod testing_subscriber;
+#[cfg(feature = "testing")]
+pub mod testing_time;
 pub mod time;
 pub mod wake;
 
