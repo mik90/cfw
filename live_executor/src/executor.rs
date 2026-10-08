@@ -1,11 +1,9 @@
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
 use task::executor::{TimeSource, WallClock};
 use task::{BuiltGraph, GraphMetadata, ScheduledCallback, execute_callback};
 
-use crate::periodic::PeriodicNode;
 use crate::pool_state::{PoolState, Scheduler};
 use crate::{LiveExecutorError, LiveExecutorStartError, StopSignal, ThreadFailure};
 
@@ -57,7 +55,7 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
                 ),
             });
         }
-        let schedules: Vec<_> = nodes.iter().map(|node| node.schedule).collect();
+        let schedules: Vec<_> = nodes.iter().map(|node| node.schedule.clone()).collect();
         let scheduler = Scheduler::new(&schedules, &workers);
         Ok(Self {
             nodes,
@@ -100,22 +98,23 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
         } = self;
         let stop = StopSignal(scheduler.clone());
         let _stop_on_exit = StopOnExit(stop.clone());
-        let started = Instant::now();
+        let started = clock.now();
         let mut periodic = Vec::new();
         #[cfg(feature = "iceoryx2")]
         let mut registrations = Vec::new();
         for (index, node) in nodes.iter_mut().enumerate() {
-            if let Some(period) = node.schedule.period {
-                let next = started.checked_add(period).ok_or_else(|| {
-                    LiveExecutorError::Start(LiveExecutorStartError {
-                        reason: "period exceeds clock range".into(),
-                    })
-                })?;
-                periodic.push(PeriodicNode {
-                    node: index,
-                    period,
-                    next,
-                });
+            if node.schedule.is_timed() {
+                let next = if node.schedule.run_on_start {
+                    None
+                } else {
+                    node.schedule.next_after(started).map_err(|error| {
+                        LiveExecutorError::Start(LiveExecutorStartError {
+                            reason: format!("invalid timing for '{}': {error:?}", node.name),
+                        })
+                    })?
+                };
+                scheduler.set_deadline(index, next);
+                periodic.push(index);
             }
             node.callback.set_waker(scheduler.waker(index));
             #[cfg(feature = "iceoryx2")]
@@ -208,12 +207,13 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
             if startup_error.is_none() && !periodic.is_empty() {
                 let scheduler = &scheduler;
                 let stop = stop.clone();
+                let clock = &clock;
                 let spawn = before_spawn(spawn_index).and_then(|()| {
                     thread::Builder::new()
                         .name("cfw_periodic".into())
                         .spawn_scoped(scope, move || {
                             let _stop_on_exit = StopOnExit(stop);
-                            crate::periodic::run(scheduler, periodic);
+                            crate::periodic::run(scheduler, periodic, clock);
                             Ok(())
                         })
                 });
@@ -275,14 +275,19 @@ fn worker<T: TimeSource>(
                 let index = work.expect("scheduler owns work sender");
                 if scheduler.is_stopped() { return Ok(()); }
                 scheduler.claim(index);
-                {
+                let executed = {
                     let mut node = nodes[index].lock().unwrap();
                     let context = metadata.context(clock.now());
-                    execute_callback(node.callback.as_mut(), &context).map_err(|source| ThreadFailure::Callback {
+                    let executed = execute_callback(node.callback.as_mut(), &context).map_err(|source| ThreadFailure::Callback {
                         worker: id, callback: node.name.clone(), source,
                     })?;
-                }
-                scheduler.finish(index);
+                    if executed && node.schedule.is_timed() {
+                        let next = node.schedule.next_after(clock.now()).map_err(|source| ThreadFailure::Timing { callback: node.name.clone(), source })?;
+                        scheduler.set_deadline(index, next);
+                    }
+                    executed
+                };
+                scheduler.finish(index, executed);
             }
         }
     }

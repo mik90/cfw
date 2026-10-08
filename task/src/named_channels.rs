@@ -47,6 +47,7 @@ struct PublisherSpec {
 
 struct SubscriberSpec {
     capacity: usize,
+    policy: crate::SubscriberPolicy,
 }
 
 /// Runtime endpoint declarations for one named channel.
@@ -92,8 +93,16 @@ impl<T> ChannelPlan<T> {
     }
 
     pub fn subscriber(&mut self, capacity: usize) -> SubscriberKey<T> {
+        self.subscriber_with_policy(capacity, crate::SubscriberPolicy::default())
+    }
+
+    pub fn subscriber_with_policy(
+        &mut self,
+        capacity: usize,
+        policy: crate::SubscriberPolicy,
+    ) -> SubscriberKey<T> {
         let index = self.subscribers.len();
-        self.subscribers.push(SubscriberSpec { capacity });
+        self.subscribers.push(SubscriberSpec { capacity, policy });
         SubscriberKey(Key {
             channel: self.identity.clone(),
             index,
@@ -192,7 +201,7 @@ impl<T> ChannelStorage<T> {
             .subscribers
             .iter()
             .map(|spec| {
-                let mut subscriber = Subscriber::new(spec.capacity);
+                let mut subscriber = Subscriber::with_policy(spec.capacity, spec.policy);
                 subscriber.set_channel_name(&self.name);
                 subscriber
             })

@@ -1,7 +1,4 @@
 //! Typed iceoryx2 channels. All processes must agree on service-wide settings.
-// TODO(port-iox2-simulation): Restore timestamped input/event injection and listener
-// polling at deterministic simulation boundaries, without live-thread ordering or
-// duplicate notifications during replay injection.
 use crate::{
     EndpointError, LoanError, StorageError, StorageLayout,
     message::{Message, MessageHeader},
@@ -415,6 +412,20 @@ pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     runtime: Arc<Iox2Runtime>,
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
+    /// Publish timestamped data without an event notification, for deterministic
+    /// simulation/replay that schedules counted events independently.
+    pub fn publish_with_header(&self, header: MessageHeader, value: T) -> Result<(), LoanError> {
+        self.port
+            .loan_uninit()
+            .map_err(|e| LoanError::Transport(e.to_string()))?
+            .write_payload(Message {
+                header,
+                message: value,
+            })
+            .send()
+            .map_err(|e| LoanError::Transport(e.to_string()))?;
+        Ok(())
+    }
     pub fn channel_name(&self) -> &str {
         &self.channel
     }
@@ -584,6 +595,7 @@ impl Iox2EventSubscriber {
     }
     pub fn take_registration(&mut self) -> Option<Iox2EventRegistration> {
         Some(Iox2EventRegistration {
+            channel: self.channel.clone(),
             listener: self.listener.take()?,
             staging: self.staging.clone(),
             wake: self
@@ -625,6 +637,7 @@ impl<'a> Iox2Event<'a> {
     }
 }
 pub struct Iox2EventRegistration {
+    pub channel: String,
     pub listener: Listener<ipc_threadsafe::Service>,
     pub staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
     pub wake: WakeHandle,

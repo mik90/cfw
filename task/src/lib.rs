@@ -16,12 +16,15 @@ pub mod subscriber;
 pub mod time;
 pub mod wake;
 
-pub use callback::{Callback, CallbackNode, execute_callback};
+pub use callback::{
+    BatchExecutionError, BatchFailure, Callback, CallbackNode, execute_callback,
+    execute_callback_batch,
+};
 pub use context::Context;
 pub use forwarded_message::ForwardedMessage;
 pub use graph::{
     BuiltGraph, CallbackSchedule, FactoryError, GraphBuildError, GraphBuilder, GraphMetadata,
-    GraphStepError, ScheduledCallback,
+    GraphStepError, ScheduledCallback, TimingError,
 };
 pub use input::{Input, InputSpan, OptionalInput, RequiredInput};
 pub use named_channels::{
@@ -35,4 +38,4 @@ pub use storage::{
     ChannelEndpoints, GraphPlan, GraphStorage, PublisherStorage, PublisherStoragePlan,
     StorageError, StorageLayout,
 };
-pub use subscriber::Subscriber;
+pub use subscriber::{Subscriber, SubscriberPolicy};

@@ -1,5 +1,5 @@
 use crossbeam::channel::{self, Receiver, Sender};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use task::CallbackSchedule;
 use task::wake::{Wake, WakeHandle};
@@ -8,6 +8,8 @@ const IDLE: u8 = 0;
 const QUEUED: u8 = 1;
 const RUNNING: u8 = 2;
 const RETRIGGERED: u8 = 3;
+const WAITING: u8 = 4;
+const READINESS_CHANGED: u8 = 5;
 
 pub(crate) struct PoolState {
     pub thread_count: usize,
@@ -18,6 +20,7 @@ pub(crate) struct PoolState {
 struct NodeState {
     state: AtomicU8,
     pool: usize,
+    deadline: AtomicI64,
 }
 
 /// Scheduling metadata only: this may outlive a run, but owns no borrowed nodes.
@@ -29,6 +32,8 @@ pub(crate) struct Scheduler {
     stopped: AtomicBool,
     stop_tx: Mutex<Option<Sender<()>>>,
     pub stop_rx: Receiver<()>,
+    timer_tx: Sender<()>,
+    pub timer_rx: Receiver<()>,
 }
 
 impl Scheduler {
@@ -47,6 +52,7 @@ impl Scheduler {
             })
             .collect();
         let (stop_tx, stop_rx) = channel::bounded(0);
+        let (timer_tx, timer_rx) = channel::bounded(1);
         Arc::new(Self {
             #[cfg(feature = "iceoryx2")]
             external_stop: std::sync::OnceLock::new(),
@@ -56,16 +62,49 @@ impl Scheduler {
                 .map(|s| NodeState {
                     state: AtomicU8::new(IDLE),
                     pool: s.pool,
+                    deadline: AtomicI64::new(task::time::FrameworkTime::INVALID.to_nanoseconds()),
                 })
                 .collect(),
             stopped: AtomicBool::new(false),
             stop_tx: Mutex::new(Some(stop_tx)),
             stop_rx,
+            timer_tx,
+            timer_rx,
         })
     }
 
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
+    }
+
+    pub fn set_deadline(&self, node: usize, time: Option<task::time::FrameworkTime>) {
+        self.nodes[node].deadline.store(
+            time.unwrap_or(task::time::FrameworkTime::INVALID)
+                .to_nanoseconds(),
+            Ordering::Release,
+        );
+        let _ = self.timer_tx.try_send(());
+    }
+    pub fn deadline(&self, node: usize) -> Option<task::time::FrameworkTime> {
+        let time = task::time::FrameworkTime::from_nanoseconds(
+            self.nodes[node].deadline.load(Ordering::Acquire),
+        );
+        (time != task::time::FrameworkTime::INVALID).then_some(time)
+    }
+    pub fn claim_due(&self, node: usize, now: task::time::FrameworkTime) -> bool {
+        let Some(time) = self.deadline(node) else {
+            return false;
+        };
+        time <= now
+            && self.nodes[node]
+                .deadline
+                .compare_exchange(
+                    time.to_nanoseconds(),
+                    task::time::FrameworkTime::INVALID.to_nanoseconds(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
     }
 
     pub fn request_stop(&self) {
@@ -97,6 +136,10 @@ impl Scheduler {
     }
 
     pub fn trigger(&self, node: usize) {
+        self.notify(node, true);
+    }
+
+    fn notify(&self, node: usize, trigger: bool) {
         if self.is_stopped() {
             return;
         }
@@ -107,14 +150,27 @@ impl Scheduler {
             // verifies the node has not changed state and publishes the queue
             // write to the worker's acquire claim of this node.
             let next = match current {
-                IDLE => QUEUED,
-                RUNNING => RETRIGGERED,
+                IDLE => {
+                    if trigger {
+                        QUEUED
+                    } else {
+                        IDLE
+                    }
+                }
+                WAITING => QUEUED,
+                RUNNING | READINESS_CHANGED => {
+                    if trigger {
+                        RETRIGGERED
+                    } else {
+                        READINESS_CHANGED
+                    }
+                }
                 QUEUED | RETRIGGERED => current,
                 _ => unreachable!(),
             };
             match state.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => {
-                    if current == IDLE {
+                    if next == QUEUED && current != QUEUED {
                         self.enqueue(node);
                     }
                     return;
@@ -140,24 +196,37 @@ impl Scheduler {
         );
     }
 
-    pub fn finish(&self, node: usize) {
-        match self.nodes[node].state.compare_exchange(
-            RUNNING,
-            IDLE,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {}
-            Err(RETRIGGERED) => {
-                // Acquire every retrigger's publication before handing the node
-                // to its next worker; a plain store would break that handoff.
-                assert_eq!(
-                    self.nodes[node].state.swap(QUEUED, Ordering::AcqRel),
-                    RETRIGGERED
-                );
-                self.enqueue(node);
+    pub fn finish(&self, node: usize, executed: bool) {
+        let state = &self.nodes[node].state;
+        let mut current = state.load(Ordering::Acquire);
+        loop {
+            let next = match current {
+                RUNNING => {
+                    if executed {
+                        IDLE
+                    } else {
+                        WAITING
+                    }
+                }
+                READINESS_CHANGED => {
+                    if executed {
+                        IDLE
+                    } else {
+                        QUEUED
+                    }
+                }
+                RETRIGGERED => QUEUED,
+                _ => unreachable!("node must be running when released"),
+            };
+            match state.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => {
+                    if next == QUEUED {
+                        self.enqueue(node);
+                    }
+                    return;
+                }
+                Err(actual) => current = actual,
             }
-            Err(_) => unreachable!("node must be running when released"),
         }
     }
 }
@@ -167,6 +236,11 @@ struct NodeWake {
     node: usize,
 }
 impl Wake for NodeWake {
+    fn readiness_changed(&self) {
+        if let Some(scheduler) = self.scheduler.upgrade() {
+            scheduler.notify(self.node, false);
+        }
+    }
     fn wake(&self) {
         if let Some(scheduler) = self.scheduler.upgrade() {
             scheduler.trigger(self.node);
@@ -177,6 +251,31 @@ impl Wake for NodeWake {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn readiness_changes_resume_only_an_outstanding_trigger() {
+        let scheduler = Scheduler::new(&[CallbackSchedule::default()], &[1]);
+        let wake = scheduler.waker(0);
+        wake.readiness_changed();
+        assert!(scheduler.pools[0].work_rx.is_empty());
+        wake.wake();
+        let node = scheduler.pools[0].work_rx.try_recv().unwrap();
+        scheduler.claim(node);
+        scheduler.finish(node, false); // Required data is missing.
+        wake.readiness_changed();
+        assert_eq!(scheduler.pools[0].work_rx.try_recv().unwrap(), node);
+        scheduler.claim(node);
+        wake.readiness_changed(); // Does not request another run after success.
+        scheduler.finish(node, true);
+        assert!(scheduler.pools[0].work_rx.is_empty());
+        wake.wake();
+        let node = scheduler.pools[0].work_rx.try_recv().unwrap();
+        scheduler.claim(node);
+        wake.readiness_changed(); // Arrival racing the failed readiness check.
+        scheduler.finish(node, false);
+        assert_eq!(scheduler.pools[0].work_rx.try_recv().unwrap(), node);
+        scheduler.claim(node);
+        scheduler.finish(node, true);
+    }
     #[test]
     fn repeated_triggers_coalesce_without_hot_path_allocation() {
         let scheduler = Scheduler::new(&[CallbackSchedule::default()], &[2]);
@@ -189,10 +288,10 @@ mod tests {
                 scheduler.claim(node);
                 wake.wake();
                 wake.wake();
-                scheduler.finish(node);
+                scheduler.finish(node, true);
                 let node = scheduler.pools[0].work_rx.try_recv().unwrap();
                 scheduler.claim(node);
-                scheduler.finish(node);
+                scheduler.finish(node, true);
                 assert!(scheduler.pools[0].work_rx.is_empty());
             }
         });

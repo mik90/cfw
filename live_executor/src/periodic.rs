@@ -1,31 +1,30 @@
 use crate::pool_state::Scheduler;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use task::executor::TimeSource;
 
-pub(crate) struct PeriodicNode {
-    pub node: usize,
-    pub next: Instant,
-    pub period: Duration,
-}
-
-pub(crate) fn run(scheduler: &Scheduler, mut periodic: Vec<PeriodicNode>) {
+pub(crate) fn run<T: TimeSource>(scheduler: &Scheduler, timed: Vec<usize>, clock: &T) {
     while !scheduler.is_stopped() {
-        let now = Instant::now();
-        for entry in &mut periodic {
-            if entry.next <= now {
-                scheduler.trigger(entry.node);
-                // Coalesce missed periods rather than creating an unbounded backlog.
-                entry.next = now
-                    .checked_add(entry.period)
-                    .expect("period exceeds clock range");
+        while scheduler.timer_rx.try_recv().is_ok() {}
+        let now = clock.now();
+        for &node in &timed {
+            if scheduler.claim_due(node, now) {
+                scheduler.trigger(node);
             }
         }
-        let next = periodic
+        let next = timed
             .iter()
-            .map(|entry| entry.next)
-            .min()
-            .expect("periodic list is nonempty");
-        let _ = scheduler
-            .stop_rx
-            .recv_timeout(next.saturating_duration_since(Instant::now()));
+            .filter_map(|&node| scheduler.deadline(node))
+            .min();
+        // Re-check injected/scaled clocks even without a callback completion.
+        let timeout = next.map_or(Duration::from_millis(100), |next| {
+            let nanos = (i128::from(next.to_nanoseconds()) - i128::from(now.to_nanoseconds()))
+                .max(0) as u64;
+            Duration::from_nanos(nanos).min(Duration::from_millis(100))
+        });
+        crossbeam::select! {
+            recv(scheduler.stop_rx) -> _ => break,
+            recv(scheduler.timer_rx) -> _ => {},
+            default(timeout) => {},
+        }
     }
 }

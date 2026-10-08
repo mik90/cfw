@@ -155,18 +155,91 @@ impl<'storage> BuiltGraph<'storage> {
     }
 }
 
-// TODO(port-timing): Add modeled execution duration and custom next-run timing for
-// simulated busy-until times and virtual-pool occupancy, with explicit timestamp rules.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct CallbackSchedule {
     pub pool: usize,
-    // TODO(port-startup-policy): Honor this flag consistently in live and simulation;
-    // test explicit startup execution independently of the first periodic deadline.
     pub run_on_start: bool,
     pub period: Option<Duration>,
+    /// Simulated pool occupancy. Publication timestamps remain invocation time.
+    pub execution_duration: Duration,
+    pub execution_duration_callback: Option<Arc<dyn Fn() -> Duration + Send + Sync>>,
+    pub next_execution_time_callback:
+        Option<Arc<dyn Fn(FrameworkTime) -> Option<FrameworkTime> + Send + Sync>>,
+}
+
+impl std::fmt::Debug for CallbackSchedule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackSchedule")
+            .field("pool", &self.pool)
+            .field("run_on_start", &self.run_on_start)
+            .field("period", &self.period)
+            .field("execution_duration", &self.execution_duration)
+            .field(
+                "custom_duration",
+                &self.execution_duration_callback.is_some(),
+            )
+            .field(
+                "custom_next_time",
+                &self.next_execution_time_callback.is_some(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimingError {
+    Overflow,
+    PastDeadline,
 }
 
 impl CallbackSchedule {
+    pub fn with_execution_duration(mut self, duration: Duration) -> Self {
+        self.execution_duration = duration;
+        self.execution_duration_callback = None;
+        self
+    }
+    pub fn with_execution_duration_callback(
+        mut self,
+        duration: impl Fn() -> Duration + Send + Sync + 'static,
+    ) -> Self {
+        self.execution_duration_callback = Some(Arc::new(duration));
+        self
+    }
+    pub fn with_next_execution_time_callback(
+        mut self,
+        next: impl Fn(FrameworkTime) -> Option<FrameworkTime> + Send + Sync + 'static,
+    ) -> Self {
+        self.next_execution_time_callback = Some(Arc::new(next));
+        self.period = None;
+        self
+    }
+    pub fn duration(&self) -> Duration {
+        self.execution_duration_callback
+            .as_ref()
+            .map_or(self.execution_duration, |duration| duration())
+    }
+    pub fn is_timed(&self) -> bool {
+        self.period.is_some() || self.next_execution_time_callback.is_some()
+    }
+    /// Compute a deadline from completion time, or from start time for the first
+    /// invocation. A custom callback returning None disables its timer until an
+    /// input-triggered invocation computes another deadline.
+    pub fn next_after(&self, now: FrameworkTime) -> Result<Option<FrameworkTime>, TimingError> {
+        let next = if let Some(next) = &self.next_execution_time_callback {
+            next(now)
+        } else if let Some(period) = self.period {
+            Some(
+                now.checked_add_duration(period)
+                    .ok_or(TimingError::Overflow)?,
+            )
+        } else {
+            None
+        };
+        if next.is_some_and(|next| next < now) {
+            return Err(TimingError::PastDeadline);
+        }
+        Ok(next)
+    }
     pub fn on_start() -> Self {
         Self {
             run_on_start: true,

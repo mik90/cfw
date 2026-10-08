@@ -6,20 +6,37 @@ use crate::wake::{WakeHandle, WakeRegistration};
 use std::sync::{Arc, OnceLock};
 
 /// A typed subscriber retaining messages for the storage lifetime.
-// TODO(port-input-policy): Restore trigger/non-trigger and keep-across-runs options
-// through declarations/macros; preserve pending triggers while required inputs are missing.
 pub struct Subscriber<'storage, T> {
     buffer: DoubleBuffer<'storage, Message<T>>,
     channel: String,
     wake: WakeRegistration,
+    policy: SubscriberPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubscriberPolicy {
+    pub trigger: bool,
+    pub keep_across_runs: bool,
+}
+impl Default for SubscriberPolicy {
+    fn default() -> Self {
+        Self {
+            trigger: true,
+            keep_across_runs: true,
+        }
+    }
 }
 
 impl<'storage, T> Subscriber<'storage, T> {
     pub fn new(capacity: usize) -> Self {
+        Self::with_policy(capacity, SubscriberPolicy::default())
+    }
+    pub fn with_policy(capacity: usize, policy: SubscriberPolicy) -> Self {
         Self {
             buffer: DoubleBuffer::new(capacity),
             channel: String::new(),
             wake: Arc::new(OnceLock::new()),
+            policy,
         }
     }
 
@@ -27,6 +44,7 @@ impl<'storage, T> Subscriber<'storage, T> {
         SubscriberWriter {
             queue: self.buffer.write_buffer(),
             wake: self.wake.clone(),
+            trigger: self.policy.trigger,
         }
     }
 
@@ -46,6 +64,17 @@ impl<'storage, T> Subscriber<'storage, T> {
 
     pub fn has_pending(&self) -> bool {
         !self.is_empty() || !self.buffer.write_buffer().is_empty()
+    }
+    pub fn requests_execution(&self) -> bool {
+        self.policy.trigger && !self.buffer.write_buffer().is_empty()
+    }
+    pub fn finish_iteration(&self) {
+        if !self.policy.keep_across_runs {
+            let mut guard = self.buffer.read_buffer();
+            while !guard.is_empty() {
+                guard.pop_front();
+            }
+        }
     }
 
     /// Move pending publications into the bounded read buffer.
@@ -71,13 +100,18 @@ impl<'storage, T> Subscriber<'storage, T> {
 pub(crate) struct SubscriberWriter<'storage, T> {
     queue: WriteBufferHandle<'storage, Message<T>>,
     wake: WakeRegistration,
+    trigger: bool,
 }
 
 impl<'storage, T> SubscriberWriter<'storage, T> {
     pub(crate) fn write(&self, ptr: base::arena::ArenaPtr<'storage, Message<T>>) {
         self.queue.write(ptr);
         if let Some(wake) = self.wake.get() {
-            wake.wake();
+            if self.trigger {
+                wake.wake();
+            } else {
+                wake.readiness_changed();
+            }
         }
     }
 }

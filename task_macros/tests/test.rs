@@ -75,6 +75,64 @@ fn annotation_mismatch_is_reported_before_registering_any_ports() {
     assert_eq!(input.publisher_capacity(&probe).unwrap(), before);
 }
 
+#[test]
+fn arrival_after_input_snapshot_does_not_make_an_empty_required_view_ready() {
+    struct LateArrival<C, F> {
+        inner: C,
+        publish: F,
+    }
+    impl<C: task::Callback, F: FnMut() + Send> task::Callback for LateArrival<C, F> {
+        fn update_inputs(&mut self) {
+            self.inner.update_inputs();
+            (self.publish)();
+        }
+        fn required_inputs_available(&self) -> bool {
+            self.inner.required_inputs_available()
+        }
+        fn required_inputs_ready(&self) -> bool {
+            self.inner.required_inputs_ready()
+        }
+        fn run(&mut self, ctx: &Context) -> Result<(), LoanError> {
+            self.inner.run(ctx)
+        }
+        fn flush_outputs(&mut self, time: FrameworkTime) {
+            self.inner.flush_outputs(time);
+        }
+        fn discard_outputs(&mut self) {
+            self.inner.discard_outputs();
+        }
+        fn finish_inputs(&mut self) {
+            self.inner.finish_inputs();
+        }
+    }
+    let mut input = ChannelPlan::new("in");
+    let mut output = ChannelPlan::new("out");
+    let declaration = Increment::declare(&mut input, &mut output).unwrap();
+    let source_key = input.publisher(1);
+    let capture_key = output.subscriber(1);
+    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let input = storage.channels().0.build();
+    let output = storage.channels().1.build();
+    let mut source = input.take_publisher(&source_key).unwrap();
+    let capture = output.take_subscriber(&capture_key).unwrap();
+    let mut callback = LateArrival {
+        inner: Increment.bind(declaration, &input, &output).unwrap(),
+        publish: move || {
+            source.publish(32).unwrap();
+            source.flush(FrameworkTime::from_nanoseconds(0));
+        },
+    };
+    let channels = Default::default();
+    let callbacks = Default::default();
+    let context = Context::new(FrameworkTime::from_nanoseconds(10), &channels, &callbacks);
+    assert!(!task::execute_callback(&mut callback, &context).unwrap());
+    assert!(task::Callback::required_inputs_available(&callback));
+    assert!(!task::Callback::required_inputs_ready(&callback));
+    assert!(task::execute_callback(&mut callback, &context).unwrap());
+    capture.update();
+    assert_eq!(capture.input().pop().unwrap().message, 42);
+}
+
 #[derive(Default)]
 struct Counted(Option<Arc<AtomicUsize>>);
 impl Drop for Counted {

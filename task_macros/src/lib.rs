@@ -1,5 +1,5 @@
-// TODO(port-callback-surface): Audit remaining callback conveniences and timing/input
-// policies; migrate test_tasks and remaining examples to declarations and factories.
+// TODO(port-callback-surface): Audit remaining forwarding/span-output conveniences;
+// migrate test_tasks and remaining examples to declarations and factories.
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::visit_mut::VisitMut;
@@ -40,6 +40,8 @@ struct Port {
     kind: PortKind,
     channel: Option<syn::Expr>,
     capacity: syn::Expr,
+    trigger: syn::Expr,
+    keep: syn::Expr,
 }
 
 struct StorageLifetimes;
@@ -131,11 +133,11 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             if !matches!(reference, Some(r) if r.mutability.is_none()) {
                 return Err(syn::Error::new_spanned(&arg.ty, "context must be &Context"));
             }
-            if arg
-                .attrs
-                .iter()
-                .any(|a| a.path().is_ident("channel") || a.path().is_ident("capacity"))
-            {
+            if arg.attrs.iter().any(|a| {
+                ["channel", "capacity", "trigger", "keep_across_runs"]
+                    .iter()
+                    .any(|name| a.path().is_ident(name))
+            }) {
                 return Err(syn::Error::new_spanned(
                     arg,
                     "context is not a channel endpoint",
@@ -203,11 +205,17 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         StorageLifetimes.visit_type_mut(&mut payload);
         let mut channel = None;
         let mut capacity = None;
+        let mut trigger = None;
+        let mut keep = None;
         for attr in &arg.attrs {
             let destination = if attr.path().is_ident("channel") {
                 &mut channel
             } else if attr.path().is_ident("capacity") {
                 &mut capacity
+            } else if attr.path().is_ident("trigger") {
+                &mut trigger
+            } else if attr.path().is_ident("keep_across_runs") {
+                &mut keep
             } else {
                 continue;
             };
@@ -219,8 +227,19 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
             *destination = Some(attr.parse_args::<syn::Expr>()?);
         }
-        arg.attrs
-            .retain(|a| !a.path().is_ident("channel") && !a.path().is_ident("capacity"));
+        if (trigger.is_some() || keep.is_some())
+            && !matches!(kind, PortKind::Input | PortKind::Required)
+        {
+            return Err(syn::Error::new_spanned(
+                &arg.ty,
+                "input policies apply to native inputs only",
+            ));
+        }
+        arg.attrs.retain(|a| {
+            !["channel", "capacity", "trigger", "keep_across_runs"]
+                .iter()
+                .any(|name| a.path().is_ident(name))
+        });
         let capacity = capacity.unwrap_or_else(|| {
             if segment.ident == "InputSpan" || segment.ident == "Iox2SpanInput" {
                 parse_quote!(4)
@@ -246,6 +265,8 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             kind,
             channel,
             capacity,
+            trigger: trigger.unwrap_or_else(|| parse_quote!(true)),
+            keep: keep.unwrap_or_else(|| parse_quote!(true)),
         });
     }
     let fallible = match &run.sig.output {
@@ -279,10 +300,12 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let mut construction = Vec::new();
     let mut endpoint_fields = Vec::new();
     let mut updates = Vec::new();
+    let mut finish_inputs = Vec::new();
     let mut wake = Vec::new();
     let mut pending = Vec::new();
     let mut channel_names = Vec::new();
     let mut ready = Vec::new();
+    let mut available = Vec::new();
     let mut flush = Vec::new();
     let mut discard = Vec::new();
     let mut names = Vec::new();
@@ -294,6 +317,8 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             kind,
             channel,
             capacity,
+            trigger,
+            keep,
         } = port;
         let input = matches!(kind, PortKind::Input | PortKind::Required);
         channel_names.push(quote!(visit(self.#name.channel_name());));
@@ -369,13 +394,15 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             flush.push(quote!(self.#name.flush(timestamp);));
             discard.push(quote!(self.#name.discard_pending();));
         } else if input {
-            registration.push(quote!(#name: #name.subscriber(#capacity)));
+            registration.push(quote!(#name: #name.subscriber_with_policy(#capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })));
             construction.push(quote!(#name: #name.take_subscriber(&self.#name)?));
             endpoint_fields.push(quote!(#name: ::task::Subscriber<'storage, #payload>));
             updates.push(quote!(self.#name.update();));
+            finish_inputs.push(quote!(self.#name.finish_iteration();));
             wake.push(quote!(self.#name.set_waker(wake.clone());));
-            pending.push(quote!(self.#name.has_pending()));
+            pending.push(quote!(self.#name.requests_execution()));
             if matches!(kind, PortKind::Required) {
+                available.push(quote!(self.#name.has_pending()));
                 ready.push(quote!(!self.#name.is_empty()));
             }
         } else {
@@ -436,7 +463,9 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             fn has_pending_inputs(&self) -> bool { false #(|| #pending)* }
             fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) { #(#channel_names)* }
             fn update_inputs(&mut self) { #(#updates)* }
+            fn finish_inputs(&mut self) { #(#finish_inputs)* }
             fn required_inputs_ready(&self) -> bool { true #(&& #ready)* }
+            fn required_inputs_available(&self) -> bool { true #(&& #available)* }
             fn run(&mut self, __cfw_context: &::task::Context) -> Result<(), ::task::LoanError> { #result }
             fn flush_outputs(&mut self, timestamp: ::task::time::FrameworkTime) { #(#flush)* }
             fn discard_outputs(&mut self) { #(#discard)* }
@@ -454,6 +483,8 @@ mod tests {
             "impl Task { fn run(&mut self, input: Unsupported<u64>) {} }",
             "impl Task { fn run(&mut self, #[capacity(1)] #[capacity(2)] input: Input<u64>) {} }",
             "impl Task { fn run(&mut self, input: Input<u64, u32>) {} }",
+            "impl Task { fn run(&mut self, #[trigger(false)] output: Output<u64>) {} }",
+            "impl Task { fn run(&mut self, #[keep_across_runs(false)] context: &Context) {} }",
         ] {
             assert!(expand(syn::parse_str(source).unwrap()).is_err());
         }

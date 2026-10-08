@@ -46,6 +46,12 @@ impl FrameworkTime {
         self.nanoseconds
     }
 
+    pub fn checked_add_duration(self, duration: Duration) -> Option<Self> {
+        let nanos =
+            i128::from(self.nanoseconds).checked_add(i128::try_from(duration.as_nanos()).ok()?)?;
+        Some(Self::from_nanoseconds(i64::try_from(nanos).ok()?))
+    }
+
     pub fn checked_duration_since(&self, earlier: FrameworkTime) -> Option<Duration> {
         let difference_ns = self.to_nanoseconds() - earlier.to_nanoseconds();
         if difference_ns >= 0 {

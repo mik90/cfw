@@ -254,6 +254,12 @@ fn callback_errors_and_panics_wake_control_and_leave_captured_messages_valid() {
 
 #[test]
 fn periodic_callbacks_run_until_controller_requests_stop() {
+    struct AdvancingClock(std::time::Instant);
+    impl TimeSource for AdvancingClock {
+        fn now(&self) -> FrameworkTime {
+            FrameworkTime::from_nanoseconds(self.0.elapsed().as_nanos() as i64)
+        }
+    }
     let calls = Arc::new(AtomicUsize::new(0));
     let (done, completed) = channel::bounded(1);
     let mut builder = GraphBuilder::new();
@@ -270,8 +276,12 @@ fn periodic_callbacks_run_until_controller_requests_stop() {
             })
         },
     );
-    let executor =
-        LiveExecutor::new_multi_pool_with_time(vec![2], builder.build().unwrap(), Clock).unwrap();
+    let executor = LiveExecutor::new_multi_pool_with_time(
+        vec![2],
+        builder.build().unwrap(),
+        AdvancingClock(std::time::Instant::now()),
+    )
+    .unwrap();
     executor
         .run_with(|stop| {
             wait(&completed);
@@ -279,6 +289,35 @@ fn periodic_callbacks_run_until_controller_requests_stop() {
         })
         .unwrap();
     assert!(calls.load(Ordering::SeqCst) >= 3);
+}
+
+#[test]
+fn custom_deadline_uses_injected_clock_and_can_disable_its_timer() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let schedule = CallbackSchedule::default().with_next_execution_time_callback(move |now| {
+        assert_eq!(now, FrameworkTime::from_nanoseconds(1234));
+        (count.load(Ordering::Acquire) == 0).then_some(now)
+    });
+    let (done, completed) = channel::bounded(1);
+    let count = calls.clone();
+    let mut builder = GraphBuilder::new();
+    builder.add_scheduled_callback("custom", schedule, move || {
+        Ok(move |_| {
+            count.fetch_add(1, Ordering::Release);
+            done.send(()).unwrap();
+            Ok(())
+        })
+    });
+    let executor =
+        LiveExecutor::new_multi_pool_with_time(vec![1], builder.build().unwrap(), Clock).unwrap();
+    executor
+        .run_with(|stop| {
+            wait(&completed);
+            stop.request_stop();
+        })
+        .unwrap();
+    assert_eq!(calls.load(Ordering::Acquire), 1);
 }
 
 #[test]

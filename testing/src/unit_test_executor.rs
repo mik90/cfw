@@ -37,6 +37,8 @@ struct UnitTestGraph {
 
 /// Struct for running unit tests against callback nodes.
 /// Dropping the executor clears queued native fixture messages before releasing their arenas.
+// TODO(port-unit-test-executor): Bind fixtures before simulation construction and
+// borrow external graph storage; port retained-fixture and executor-first-drop tests.
 pub struct UnitTestExecutor {
     unit_test_graph: UnitTestGraph,
     /// Shared time cell updated at the end of every `try_step`. `TestPublisher`s

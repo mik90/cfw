@@ -1,708 +1,433 @@
-use task::callback_storage::{CallbackStorage, SharedCallbackNode};
-use task::executor::{ExecutorParams, ThreadPoolConfig};
-
-use crate::node_executor::{NodeExecutionRequest, NodeExecutionResponse, node_executor_thread};
-use crate::{
-    CallbackNodeIndex, FrameworkTime, PoolIndex, SimulationConfig, TimeTriggeredNode, VirtualPool,
+use crate::{FrameworkTime, SimulationConfig};
+use std::collections::BTreeMap;
+use std::num::Saturating;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use task::wake::Wake;
+use task::{
+    BatchExecutionError, BatchFailure, BuiltGraph, Callback, CallbackSchedule, GraphMetadata,
+    TimingError, execute_callback_batch,
 };
+
+const TRIGGER: u8 = 1;
+const READINESS: u8 = 2;
+struct Notification(AtomicU8);
+impl Wake for Notification {
+    fn wake(&self) {
+        self.0.fetch_or(TRIGGER, Ordering::Release);
+    }
+    fn readiness_changed(&self) {
+        self.0.fetch_or(READINESS, Ordering::Release);
+    }
+}
 
 #[derive(Debug)]
 pub enum StepError {
-    /// No node executor threads are configured.
-    NoNodeExecutors,
-    /// A node executor thread disconnected, likely because it panicked.
-    NodeExecutorThreadDisconnected,
-    /// Received more responses than expected from node executor threads.
-    UnexpectedResponse,
-    /// The step loop thread panicked.
-    StepThreadPanicked,
-    /// Unable to register or poll an iox2 event listener.
+    InvalidConfig(String),
+    Callback {
+        callback: String,
+        failure: BatchFailure,
+    },
+    Timing {
+        callback: String,
+        source: TimingError,
+    },
+    Panicked,
+    Poisoned,
+    Action(String),
+    PastAction,
+    UnknownEventChannel(String),
     Iox2Event(String),
-    /// Unable to publish a scheduled iox2 input.
-    Iox2Input(String),
+    StepLimitExceeded,
 }
-use std::collections::VecDeque;
-use std::num::Saturating;
-use std::sync::Arc;
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
-use std::thread;
+impl std::fmt::Display for StepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "simulation error: {self:?}")
+    }
+}
+impl std::error::Error for StepError {}
 
-#[cfg(feature = "iceoryx2")]
-mod iox2;
-#[cfg(feature = "iceoryx2")]
-pub use iox2::Iox2InputError;
-#[cfg(feature = "iceoryx2")]
-use iox2::Iox2SimulationState;
+#[derive(Debug)]
+pub struct StepResult {
+    pub before: FrameworkTime,
+    pub after: FrameworkTime,
+    /// Callback indices in deterministic scheduling/commit order.
+    pub executed: Vec<usize>,
+    /// No runnable work or future simulated event. External inputs may wake it.
+    pub idle: bool,
+}
 
-// TODO(port-simulation): Borrow graph storage and scope real workers while preserving
-// virtual pools, durations, deterministic batch commits, and next-event time advancement.
-// Port the unit-test executor and retained-fixture regressions against this scheduler.
-pub struct SimulationState {
-    /// Storage of all callback nodes. A node's index into this vec is used to index into other Vecs.
-    /// Each node is guarded by the atomic run-state protocol of
-    /// [`SharedCallbackNode`] so the parallel node executors can run individual
-    /// nodes without unsafe disjoint-index tricks. The framework invariant — no
-    /// two node executor threads run the same node concurrently — is now
-    /// enforced by the protocol rather than by `RefCell` borrowing convention.
-    nodes: CallbackStorage,
+struct NodeState {
+    requested: bool,
+    ready_since: Option<FrameworkTime>,
+    busy_until: FrameworkTime,
+    next: Option<FrameworkTime>,
+}
 
-    /// Threads that execute callback nodes in parallel.
-    node_executor_threads: Vec<thread::JoinHandle<()>>,
+type Action<'storage> = Box<dyn FnOnce(FrameworkTime) -> Result<(), String> + Send + 'storage>;
 
-    /// Tells node executors to do work
-    node_exec_request_senders: Vec<Sender<NodeExecutionRequest>>,
-
-    /// Mono channel with all results of execution
-    node_exec_response_receiver: Receiver<NodeExecutionResponse>,
-
-    /// Maps each global callback node index to its pool index
-    node_to_pool: Vec<PoolIndex>,
-
-    /// Virtual pools — no real threads, but models concurrency boundaries
-    virtual_pools: Vec<VirtualPool>,
-
-    /// TODO should this be a sorted queue?
-    periodic_nodes: VecDeque<TimeTriggeredNode>,
-
-    /// Per-node sim-time when each node's last execution finishes. Initialized to start_time.
-    node_busy_until: Vec<FrameworkTime>,
-
-    /// Whether each node currently holds a virtual thread from its pool. Set
-    /// when the node is allocated a thread, cleared once its busy period has
-    /// elapsed — a node can only be freed if it actually occupied a thread.
-    node_thread_occupied: Vec<bool>,
-
-    /// Sim-time when each node first became ready but hadn't yet been allocated a thread.
-    /// None if the node is not currently waiting. Used to prioritize longest-waiting nodes.
-    node_ready_since: Vec<Option<FrameworkTime>>,
-
-    /// Current simulation time
+/// Borrowed, discrete-event simulation with deterministic batch commits.
+/// A failed step poisons the session: callback state and consumed inputs cannot
+/// be rolled back. Retained message handles remain valid for their storage borrow.
+pub struct SimulationState<'storage> {
+    callbacks: Vec<Box<dyn Callback + 'storage>>,
+    names: Vec<String>,
+    schedules: Vec<CallbackSchedule>,
+    nodes: Vec<NodeState>,
+    notifications: Vec<Arc<Notification>>,
+    metadata: GraphMetadata,
+    config: SimulationConfig,
     time: FrameworkTime,
-
-    /// Number of times the state has been stepped
     step_count: Saturating<usize>,
-
+    failed: bool,
+    actions: BTreeMap<(FrameworkTime, usize), Action<'storage>>,
+    action_sequence: usize,
     #[cfg(feature = "iceoryx2")]
-    iox2: Iox2SimulationState,
+    events: Vec<task::iox2::Iox2EventRegistration>,
 }
 
-impl SimulationState {
-    /// Create a single virtual pool with `num_virtual_threads` for all callback nodes,
-    /// starting at simulation time zero
-    pub fn new(num_virtual_threads: usize, nodes: impl Into<CallbackStorage>) -> Self {
-        Self::new_with(SimulationConfig {
-            start_time: FrameworkTime::from_nanoseconds(0),
-            executor_params: ExecutorParams::new(vec![ThreadPoolConfig::new(
-                num_virtual_threads,
-                nodes,
-            )]),
-            node_executor_thread_count: 1,
-        })
+impl<'storage> SimulationState<'storage> {
+    pub fn new(graph: BuiltGraph<'storage>) -> Result<Self, StepError> {
+        Self::with_config(graph, SimulationConfig::default())
     }
 
-    /// Create an new state from a [`SimulationConfig`], supporting multiple virtual
-    /// pools and a configurable start time.
-    pub fn new_with(config: SimulationConfig) -> SimulationState {
-        Self::try_new_with(config)
-            .unwrap_or_else(|error| panic!("Could not create simulation state: {error:?}"))
-    }
-
-    /// Construct simulation state and register all iox2 event listeners.
-    pub fn try_new_with(config: SimulationConfig) -> Result<SimulationState, StepError> {
-        let SimulationConfig {
-            start_time,
-            executor_params,
-            node_executor_thread_count,
-        } = config;
-        #[cfg(feature = "iceoryx2")]
-        let (pools, channel_interner, callback_interner, iox2_context) =
-            executor_params.into_parts_with_iox2_context();
-        #[cfg(not(feature = "iceoryx2"))]
-        let (pools, channel_interner, callback_interner) = executor_params.into_parts();
-        let mut all_nodes: Vec<Arc<SharedCallbackNode>> = vec![];
-        let mut node_to_pool: Vec<usize> = Vec::new();
-        let mut virtual_pools: Vec<VirtualPool> = Vec::new();
-
-        for (pool_idx, pool) in pools.into_iter().enumerate() {
-            virtual_pools.push(VirtualPool {
-                virtual_thread_count: pool.thread_count,
-                num_threads_occupied: 0,
-            });
-            for node in pool.nodes.into_nodes() {
-                node_to_pool.push(pool_idx);
-                all_nodes.push(node);
-            }
+    pub fn with_config(
+        graph: BuiltGraph<'storage>,
+        config: SimulationConfig,
+    ) -> Result<Self, StepError> {
+        if config.node_executor_thread_count == 0
+            || config.virtual_pool_threads.is_empty()
+            || config.virtual_pool_threads.contains(&0)
+            || config.start_time == FrameworkTime::INVALID
+        {
+            return Err(StepError::InvalidConfig(
+                "positive worker/pool counts and a valid start time are required".into(),
+            ));
         }
-
-        let num_nodes = all_nodes.len();
-
-        // One response channel shared by all node executor threads
-        let (exec_response_sender, exec_response_recv): (
-            Sender<NodeExecutionResponse>,
-            Receiver<NodeExecutionResponse>,
-        ) = mpsc::channel();
-
-        let callback_storage = CallbackStorage::from_shared(all_nodes);
-        #[cfg(feature = "iceoryx2")]
-        let iox2 = Iox2SimulationState::new(&callback_storage, iox2_context)?;
-        let mut state = SimulationState {
-            nodes: callback_storage,
-            node_executor_threads: Vec::with_capacity(node_executor_thread_count),
-            node_exec_request_senders: Vec::with_capacity(node_executor_thread_count),
-            node_exec_response_receiver: exec_response_recv,
-            virtual_pools,
-            node_to_pool,
-            periodic_nodes: VecDeque::new(),
-            node_busy_until: vec![start_time; num_nodes],
-            node_thread_occupied: vec![false; num_nodes],
-            node_ready_since: vec![None; num_nodes],
-            time: start_time,
+        let (callbacks, metadata) = graph.into_parts();
+        let mut state = Self {
+            callbacks: Vec::new(),
+            names: Vec::new(),
+            schedules: Vec::new(),
+            nodes: Vec::new(),
+            notifications: Vec::new(),
+            metadata,
+            time: config.start_time,
+            config,
             step_count: Saturating(0),
+            failed: false,
+            actions: BTreeMap::new(),
+            action_sequence: 0,
             #[cfg(feature = "iceoryx2")]
-            iox2,
+            events: Vec::new(),
         };
-        for _ in 0..node_executor_thread_count {
-            // Each thread has its own request receiver; the state owns the matching sender
-            let (request_sender, request_recv): (
-                Sender<NodeExecutionRequest>,
-                Receiver<NodeExecutionRequest>,
-            ) = mpsc::channel();
-            state.node_exec_request_senders.push(request_sender);
-
-            let cloned_nodes = state.nodes.clone_shared();
-
-            let response_sender_clone = exec_response_sender.clone();
-            let channel_name_interner_clone = channel_interner.clone();
-            let callback_name_interner_clone = callback_interner.clone();
-            state.node_executor_threads.push(thread::spawn(move || {
-                node_executor_thread(
-                    request_recv,
-                    response_sender_clone,
-                    cloned_nodes,
-                    channel_name_interner_clone,
-                    callback_name_interner_clone,
-                );
-            }));
+        for mut node in callbacks {
+            if node.schedule.pool >= state.config.virtual_pool_threads.len() {
+                return Err(StepError::InvalidConfig(format!(
+                    "callback '{}' references missing pool {}",
+                    node.name, node.schedule.pool
+                )));
+            }
+            let notification = Arc::new(Notification(AtomicU8::new(0)));
+            node.callback.set_waker(notification.clone());
+            #[cfg(feature = "iceoryx2")]
+            state.events.extend(node.callback.take_iox2_events());
+            let requested = node.schedule.run_on_start || node.callback.has_pending_inputs();
+            let next = if node.schedule.run_on_start {
+                Some(state.time)
+            } else {
+                node.schedule
+                    .next_after(state.time)
+                    .map_err(|source| StepError::Timing {
+                        callback: node.name.clone(),
+                        source,
+                    })?
+            };
+            state.nodes.push(NodeState {
+                requested,
+                ready_since: None,
+                busy_until: state.time,
+                next,
+            });
+            state.notifications.push(notification);
+            state.names.push(node.name);
+            state.schedules.push(node.schedule);
+            state.callbacks.push(node.callback);
         }
-
         Ok(state)
-    }
-
-    pub fn start(&mut self) {
-        // Set up periodic execution
-        for (index, node) in self.nodes.iter_shared().enumerate() {
-            // Quiescent at startup (no work has been dispatched yet), but
-            // prefer try_ to skip a node that is somehow already running.
-            let is_periodic = node
-                .try_access(|n| n.next_requested_execution_time(self.time).is_some())
-                .unwrap_or(false);
-            if is_periodic {
-                self.periodic_nodes.push_back(TimeTriggeredNode {
-                    index,
-                    // Periodic nodes will run on startup, and then their requested times will be honored
-                    requested_exec_time: self.time,
-                });
-            }
-        }
-    }
-
-    /// Finds callback nodes that should run this step, allocates a thread from their pool to each,
-    /// and drains their subscribers (write → read) so data is available when they run.
-    ///
-    /// A node is a candidate if it has new trigger data in its write buffer and isn't busy,
-    /// or it is a periodic node that is due and isn't busy. Among candidates, only those
-    /// whose pool has a free thread are returned. Drain is deferred until after thread
-    /// allocation so that nodes which can't run don't consume their trigger data.
-    fn allocate_nodes_to_threads(&mut self) -> Vec<CallbackNodeIndex> {
-        let mut candidates: Vec<CallbackNodeIndex> = vec![];
-
-        for (index, node) in self.nodes.iter_shared().enumerate() {
-            // A trigger fired and every required input has a value — the node
-            // can actually run. Without the required-input check, a node with
-            // a required non-trigger input would run while that input is
-            // still empty.
-            let ready = node
-                .try_access(|n| {
-                    n.subscribers_request_execution()
-                        && n.required_inputs_ready()
-                        && self.time >= self.node_busy_until[index]
-                })
-                .unwrap_or(false);
-            if ready {
-                candidates.push(index);
-            }
-        }
-        for periodic in &self.periodic_nodes {
-            if periodic.requested_exec_time <= self.time
-                && self.time >= self.node_busy_until[periodic.index]
-                && !candidates.contains(&periodic.index)
-            {
-                candidates.push(periodic.index);
-            }
-        }
-
-        // Record when each node first became ready, then sort by wait time (oldest first)
-        // with node index as a tiebreaker to preserve determinism.
-        for &index in &candidates {
-            self.node_ready_since[index].get_or_insert(self.time);
-        }
-        candidates.sort_by_key(|&index| (self.node_ready_since[index], index));
-
-        let mut runnable: Vec<CallbackNodeIndex> = vec![];
-        for index in candidates {
-            let pool_index = self.node_to_pool[index];
-            let pool = &mut self.virtual_pools[pool_index];
-            if pool.num_threads_occupied < pool.virtual_thread_count {
-                pool.num_threads_occupied += 1;
-                self.node_thread_occupied[index] = true;
-                self.node_ready_since[index] = None;
-                runnable.push(index);
-            }
-        }
-
-        runnable
-    }
-
-    pub fn step(&mut self) -> Result<Vec<CallbackNodeIndex>, StepError> {
-        #[cfg(feature = "iceoryx2")]
-        {
-            let mut due = Vec::new();
-            for node in self.nodes.iter_shared() {
-                node.access(|node| {
-                    node.callback_mut().dispatch_simulation_events(
-                        self.time,
-                        &mut |channel, id, count| {
-                            due.push((channel.to_owned(), id, count));
-                        },
-                    )
-                })
-                .map_err(StepError::Iox2Event)?;
-            }
-            for (channel, id, count) in due {
-                self.iox2.stage_logged_event(&channel, id, count, self.time);
-            }
-        }
-        #[cfg(feature = "iceoryx2")]
-        self.iox2.dispatch_due_inputs(self.time)?;
-        #[cfg(feature = "iceoryx2")]
-        self.iox2.poll_listeners(self.time)?;
-        let runnable_nodes = self.allocate_nodes_to_threads();
-        // Only drain subscribers for nodes that actually got a thread, so that nodes
-        // blocked by pool pressure keep their trigger data for the next step.
-        for &index in &runnable_nodes {
-            self.nodes[index].access(|n| n.drain_subscribers());
-        }
-
-        let time = self.time;
-
-        let mut sender_cycle_iter = self.node_exec_request_senders.iter().cycle();
-        for index in &runnable_nodes {
-            // Round-robin work across node executor threads.
-            sender_cycle_iter
-                .next()
-                .ok_or(StepError::NoNodeExecutors)?
-                .send(NodeExecutionRequest {
-                    index: *index,
-                    current_time: time,
-                    should_run: true,
-                })
-                .map_err(|_| StepError::NodeExecutorThreadDisconnected)?;
-        }
-
-        let mut execution_responses: Vec<NodeExecutionResponse> = vec![];
-        for _ in &runnable_nodes {
-            let response = self
-                .node_exec_response_receiver
-                .recv()
-                .map_err(|_| StepError::NodeExecutorThreadDisconnected)?;
-            execution_responses.push(response);
-        }
-
-        if self.node_exec_response_receiver.try_recv().is_ok() {
-            return Err(StepError::UnexpectedResponse);
-        }
-
-        for response in execution_responses {
-            self.node_busy_until[response.index] = time + response.execution_duration;
-        }
-
-        for &index in &runnable_nodes {
-            self.nodes[index].access(|n| {
-                let mut sink = task::scheduling::NoopReadyNodeSink;
-                n.flush_publishers(time, &mut sink)
-            });
-        }
-
-        #[cfg(feature = "iceoryx2")]
-        self.iox2.poll_listeners(time)?;
-        let idle = !self.nodes.iter_shared().any(|node| {
-            node.access(|node| node.subscribers_request_execution() && node.required_inputs_ready())
-        });
-        if idle {
-            for node in self.nodes.iter_shared() {
-                node.access(|node| node.callback_mut().simulation_stop_if_idle(true));
-            }
-        }
-
-        // Update periodic node next-run times from their no-longer-busy instant
-        for periodic in &mut self.periodic_nodes {
-            if runnable_nodes.contains(&periodic.index) {
-                let no_longer_busy = self.node_busy_until[periodic.index];
-                if let Some(next_time) = self.nodes[periodic.index]
-                    .access(|n| n.next_requested_execution_time(no_longer_busy))
-                {
-                    periodic.requested_exec_time = next_time;
-                }
-            }
-        }
-
-        // Advance sim time to earliest next event. Times not strictly in the
-        // future are excluded: a zero-duration node's busy_until equals the
-        // current time (it's already free), so it must not win the min
-        // against the next periodic event and freeze the clock.
-        let next_busy = runnable_nodes
-            .iter()
-            .map(|&i| self.node_busy_until[i])
-            .filter(|&t| t > self.time)
-            .min();
-        let next_periodic = self
-            .periodic_nodes
-            .iter()
-            .map(|p| p.requested_exec_time)
-            .filter(|&t| t > self.time)
-            .min();
-        #[cfg(feature = "iceoryx2")]
-        let next_synthetic_input = self.iox2.next_input_time(self.time);
-        #[cfg(not(feature = "iceoryx2"))]
-        let next_synthetic_input: Option<FrameworkTime> = None;
-        if let Some(t) = [next_busy, next_periodic, next_synthetic_input]
-            .into_iter()
-            .flatten()
-            .min()
-            && t > self.time
-        {
-            self.time = t;
-        }
-
-        // Free the virtual thread of any node whose busy period has elapsed.
-        // Zero-duration nodes finish the instant they start (busy_until <=
-        // current time), so they free their thread right away — comparing
-        // against the pre-advance time instead would never free them and
-        // would wedge their pool's thread permanently.
-        for index in 0..self.nodes.len() {
-            if self.node_thread_occupied[index] && self.node_busy_until[index] <= self.time {
-                self.node_thread_occupied[index] = false;
-                let pool_index = self.node_to_pool[index];
-                self.virtual_pools[pool_index].num_threads_occupied -= 1;
-            }
-        }
-        self.step_count += 1;
-        Ok(runnable_nodes)
-    }
-
-    pub fn shutdown_node_executor_threads(&mut self) -> Result<(), Vec<usize>> {
-        for sender in self.node_exec_request_senders.drain(..) {
-            // Best-effort: thread may already have exited if its sender was dropped.
-            let _ = sender.send(NodeExecutionRequest {
-                index: 0,
-                current_time: FrameworkTime::INVALID,
-                should_run: false,
-            });
-        }
-
-        let mut panicked_thread_indexes = vec![];
-        for (thread_idx, t) in self.node_executor_threads.drain(..).enumerate() {
-            if t.join().is_err() {
-                panicked_thread_indexes.push(thread_idx);
-            }
-        }
-
-        if panicked_thread_indexes.is_empty() {
-            Ok(())
-        } else {
-            Err(panicked_thread_indexes)
-        }
-    }
-
-    pub fn step_count(&self) -> Saturating<usize> {
-        self.step_count
     }
 
     pub fn simulation_time(&self) -> FrameworkTime {
         self.time
     }
-
-    pub fn clear_subscribers(&mut self) {
-        self.nodes.cleanup_subscribers();
+    pub fn current_time(&self) -> FrameworkTime {
+        self.time
     }
-}
-
-impl Drop for SimulationState {
-    fn drop(&mut self) {
-        // Make sure node executor threads exit even if stop() was never called.
-        let _ = self.shutdown_node_executor_threads();
-        self.clear_subscribers();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use test_tasks::*;
-
-    use super::SimulationState;
-
-    /// Lower level test that manually steps sim state
-    #[test]
-    fn test_simulation_state() {
-        let (nodes, task_info) = build_fizz_buzz_callback_nodes();
-
-        let mut state = SimulationState::new(1, nodes);
-        state.start();
-        let start_time = state.simulation_time();
-
-        assert_eq!(state.nodes.len(), 3);
-
-        let periodic = state.periodic_nodes.front().unwrap();
-        assert_eq!(periodic.index, 0);
-        assert_eq!(periodic.requested_exec_time, start_time);
-
-        let executed_nodes = state.step().unwrap();
-        assert_eq!(executed_nodes, vec![task_info.integer_publisher_index]);
-
-        // After first step, the publisher should want to run in the future
-        let periodic = state.periodic_nodes.front().unwrap();
-        assert_eq!(periodic.index, 0);
-        assert_eq!(
-            periodic.requested_exec_time,
-            start_time + Duration::from_millis(1) + Duration::from_millis(500),
-            "Publisher callback node takes 1ms to run and wants to run every 500ms"
-        );
-
-        let executed_nodes = state.step().unwrap();
-        assert_eq!(
-            executed_nodes,
-            vec![task_info.fizz_buzz_index],
-            "After the second step, the fizz-buzz callback node should have run"
-        );
-
-        let executed_nodes = state.step().unwrap();
-        assert_eq!(
-            executed_nodes,
-            vec![task_info.string_store_index],
-            "After the third step, the string store callback node should've run"
-        );
-
-        assert_eq!(task_info.stored_strings(), vec!["FizzBuzz"]);
+    pub fn step_count(&self) -> Saturating<usize> {
+        self.step_count
     }
 
-    /// Regression test: a zero-duration node must free its pool's virtual
-    /// thread as soon as its step completes. Previously the thread-freeing
-    /// check required `busy_until > old_sim_time`, which a zero-duration run
-    /// never satisfies — the node's first execution wedged its pool thread
-    /// permanently and, with a single-threaded pool, froze the whole
-    /// simulation (this is the shape `LogTask` uses, so logging deadlocked
-    /// the executor after one drain).
-    #[test]
-    fn test_zero_duration_node_frees_pool_thread() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use task::callback::{Callback, PubOrSub, PubOrSubMut};
-        use task::context::Context;
-
-        struct CountingCallback(Arc<AtomicUsize>);
-        impl Callback for CountingCallback {
-            fn run(&mut self, _ctx: &Context) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-            fn for_each_pub_or_sub<'a>(&'a self, _f: &mut dyn FnMut(PubOrSub<'a>)) {}
-            fn for_each_pub_or_sub_mut<'a>(&'a mut self, _f: &mut dyn FnMut(PubOrSubMut<'a>)) {}
+    /// Actions at equal timestamps execute in insertion order, before selecting
+    /// the callback batch. Scheduling in the past is rejected.
+    pub fn schedule_at(
+        &mut self,
+        at: FrameworkTime,
+        action: impl FnOnce(FrameworkTime) -> Result<(), String> + Send + 'storage,
+    ) -> Result<(), StepError> {
+        if self.failed {
+            return Err(StepError::Poisoned);
         }
-
-        let run_count = Arc::new(AtomicUsize::new(0));
-        let mut node = task::callback::CallbackNode::new_named(
-            Box::new(CountingCallback(run_count.clone())),
-            "zero_duration".into(),
-        );
-        node.set_execution_duration_callback(Box::new(|| Duration::ZERO));
-        node.set_execution_time_callback(Box::new(|now| Some(now + Duration::from_nanos(1))));
-
-        // Single-threaded pool: if the zero-duration node never frees its
-        // thread, it runs at most once.
-        let mut state = SimulationState::new(1, vec![node]);
-        state.start();
-
-        for _ in 0..5 {
-            let executed = state.step().unwrap();
-            assert_eq!(executed, vec![0], "node should run every step");
+        if at < self.time {
+            return Err(StepError::PastAction);
         }
-        assert_eq!(
-            run_count.load(Ordering::Relaxed),
-            5,
-            "zero-duration node must run once per step, not wedge the pool"
-        );
+        let sequence = self.action_sequence;
+        self.action_sequence = sequence
+            .checked_add(1)
+            .ok_or_else(|| StepError::InvalidConfig("action sequence exhausted".into()))?;
+        self.actions.insert((at, sequence), Box::new(action));
+        Ok(())
     }
 
-    /// A node with a required trigger input and a required non-trigger input
-    /// must only run once BOTH have values — and must re-run on later trigger
-    /// data while the non-trigger input's value is retained.
-    #[test]
-    fn test_required_non_trigger_input_gates_execution() {
-        use std::sync::Arc;
-        use std::sync::Mutex;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use task::callback::{Callback, PubOrSub, PubOrSubMut};
-        use task::context::Context;
-        use task::output::Output;
-        use task::publisher::{Publisher, PublisherConfig};
-        use task::subscriber::{Subscriber, SubscriberConfig};
-
-        /// Publishes an incrementing counter, starting at `start`, once per
-        /// run, up to `max` messages.
-        struct CounterPublisher {
-            publisher: Publisher<u64>,
-            next: u64,
-            max: u64,
+    #[cfg(feature = "iceoryx2")]
+    pub fn schedule_event(
+        &mut self,
+        at: FrameworkTime,
+        channel: &str,
+        id: iceoryx2::prelude::EventId,
+        count: u64,
+    ) -> Result<(), StepError> {
+        let recipients: Vec<_> = self
+            .events
+            .iter()
+            .filter(|event| event.channel == channel)
+            .map(|event| (event.staging.clone(), event.wake.clone()))
+            .collect();
+        if recipients.is_empty() {
+            return Err(StepError::UnknownEventChannel(channel.into()));
         }
-        impl Callback for CounterPublisher {
-            fn run(&mut self, _ctx: &Context) {
-                if self.next < self.max {
-                    let mut out = Output::<u64>::new_default(&mut self.publisher);
-                    *out = self.next;
-                    out.send();
-                    self.next += 1;
+        self.schedule_at(at, move |_| {
+            if count != 0 {
+                for (queue, wake) in recipients {
+                    queue.push(task::iox2::EventRecord {
+                        event_id: id,
+                        count,
+                    });
+                    wake.wake();
                 }
             }
-            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
-                f(PubOrSub::Publisher(&self.publisher));
-            }
-            fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
-                f(PubOrSubMut::Publisher(&mut self.publisher));
-            }
-        }
+            Ok(())
+        })
+    }
 
-        /// Required trigger on "trigger", required non-trigger on "gate".
-        /// Records every run's observed values; a run missing either value is
-        /// a gating violation.
-        struct GatedConsumer {
-            trigger: Subscriber<u64>,
-            gate: Subscriber<u64>,
-            runs: Arc<Mutex<Vec<(u64, u64)>>>,
-            violations: Arc<AtomicUsize>,
+    /// Inject data without an implicit notification; schedule its event separately
+    /// when replaying counted events so one input cannot generate two activations.
+    #[cfg(feature = "iceoryx2")]
+    pub fn schedule_iox2_input<
+        T: std::fmt::Debug + iceoryx2::prelude::ZeroCopySend + Send + Sync + 'static,
+    >(
+        &mut self,
+        at: FrameworkTime,
+        publisher: Arc<std::sync::Mutex<task::iox2::Iox2Publisher<T>>>,
+        value: T,
+    ) -> Result<(), StepError> {
+        self.schedule_at(at, move |time| {
+            publisher
+                .lock()
+                .map_err(|e| e.to_string())?
+                .publish_with_header(task::message::MessageHeader::new(time), value)
+                .map_err(|e| format!("{e:?}"))
+        })
+    }
+
+    pub fn step(&mut self) -> Result<StepResult, StepError> {
+        if self.failed {
+            return Err(StepError::Poisoned);
         }
-        impl Callback for GatedConsumer {
-            fn run(&mut self, _ctx: &Context) {
-                let read_front = |sub: &mut Subscriber<u64>| -> Option<u64> {
-                    let guard = sub.read_buffer();
-                    guard.front().map(|msg| msg.message)
-                };
-                match (read_front(&mut self.trigger), read_front(&mut self.gate)) {
-                    (Some(a), Some(b)) => self.runs.lock().unwrap().push((a, b)),
-                    _ => {
-                        self.violations.fetch_add(1, Ordering::Relaxed);
-                    }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.step_inner()))
+            .unwrap_or(Err(StepError::Panicked));
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    pub fn run_until_idle(&mut self, max_steps: usize) -> Result<Vec<StepResult>, StepError> {
+        let mut steps = Vec::new();
+        for _ in 0..max_steps {
+            let step = self.step()?;
+            let idle = step.idle;
+            steps.push(step);
+            if idle {
+                return Ok(steps);
+            }
+        }
+        Err(StepError::StepLimitExceeded)
+    }
+
+    fn poll_events(&self) -> Result<(), StepError> {
+        #[cfg(feature = "iceoryx2")]
+        if self.config.poll_external_events {
+            for event in &self.events {
+                let mut observed = false;
+                event
+                    .listener
+                    .try_wait(|activation| {
+                        event.staging.push(task::iox2::EventRecord {
+                            event_id: activation.id,
+                            count: activation.count,
+                        });
+                        observed = true;
+                    })
+                    .map_err(|e| StepError::Iox2Event(e.to_string()))?;
+                if observed {
+                    event.wake.wake();
                 }
             }
-            fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
-                f(PubOrSub::Subscriber(&self.trigger));
-                f(PubOrSub::Subscriber(&self.gate));
+        }
+        Ok(())
+    }
+
+    fn refresh(&mut self) {
+        for (index, node) in self.nodes.iter_mut().enumerate() {
+            let notification = self.notifications[index].0.swap(0, Ordering::AcqRel);
+            node.requested |=
+                notification & TRIGGER != 0 || node.next.is_some_and(|next| next <= self.time);
+            if node.requested
+                && node.busy_until <= self.time
+                && self.callbacks[index].required_inputs_available()
+            {
+                node.ready_since.get_or_insert(self.time);
+            } else {
+                node.ready_since = None;
             }
-            fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
-                f(PubOrSubMut::Subscriber(&mut self.trigger));
-                f(PubOrSubMut::Subscriber(&mut self.gate));
+        }
+    }
+
+    fn free_threads(&self) -> Vec<usize> {
+        let mut free = self.config.virtual_pool_threads.clone();
+        for (node, schedule) in self.nodes.iter().zip(&self.schedules) {
+            if node.busy_until > self.time {
+                free[schedule.pool] -= 1;
             }
         }
+        free
+    }
 
-        let make_periodic = |callback: Box<dyn Callback>, name: &str| {
-            let mut node = task::callback::CallbackNode::new_named(callback, name.into());
-            node.set_execution_duration_callback(Box::new(|| Duration::ZERO));
-            node.set_execution_time_callback(Box::new(|now| Some(now + Duration::from_nanos(1))));
-            node
-        };
-
-        // The trigger producer publishes a steady stream; the gate producer
-        // publishes a single value (100) and then goes quiet — its value must
-        // be retained by the consumer's read buffer.
-        let trigger_node = make_periodic(
-            Box::new(CounterPublisher {
-                publisher: Publisher::<u64>::new(PublisherConfig {
-                    capacity: 1,
-                    channel_name: "trigger".into(),
-                }),
-                next: 0,
-                max: 100,
-            }),
-            "trigger_producer",
-        );
-        let gate_node = make_periodic(
-            Box::new(CounterPublisher {
-                publisher: Publisher::<u64>::new(PublisherConfig {
-                    capacity: 1,
-                    channel_name: "gate".into(),
-                }),
-                next: 100,
-                max: 101,
-            }),
-            "gate_producer",
-        );
-
-        let runs = Arc::new(Mutex::new(Vec::new()));
-        let violations = Arc::new(AtomicUsize::new(0));
-        let mut consumer = task::callback::CallbackNode::new_named(
-            Box::new(GatedConsumer {
-                trigger: Subscriber::<u64>::new(SubscriberConfig {
-                    is_optional: false,
-                    capacity: 1,
-                    is_trigger: true,
-                    keep_across_runs: true,
-                    channel_name: "trigger".into(),
-                }),
-                gate: Subscriber::<u64>::new(SubscriberConfig {
-                    is_optional: false,
-                    capacity: 1,
-                    is_trigger: false,
-                    keep_across_runs: true,
-                    channel_name: "gate".into(),
-                }),
-                runs: runs.clone(),
-                violations: violations.clone(),
-            }),
-            "consumer".into(),
-        );
-        consumer.set_execution_duration_callback(Box::new(|| Duration::ZERO));
-
-        let mut nodes = vec![trigger_node, gate_node, consumer];
-        task::callback::connect_callback_nodes(&mut nodes).expect("channels connect");
-
-        let mut state = SimulationState::new(1, nodes);
-        state.start();
-        #[cfg(not(miri))]
-        const STEP_COUNT: usize = 20;
-        #[cfg(miri)]
-        const STEP_COUNT: usize = 10;
-        for _ in 0..STEP_COUNT {
-            state.step().unwrap();
+    fn step_inner(&mut self) -> Result<StepResult, StepError> {
+        let before = self.time;
+        while self
+            .actions
+            .first_key_value()
+            .is_some_and(|((at, _), _)| *at <= self.time)
+        {
+            let ((at, _), action) = self.actions.pop_first().unwrap();
+            action(at).map_err(StepError::Action)?;
         }
-
-        assert_eq!(
-            violations.load(Ordering::Relaxed),
-            0,
-            "consumer must never run while a required input has no value"
-        );
-        let observed = runs.lock().unwrap();
-        assert!(
-            observed.len() >= 2,
-            "consumer should re-run on new trigger data while the gate value is retained, got {observed:?}"
-        );
-        for &(_, gate_value) in observed.iter() {
-            assert_eq!(
-                gate_value, 100,
-                "gate value must be the retained single publish"
-            );
+        self.poll_events()?;
+        self.refresh();
+        let mut candidates: Vec<_> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| node.ready_since.map(|since| (since, index)))
+            .collect();
+        candidates.sort_unstable();
+        let mut free = self.free_threads();
+        let mut selected = Vec::new();
+        for (_, index) in candidates {
+            let pool = self.schedules[index].pool;
+            if free[pool] != 0 {
+                free[pool] -= 1;
+                selected.push(index);
+            }
         }
-        // Every run pairs the newest trigger value with the retained gate value.
-        assert!(observed.windows(2).all(|w| w[0].0 < w[1].0));
+        let mut rank = vec![None; self.callbacks.len()];
+        for (position, &index) in selected.iter().enumerate() {
+            rank[index] = Some(position);
+            self.nodes[index].ready_since = None;
+        }
+        let mut batch = Vec::new();
+        for (index, callback) in self.callbacks.iter_mut().enumerate() {
+            if let Some(position) = rank[index] {
+                batch.push((position, index, callback.as_mut()));
+            }
+        }
+        batch.sort_by_key(|(position, _, _)| *position);
+        let (executed, timing) = execute_callback_batch(
+            batch
+                .into_iter()
+                .map(|(_, index, callback)| (index, callback)),
+            &self.metadata.context(self.time),
+            self.config.node_executor_thread_count,
+            |executed| {
+                // Validate the whole batch's timing before publishing any outputs.
+                let mut timing = Vec::with_capacity(executed.len());
+                for &index in executed {
+                    let finish = self
+                        .time
+                        .checked_add_duration(self.schedules[index].duration())
+                        .ok_or_else(|| StepError::Timing {
+                            callback: self.names[index].clone(),
+                            source: TimingError::Overflow,
+                        })?;
+                    let next = self.schedules[index].next_after(finish).map_err(|source| {
+                        StepError::Timing {
+                            callback: self.names[index].clone(),
+                            source,
+                        }
+                    })?;
+                    timing.push((finish, next));
+                }
+                Ok(timing)
+            },
+        )
+        .map_err(|error| match error {
+            BatchExecutionError::Callback { index, failure } => StepError::Callback {
+                callback: self.names[index].clone(),
+                failure,
+            },
+            BatchExecutionError::BeforeCommit(error) => error,
+            BatchExecutionError::NoWorkers => {
+                StepError::InvalidConfig("a callback batch requires a worker".into())
+            }
+        })?;
+        for (&index, (finish, next)) in executed.iter().zip(timing) {
+            self.nodes[index].requested = false;
+            self.nodes[index].busy_until = finish;
+            self.nodes[index].next = next;
+        }
+        self.poll_events()?;
+        self.refresh();
+        let free = self.free_threads();
+        let runnable = self.nodes.iter().enumerate().any(|(index, node)| {
+            node.ready_since.is_some() && free[self.schedules[index].pool] != 0
+        });
+        let next = self
+            .nodes
+            .iter()
+            .flat_map(|node| [Some(node.busy_until), node.next])
+            .flatten()
+            .chain(self.actions.first_key_value().map(|((at, _), _)| *at))
+            .filter(|&time| time > self.time)
+            .min();
+        if !runnable && let Some(next) = next {
+            self.time = next;
+        }
+        self.refresh();
+        let free = self.free_threads();
+        let runnable = self.nodes.iter().enumerate().any(|(index, node)| {
+            node.ready_since.is_some() && free[self.schedules[index].pool] != 0
+        });
+        let future = !self.actions.is_empty()
+            || self.nodes.iter().any(|node| {
+                node.busy_until > self.time || node.next.is_some_and(|next| next > self.time)
+            });
+        self.step_count += Saturating(1);
+        Ok(StepResult {
+            before,
+            after: self.time,
+            executed,
+            idle: !runnable && !future,
+        })
     }
 }

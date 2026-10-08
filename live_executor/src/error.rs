@@ -7,6 +7,10 @@ pub struct LiveExecutorStartError {
 
 #[derive(Debug)]
 pub enum ThreadFailure {
+    Timing {
+        callback: String,
+        source: task::TimingError,
+    },
     Readiness {
         reason: String,
     },

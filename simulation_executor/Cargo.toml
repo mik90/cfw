@@ -4,17 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-task = { path = "../task" }
+task = { path = "../task", default-features = false }
 iceoryx2 = { workspace = true, optional = true }
-logging = { path = "../logging", optional = true }
 
 [features]
-default = ["log_simulation", "iceoryx2"]
-log_simulation = ["dep:logging"]
+default = ["iceoryx2"]
 iceoryx2 = ["task/iceoryx2", "dep:iceoryx2"]
 
 [dev-dependencies]
-test_tasks = { path = "../test_tasks" }
+task_macros = { path = "../task_macros" }
 
 [lints]
 workspace = true

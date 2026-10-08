@@ -1,35 +1,34 @@
+//! Borrowed discrete-event simulation. Each step prepares a runnable batch,
+//! executes it with bounded parallelism, and commits outputs in scheduling order.
+//! Modeled durations occupy virtual pool slots; output timestamps are invocation
+//! times. Ready work runs before advancing to the next future event.
+//!
+//! Real worker batches are scoped to individual steps. A single real worker runs
+//! inline, independently of how many virtual threads the simulation models.
 pub mod executor;
-#[cfg(feature = "log_simulation")]
-pub mod log_simulation;
-mod node_executor;
 pub mod state;
-use task::context::Context;
-use task::executor::ExecutorParams;
-use task::time::FrameworkTime;
+pub use executor::SimulationExecutor;
+pub use state::{SimulationState, StepError, StepResult};
+pub use task::time::FrameworkTime;
 
-#[derive(Clone, Copy)]
-struct TimeTriggeredNode {
-    index: usize,
-    requested_exec_time: FrameworkTime,
-}
-
-/// A virtual pool tracks how many concurrent "threads" it models,
-/// without spawning real OS threads.
-pub struct VirtualPool {
-    /// Total count of threads in the pool
-    virtual_thread_count: usize,
-
-    /// How many threads are 'taken up' by a callback node until its busy_until time is reached
-    num_threads_occupied: usize,
-}
-
-type PoolIndex = usize;
-type CallbackNodeIndex = usize;
-
+/// Simulated pool sizes are independent of the real workers executing a batch.
+#[derive(Clone, Debug)]
 pub struct SimulationConfig {
     pub start_time: FrameworkTime,
-    pub executor_params: ExecutorParams,
-    /// Number of real OS threads used to execute callback nodes in parallel within a step.
-    /// Independent of any virtual thread pool sizes.
+    pub virtual_pool_threads: Vec<usize>,
     pub node_executor_thread_count: usize,
+    /// Poll real IPC event listeners at step boundaries. Disable this when
+    /// scheduled injections are the authoritative source of simulation events.
+    pub poll_external_events: bool,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            start_time: FrameworkTime::from_nanoseconds(0),
+            virtual_pool_threads: vec![1],
+            node_executor_thread_count: 1,
+            poll_external_events: true,
+        }
+    }
 }
