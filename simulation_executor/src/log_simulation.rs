@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use logging::sorted_log_stream::{
-    ReplaySinkMap, SortedLogStreamReader, build_replay_sinks_with_iox2_factories,
+    ReplaySourceMap, SortedLogStreamReader, build_replay_sources_with_iox2_factories,
 };
 use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
 use task::channel_registry::ChannelRegistry;
@@ -16,7 +16,7 @@ use task::time::{AtomicFrameworkTime, FrameworkTime};
 
 pub struct LogSimulationTask {
     reader: SortedLogStreamReader,
-    sinks: ReplaySinkMap,
+    sources: ReplaySourceMap,
     #[cfg(feature = "iceoryx2")]
     event_denylist: HashSet<ChannelName>,
     exhausted: bool,
@@ -30,7 +30,7 @@ impl Callback for LogSimulationTask {
         {
             let (batch, _) = self.reader.read_until(ctx.now);
             for entry in &batch {
-                self.sinks.publish(entry);
+                self.sources.publish(entry);
             }
         }
         #[cfg(feature = "iceoryx2")]
@@ -81,21 +81,21 @@ impl Callback for LogSimulationTask {
                 })?;
                 stage(channel, payload.event_id, payload.count);
             } else {
-                self.sinks.publish(&entry);
+                self.sources.publish(&entry);
             }
         }
-        self.sinks.for_each_publisher_mut(&mut |publisher| {
+        self.sources.for_each_publisher_mut(&mut |publisher| {
             publisher.flush_loaned_values(now, &mut task::scheduling::NoopReadyNodeSink);
         });
         Ok(())
     }
 
     fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
-        self.sinks
+        self.sources
             .for_each_publisher(&mut |p| f(PubOrSub::Publisher(p)));
     }
     fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
-        self.sinks.for_each_pub_or_sub_mut(f);
+        self.sources.for_each_pub_or_sub_mut(f);
     }
 }
 
@@ -175,7 +175,7 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
                 }
             });
         }
-        let sinks = build_replay_sinks_with_iox2_factories(
+        let sources = build_replay_sources_with_iox2_factories(
             reader,
             channel_registry,
             &self.denylist,
@@ -192,7 +192,7 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
         let has_events = false;
         drop(reader_guard);
 
-        if sinks.is_empty() && !has_events {
+        if sources.is_empty() && !has_events {
             return Ok(vec![]);
         }
 
@@ -207,7 +207,7 @@ impl TaskGraphBuildStep for LogSimulationBuildStep {
 
         let log_task = LogSimulationTask {
             reader,
-            sinks,
+            sources,
             #[cfg(feature = "iceoryx2")]
             event_denylist: self.denylist.clone(),
             exhausted: false,

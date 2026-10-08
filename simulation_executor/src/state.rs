@@ -206,18 +206,28 @@ impl<'storage> SimulationState<'storage> {
             .events
             .iter()
             .filter(|event| event.channel == channel)
-            .map(|event| (event.staging.clone(), event.wake.clone()))
+            .map(|event| {
+                (
+                    event.staging.clone(),
+                    event.wake.clone(),
+                    event.observer.clone(),
+                )
+            })
             .collect();
         if recipients.is_empty() {
             return Err(StepError::UnknownEventChannel(channel.into()));
         }
-        self.schedule_at(at, move |_| {
+        self.schedule_at(at, move |observed_at| {
             if count != 0 {
-                for (queue, wake) in recipients {
-                    queue.push(task::iox2::EventRecord {
+                for (queue, wake, observer) in recipients {
+                    let record = task::iox2::EventRecord {
                         event_id: id,
                         count,
-                    });
+                    };
+                    if let Some(observer) = observer {
+                        observer(observed_at, record);
+                    }
+                    queue.push(record);
                     wake.wake();
                 }
             }
@@ -278,10 +288,14 @@ impl<'storage> SimulationState<'storage> {
                 event
                     .listener
                     .try_wait(|activation| {
-                        event.staging.push(task::iox2::EventRecord {
+                        let record = task::iox2::EventRecord {
                             event_id: activation.id,
                             count: activation.count,
-                        });
+                        };
+                        if let Some(observer) = &event.observer {
+                            observer(self.time, record);
+                        }
+                        event.staging.push(record);
                         observed = true;
                     })
                     .map_err(|e| StepError::Iox2Event(e.to_string()))?;

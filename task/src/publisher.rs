@@ -79,6 +79,13 @@ impl<'storage, T> Publisher<'storage, T> {
     pub fn discard_pending(&mut self) {
         self.pending.clear();
     }
+    pub fn visit_pending_headers(&self, mut visit: impl FnMut(MessageHeader)) {
+        for message in &self.pending {
+            // SAFETY: pending contains initialized loans; publication/mutation
+            // requires an exclusive publisher borrow.
+            visit(unsafe { message.assume_init_ref() }.header);
+        }
+    }
 
     /// Publish a fully initialized batch at an executor-provided timestamp.
     /// Unsent outputs are released when their output handle is dropped.

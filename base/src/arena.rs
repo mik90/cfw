@@ -163,10 +163,16 @@ impl<'arena, T> Drop for ArenaPtrUninit<'arena, T> {
 }
 
 /// Pointer to a message that we assume is read-only based on pub/sub invariants
-#[derive(Clone)]
 pub struct ArenaReaderPtr<'arena, T> {
     /// Holds a normal ArenaPtr, just marked as read-only
     ptr: ArenaPtr<'arena, T>,
+}
+impl<T> Clone for ArenaReaderPtr<'_, T> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr.clone(),
+        }
+    }
 }
 
 // SAFETY: This wrapper exposes only immutable payload references. Its inner

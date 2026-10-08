@@ -4,18 +4,24 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-task = { path = "../task" }
+task = { path = "../task", default-features = false }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+iceoryx2 = { workspace = true, optional = true }
 
 [features]
 default = ["serde", "iceoryx2"]
 serde = ["dep:serde", "dep:serde_json", "task/serde"]
-iceoryx2 = ["task/iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "dep:iceoryx2"]
 # Test-only utilities (e.g. `InMemoryWriter`) for external test crates like
 # `logging_test`. Kept behind a feature so they stay out of the public API
 # for normal consumers.
 testing = []
+
+[dev-dependencies]
+task_macros = { path = "../task_macros" }
+simulation_executor = { path = "../simulation_executor" }
+live_executor = { path = "../live_executor" }
 
 [lints]
 workspace = true

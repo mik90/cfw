@@ -5,8 +5,13 @@ use crate::{Context, LoanError, Publisher, Subscriber};
 /// Executors invoke `execute_callback` or `execute_callback_batch` rather than
 /// calling `run` directly.
 pub trait Callback: Send {
-    // TODO(port-execution-logging): Restore execution-log hooks and replay metadata
-    // for inputs, committed outputs, and events within the split callback lifecycle.
+    fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
+        None
+    }
+    fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
+    fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
+    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
+    fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         Vec::new()

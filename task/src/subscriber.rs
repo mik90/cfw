@@ -95,6 +95,11 @@ impl<'storage, T> Subscriber<'storage, T> {
     pub fn writer_drops(&self) -> usize {
         self.buffer.writer_drops()
     }
+    pub fn visit_headers(&self, mut visit: impl FnMut(crate::message::MessageHeader)) {
+        for message in self.buffer.read_buffer().as_slice() {
+            visit(message.header);
+        }
+    }
 
     pub fn reader_drops(&self) -> usize {
         self.buffer.read_buffer().drops()

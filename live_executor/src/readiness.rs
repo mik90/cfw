@@ -9,6 +9,7 @@ pub(crate) fn run(
     shutdown: Iox2Shutdown,
     scheduler: &Scheduler,
     ready: Sender<Result<(), String>>,
+    clock: &dyn task::executor::TimeSource,
 ) -> Result<(), ThreadFailure> {
     let waitset = match WaitSetBuilder::new()
         .signal_handling_mode(SignalHandlingMode::Disabled)
@@ -42,10 +43,14 @@ pub(crate) fn run(
                     }
                     let mut observed = false;
                     if let Err(error) = registration.listener.try_wait(|event| {
-                        registration.staging.push(EventRecord {
+                        let record = EventRecord {
                             event_id: event.id,
                             count: event.count,
-                        });
+                        };
+                        if let Some(observer) = &registration.observer {
+                            observer(clock.now(), record);
+                        }
+                        registration.staging.push(record);
                         observed = true;
                     }) {
                         failure = Some(error.to_string());

@@ -330,6 +330,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
             notifiers.push(RefCell::new(Some(Iox2Notifier {
                 channel: self.plan.name.clone(),
                 pending: false,
+                event_id: id,
                 port: self
                     .event
                     .notifier_builder()
@@ -412,6 +413,11 @@ pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     runtime: Arc<Iox2Runtime>,
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
+    pub fn visit_pending_headers(&self, mut visit: impl FnMut(MessageHeader)) {
+        for sample in &self.pending {
+            visit(sample.header);
+        }
+    }
     /// Publish timestamped data without an event notification, for deterministic
     /// simulation/replay that schedules counted events independently.
     pub fn publish_with_header(&self, header: MessageHeader, value: T) -> Result<(), LoanError> {
@@ -494,6 +500,11 @@ pub struct Iox2Subscriber<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     _runtime: Arc<Iox2Runtime>,
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
+    pub fn visit_headers(&self, mut visit: impl FnMut(MessageHeader)) {
+        for sample in self.read.borrow().iter() {
+            visit(sample.header);
+        }
+    }
     pub fn channel_name(&self) -> &str {
         &self.channel
     }
@@ -581,6 +592,11 @@ pub struct Iox2EventSubscriber {
     runtime: Arc<Iox2Runtime>,
 }
 impl Iox2EventSubscriber {
+    pub fn visit_records(&self, mut visit: impl FnMut(EventRecord)) {
+        for record in self.read.borrow().iter() {
+            visit(*record);
+        }
+    }
     pub fn channel_name(&self) -> &str {
         &self.channel
     }
@@ -605,6 +621,7 @@ impl Iox2EventSubscriber {
     }
     pub fn take_registration(&mut self) -> Option<Iox2EventRegistration> {
         Some(Iox2EventRegistration {
+            observer: None,
             channel: self.channel.clone(),
             listener: self.listener.take()?,
             staging: self.staging.clone(),
@@ -647,20 +664,29 @@ impl<'a> Iox2Event<'a> {
     }
 }
 pub struct Iox2EventRegistration {
+    pub observer: Option<EventObserver>,
     pub channel: String,
     pub listener: Listener<ipc_threadsafe::Service>,
     pub staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
     pub wake: WakeHandle,
     _runtime: Arc<Iox2Runtime>,
 }
+pub type EventObserver = Arc<dyn Fn(FrameworkTime, EventRecord) + Send + Sync>;
 
 pub struct Iox2Notifier {
     channel: String,
     port: Notifier<ipc_threadsafe::Service>,
     pending: bool,
+    event_id: usize,
     _runtime: Arc<Iox2Runtime>,
 }
 impl Iox2Notifier {
+    pub fn pending_event(&self) -> Option<EventRecord> {
+        self.pending.then_some(EventRecord {
+            event_id: EventId::new(self.event_id),
+            count: 1,
+        })
+    }
     pub fn channel_name(&self) -> &str {
         &self.channel
     }

@@ -153,12 +153,13 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
                 let (ready, attached) = crossbeam::channel::bounded(1);
                 let stop = stop.clone();
                 let scheduler = &scheduler;
+                let clock = &clock;
                 let spawn = before_spawn(spawn_index).and_then(|()| {
                     thread::Builder::new()
                         .name("cfw_iox2_readiness".into())
                         .spawn_scoped(scope, move || {
                             let _stop_on_exit = StopOnExit(stop);
-                            crate::readiness::run(registrations, shutdown, scheduler, ready)
+                            crate::readiness::run(registrations, shutdown, scheduler, ready, clock)
                         })
                 });
                 match spawn {

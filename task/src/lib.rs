@@ -7,10 +7,12 @@ pub mod graph;
 pub mod input;
 #[cfg(feature = "iceoryx2")]
 pub mod iox2;
+pub mod loggable;
 pub mod message;
 pub mod named_channels;
 pub mod output;
 pub mod publisher;
+pub mod recording;
 pub mod storage;
 pub mod string_interner;
 pub mod subscriber;

@@ -413,63 +413,63 @@ fn external_sort(path: &Path, sort_batch_size: usize) -> Result<PathBuf, serde_j
     Ok(sorted_path)
 }
 
-/// A sink for replaying one channel's messages: deserializer + publisher pair.
-pub struct ReplaySink {
+/// A source for replaying one channel's messages: deserializer + publisher pair.
+pub struct ReplaySource {
     pub channel_name: ChannelName,
     pub deserializer: DeserializerFn,
     pub publisher: Box<dyn GenericPublisher>,
     pub writer: ChannelReplayWriter,
 }
 
-/// Map from channel name to its [`ReplaySink`].
-pub struct ReplaySinkMap {
-    sinks: HashMap<ChannelName, ReplaySink>,
+/// Map from channel name to its [`ReplaySource`].
+pub struct ReplaySourceMap {
+    sources: HashMap<ChannelName, ReplaySource>,
 }
 
-impl ReplaySinkMap {
-    /// Create an empty sink map.
+impl ReplaySourceMap {
+    /// Create an empty source map.
     pub fn new() -> Self {
-        ReplaySinkMap {
-            sinks: HashMap::new(),
+        ReplaySourceMap {
+            sources: HashMap::new(),
         }
     }
 
-    fn get_mut(&mut self, channel: &str) -> Option<&mut ReplaySink> {
-        self.sinks.get_mut(channel)
+    fn get_mut(&mut self, channel: &str) -> Option<&mut ReplaySource> {
+        self.sources.get_mut(channel)
     }
 
-    fn insert(&mut self, key: ChannelName, value: ReplaySink) -> Option<ReplaySink> {
-        self.sinks.insert(key, value)
+    fn insert(&mut self, key: ChannelName, value: ReplaySource) -> Option<ReplaySource> {
+        self.sources.insert(key, value)
     }
 
     /// Check if a channel is present in the map.
     pub fn contains_key(&self, key: &str) -> bool {
-        self.sinks.contains_key(key)
+        self.sources.contains_key(key)
     }
 
-    /// Returns `true` if the map contains no sinks.
+    /// Returns `true` if the map contains no sources.
     pub fn is_empty(&self) -> bool {
-        self.sinks.is_empty()
+        self.sources.is_empty()
     }
 
-    /// Returns the number of sinks.
+    /// Returns the number of sources.
     pub fn len(&self) -> usize {
-        self.sinks.len()
+        self.sources.len()
     }
 
-    /// Publish a log entry through the matching sink.
+    /// Publish a log entry through the matching source.
     pub fn publish(&mut self, entry: &OwnedLogEntry) {
-        if let Some(sink) = self.get_mut(&entry.channel_name)
-            && let Ok(value) = (sink.deserializer)(&entry.serialized_body)
+        if let Some(source) = self.get_mut(&entry.channel_name)
+            && let Ok(value) = (source.deserializer)(&entry.serialized_body)
         {
-            (sink.writer)(&mut *sink.publisher, entry.header, value);
+            (source.writer)(&mut *source.publisher, entry.header, value);
         }
     }
 
     /// Invoke `f` for every publisher.
     pub fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        for sink in self.sinks.values() {
-            f(sink.publisher.as_ref());
+        for source in self.sources.values() {
+            f(source.publisher.as_ref());
         }
     }
 
@@ -478,46 +478,46 @@ impl ReplaySinkMap {
         &'a mut self,
         f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
     ) {
-        for sink in self.sinks.values_mut() {
-            f(sink.publisher.as_mut());
+        for source in self.sources.values_mut() {
+            f(source.publisher.as_mut());
         }
     }
 
     /// Invoke `f` for every publisher as a mutable pub-or-sub.
     pub fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
-        for sink in self.sinks.values_mut() {
-            f(PubOrSubMut::Publisher(sink.publisher.as_mut()));
+        for source in self.sources.values_mut() {
+            f(PubOrSubMut::Publisher(source.publisher.as_mut()));
         }
     }
 }
 
-impl Default for ReplaySinkMap {
+impl Default for ReplaySourceMap {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Build a [`ReplaySinkMap`] from a [`SortedLogStreamReader`]'s channel names.
+/// Build a [`ReplaySourceMap`] from a [`SortedLogStreamReader`]'s channel names.
 ///
 /// Skips `EXECUTION_LOG_CHANNEL`, iceoryx2 event-log channels, and any channels
 /// in `denylist`. Returns an
 /// error if a log channel appears that is not registered in the registry.
-pub fn build_replay_sinks(
+pub fn build_replay_sources(
     reader: &SortedLogStreamReader,
     registry: &ChannelRegistry,
     denylist: &HashSet<ChannelName>,
-) -> Result<ReplaySinkMap, TaskGraphBuildStepError> {
-    build_replay_sinks_with_iox2_factories(reader, registry, denylist, &HashMap::new())
+) -> Result<ReplaySourceMap, TaskGraphBuildStepError> {
+    build_replay_sources_with_iox2_factories(reader, registry, denylist, &HashMap::new())
 }
 
-/// Build replay sinks, preferring channel-specific iox2 factories over native type factories.
-pub fn build_replay_sinks_with_iox2_factories(
+/// Build replay sources, preferring channel-specific iox2 factories over native type factories.
+pub fn build_replay_sources_with_iox2_factories(
     reader: &SortedLogStreamReader,
     registry: &ChannelRegistry,
     denylist: &HashSet<ChannelName>,
     iox2_factories: &HashMap<ChannelName, Iox2ReplayPublisherFactory>,
-) -> Result<ReplaySinkMap, TaskGraphBuildStepError> {
-    let mut map = ReplaySinkMap::new();
+) -> Result<ReplaySourceMap, TaskGraphBuildStepError> {
+    let mut map = ReplaySourceMap::new();
     for channel in reader.channel_names() {
         if channel.as_str() == EXECUTION_LOG_CHANNEL
             || (cfg!(feature = "iceoryx2") && channel.ends_with("_iox2_event"))
@@ -560,7 +560,7 @@ pub fn build_replay_sinks_with_iox2_factories(
         };
         map.insert(
             channel.clone(),
-            ReplaySink {
+            ReplaySource {
                 channel_name: channel.clone(),
                 deserializer,
                 publisher,
@@ -741,16 +741,16 @@ mod tests {
         miri,
         ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
     )]
-    fn test_build_replay_sinks_basic() {
+    fn test_build_replay_sources_basic() {
         let data = write_log(&[(100, "integer", &42u64.to_le_bytes())]);
         let reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
 
         let mut registry = ChannelRegistry::new();
         registry.register_channel::<u64>("integer".into());
 
-        let sinks = build_replay_sinks(&reader, &registry, &HashSet::new()).unwrap();
-        assert_eq!(sinks.len(), 1);
-        assert!(sinks.contains_key("integer"));
+        let sources = build_replay_sources(&reader, &registry, &HashSet::new()).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(sources.contains_key("integer"));
     }
 
     #[test]
@@ -758,7 +758,7 @@ mod tests {
         miri,
         ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
     )]
-    fn test_build_replay_sinks_denylist() {
+    fn test_build_replay_sources_denylist() {
         let data = write_log(&[(100, "integer", &42u64.to_le_bytes())]);
         let reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
 
@@ -767,7 +767,7 @@ mod tests {
 
         let mut deny = HashSet::new();
         deny.insert("integer".to_string());
-        let sinks = build_replay_sinks(&reader, &registry, &deny).unwrap();
-        assert!(sinks.is_empty());
+        let sources = build_replay_sources(&reader, &registry, &deny).unwrap();
+        assert!(sources.is_empty());
     }
 }

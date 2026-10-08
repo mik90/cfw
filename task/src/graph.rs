@@ -153,6 +153,31 @@ pub struct BuiltGraph<'storage> {
 }
 
 impl<'storage> BuiltGraph<'storage> {
+    pub fn try_map_callbacks<E>(
+        self,
+        mut map: impl FnMut(
+            usize,
+            &str,
+            Box<dyn Callback + 'storage>,
+        ) -> Result<Box<dyn Callback + 'storage>, E>,
+    ) -> Result<Self, E> {
+        let callbacks = self
+            .callbacks
+            .into_iter()
+            .enumerate()
+            .map(|(index, node)| {
+                Ok(ScheduledCallback {
+                    callback: map(index, &node.name, node.callback)?,
+                    name: node.name,
+                    schedule: node.schedule,
+                })
+            })
+            .collect::<Result<_, E>>()?;
+        Ok(Self {
+            callbacks,
+            metadata: self.metadata,
+        })
+    }
     pub fn metadata(&self) -> &GraphMetadata {
         &self.metadata
     }

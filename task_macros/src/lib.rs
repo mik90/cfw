@@ -311,6 +311,13 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let mut discard = Vec::new();
     let mut names = Vec::new();
     let mut events = Vec::new();
+    let mut descriptors = Vec::new();
+    let mut recorded_inputs = Vec::new();
+    let mut recorded_outputs = Vec::new();
+    let mut recorded_events = Vec::new();
+    let mut recorded_output_events = Vec::new();
+    let mut input_ordinal = 0_usize;
+    let mut output_ordinal = 0_usize;
     for port in ports {
         let Port {
             name,
@@ -322,6 +329,45 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             keep,
         } = port;
         let input = matches!(kind, PortKind::Input | PortKind::Required);
+        let receiving = input
+            || matches!(
+                kind,
+                PortKind::IoxInput | PortKind::IoxSpan | PortKind::IoxEvent
+            );
+        let ordinal = if receiving {
+            let n = input_ordinal;
+            input_ordinal += 1;
+            n
+        } else {
+            let n = output_ordinal;
+            output_ordinal += 1;
+            n
+        };
+        let direction = if receiving {
+            quote!(Received)
+        } else {
+            quote!(Published)
+        };
+        let transport = match kind {
+            PortKind::IoxEvent | PortKind::IoxNotifier => quote!(Event),
+            PortKind::IoxInput | PortKind::IoxSpan | PortKind::IoxOutput => quote!(Ipc),
+            _ => quote!(Native),
+        };
+        descriptors.push(quote!(::task::recording::EndpointDescriptor {
+            ordinal: #ordinal, channel: self.#name.channel_name().into(),
+            direction: ::task::recording::Direction::#direction,
+            transport: ::task::recording::Transport::#transport,
+            payload_type: ::core::any::type_name::<#payload>().into(),
+        }));
+        match kind {
+            PortKind::IoxEvent => recorded_events.push(quote!(self.#name.visit_records(|event| visit(::task::recording::LoggedEvent { ordinal: #ordinal, event_id: event.event_id.as_value(), count: event.count }));)),
+            PortKind::IoxNotifier => recorded_output_events.push(quote!(if let Some(event) = self.#name.pending_event() { visit(::task::recording::LoggedEvent { ordinal: #ordinal, event_id: event.event_id.as_value(), count: event.count }); })),
+            _ if receiving => recorded_inputs.push(quote!(self.#name.visit_headers(|header| visit(::task::recording::LoggedMessage { ordinal: #ordinal, header }));)),
+            _ => {
+                recorded_outputs.push(quote!(self.#name.visit_pending_headers(|header| visit(::task::recording::LoggedMessage { ordinal: #ordinal, header }));));
+                if matches!(kind, PortKind::IoxOutput) { recorded_output_events.push(quote!(self.#name.visit_pending_headers(|_| visit(::task::recording::LoggedEvent { ordinal: #ordinal, event_id: 0, count: 1 }));)); }
+            }
+        }
         channel_names.push(quote!(visit(self.#name.channel_name());));
         let (key, plan, bindings) = match kind {
             PortKind::IoxInput | PortKind::IoxSpan => (
@@ -460,6 +506,11 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         }
         impl<'storage> ::task::Callback for #callback<'storage> {
+            fn recording_endpoints(&self) -> Option<Vec<::task::recording::EndpointDescriptor>> { Some(vec![#(#descriptors),*]) }
+            fn visit_prepared_messages(&self, visit: &mut dyn FnMut(::task::recording::LoggedMessage)) { #(#recorded_inputs)* }
+            fn visit_pending_messages(&self, visit: &mut dyn FnMut(::task::recording::LoggedMessage)) { #(#recorded_outputs)* }
+            fn visit_prepared_events(&self, visit: &mut dyn FnMut(::task::recording::LoggedEvent)) { #(#recorded_events)* }
+            fn visit_pending_events(&self, visit: &mut dyn FnMut(::task::recording::LoggedEvent)) { #(#recorded_output_events)* }
             #event_method
             fn set_waker(&mut self, wake: ::task::wake::WakeHandle) { #(#wake)* }
             fn has_pending_inputs(&self) -> bool { false #(|| #pending)* }

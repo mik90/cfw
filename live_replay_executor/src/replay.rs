@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use logging::sorted_log_stream::{ReplaySinkMap, SortedLogStreamReader, build_replay_sinks};
+use logging::sorted_log_stream::{ReplaySourceMap, SortedLogStreamReader, build_replay_sources};
 use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
 use task::channel_registry::ChannelRegistry;
 use task::context::Context;
@@ -15,7 +15,7 @@ use crate::LiveReplayConfig;
 
 pub struct ReplayTask {
     reader: SortedLogStreamReader,
-    sinks: ReplaySinkMap,
+    sources: ReplaySourceMap,
     stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
 }
 
@@ -23,7 +23,7 @@ impl Callback for ReplayTask {
     fn run(&mut self, ctx: &Context) {
         let (batch, next_time) = self.reader.read_until(ctx.now);
         for entry in &batch {
-            self.sinks.publish(entry);
+            self.sources.publish(entry);
         }
 
         let done = next_time.is_none();
@@ -33,11 +33,11 @@ impl Callback for ReplayTask {
     }
 
     fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
-        self.sinks
+        self.sources
             .for_each_publisher(&mut |p| f(PubOrSub::Publisher(p)));
     }
     fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
-        self.sinks.for_each_pub_or_sub_mut(f);
+        self.sources.for_each_pub_or_sub_mut(f);
     }
 }
 
@@ -62,10 +62,10 @@ impl TaskGraphBuildStep for ReplayBuildStep {
         let reader = reader_guard
             .as_ref()
             .expect("ReplayBuildStep: reader already taken; build_step may only be called once");
-        let sinks = build_replay_sinks(reader, channel_registry, &self.denylist)?;
+        let sources = build_replay_sources(reader, channel_registry, &self.denylist)?;
         drop(reader_guard);
 
-        if sinks.is_empty() {
+        if sources.is_empty() {
             return Ok(vec![]);
         }
 
@@ -80,7 +80,7 @@ impl TaskGraphBuildStep for ReplayBuildStep {
 
         let replay_task = ReplayTask {
             reader,
-            sinks,
+            sources,
             stop_signal,
         };
 

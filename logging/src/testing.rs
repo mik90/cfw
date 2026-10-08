@@ -1,7 +1,7 @@
 use crate::{BoxedLogError, LogFileWriter};
 use std::sync::{Arc, Mutex};
 use task::message::MessageHeader;
-use task::pub_sub::ChannelName;
+type ChannelName = String;
 
 #[derive(Default, Debug, Clone)]
 pub struct InMemoryMessage {
