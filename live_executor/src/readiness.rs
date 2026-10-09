@@ -4,12 +4,12 @@ use iceoryx2::prelude::*;
 use std::time::Duration;
 use task::iox2::{EventRecord, Iox2EventRegistration, Iox2Shutdown};
 
-pub(crate) fn run(
+pub(crate) fn run<T: task::executor::TimeSource>(
     registrations: Vec<Iox2EventRegistration>,
     shutdown: Iox2Shutdown,
     scheduler: &Scheduler,
     ready: Sender<Result<(), String>>,
-    clock: &dyn task::executor::TimeSource,
+    clock: &T,
 ) -> Result<(), ThreadFailure> {
     let waitset = match WaitSetBuilder::new()
         .signal_handling_mode(SignalHandlingMode::Disabled)

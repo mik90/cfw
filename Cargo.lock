@@ -1492,6 +1492,8 @@ name = "simulation_executor"
 version = "0.1.0"
 dependencies = [
  "iceoryx2",
+ "logging",
+ "serde_json",
  "task",
  "task_macros",
 ]

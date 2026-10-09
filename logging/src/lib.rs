@@ -4,6 +4,10 @@ pub mod log_file;
 pub mod log_file_json;
 pub mod replay_source;
 pub mod session;
+#[cfg(feature = "serde")]
+pub mod sorted_log_stream;
+#[cfg(feature = "serde")]
+pub use sorted_log_stream::{LogReadError, OwnedLogEntry, SortedLogStreamReader};
 #[cfg(feature = "testing")]
 pub mod testing;
 

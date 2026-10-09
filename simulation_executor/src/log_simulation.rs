@@ -1,471 +1,298 @@
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, OnceLock};
-
-use logging::sorted_log_stream::{
-    ReplaySourceMap, SortedLogStreamReader, build_replay_sources_with_iox2_factories,
+//! Log-driven input injection over the ordinary discrete-event simulator.
+use crate::{SimulationConfig, SimulationState, StepError, StepResult};
+use logging::{BoxedLogError, OwnedLogEntry, ReplaySource, SortedLogStreamReader};
+use std::{
+    collections::{BTreeMap, HashSet},
+    num::Saturating,
+    sync::{Arc, Mutex},
 };
-use task::callback::{Callback, CallbackNode, PubOrSub, PubOrSubMut};
-use task::channel_registry::ChannelRegistry;
-use task::context::Context;
-use task::executor::ExecutorStopSignal;
-use task::pub_sub::ChannelName;
-use task::task_graph_builder::{TaskGraphBuildStep, TaskGraphBuildStepError};
-use task::time::{AtomicFrameworkTime, FrameworkTime};
+use task::{
+    BuiltGraph,
+    recording::{
+        Direction, EXECUTION_EVENT_CHANNEL, EXECUTION_LOG_CHANNEL,
+        EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionDescriptor, ExecutionRecord, ObservedEvent,
+        Transport,
+    },
+    time::FrameworkTime,
+};
 
-pub struct LogSimulationTask {
-    reader: SortedLogStreamReader,
-    sources: ReplaySourceMap,
-    #[cfg(feature = "iceoryx2")]
-    event_denylist: HashSet<ChannelName>,
-    exhausted: bool,
-    next_time_ns: Arc<AtomicFrameworkTime>,
-    stop_signal: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
+#[derive(Default)]
+pub struct LogSimulationOptions {
+    /// None starts at the first log timestamp (or zero for an empty log), with
+    /// kernel polling disabled: recorded activations are authoritative. Some
+    /// uses the supplied configuration verbatim, including its start time.
+    pub simulation: Option<SimulationConfig>,
+    /// Exclude computed/internal channels from input replay. Event records are
+    /// filtered by their descriptor's channel; denying execution_events skips all.
+    pub denylist: HashSet<String>,
 }
-
-impl Callback for LogSimulationTask {
-    fn run(&mut self, ctx: &Context) {
-        #[cfg(not(feature = "iceoryx2"))]
-        {
-            let (batch, _) = self.reader.read_until(ctx.now);
-            for entry in &batch {
-                self.sources.publish(entry);
-            }
-        }
-        #[cfg(feature = "iceoryx2")]
-        let _ = ctx;
-        let next_time = self.reader.peek_time();
-        match next_time {
-            Some(t) => {
-                self.next_time_ns.store(t, Ordering::Relaxed);
-            }
-            None => {
-                self.exhausted = true;
-                self.next_time_ns
-                    .store(FrameworkTime::INVALID, Ordering::Relaxed);
-            }
+enum Pending {
+    Data(OwnedLogEntry),
+    Event {
+        callback: String,
+        channel: String,
+        event: ObservedEvent,
+    },
+}
+impl Pending {
+    fn time(&self) -> FrameworkTime {
+        match self {
+            Self::Data(entry) => entry.header.published_at,
+            Self::Event { event, .. } => event.observed_at,
         }
     }
-
-    fn simulation_stop_if_idle(&mut self, idle: bool) {
-        if self.exhausted
-            && idle
-            && let Some(signal) = self.stop_signal.get()
-        {
-            signal.request_stop();
-        }
-    }
-
+}
+struct Feed<'a> {
+    reader: SortedLogStreamReader,
+    sources: BTreeMap<String, ReplaySource<'a>>,
+    descriptor: Option<ExecutionDescriptor>,
+    denied: HashSet<String>,
+    pending: Option<Pending>,
+    exhausted: bool,
     #[cfg(feature = "iceoryx2")]
-    fn dispatch_simulation_events(
-        &mut self,
-        now: FrameworkTime,
-        stage: &mut dyn FnMut(&str, usize, u64),
-    ) -> Result<(), String> {
-        use task::loggable::Loggable;
-        let (batch, _) = self.reader.read_until(now);
-        for entry in batch {
-            if let Some(channel) = entry
-                .channel_name
-                .strip_suffix(task::iox2::IOX2_EVENT_LOG_SUFFIX)
-            {
-                if self.event_denylist.contains(channel)
-                    || self.event_denylist.contains(&entry.channel_name)
-                {
-                    continue;
+    targets: BTreeMap<(String, usize), crate::state::EventTarget>,
+}
+impl Feed<'_> {
+    fn next(&mut self) -> Result<(), BoxedLogError> {
+        self.pending = None;
+        while let Some(entry) = self.reader.next_entry()? {
+            if self.denied.contains(&entry.channel_name) {
+                continue;
+            }
+            match entry.channel_name.as_str() {
+                EXECUTION_LOG_CHANNEL => {
+                    let record: ExecutionRecord = serde_json::from_slice(&entry.serialized_body)?;
+                    let descriptor = self
+                        .descriptor
+                        .as_ref()
+                        .ok_or("execution record has no descriptor")?;
+                    if record.callback_index >= descriptor.callbacks.len()
+                        || record.execution_time != entry.header.published_at
+                    {
+                        return Err("invalid execution record index or timestamp".into());
+                    }
                 }
-                let payload = task::iox2::LoggedChannelEvent::deserialize(&entry.serialized_body)
-                    .map_err(|error| {
-                    format!("invalid event on {}: {error}", entry.channel_name)
-                })?;
-                stage(channel, payload.event_id, payload.count);
-            } else {
-                self.sources.publish(&entry);
+                EXECUTION_EVENT_CHANNEL => {
+                    let event: ObservedEvent = serde_json::from_slice(&entry.serialized_body)?;
+                    if event.observed_at != entry.header.published_at {
+                        return Err("event timestamp differs from log header".into());
+                    }
+                    let callback = self
+                        .descriptor
+                        .as_ref()
+                        .and_then(|d| d.callbacks.get(event.callback_index))
+                        .ok_or("event record has no matching callback descriptor")?;
+                    let mut matches = callback.endpoints.iter().filter(|p| {
+                        p.direction == Direction::Received && p.ordinal == event.event.ordinal
+                    });
+                    let port = matches
+                        .next()
+                        .ok_or("event record has unknown subscriber ordinal")?;
+                    if matches.next().is_some() || port.transport != Transport::Event {
+                        return Err(
+                            "event record has ambiguous or non-event subscriber ordinal".into()
+                        );
+                    }
+                    if self.denied.contains(&port.channel) {
+                        continue;
+                    }
+                    self.pending = Some(Pending::Event {
+                        callback: callback.name.clone(),
+                        channel: port.channel.clone(),
+                        event,
+                    });
+                    return Ok(());
+                }
+                _ => {
+                    if !self.sources.contains_key(&entry.channel_name) {
+                        return Err(format!(
+                            "no replay source for channel '{}'",
+                            entry.channel_name
+                        )
+                        .into());
+                    }
+                    self.pending = Some(Pending::Data(entry));
+                    return Ok(());
+                }
             }
         }
-        self.sources.for_each_publisher_mut(&mut |publisher| {
-            publisher.flush_loaned_values(now, &mut task::scheduling::NoopReadyNodeSink);
-        });
+        self.exhausted = true;
         Ok(())
     }
-
-    fn for_each_pub_or_sub<'a>(&'a self, f: &mut dyn FnMut(PubOrSub<'a>)) {
-        self.sources
-            .for_each_publisher(&mut |p| f(PubOrSub::Publisher(p)));
-    }
-    fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
-        self.sources.for_each_pub_or_sub_mut(f);
+    fn inject_due(&mut self, time: FrameworkTime) -> Result<Option<FrameworkTime>, BoxedLogError> {
+        while self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.time() <= time)
+        {
+            match self.pending.take().unwrap() {
+                Pending::Data(entry) => self
+                    .sources
+                    .get_mut(&entry.channel_name)
+                    .unwrap()
+                    .inject(entry.header, &entry.serialized_body)
+                    .map_err(|e| {
+                        format!(
+                            "replay channel '{}' at {}: {e}",
+                            entry.channel_name, entry.header.published_at
+                        )
+                    })?,
+                Pending::Event {
+                    callback,
+                    channel,
+                    event,
+                } => {
+                    #[cfg(feature = "iceoryx2")]
+                    {
+                        let target = self
+                            .targets
+                            .get(&(callback.clone(), event.event.ordinal))
+                            .ok_or_else(|| {
+                                format!(
+                                    "unknown event recipient '{callback}' subscriber {}",
+                                    event.event.ordinal
+                                )
+                            })?;
+                        if target.channel != channel {
+                            return Err(format!("event recipient '{callback}' channel mismatch: recorded '{channel}', bound '{}'", target.channel).into());
+                        }
+                        target.inject(
+                            event.observed_at,
+                            iceoryx2::prelude::EventId::new(event.event.event_id),
+                            event.event.count,
+                        );
+                    }
+                    #[cfg(not(feature = "iceoryx2"))]
+                    {
+                        let _ = (callback, channel, event);
+                        return Err("replaying event records requires iceoryx2".into());
+                    }
+                }
+            }
+            self.next()?;
+        }
+        Ok(self.pending.as_ref().map(Pending::time))
     }
 }
 
-pub struct LogSimulationBuildStep {
-    reader: Arc<Mutex<Option<SortedLogStreamReader>>>,
-    next_time_ns: Arc<AtomicFrameworkTime>,
-    denylist: HashSet<ChannelName>,
-    stop_signal_cell: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
-    first_time: FrameworkTime,
+/// Binds already-planned input sources to a streaming log. It replays inputs and
+/// arrivals, not the recorded callback execution order. Callback schedules must
+/// supply explicit modeled durations. EOF still allows downstream work to drain.
+/// Infinite periodic schedules are bounded by run_until_idle's step limit.
+pub struct LogSimulation<'storage> {
+    simulation: SimulationState<'storage>,
+    // Retain sources through downstream draining, even after the stream action
+    // returns None and is removed from the scheduler.
+    feed: Arc<Mutex<Feed<'storage>>>,
 }
-
-impl LogSimulationBuildStep {
-    /// Construct a new build step from a log file path.
-    ///
-    /// Opens the file, creates a streaming reader, and seeds the first
-    /// execution time from the earliest logged entry.
+impl<'storage> LogSimulation<'storage> {
     pub fn new(
-        path: PathBuf,
-        denylist: HashSet<ChannelName>,
-        stop_signal_cell: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let mut log_reader = SortedLogStreamReader::from_path(&path, 65536)?;
-
-        if log_reader.is_empty() {
-            return Err("Log file is empty".into());
-        }
-
-        let first_time = log_reader
-            .peek_time()
-            .unwrap_or(FrameworkTime::from_nanoseconds(0));
-        let next_time_ns = Arc::new(AtomicFrameworkTime::new(first_time));
-
-        Ok(LogSimulationBuildStep {
-            reader: Arc::new(Mutex::new(Some(log_reader))),
-            next_time_ns,
-            denylist,
-            stop_signal_cell,
-            first_time,
-        })
+        graph: BuiltGraph<'storage>,
+        reader: SortedLogStreamReader,
+        sources: impl IntoIterator<Item = ReplaySource<'storage>>,
+    ) -> Result<Self, BoxedLogError> {
+        Self::with_options(graph, reader, sources, LogSimulationOptions::default())
     }
-
-    /// Timestamp of the earliest entry in the log.
-    pub fn first_log_time(&self) -> FrameworkTime {
-        self.first_time
-    }
-}
-
-impl TaskGraphBuildStep for LogSimulationBuildStep {
-    fn name(&self) -> &str {
-        "LogSimulationBuildStep"
-    }
-
-    fn build_step(
-        &self,
-        nodes: &[CallbackNode],
-        channel_registry: &mut ChannelRegistry,
-    ) -> Result<Vec<CallbackNode>, TaskGraphBuildStepError> {
-        let reader_guard = self.reader.lock().unwrap();
-        let reader = reader_guard.as_ref().expect(
-            "LogSimulationBuildStep: reader already taken; build_step may only be called once",
-        );
-        #[cfg(not(feature = "iceoryx2"))]
-        let _ = nodes;
-        #[cfg(feature = "iceoryx2")]
-        let mut iox2_factories = std::collections::HashMap::new();
-        #[cfg(not(feature = "iceoryx2"))]
-        let iox2_factories = std::collections::HashMap::new();
-        #[cfg(feature = "iceoryx2")]
-        for node in nodes {
-            node.callback().for_each_subscriber(&mut |subscriber| {
-                let channel = subscriber.config().channel_name.clone();
-                if !self.denylist.contains(&channel)
-                    && reader.channel_names().contains(&channel)
-                    && let Some(factory) = subscriber.iox2_replay_publisher_factory()
-                {
-                    iox2_factories.insert(channel, factory);
-                }
-            });
-        }
-        let sources = build_replay_sources_with_iox2_factories(
-            reader,
-            channel_registry,
-            &self.denylist,
-            &iox2_factories,
-        )?;
-        #[cfg(feature = "iceoryx2")]
-        let has_events = reader.channel_names().iter().any(|name| {
-            name.strip_suffix(task::iox2::IOX2_EVENT_LOG_SUFFIX)
-                .is_some_and(|channel| {
-                    !self.denylist.contains(name) && !self.denylist.contains(channel)
-                })
+    pub fn with_options(
+        graph: BuiltGraph<'storage>,
+        reader: SortedLogStreamReader,
+        sources: impl IntoIterator<Item = ReplaySource<'storage>>,
+        options: LogSimulationOptions,
+    ) -> Result<Self, BoxedLogError> {
+        let config = options.simulation.unwrap_or_else(|| SimulationConfig {
+            start_time: reader
+                .first_log_time()
+                .unwrap_or_else(|| FrameworkTime::from_nanoseconds(0)),
+            poll_external_events: false,
+            ..Default::default()
         });
-        #[cfg(not(feature = "iceoryx2"))]
-        let has_events = false;
-        drop(reader_guard);
-
-        if sources.is_empty() && !has_events {
-            return Ok(vec![]);
-        }
-
-        let mut reader_guard = self.reader.lock().unwrap();
-        let reader = reader_guard
-            .take()
-            .expect("LogSimulationBuildStep: reader already taken");
-        drop(reader_guard);
-
-        let next_time_ns = self.next_time_ns.clone();
-        let stop_signal = self.stop_signal_cell.clone();
-
-        let log_task = LogSimulationTask {
-            reader,
-            sources,
-            #[cfg(feature = "iceoryx2")]
-            event_denylist: self.denylist.clone(),
-            exhausted: false,
-            next_time_ns: next_time_ns.clone(),
-            stop_signal,
-        };
-
-        let mut node = CallbackNode::new_named(Box::new(log_task), "LogSimulationTask".into());
-        node.set_execution_duration_callback(Box::new(|| std::time::Duration::ZERO));
-        node.set_execution_time_callback(Box::new(move |_now| {
-            let t = next_time_ns.load(Ordering::Relaxed);
-            (t != FrameworkTime::INVALID).then_some(t)
-        }));
-
-        Ok(vec![node])
-    }
-}
-
-#[cfg(all(test, feature = "iceoryx2"))]
-mod iox2_tests;
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, OnceLock};
-
-    use logging::log_file::LogFileWriter;
-    use logging::log_file_json::JsonLogFileWriter;
-    use task::callback::CallbackViews;
-    use task::channel_registry::ChannelRegistry;
-    use task::executor::ExecutorStopSignal;
-    use task::generic_publisher::GenericPublisher as _;
-    use task::input::OptionalInput;
-    use task::publisher::Publisher;
-    use task::subscriber::{Subscriber, SubscriberConfig};
-    use task::time::FrameworkTime;
-
-    use crate::state::SimulationState;
-
-    use super::*;
-
-    struct TestStopSignal(Arc<AtomicBool>);
-    impl ExecutorStopSignal for TestStopSignal {
-        fn request_stop(&self) {
-            self.0.store(true, Ordering::Release);
-        }
-    }
-
-    fn serialize_u64(val: u64) -> Vec<u8> {
-        let mut buf = Vec::new();
-        task::loggable::Loggable::serialize(&val, &mut buf).unwrap();
-        buf
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_log_simulation_schedules_by_log_time() {
-        let stopped = Arc::new(AtomicBool::new(false));
-
-        let mut registry = ChannelRegistry::new();
-        registry.register_channel::<u64>("integer".into());
-
-        // Build a log buffer using JsonLogFileWriter.
-        let mut log_buf = Vec::new();
-        {
-            let mut writer = JsonLogFileWriter::new(&mut log_buf);
-            writer
-                .store_message(
-                    "integer",
-                    &task::message::MessageHeader::new(FrameworkTime::from_nanoseconds(1_000)),
-                    &serialize_u64(42u64),
-                )
-                .unwrap();
-            writer
-                .store_message(
-                    "integer",
-                    &task::message::MessageHeader::new(FrameworkTime::from_nanoseconds(3_000)),
-                    &serialize_u64(7u64),
-                )
-                .unwrap();
-            writer
-                .store_message(
-                    "integer",
-                    &task::message::MessageHeader::new(FrameworkTime::from_nanoseconds(5_000)),
-                    &serialize_u64(9u64),
-                )
-                .unwrap();
-        }
-
-        let stop_signal_cell = Arc::new(OnceLock::new());
-        let _ = stop_signal_cell
-            .set(Arc::new(TestStopSignal(stopped.clone())) as Arc<dyn ExecutorStopSignal>);
-
-        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
-        let first_time = reader.peek_time().unwrap();
-        let next_time_ns = Arc::new(AtomicFrameworkTime::new(first_time));
-
-        let build_step = LogSimulationBuildStep {
-            reader: Arc::new(Mutex::new(Some(reader))),
-            next_time_ns: next_time_ns.clone(),
-            denylist: HashSet::new(),
-            stop_signal_cell: stop_signal_cell.clone(),
-            first_time,
-        };
-
-        let mut channel_registry = ChannelRegistry::new();
-        channel_registry.register_channel::<u64>("integer".into());
-        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].name(), "LogSimulationTask");
-
-        let mut node = nodes.into_iter().next().unwrap();
-
-        let mut sub = Subscriber::<u64>::new(SubscriberConfig {
-            is_optional: false,
-            capacity: 4,
-            is_trigger: true,
-            keep_across_runs: true,
-            channel_name: "integer".into(),
-        });
-        {
-            let mut pubs = node.callback_mut().collect_publishers_mut();
-            let pub_ref: &mut Publisher<u64> = pubs[0]
-                .as_any()
-                .downcast_mut::<Publisher<u64>>()
-                .expect("publisher should be u64");
-            pub_ref.add_typed_subscriber(&mut sub);
-            pub_ref.allocate_arena();
-        }
-
-        let mut state = SimulationState::new(1, vec![node]);
-        state.start();
-
-        let mut observed_values: Vec<u64> = Vec::new();
-
-        for _ in 0..20 {
-            if stopped.load(Ordering::Relaxed) {
-                break;
+        let mut sources_by_channel = BTreeMap::new();
+        for source in sources {
+            let channel = source.channel().to_owned();
+            if channel == EXECUTION_LOG_CHANNEL || channel == EXECUTION_EVENT_CHANNEL {
+                return Err(format!("reserved replay source channel '{channel}'").into());
             }
-
-            let _executed = state.step().unwrap();
-
-            sub.drain_writer_to_reader();
+            if sources_by_channel.insert(channel.clone(), source).is_some() {
+                return Err(format!("duplicate replay source for '{channel}'").into());
+            }
+        }
+        for channel in reader.channel_names() {
+            if channel != EXECUTION_LOG_CHANNEL
+                && channel != EXECUTION_EVENT_CHANNEL
+                && !options.denylist.contains(channel)
+                && !sources_by_channel.contains_key(channel)
             {
-                let mut input = OptionalInput::<u64>::new_downcasted(&mut sub);
-                if let Some(val) = input.value() {
-                    observed_values.push(*val);
-                    input.clear();
+                return Err(format!(
+                    "no replay source for channel '{channel}' (add a source or explicitly deny it)"
+                )
+                .into());
+            }
+        }
+        let descriptor = reader
+            .artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT)
+            .map(serde_json::from_slice::<ExecutionDescriptor>)
+            .transpose()?;
+        if let Some(descriptor) = &descriptor {
+            let mut names = HashSet::new();
+            for callback in &descriptor.callbacks {
+                if !names.insert(&callback.name) {
+                    return Err(
+                        format!("duplicate recorded callback name '{}'", callback.name).into(),
+                    );
+                }
+                let mut ports = HashSet::new();
+                for port in &callback.endpoints {
+                    let receiving = port.direction == Direction::Received;
+                    if !ports.insert((receiving, port.ordinal)) {
+                        return Err(
+                            format!("duplicate endpoint ordinal on '{}'", callback.name).into()
+                        );
+                    }
                 }
             }
         }
-
-        assert_eq!(observed_values, vec![42u64, 7u64, 9u64]);
-        assert_eq!(
-            state.simulation_time(),
-            FrameworkTime::from_nanoseconds(5_000)
-        );
-        assert!(stopped.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_log_simulation_drylists_execution_log() {
-        let mut registry = ChannelRegistry::new();
-        registry.register_channel::<u64>("integer".into());
-
-        let mut log_buf = Vec::new();
-        {
-            let mut writer = JsonLogFileWriter::new(&mut log_buf);
-            writer
-                .store_message(
-                    task::execution_log::EXECUTION_LOG_CHANNEL,
-                    &task::message::MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
-                    &serialize_u64(0u64),
-                )
-                .unwrap();
-            writer
-                .store_message(
-                    "integer",
-                    &task::message::MessageHeader::new(FrameworkTime::from_nanoseconds(500)),
-                    &serialize_u64(100u64),
-                )
-                .unwrap();
-        }
-
-        let stop_signal_cell = Arc::new(OnceLock::new());
-        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
-        let first_time = reader.peek_time().unwrap();
-        let next_time_ns = Arc::new(AtomicFrameworkTime::new(first_time));
-
-        let build_step = LogSimulationBuildStep {
-            reader: Arc::new(Mutex::new(Some(reader))),
-            next_time_ns,
-            denylist: HashSet::new(),
-            stop_signal_cell,
-            first_time,
+        let mut simulation = SimulationState::with_config(graph, config)?;
+        let mut feed = Feed {
+            reader,
+            sources: sources_by_channel,
+            descriptor,
+            denied: options.denylist,
+            pending: None,
+            exhausted: false,
+            #[cfg(feature = "iceoryx2")]
+            targets: simulation.replay_event_targets(),
         };
-
-        let mut channel_registry = ChannelRegistry::new();
-        channel_registry.register_channel::<u64>("integer".into());
-        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
-        assert_eq!(nodes.len(), 1);
-        assert_eq!(nodes[0].callback().collect_publishers().len(), 1);
-        assert_eq!(
-            nodes[0].callback().collect_publishers()[0]
-                .config()
-                .channel_name,
-            "integer"
-        );
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_log_simulation_denylisted_channels_skipped() {
-        let mut registry = ChannelRegistry::new();
-        registry.register_channel::<u64>("integer".into());
-
-        let mut log_buf = Vec::new();
-        {
-            let mut writer = JsonLogFileWriter::new(&mut log_buf);
-            writer
-                .store_message(
-                    "integer",
-                    &task::message::MessageHeader::new(FrameworkTime::from_nanoseconds(100)),
-                    &[],
-                )
-                .unwrap();
+        feed.next()?;
+        let first = feed.pending.as_ref().map(Pending::time);
+        let feed = Arc::new(Mutex::new(feed));
+        if let Some(at) = first {
+            let source = feed.clone();
+            simulation.schedule_stream(at, move |time| {
+                source
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .inject_due(time)
+                    .map_err(|e| e.to_string())
+            })?;
         }
-
-        let stop_signal_cell = Arc::new(OnceLock::new());
-        let mut reader = SortedLogStreamReader::from_reader(log_buf.as_slice(), 64).unwrap();
-        let first_time = reader.peek_time().unwrap();
-        let next_time_ns = Arc::new(AtomicFrameworkTime::new(first_time));
-
-        let mut denylist = HashSet::new();
-        denylist.insert("integer".to_string());
-
-        let build_step = LogSimulationBuildStep {
-            reader: Arc::new(Mutex::new(Some(reader))),
-            next_time_ns,
-            denylist,
-            stop_signal_cell,
-            first_time,
-        };
-
-        let mut channel_registry = ChannelRegistry::new();
-        channel_registry.register_channel::<u64>("integer".into());
-        let nodes = build_step.build_step(&[], &mut channel_registry).unwrap();
-        assert!(nodes.is_empty());
+        Ok(Self { simulation, feed })
+    }
+    pub fn step(&mut self) -> Result<StepResult, StepError> {
+        self.simulation.step()
+    }
+    pub fn run_until_idle(&mut self, max_steps: usize) -> Result<Vec<StepResult>, StepError> {
+        self.simulation.run_until_idle(max_steps)
+    }
+    pub fn current_time(&self) -> FrameworkTime {
+        self.simulation.current_time()
+    }
+    pub fn step_count(&self) -> Saturating<usize> {
+        self.simulation.step_count()
+    }
+    pub fn input_exhausted(&self) -> bool {
+        self.feed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .exhausted
     }
 }

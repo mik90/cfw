@@ -10,8 +10,12 @@
 //! Real worker batches are scoped to individual steps. A single real worker runs
 //! inline, independently of how many virtual threads the simulation models.
 pub mod executor;
+#[cfg(feature = "log_simulation")]
+pub mod log_simulation;
 pub mod state;
 pub use executor::SimulationExecutor;
+#[cfg(feature = "log_simulation")]
+pub use log_simulation::{LogSimulation, LogSimulationOptions};
 pub use state::{SimulationState, StepError, StepResult};
 pub use task::time::FrameworkTime;
 

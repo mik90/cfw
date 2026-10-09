@@ -6,10 +6,13 @@ edition = "2024"
 [dependencies]
 task = { path = "../task", default-features = false }
 iceoryx2 = { workspace = true, optional = true }
+logging = { path = "../logging", default-features = false, features = ["serde"], optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = ["iceoryx2"]
-iceoryx2 = ["task/iceoryx2", "dep:iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "dep:iceoryx2", "logging?/iceoryx2"]
+log_simulation = ["dep:logging", "dep:serde_json"]
 
 [dev-dependencies]
 task_macros = { path = "../task_macros" }

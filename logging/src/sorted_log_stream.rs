@@ -1,773 +1,426 @@
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use task::callback::PubOrSubMut;
-use task::channel_registry::{
-    ChannelRegistry, ChannelReplayWriter, DeserializerFn, Iox2ReplayPublisherFactory,
+//! Strict, stable external sorting of the current JSON-lines log format.
+use std::{
+    collections::{HashMap, HashSet},
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
-use task::execution_log::EXECUTION_LOG_CHANNEL;
-use task::generic_publisher::GenericPublisher;
-use task::message::MessageHeader;
-use task::pub_sub::ChannelName;
-use task::task_graph_builder::TaskGraphBuildStepError;
-use task::time::FrameworkTime;
+use task::{message::MessageHeader, time::FrameworkTime};
 
-static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
-
-fn temp_path(kind: &str) -> PathBuf {
-    let pid = std::process::id();
-    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("cfw_replay_{kind}_{pid}_{id}"))
+#[derive(Debug)]
+pub enum LogReadError {
+    Io(std::io::Error),
+    Json {
+        line: usize,
+        source: serde_json::Error,
+    },
+    CorruptRun(serde_json::Error),
+    Invalid(String),
+    Poisoned,
+}
+impl std::fmt::Display for LogReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "log IO: {e}"),
+            Self::Json { line, source } => write!(f, "invalid log line {line}: {source}"),
+            Self::CorruptRun(e) => write!(f, "invalid sorted run: {e}"),
+            Self::Invalid(reason) => f.write_str(reason),
+            Self::Poisoned => f.write_str("log reader failed previously"),
+        }
+    }
+}
+impl std::error::Error for LogReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Json { source, .. } | Self::CorruptRun(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+impl From<std::io::Error> for LogReadError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
 }
 
-/// An owned log entry suitable for replay. Carries the header, channel name,
-/// and serialized message body.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OwnedLogEntry {
     pub header: MessageHeader,
-    pub channel_name: ChannelName,
+    pub channel_name: String,
+    #[serde(rename = "body")]
     pub serialized_body: Vec<u8>,
 }
-
-// Discriminated line parser for the input log file.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Artifact {
+    artifact: String,
+    body: serde_json::Value,
+}
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
-enum RawLine {
-    Artifact {
-        artifact: String,
-    },
-    Message {
-        header: MessageHeader,
-        channel_name: String,
-        body: Vec<u8>,
-    },
+enum Row {
+    Artifact(Artifact),
+    Message(OwnedLogEntry),
 }
-
-// Helper for serializing entries to temp run files.
-#[derive(serde::Serialize)]
-struct WriteEntry<'a> {
-    header: MessageHeader,
-    channel_name: &'a str,
-    body: &'a [u8],
-}
-
-// Helper for deserializing entries from temp run files.
-#[derive(serde::Deserialize)]
-struct ReadEntry {
-    header: MessageHeader,
-    channel_name: String,
-    body: Vec<u8>,
-}
-
-fn parse_entry_line(line: &str) -> Option<OwnedLogEntry> {
-    if line.trim().is_empty() {
-        return None;
-    }
-    match serde_json::from_str::<RawLine>(line) {
-        Ok(RawLine::Artifact { .. }) => None,
-        Ok(RawLine::Message {
-            header,
-            channel_name,
-            body,
-        }) => Some(OwnedLogEntry {
-            header,
-            channel_name,
-            serialized_body: body,
-        }),
-        Err(_) => None,
-    }
-}
-
-fn write_entry<W: Write>(w: &mut W, entry: &OwnedLogEntry) -> Result<(), serde_json::Error> {
-    let line = serde_json::to_string(&WriteEntry {
-        header: entry.header,
-        channel_name: &entry.channel_name,
-        body: &entry.serialized_body,
-    })?;
-    w.write_all(line.as_bytes())
-        .map_err(serde_json::Error::io)?;
-    w.write_all(b"\n").map_err(serde_json::Error::io)
-}
-
-fn write_entries(path: &Path, entries: &[OwnedLogEntry]) -> Result<(), serde_json::Error> {
-    let mut file = File::create(path).map_err(serde_json::Error::io)?;
-    for entry in entries {
-        write_entry(&mut file, entry)?;
-    }
-    Ok(())
-}
-
-fn read_run_entry(reader: &mut BufReader<File>) -> Option<OwnedLogEntry> {
-    let mut line = String::new();
-    match reader.read_line(&mut line) {
-        Ok(0) | Err(_) => None,
-        Ok(_) => {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                serde_json::from_str::<ReadEntry>(trimmed)
-                    .ok()
-                    .map(|r| OwnedLogEntry {
-                        header: r.header,
-                        channel_name: r.channel_name,
-                        serialized_body: r.body,
-                    })
-            }
-        }
-    }
-}
-
-/// Merge entry used in the binary heap during external merge.
-struct MergeEntry {
-    time: FrameworkTime,
-    run_index: usize,
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RunEntry {
+    sequence: usize,
     entry: OwnedLogEntry,
 }
-
-impl PartialEq for MergeEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.time == other.time
+impl RunEntry {
+    fn key(&self) -> (FrameworkTime, usize) {
+        (self.entry.header.published_at, self.sequence)
     }
 }
 
-impl Eq for MergeEntry {}
-
-impl PartialOrd for MergeEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+struct TempRun {
+    path: PathBuf,
 }
-
-impl Ord for MergeEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.time.cmp(&other.time)
-    }
-}
-
-/// Where the reader currently streams entries from.
-enum SortedSource {
-    /// Log was empty.
-    Empty,
-    /// Entries streamed directly from an already-sorted file.
-    FromFile(BufReader<File>),
-}
-
-/// A bounded-memory, time-sorted streaming reader for JSON log files.
-///
-/// The log is read in a streaming fashion; memory is proportional to the
-/// number of distinct channel names plus `sort_batch_size` entries, never the
-/// whole log. If the input is already time-sorted the entries are streamed
-/// directly; otherwise an external merge sort spills sorted chunks to
-/// temporary files and merges them.
-///
-/// Callers advance through the log with [`read_until`](Self::read_until), which
-/// returns all entries with `published_at <= time` and the timestamp of the
-/// next entry (the "T+1" time).
-pub struct SortedLogStreamReader {
-    source: SortedSource,
-    channels: HashSet<ChannelName>,
-    entry_count: usize,
-    first_time: Option<FrameworkTime>,
-    peeked: Option<OwnedLogEntry>,
-    temp_files: Vec<PathBuf>,
-}
-
-impl SortedLogStreamReader {
-    /// Build a streaming reader from a log file path.
-    ///
-    /// `sort_batch_size` controls the maximum number of entries held in memory
-    /// at once during the external sort path. Larger values improve I/O
-    /// performance at the cost of memory.
-    pub fn from_path(path: &Path, sort_batch_size: usize) -> Result<Self, serde_json::Error> {
-        let mut channels: HashSet<ChannelName> = HashSet::new();
-        let mut entry_count = 0usize;
-        let mut first_time: Option<FrameworkTime> = None;
-        let mut already_sorted = true;
-        let mut prev_time: Option<FrameworkTime> = None;
-
-        {
-            let file = File::open(path).map_err(serde_json::Error::io)?;
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = line.map_err(serde_json::Error::io)?;
-                let Some(entry) = parse_entry_line(&line) else {
-                    continue;
-                };
-                let t = entry.header.published_at;
-                channels.insert(entry.channel_name);
-                if first_time.is_none() {
-                    first_time = Some(t);
-                }
-                entry_count += 1;
-                if already_sorted {
-                    if let Some(prev) = prev_time
-                        && t < prev
-                    {
-                        already_sorted = false;
-                    }
-                    prev_time = Some(t);
-                }
-            }
-        }
-
-        if entry_count == 0 {
-            return Ok(SortedLogStreamReader {
-                source: SortedSource::Empty,
-                channels,
-                entry_count,
-                first_time,
-                peeked: None,
-                temp_files: vec![],
-            });
-        }
-
-        if already_sorted {
-            let file = File::open(path).map_err(serde_json::Error::io)?;
-            let mut reader = SortedLogStreamReader {
-                source: SortedSource::FromFile(BufReader::new(file)),
-                channels,
-                entry_count,
-                first_time,
-                peeked: None,
-                temp_files: vec![],
-            };
-            reader.advance_peek();
-            return Ok(reader);
-        }
-
-        let sorted_path = external_sort(path, sort_batch_size)?;
-        let file = File::open(&sorted_path).map_err(serde_json::Error::io)?;
-        let mut reader = SortedLogStreamReader {
-            source: SortedSource::FromFile(BufReader::new(file)),
-            channels,
-            entry_count,
-            first_time,
-            peeked: None,
-            temp_files: vec![sorted_path],
-        };
-        reader.advance_peek();
-        Ok(reader)
-    }
-
-    /// Build a streaming reader from any `BufRead` source.
-    ///
-    /// The source is copied to a temporary file so it can be streamed
-    /// multiple times; prefer [`from_path`](Self::from_path) for real log
-    /// files to avoid the copy.
-    pub fn from_reader<R: BufRead>(
-        reader: R,
-        sort_batch_size: usize,
-    ) -> Result<Self, serde_json::Error> {
-        let path = temp_path("input");
-        {
-            let mut file = File::create(&path).map_err(serde_json::Error::io)?;
-            for line in reader.lines() {
-                let line = line.map_err(serde_json::Error::io)?;
-                writeln!(file, "{line}").map_err(serde_json::Error::io)?;
-            }
-        }
-        let mut result = Self::from_path(&path, sort_batch_size)?;
-        result.temp_files.push(path);
-        Ok(result)
-    }
-
-    fn advance_peek(&mut self) {
-        self.peeked = match &mut self.source {
-            SortedSource::Empty => None,
-            SortedSource::FromFile(reader) => read_run_entry(reader),
-        };
-    }
-
-    /// Distinct channel names discovered in the log.
-    pub fn channel_names(&self) -> &HashSet<ChannelName> {
-        &self.channels
-    }
-
-    /// Whether the log contains zero entries.
-    pub fn is_empty(&self) -> bool {
-        self.entry_count == 0
-    }
-
-    /// Timestamp of the earliest entry, or `None` if empty.
-    pub fn first_log_time(&self) -> Option<FrameworkTime> {
-        self.first_time
-    }
-
-    /// Timestamp of the next un-yielded entry, or `None` if exhausted.
-    pub fn peek_time(&mut self) -> Option<FrameworkTime> {
-        self.peeked.as_ref().map(|e| e.header.published_at)
-    }
-
-    /// Consume and return all not-yet-yielded entries with `published_at <= time`.
-    ///
-    /// Returns `(batch, next_time)` where `batch` is the entries for the
-    /// current time step and `next_time` is the timestamp of the first entry
-    /// with `published_at > time` (the "T+1" step), or `None` at EOF.
-    pub fn read_until(
-        &mut self,
-        time: FrameworkTime,
-    ) -> (Vec<OwnedLogEntry>, Option<FrameworkTime>) {
-        let mut batch = Vec::new();
-        loop {
-            match self.peeked.take() {
-                Some(entry) if entry.header.published_at <= time => {
-                    batch.push(entry);
-                    self.advance_peek();
-                }
-                Some(entry) => {
-                    self.peeked = Some(entry);
-                    let next = self.peeked.as_ref().map(|e| e.header.published_at);
-                    return (batch, next);
-                }
-                None => {
-                    return (batch, None);
-                }
-            }
-        }
-    }
-}
-
-impl Drop for SortedLogStreamReader {
+impl Drop for TempRun {
     fn drop(&mut self) {
-        for path in self.temp_files.drain(..) {
-            let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+fn temporary() -> Result<(TempRun, File), LogReadError> {
+    loop {
+        let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("cfw_sorted_{}_{}", std::process::id(), id));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((TempRun { path }, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
         }
     }
 }
-
-/// Sort an unsorted log file into a single time-sorted temp file.
-///
-/// Memory is bounded by `sort_batch_size` entries during the chunking pass
-/// and one entry per run during the merge.
-fn external_sort(path: &Path, sort_batch_size: usize) -> Result<PathBuf, serde_json::Error> {
-    let batch = sort_batch_size.max(1);
-    let mut run_paths: Vec<PathBuf> = Vec::new();
-
-    // Phase 1: read sorted chunks and spill each to a temp run file.
-    let file = File::open(path).map_err(serde_json::Error::io)?;
-    let mut reader = BufReader::new(file);
-    let mut chunk: Vec<OwnedLogEntry> = Vec::with_capacity(batch);
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(serde_json::Error::io)?;
-        if n == 0 {
-            break;
+fn write_entry(writer: &mut impl Write, entry: &RunEntry) -> Result<(), LogReadError> {
+    serde_json::to_writer(&mut *writer, entry).map_err(LogReadError::CorruptRun)?;
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+fn read_entry(reader: &mut impl BufRead) -> Result<Option<RunEntry>, LogReadError> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(None);
+    }
+    serde_json::from_str(&line)
+        .map(Some)
+        .map_err(LogReadError::CorruptRun)
+}
+fn spill(chunk: &mut Vec<RunEntry>) -> Result<TempRun, LogReadError> {
+    chunk.sort_by_key(RunEntry::key);
+    let (run, file) = temporary()?;
+    let mut writer = BufWriter::new(file);
+    for entry in chunk.drain(..) {
+        write_entry(&mut writer, &entry)?;
+    }
+    writer.flush()?;
+    Ok(run)
+}
+fn merge(left: TempRun, right: TempRun) -> Result<TempRun, LogReadError> {
+    let mut a = BufReader::new(File::open(&left.path)?);
+    let mut b = BufReader::new(File::open(&right.path)?);
+    let (run, file) = temporary()?;
+    let mut writer = BufWriter::new(file);
+    let mut first = read_entry(&mut a)?;
+    let mut second = read_entry(&mut b)?;
+    while first.is_some() || second.is_some() {
+        if second.is_none()
+            || first
+                .as_ref()
+                .is_some_and(|x| x.key() <= second.as_ref().unwrap().key())
+        {
+            write_entry(&mut writer, &first.take().unwrap())?;
+            first = read_entry(&mut a)?;
+        } else {
+            write_entry(&mut writer, &second.take().unwrap())?;
+            second = read_entry(&mut b)?;
         }
-        if let Some(entry) = parse_entry_line(&line) {
-            chunk.push(entry);
-            if chunk.len() >= batch {
-                chunk.sort_by_key(|e| e.header.published_at);
-                let run_path = temp_path("run");
-                write_entries(&run_path, &chunk)?;
-                run_paths.push(run_path);
-                chunk.clear();
+    }
+    writer.flush()?;
+    Ok(run)
+}
+fn add_run(levels: &mut Vec<Option<TempRun>>, mut run: TempRun) -> Result<(), LogReadError> {
+    for level in levels.iter_mut() {
+        match level.take() {
+            Some(previous) => run = merge(previous, run)?,
+            None => {
+                *level = Some(run);
+                return Ok(());
             }
+        }
+    }
+    levels.push(Some(run));
+    Ok(())
+}
+fn sort_run(input: TempRun, batch_size: usize) -> Result<TempRun, LogReadError> {
+    let mut reader = BufReader::new(File::open(&input.path)?);
+    let mut levels = Vec::new();
+    let mut chunk = Vec::new();
+    while let Some(entry) = read_entry(&mut reader)? {
+        chunk.push(entry);
+        if chunk.len() == batch_size {
+            add_run(&mut levels, spill(&mut chunk)?)?;
         }
     }
     if !chunk.is_empty() {
-        chunk.sort_by_key(|e| e.header.published_at);
-        let run_path = temp_path("run");
-        write_entries(&run_path, &chunk)?;
-        run_paths.push(run_path);
+        add_run(&mut levels, spill(&mut chunk)?)?;
     }
-
-    // Phase 2: k-way merge the runs into one sorted file.
-    let sorted_path = temp_path("sorted");
-    let mut out = File::create(&sorted_path).map_err(serde_json::Error::io)?;
-    let mut readers: Vec<BufReader<File>> = Vec::with_capacity(run_paths.len());
-    for p in &run_paths {
-        readers.push(BufReader::new(
-            File::open(p).map_err(serde_json::Error::io)?,
-        ));
+    let mut result = None;
+    for run in levels.into_iter().flatten() {
+        result = Some(match result {
+            Some(previous) => merge(previous, run)?,
+            None => run,
+        });
     }
-
-    let mut heap: BinaryHeap<Reverse<MergeEntry>> = BinaryHeap::new();
-    for (idx, r) in readers.iter_mut().enumerate() {
-        if let Some(entry) = read_run_entry(r) {
-            heap.push(Reverse(MergeEntry {
-                time: entry.header.published_at,
-                run_index: idx,
-                entry,
-            }));
-        }
-    }
-    while let Some(Reverse(item)) = heap.pop() {
-        write_entry(&mut out, &item.entry)?;
-        if let Some(entry) = read_run_entry(&mut readers[item.run_index]) {
-            heap.push(Reverse(MergeEntry {
-                time: entry.header.published_at,
-                run_index: item.run_index,
-                entry,
-            }));
-        }
-    }
-
-    for p in &run_paths {
-        let _ = std::fs::remove_file(p);
-    }
-    Ok(sorted_path)
+    result.ok_or_else(|| LogReadError::Invalid("empty external sort input".into()))
+}
+enum Source {
+    Empty,
+    Memory(std::vec::IntoIter<OwnedLogEntry>),
+    // Close the file before releasing its path, including on early reader drop.
+    File {
+        reader: BufReader<File>,
+        _run: TempRun,
+    },
 }
 
-/// A source for replaying one channel's messages: deserializer + publisher pair.
-pub struct ReplaySource {
-    pub channel_name: ChannelName,
-    pub deserializer: DeserializerFn,
-    pub publisher: Box<dyn GenericPublisher>,
-    pub writer: ChannelReplayWriter,
+/// Bounded-memory snapshot of a JSON-lines log. Sorting holds at most one chunk
+/// and two merge heads; a binary merge hierarchy bounds open file descriptors.
+/// Already sorted inputs use a single snapshot pass without merge sorting.
+/// Metadata/channel dictionaries are retained. Equal times preserve file order.
+pub struct SortedLogStreamReader {
+    source: Source,
+    channels: HashSet<String>,
+    artifacts: HashMap<String, Vec<u8>>,
+    entry_count: usize,
+    first_time: Option<FrameworkTime>,
+    peeked: Option<OwnedLogEntry>,
+    failed: bool,
 }
-
-/// Map from channel name to its [`ReplaySource`].
-pub struct ReplaySourceMap {
-    sources: HashMap<ChannelName, ReplaySource>,
-}
-
-impl ReplaySourceMap {
-    /// Create an empty source map.
-    pub fn new() -> Self {
-        ReplaySourceMap {
-            sources: HashMap::new(),
+impl SortedLogStreamReader {
+    pub fn from_path(path: &Path, sort_batch_size: usize) -> Result<Self, LogReadError> {
+        Self::from_reader(BufReader::new(File::open(path)?), sort_batch_size)
+    }
+    pub fn from_reader(
+        mut input: impl BufRead,
+        sort_batch_size: usize,
+    ) -> Result<Self, LogReadError> {
+        if sort_batch_size == 0 {
+            return Err(LogReadError::Invalid(
+                "sort batch size must be positive".into(),
+            ));
         }
-    }
-
-    fn get_mut(&mut self, channel: &str) -> Option<&mut ReplaySource> {
-        self.sources.get_mut(channel)
-    }
-
-    fn insert(&mut self, key: ChannelName, value: ReplaySource) -> Option<ReplaySource> {
-        self.sources.insert(key, value)
-    }
-
-    /// Check if a channel is present in the map.
-    pub fn contains_key(&self, key: &str) -> bool {
-        self.sources.contains_key(key)
-    }
-
-    /// Returns `true` if the map contains no sources.
-    pub fn is_empty(&self) -> bool {
-        self.sources.is_empty()
-    }
-
-    /// Returns the number of sources.
-    pub fn len(&self) -> usize {
-        self.sources.len()
-    }
-
-    /// Publish a log entry through the matching source.
-    pub fn publish(&mut self, entry: &OwnedLogEntry) {
-        if let Some(source) = self.get_mut(&entry.channel_name)
-            && let Ok(value) = (source.deserializer)(&entry.serialized_body)
-        {
-            (source.writer)(&mut *source.publisher, entry.header, value);
-        }
-    }
-
-    /// Invoke `f` for every publisher.
-    pub fn for_each_publisher<'a>(&'a self, f: &mut dyn FnMut(&'a dyn GenericPublisher)) {
-        for source in self.sources.values() {
-            f(source.publisher.as_ref());
-        }
-    }
-
-    /// Invoke `f` for every mutable publisher.
-    pub fn for_each_publisher_mut<'a>(
-        &'a mut self,
-        f: &mut dyn FnMut(&'a mut dyn GenericPublisher),
-    ) {
-        for source in self.sources.values_mut() {
-            f(source.publisher.as_mut());
-        }
-    }
-
-    /// Invoke `f` for every publisher as a mutable pub-or-sub.
-    pub fn for_each_pub_or_sub_mut<'a>(&'a mut self, f: &mut dyn FnMut(PubOrSubMut<'a>)) {
-        for source in self.sources.values_mut() {
-            f(PubOrSubMut::Publisher(source.publisher.as_mut()));
-        }
-    }
-}
-
-impl Default for ReplaySourceMap {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Build a [`ReplaySourceMap`] from a [`SortedLogStreamReader`]'s channel names.
-///
-/// Skips `EXECUTION_LOG_CHANNEL`, iceoryx2 event-log channels, and any channels
-/// in `denylist`. Returns an
-/// error if a log channel appears that is not registered in the registry.
-pub fn build_replay_sources(
-    reader: &SortedLogStreamReader,
-    registry: &ChannelRegistry,
-    denylist: &HashSet<ChannelName>,
-) -> Result<ReplaySourceMap, TaskGraphBuildStepError> {
-    build_replay_sources_with_iox2_factories(reader, registry, denylist, &HashMap::new())
-}
-
-/// Build replay sources, preferring channel-specific iox2 factories over native type factories.
-pub fn build_replay_sources_with_iox2_factories(
-    reader: &SortedLogStreamReader,
-    registry: &ChannelRegistry,
-    denylist: &HashSet<ChannelName>,
-    iox2_factories: &HashMap<ChannelName, Iox2ReplayPublisherFactory>,
-) -> Result<ReplaySourceMap, TaskGraphBuildStepError> {
-    let mut map = ReplaySourceMap::new();
-    for channel in reader.channel_names() {
-        if channel.as_str() == EXECUTION_LOG_CHANNEL
-            || (cfg!(feature = "iceoryx2") && channel.ends_with("_iox2_event"))
-        {
-            continue;
-        }
-        if denylist.contains(channel) {
-            continue;
-        }
-        let Some(type_id) = registry.channel_type(channel) else {
-            return Err(format!(
-                "replay: channel '{channel}' appears in log but was not registered via ChannelRegistry::register_channel"
-            )
-            .into());
-        };
-        let Some(deserializer) = registry.deserializer_for(type_id) else {
-            if iox2_factories.contains_key(channel) {
-                return Err(format!(
-                    "replay: no deserializer registered for iox2 channel '{channel}'"
-                )
-                .into());
+        let mut channels = HashSet::new();
+        let mut artifacts = HashMap::new();
+        let mut count = 0_usize;
+        let mut line_number = 0;
+        let mut line = String::new();
+        let (snapshot, file) = temporary()?;
+        let mut writer = BufWriter::new(file);
+        let mut sorted = true;
+        let mut previous = None;
+        loop {
+            line.clear();
+            if input.read_line(&mut line)? == 0 {
+                break;
             }
-            continue;
-        };
-        let (publisher, writer) = if let Some(factory) = iox2_factories.get(channel) {
-            factory(channel.clone())
+            line_number += 1;
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Row>(&line).map_err(|source| LogReadError::Json {
+                line: line_number,
+                source,
+            })? {
+                Row::Artifact(artifact) => {
+                    if artifacts.contains_key(&artifact.artifact) {
+                        return Err(LogReadError::Invalid(format!(
+                            "duplicate artifact '{}' at line {line_number}",
+                            artifact.artifact
+                        )));
+                    }
+                    artifacts.insert(
+                        artifact.artifact,
+                        serde_json::to_vec(&artifact.body).map_err(|source| {
+                            LogReadError::Json {
+                                line: line_number,
+                                source,
+                            }
+                        })?,
+                    );
+                }
+                Row::Message(entry) => {
+                    validate(&entry)?;
+                    channels.insert(entry.channel_name.clone());
+                    let time = entry.header.published_at;
+                    sorted &= previous.is_none_or(|last| last <= time);
+                    previous = Some(time);
+                    write_entry(
+                        &mut writer,
+                        &RunEntry {
+                            sequence: count,
+                            entry,
+                        },
+                    )?;
+                    count = count
+                        .checked_add(1)
+                        .ok_or_else(|| LogReadError::Invalid("too many log entries".into()))?;
+                }
+            }
+        }
+        writer.flush()?;
+        drop(writer);
+        let source = if count == 0 {
+            Source::Empty
         } else {
-            let Some(factory) = registry.channel_publisher_factory(type_id) else {
-                return Err(format!(
-                    "replay: no publisher factory for channel '{channel}' type {type_id:?}"
-                )
-                .into());
+            let run = if sorted {
+                snapshot
+            } else {
+                sort_run(snapshot, sort_batch_size)?
             };
-            let (publisher, native_writer) = factory(channel.clone());
-            let writer: ChannelReplayWriter =
-                std::sync::Arc::new(move |publisher, _header, value| {
-                    native_writer(publisher, value);
-                });
-            (publisher, writer)
+            Source::File {
+                reader: BufReader::new(File::open(&run.path)?),
+                _run: run,
+            }
         };
-        map.insert(
-            channel.clone(),
-            ReplaySource {
-                channel_name: channel.clone(),
-                deserializer,
-                publisher,
-                writer,
-            },
-        );
+        Self::initialize(source, channels, artifacts, count)
     }
-    Ok(map)
+    /// In-memory fixture alternative with the same stable ordering and validation.
+    pub fn from_entries(
+        mut entries: Vec<OwnedLogEntry>,
+        artifacts: HashMap<String, Vec<u8>>,
+    ) -> Result<Self, LogReadError> {
+        let mut channels = HashSet::new();
+        for entry in &entries {
+            validate(entry)?;
+            channels.insert(entry.channel_name.clone());
+        }
+        for (name, body) in &artifacts {
+            serde_json::from_slice::<serde_json::Value>(body)
+                .map_err(|e| LogReadError::Invalid(format!("artifact '{name}': {e}")))?;
+        }
+        entries.sort_by_key(|entry| entry.header.published_at);
+        let count = entries.len();
+        Self::initialize(
+            Source::Memory(entries.into_iter()),
+            channels,
+            artifacts,
+            count,
+        )
+    }
+    fn initialize(
+        source: Source,
+        channels: HashSet<String>,
+        artifacts: HashMap<String, Vec<u8>>,
+        entry_count: usize,
+    ) -> Result<Self, LogReadError> {
+        let mut reader = Self {
+            source,
+            channels,
+            artifacts,
+            entry_count,
+            first_time: None,
+            peeked: None,
+            failed: false,
+        };
+        reader.advance()?;
+        reader.first_time = reader.peek_time();
+        Ok(reader)
+    }
+    fn advance(&mut self) -> Result<(), LogReadError> {
+        let next = match &mut self.source {
+            Source::Empty => Ok(None),
+            Source::Memory(entries) => Ok(entries.next()),
+            Source::File { reader, .. } => {
+                read_entry(reader).map(|entry| entry.map(|row| row.entry))
+            }
+        };
+        match next {
+            Ok(entry) => {
+                self.peeked = entry;
+                Ok(())
+            }
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
+        }
+    }
+    pub fn channel_names(&self) -> &HashSet<String> {
+        &self.channels
+    }
+    pub fn artifact(&self, name: &str) -> Option<&[u8]> {
+        self.artifacts.get(name).map(Vec::as_slice)
+    }
+    pub fn len(&self) -> usize {
+        self.entry_count
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entry_count == 0
+    }
+    pub fn first_log_time(&self) -> Option<FrameworkTime> {
+        self.first_time
+    }
+    pub fn peek_time(&self) -> Option<FrameworkTime> {
+        self.peeked.as_ref().map(|e| e.header.published_at)
+    }
+    pub fn next_entry(&mut self) -> Result<Option<OwnedLogEntry>, LogReadError> {
+        if self.failed {
+            return Err(LogReadError::Poisoned);
+        }
+        let current = self.peeked.take();
+        self.advance()?;
+        Ok(current)
+    }
+    pub fn read_until(
+        &mut self,
+        time: FrameworkTime,
+    ) -> Result<(Vec<OwnedLogEntry>, Option<FrameworkTime>), LogReadError> {
+        if self.failed {
+            return Err(LogReadError::Poisoned);
+        }
+        let mut batch = Vec::new();
+        while self.peek_time().is_some_and(|next| next <= time) {
+            batch.push(self.next_entry()?.unwrap());
+        }
+        Ok((batch, self.peek_time()))
+    }
+}
+fn validate(entry: &OwnedLogEntry) -> Result<(), LogReadError> {
+    if entry.header.published_at == FrameworkTime::INVALID {
+        return Err(LogReadError::Invalid(format!(
+            "invalid timestamp on '{}'",
+            entry.channel_name
+        )));
+    }
+    if entry.channel_name.is_empty() {
+        return Err(LogReadError::Invalid("empty log channel name".into()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::log_file::LogFileWriter;
-    use crate::log_file_json::JsonLogFileWriter;
-    use task::time::FrameworkTime;
-
-    fn make_header(ns: i64) -> MessageHeader {
-        MessageHeader::new(FrameworkTime::from_nanoseconds(ns))
-    }
-
-    fn write_log(entries: &[(i64, &str, &[u8])]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        {
-            let mut writer = JsonLogFileWriter::new(&mut buf);
-            for (ns, channel, body) in entries {
-                writer
-                    .store_message(channel, &make_header(*ns), body)
-                    .unwrap();
-            }
-        }
-        buf
-    }
-
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_sorted_input_yields_in_order() {
-        let data = write_log(&[(100, "a", b"x"), (200, "b", b"y"), (300, "c", b"z")]);
-        let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
-        assert!(!reader.is_empty());
-        assert_eq!(
-            reader.first_log_time(),
-            Some(FrameworkTime::from_nanoseconds(100))
-        );
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(200));
-        assert_eq!(batch.len(), 2);
-        assert_eq!(batch[0].channel_name, "a");
-        assert_eq!(batch[1].channel_name, "b");
-        assert_eq!(next, Some(FrameworkTime::from_nanoseconds(300)));
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(300));
-        assert_eq!(batch.len(), 1);
-        assert_eq!(batch[0].channel_name, "c");
-        assert_eq!(next, None);
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_unsorted_input_yields_sorted() {
-        let data = write_log(&[(300, "c", b"z"), (100, "a", b"x"), (200, "b", b"y")]);
-        let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 2).unwrap();
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(100));
-        assert_eq!(batch.len(), 1);
-        assert_eq!(batch[0].channel_name, "a");
-        assert_eq!(next, Some(FrameworkTime::from_nanoseconds(200)));
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(200));
-        assert_eq!(batch.len(), 1);
-        assert_eq!(batch[0].channel_name, "b");
-        assert_eq!(next, Some(FrameworkTime::from_nanoseconds(300)));
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(300));
-        assert_eq!(batch.len(), 1);
-        assert_eq!(batch[0].channel_name, "c");
-        assert_eq!(next, None);
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_channel_names() {
-        let data = write_log(&[(100, "a", b"x"), (200, "b", b"y"), (300, "a", b"z")]);
-        let reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
-        let mut names: Vec<&String> = reader.channel_names().iter().collect();
-        names.sort();
-        assert_eq!(names, vec!["a", "b"]);
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_read_until_semantics() {
-        let data = write_log(&[(1000, "x", b"1"), (3000, "x", b"2"), (5000, "x", b"3")]);
-        let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
-
-        assert_eq!(
-            reader.peek_time(),
-            Some(FrameworkTime::from_nanoseconds(1000))
-        );
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(1000));
-        assert_eq!(batch.len(), 1);
-        assert_eq!(next, Some(FrameworkTime::from_nanoseconds(3000)));
-
-        assert_eq!(
-            reader.peek_time(),
-            Some(FrameworkTime::from_nanoseconds(3000))
-        );
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(2000));
-        assert_eq!(batch.len(), 0);
-        assert_eq!(next, Some(FrameworkTime::from_nanoseconds(3000)));
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(3000));
-        assert_eq!(batch.len(), 1);
-        assert_eq!(next, Some(FrameworkTime::from_nanoseconds(5000)));
-
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(9999));
-        assert_eq!(batch.len(), 1);
-        assert_eq!(next, None);
-
-        assert!(reader.peek_time().is_none());
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_empty_log() {
-        let data = Vec::new();
-        let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
-        assert!(reader.is_empty());
-        assert_eq!(reader.first_log_time(), None);
-        assert!(reader.peek_time().is_none());
-        let (batch, next) = reader.read_until(FrameworkTime::from_nanoseconds(0));
-        assert!(batch.is_empty());
-        assert!(next.is_none());
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_peek_time_consistency() {
-        let data = write_log(&[(10, "a", b"v1"), (20, "a", b"v2")]);
-        let mut reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
-        assert_eq!(
-            reader.peek_time(),
-            Some(FrameworkTime::from_nanoseconds(10))
-        );
-        let (batch, _) = reader.read_until(FrameworkTime::from_nanoseconds(10));
-        assert_eq!(batch.len(), 1);
-        assert_eq!(
-            reader.peek_time(),
-            Some(FrameworkTime::from_nanoseconds(20))
-        );
-        let (batch, _) = reader.read_until(FrameworkTime::from_nanoseconds(20));
-        assert_eq!(batch.len(), 1);
-        assert!(reader.peek_time().is_none());
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_build_replay_sources_basic() {
-        let data = write_log(&[(100, "integer", &42u64.to_le_bytes())]);
-        let reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
-
-        let mut registry = ChannelRegistry::new();
-        registry.register_channel::<u64>("integer".into());
-
-        let sources = build_replay_sources(&reader, &registry, &HashSet::new()).unwrap();
-        assert_eq!(sources.len(), 1);
-        assert!(sources.contains_key("integer"));
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "Miri doesn't support file I/O: SortedLogStreamReader::from_reader copies its input to a temp file"
-    )]
-    fn test_build_replay_sources_denylist() {
-        let data = write_log(&[(100, "integer", &42u64.to_le_bytes())]);
-        let reader = SortedLogStreamReader::from_reader(data.as_slice(), 64).unwrap();
-
-        let mut registry = ChannelRegistry::new();
-        registry.register_channel::<u64>("integer".into());
-
-        let mut deny = HashSet::new();
-        deny.insert("integer".to_string());
-        let sources = build_replay_sources(&reader, &registry, &deny).unwrap();
-        assert!(sources.is_empty());
+    #[cfg_attr(miri, ignore = "requires filesystem")]
+    fn temporary_run_cleanup_is_scoped() {
+        let path = {
+            let (run, _file) = temporary().unwrap();
+            assert!(run.path.exists());
+            run.path.clone()
+        };
+        assert!(!path.exists());
     }
 }

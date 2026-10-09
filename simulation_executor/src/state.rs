@@ -64,7 +64,46 @@ struct NodeState {
     next: Option<FrameworkTime>,
 }
 
-type Action<'storage> = Box<dyn FnOnce(FrameworkTime) -> Result<(), String> + Send + 'storage>;
+enum Action<'storage> {
+    Once(Box<dyn FnOnce(FrameworkTime) -> Result<(), String> + Send + 'storage>),
+    Stream(
+        Box<dyn FnMut(FrameworkTime) -> Result<Option<FrameworkTime>, String> + Send + 'storage>,
+    ),
+}
+
+#[cfg(feature = "iceoryx2")]
+#[derive(Clone)]
+pub(crate) struct EventTarget {
+    pub(crate) channel: String,
+    inject: Arc<dyn Fn(FrameworkTime, iceoryx2::prelude::EventId, u64) + Send + Sync>,
+}
+#[cfg(feature = "iceoryx2")]
+impl EventTarget {
+    fn new(registration: &task::iox2::Iox2EventRegistration) -> Self {
+        let queue = registration.staging.clone();
+        let wake = registration.wake.clone();
+        let observer = registration.observer.clone();
+        Self {
+            channel: registration.channel.clone(),
+            inject: Arc::new(move |at, id, count| {
+                if count != 0 {
+                    let record = task::iox2::EventRecord {
+                        event_id: id,
+                        count,
+                    };
+                    if let Some(observer) = &observer {
+                        observer(at, record);
+                    }
+                    queue.push(record);
+                    wake.wake();
+                }
+            }),
+        }
+    }
+    pub(crate) fn inject(&self, at: FrameworkTime, id: iceoryx2::prelude::EventId, count: u64) {
+        (self.inject)(at, id, count);
+    }
+}
 
 /// Borrowed, discrete-event simulation with deterministic batch commits.
 /// A failed step poisons the session: callback state and consumed inputs cannot
@@ -84,6 +123,8 @@ pub struct SimulationState<'storage> {
     action_sequence: usize,
     #[cfg(feature = "iceoryx2")]
     events: Vec<task::iox2::Iox2EventRegistration>,
+    #[cfg(feature = "iceoryx2")]
+    event_targets: BTreeMap<(String, usize), EventTarget>,
 }
 
 impl<'storage> SimulationState<'storage> {
@@ -120,6 +161,8 @@ impl<'storage> SimulationState<'storage> {
             action_sequence: 0,
             #[cfg(feature = "iceoryx2")]
             events: Vec::new(),
+            #[cfg(feature = "iceoryx2")]
+            event_targets: BTreeMap::new(),
         };
         for mut node in callbacks {
             if !node.schedule.has_execution_duration() {
@@ -137,7 +180,45 @@ impl<'storage> SimulationState<'storage> {
             let notification = Arc::new(Notification(AtomicU8::new(0)));
             node.callback.set_waker(notification.clone());
             #[cfg(feature = "iceoryx2")]
-            state.events.extend(node.callback.take_iox2_events());
+            {
+                let registrations = node.callback.take_iox2_events();
+                if let Some(endpoints) = node.callback.recording_endpoints() {
+                    let ports: Vec<_> = endpoints
+                        .into_iter()
+                        .filter(|port| {
+                            port.direction == task::recording::Direction::Received
+                                && port.transport == task::recording::Transport::Event
+                        })
+                        .collect();
+                    if ports.len() != registrations.len()
+                        || ports
+                            .iter()
+                            .zip(&registrations)
+                            .any(|(port, registration)| port.channel != registration.channel)
+                    {
+                        return Err(StepError::InvalidConfig(format!(
+                            "callback '{}' event registrations do not match endpoint metadata",
+                            node.name
+                        )));
+                    }
+                    for (port, registration) in ports.into_iter().zip(&registrations) {
+                        if state
+                            .event_targets
+                            .insert(
+                                (node.name.clone(), port.ordinal),
+                                EventTarget::new(registration),
+                            )
+                            .is_some()
+                        {
+                            return Err(StepError::InvalidConfig(format!(
+                                "callback '{}' has duplicate event ordinal {}",
+                                node.name, port.ordinal
+                            )));
+                        }
+                    }
+                }
+                state.events.extend(registrations);
+            }
             let requested = node.schedule.run_on_start || node.callback.has_pending_inputs();
             let next = if node.schedule.run_on_start {
                 Some(state.time)
@@ -180,6 +261,23 @@ impl<'storage> SimulationState<'storage> {
         at: FrameworkTime,
         action: impl FnOnce(FrameworkTime) -> Result<(), String> + Send + 'storage,
     ) -> Result<(), StepError> {
+        self.insert_action(at, Action::Once(Box::new(action)))
+    }
+
+    /// Run a streaming input driver at `at`. Returning a strictly later timestamp
+    /// reschedules it before time advancement is calculated; None signals EOF.
+    pub fn schedule_stream(
+        &mut self,
+        at: FrameworkTime,
+        action: impl FnMut(FrameworkTime) -> Result<Option<FrameworkTime>, String> + Send + 'storage,
+    ) -> Result<(), StepError> {
+        self.insert_action(at, Action::Stream(Box::new(action)))
+    }
+    fn insert_action(
+        &mut self,
+        at: FrameworkTime,
+        action: Action<'storage>,
+    ) -> Result<(), StepError> {
         if self.failed {
             return Err(StepError::Poisoned);
         }
@@ -190,8 +288,46 @@ impl<'storage> SimulationState<'storage> {
         self.action_sequence = sequence
             .checked_add(1)
             .ok_or_else(|| StepError::InvalidConfig("action sequence exhausted".into()))?;
-        self.actions.insert((at, sequence), Box::new(action));
+        self.actions.insert((at, sequence), action);
         Ok(())
+    }
+
+    #[cfg(feature = "iceoryx2")]
+    pub(crate) fn event_target(
+        &self,
+        callback: &str,
+        ordinal: usize,
+    ) -> Result<EventTarget, StepError> {
+        self.event_targets
+            .get(&(callback.into(), ordinal))
+            .cloned()
+            .ok_or_else(|| {
+                StepError::InvalidConfig(format!(
+                    "unknown event recipient '{callback}' subscriber {ordinal}"
+                ))
+            })
+    }
+    #[cfg(feature = "iceoryx2")]
+    pub(crate) fn replay_event_targets(&self) -> BTreeMap<(String, usize), EventTarget> {
+        self.event_targets.clone()
+    }
+
+    /// Inject one recorded listener activation without broadcasting to the other
+    /// listeners on its channel. Ordinals come from callback endpoint metadata.
+    #[cfg(feature = "iceoryx2")]
+    pub fn schedule_event_for(
+        &mut self,
+        at: FrameworkTime,
+        callback: &str,
+        ordinal: usize,
+        id: iceoryx2::prelude::EventId,
+        count: u64,
+    ) -> Result<(), StepError> {
+        let target = self.event_target(callback, ordinal)?;
+        self.schedule_at(at, move |time| {
+            target.inject(time, id, count);
+            Ok(())
+        })
     }
 
     #[cfg(feature = "iceoryx2")]
@@ -341,7 +477,19 @@ impl<'storage> SimulationState<'storage> {
             .is_some_and(|((at, _), _)| *at <= self.time)
         {
             let ((at, _), action) = self.actions.pop_first().unwrap();
-            action(at).map_err(StepError::Action)?;
+            match action {
+                Action::Once(action) => action(at).map_err(StepError::Action)?,
+                Action::Stream(mut action) => {
+                    if let Some(next) = action(at).map_err(StepError::Action)? {
+                        if next <= self.time {
+                            return Err(StepError::Action(
+                                "streaming action must return a future timestamp".into(),
+                            ));
+                        }
+                        self.insert_action(next, Action::Stream(action))?;
+                    }
+                }
+            }
         }
         self.poll_events()?;
         self.refresh();
