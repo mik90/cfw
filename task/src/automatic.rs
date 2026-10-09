@@ -34,12 +34,176 @@ pub trait Task {
         self: Box<Self>,
         channels: &mut NamedPlan,
     ) -> Result<Box<dyn TaskFactory>, BuildError>;
+    fn register_with(
+        self: Box<Self>,
+        channels: &mut NamedPlan,
+        overrides: &ChannelOverrides,
+    ) -> Result<Box<dyn TaskFactory>, BuildError> {
+        if !overrides.is_empty() {
+            return Err(BuildError("task does not support channel overrides".into()));
+        }
+        self.register(channels)
+    }
 }
 pub trait TaskFactory {
     fn build<'a>(
         self: Box<Self>,
         bindings: &NamedBindings<'a>,
     ) -> Result<Box<dyn Callback + 'a>, BuildError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PortDirection {
+    Input,
+    Output,
+}
+impl PortDirection {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Output => "output",
+        }
+    }
+}
+
+/// Overrides refer to callback argument names, not to default channel names or
+/// channel endpoint indices. Resolution precedes all endpoint registration.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelOverrides {
+    channels: BTreeMap<(PortDirection, String), String>,
+}
+impl ChannelOverrides {
+    pub fn input_channel(
+        &mut self,
+        port: impl Into<String>,
+        channel: impl Into<String>,
+    ) -> &mut Self {
+        self.channels
+            .insert((PortDirection::Input, port.into()), channel.into());
+        self
+    }
+    pub fn output_channel(
+        &mut self,
+        port: impl Into<String>,
+        channel: impl Into<String>,
+    ) -> &mut Self {
+        self.channels
+            .insert((PortDirection::Output, port.into()), channel.into());
+        self
+    }
+    pub fn is_empty(&self) -> bool {
+        self.channels.is_empty()
+    }
+    pub fn validate(&self, ports: &[(&str, PortDirection)]) -> Result<(), BuildError> {
+        for ((direction, name), channel) in &self.channels {
+            let (_, actual) = ports
+                .iter()
+                .find(|(port, _)| *port == name)
+                .ok_or_else(|| BuildError(format!("unknown {} port '{name}'", direction.name())))?;
+            if actual != direction {
+                return Err(BuildError(format!(
+                    "port '{name}' is an {}, not an {}",
+                    actual.name(),
+                    direction.name()
+                )));
+            }
+            if channel.is_empty() {
+                return Err(BuildError(format!(
+                    "port '{name}' has an empty channel override"
+                )));
+            }
+        }
+        Ok(())
+    }
+    pub fn resolve(
+        &self,
+        port: &str,
+        direction: PortDirection,
+        default: impl FnOnce() -> String,
+    ) -> Result<String, BuildError> {
+        let name = self
+            .channels
+            .get(&(direction, port.into()))
+            .cloned()
+            .unwrap_or_else(default);
+        if name.is_empty() {
+            return Err(BuildError(format!(
+                "port '{port}' has an empty channel name"
+            )));
+        }
+        Ok(name)
+    }
+}
+
+/// An unbound task and its per-instance configuration, reusable by executor and
+/// test graph construction. Channel wiring becomes fixed during registration.
+pub struct TaskRegistration {
+    name: String,
+    schedule: crate::CallbackSchedule,
+    task: Box<dyn Task>,
+    channels: ChannelOverrides,
+}
+impl TaskRegistration {
+    pub fn new(
+        name: impl Into<String>,
+        task: impl Task + 'static,
+        schedule: crate::CallbackSchedule,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            task: Box::new(task),
+            schedule,
+            channels: ChannelOverrides::default(),
+        }
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn input_channel(
+        &mut self,
+        port: impl Into<String>,
+        channel: impl Into<String>,
+    ) -> &mut Self {
+        self.channels.input_channel(port, channel);
+        self
+    }
+    pub fn output_channel(
+        &mut self,
+        port: impl Into<String>,
+        channel: impl Into<String>,
+    ) -> &mut Self {
+        self.channels.output_channel(port, channel);
+        self
+    }
+    pub fn register(self, plan: &mut NamedPlan) -> Result<RegisteredTask, BuildError> {
+        let factory = self
+            .task
+            .register_with(plan, &self.channels)
+            .map_err(|e| BuildError(format!("task '{}': {e}", self.name)))?;
+        Ok(RegisteredTask {
+            name: self.name,
+            schedule: self.schedule,
+            factory,
+        })
+    }
+}
+pub struct RegisteredTask {
+    pub name: String,
+    pub schedule: crate::CallbackSchedule,
+    pub factory: Box<dyn TaskFactory>,
+}
+impl RegisteredTask {
+    pub fn add_to_graph<'build, 'storage>(
+        self,
+        graph: &mut GraphBuilder<'build, 'storage>,
+        bindings: &'build NamedBindings<'storage>,
+    ) {
+        graph.add_boxed_callback(self.name, self.schedule, move || {
+            self.factory
+                .build(bindings)
+                .map_err(|e| Box::new(e) as crate::FactoryError)
+        });
+    }
 }
 
 trait Plan {

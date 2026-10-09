@@ -9,7 +9,7 @@ use super::{
 };
 
 struct Key<T> {
-    channel: Arc<()>,
+    channel: Arc<str>,
     index: usize,
     payload: PhantomData<fn(T) -> T>,
 }
@@ -24,7 +24,7 @@ impl<T> Clone for Key<T> {
     }
 }
 
-/// Typed declaration handle. Channel-plan identity is checked before using its index.
+/// Typed declaration handle: channel name and index within its endpoint list.
 pub struct PublisherKey<T>(Key<T>);
 pub struct SubscriberKey<T>(Key<T>);
 
@@ -56,9 +56,10 @@ struct SubscriberSpec {
 /// subscriber in this plan and gets its own arena. Distinct channel names can
 /// carry the same T, including borrowed types, without connecting to each other.
 /// Declare all endpoints before allocating the graph.
+/// Keys address endpoints by channel name and declaration-order index; names
+/// must be unique within the graph.
 pub struct ChannelPlan<T> {
-    name: String,
-    identity: Arc<()>,
+    name: Arc<str>,
     publishers: Vec<PublisherSpec>,
     subscribers: Vec<SubscriberSpec>,
     payload: PhantomData<fn(T) -> T>,
@@ -67,8 +68,7 @@ pub struct ChannelPlan<T> {
 impl<T> ChannelPlan<T> {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
-            identity: Arc::new(()),
+            name: name.into().into(),
             publishers: Vec::new(),
             subscribers: Vec::new(),
             payload: PhantomData,
@@ -86,7 +86,7 @@ impl<T> ChannelPlan<T> {
             retained_capacity: 0,
         });
         PublisherKey(Key {
-            channel: self.identity.clone(),
+            channel: self.name.clone(),
             index,
             payload: PhantomData,
         })
@@ -104,7 +104,7 @@ impl<T> ChannelPlan<T> {
         let index = self.subscribers.len();
         self.subscribers.push(SubscriberSpec { capacity, policy });
         SubscriberKey(Key {
-            channel: self.identity.clone(),
+            channel: self.name.clone(),
             index,
             payload: PhantomData,
         })
@@ -115,10 +115,13 @@ impl<T> ChannelPlan<T> {
         publisher: &PublisherKey<T>,
         additional: usize,
     ) -> Result<(), StorageError> {
-        if !Arc::ptr_eq(&self.identity, &publisher.0.channel) {
+        if self.name != publisher.0.channel {
             return Err(StorageError::ForeignPublisherKey);
         }
-        let spec = &mut self.publishers[publisher.0.index];
+        let spec = self
+            .publishers
+            .get_mut(publisher.0.index)
+            .ok_or(StorageError::InvalidPublisherIndex(publisher.0.index))?;
         spec.retained_capacity = spec
             .retained_capacity
             .checked_add(additional)
@@ -128,11 +131,15 @@ impl<T> ChannelPlan<T> {
 
     /// Query after declaring downstream subscribers when budgeting forwarding.
     pub fn publisher_capacity(&self, publisher: &PublisherKey<T>) -> Result<usize, StorageError> {
-        if !Arc::ptr_eq(&self.identity, &publisher.0.channel) {
+        if self.name != publisher.0.channel {
             return Err(StorageError::ForeignPublisherKey);
         }
-        self.publisher_plan(&self.publishers[publisher.0.index])
-            .capacity()
+        self.publisher_plan(
+            self.publishers
+                .get(publisher.0.index)
+                .ok_or(StorageError::InvalidPublisherIndex(publisher.0.index))?,
+        )
+        .capacity()
     }
 
     fn publisher_plan(&self, publisher: &PublisherSpec) -> PublisherStoragePlan<T> {
@@ -162,8 +169,8 @@ impl<T> StorageLayout for ChannelPlan<T> {
     }
 
     fn validate_channel_names(&self, names: &mut HashSet<String>) -> Result<(), StorageError> {
-        if !names.insert(self.name.clone()) {
-            return Err(StorageError::DuplicateChannel(self.name.clone()));
+        if !names.insert(self.name.to_string()) {
+            return Err(StorageError::DuplicateChannel(self.name.to_string()));
         }
         Ok(())
     }
@@ -176,7 +183,6 @@ impl<T> StorageLayout for ChannelPlan<T> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ChannelStorage {
             name: self.name,
-            identity: self.identity,
             publishers,
             subscribers: self.subscribers,
         })
@@ -185,8 +191,7 @@ impl<T> StorageLayout for ChannelPlan<T> {
 
 /// Fixed arenas and endpoint configuration for one named channel.
 pub struct ChannelStorage<T> {
-    name: String,
-    identity: Arc<()>,
+    name: Arc<str>,
     publishers: Vec<PublisherStorage<T>>,
     subscribers: Vec<SubscriberSpec>,
 }
@@ -219,7 +224,7 @@ impl<T> ChannelStorage<T> {
             })
             .collect();
         EndpointBindings {
-            identity: self.identity.clone(),
+            channel: self.name.clone(),
             publishers,
             subscribers: subscribers
                 .into_iter()
@@ -232,6 +237,7 @@ impl<T> ChannelStorage<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointError {
     WrongChannel,
+    InvalidIndex(usize),
     AlreadyTaken,
 }
 
@@ -257,7 +263,10 @@ impl std::error::Error for DeclarationError {}
 impl std::fmt::Display for EndpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::WrongChannel => f.write_str("endpoint key belongs to another channel plan"),
+            Self::WrongChannel => f.write_str("endpoint key names another channel"),
+            Self::InvalidIndex(index) => {
+                write!(f, "channel endpoint index {index} is out of range")
+            }
             Self::AlreadyTaken => f.write_str("endpoint has already been taken by another factory"),
         }
     }
@@ -268,7 +277,7 @@ impl std::error::Error for EndpointError {}
 /// Temporary construction bindings. Taken endpoints borrow storage, not this
 /// table, so it can be dropped immediately after building callbacks and fixtures.
 pub struct EndpointBindings<'storage, T> {
-    identity: Arc<()>,
+    channel: Arc<str>,
     publishers: Vec<RefCell<Option<Publisher<'storage, T>>>>,
     subscribers: Vec<RefCell<Option<Subscriber<'storage, T>>>>,
 }
@@ -278,10 +287,12 @@ impl<'storage, T> EndpointBindings<'storage, T> {
         &self,
         key: &PublisherKey<T>,
     ) -> Result<Publisher<'storage, T>, EndpointError> {
-        if !Arc::ptr_eq(&self.identity, &key.0.channel) {
+        if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
         }
-        self.publishers[key.0.index]
+        self.publishers
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
             .borrow_mut()
             .take()
             .ok_or(EndpointError::AlreadyTaken)
@@ -291,12 +302,73 @@ impl<'storage, T> EndpointBindings<'storage, T> {
         &self,
         key: &SubscriberKey<T>,
     ) -> Result<Subscriber<'storage, T>, EndpointError> {
-        if !Arc::ptr_eq(&self.identity, &key.0.channel) {
+        if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
         }
-        self.subscribers[key.0.index]
+        self.subscribers
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
             .borrow_mut()
             .take()
             .ok_or(EndpointError::AlreadyTaken)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn key<T>(name: &str, index: usize) -> Key<T> {
+        Key {
+            channel: Arc::from(name),
+            index,
+            payload: PhantomData,
+        }
+    }
+    #[test]
+    fn channel_names_match_by_value_and_indices_are_checked() {
+        let mut plan = ChannelPlan::<u64>::new("numbers");
+        let original_pub = plan.publisher(1);
+        let original_sub = plan.subscriber(1);
+        let pub_key = PublisherKey(key("numbers", 0));
+        let sub_key = SubscriberKey(key("numbers", 0));
+        let invalid_pub = PublisherKey(key("numbers", 9));
+        assert_eq!(
+            plan.reserve_retained(&invalid_pub, 1),
+            Err(StorageError::InvalidPublisherIndex(9))
+        );
+        assert_eq!(
+            plan.publisher_capacity(&invalid_pub),
+            Err(StorageError::InvalidPublisherIndex(9))
+        );
+        plan.reserve_retained(&pub_key, 2).unwrap();
+        assert_eq!(plan.publisher_capacity(&pub_key).unwrap(), 6);
+        let storage = crate::GraphPlan::new(plan).allocate().unwrap();
+        let bindings = storage.channels().build();
+        assert!(matches!(
+            bindings.take_publisher(&invalid_pub),
+            Err(EndpointError::InvalidIndex(9))
+        ));
+        assert!(matches!(
+            bindings.take_subscriber(&SubscriberKey(key("numbers", 9))),
+            Err(EndpointError::InvalidIndex(9))
+        ));
+        assert!(matches!(
+            bindings.take_subscriber(&SubscriberKey(key("other", 0))),
+            Err(EndpointError::WrongChannel)
+        ));
+        let mut publisher = bindings.take_publisher(&pub_key).unwrap();
+        let subscriber = bindings.take_subscriber(&sub_key).unwrap();
+        assert!(matches!(
+            bindings.take_publisher(&original_pub),
+            Err(EndpointError::AlreadyTaken)
+        ));
+        assert!(matches!(
+            bindings.take_subscriber(&original_sub),
+            Err(EndpointError::AlreadyTaken)
+        ));
+        publisher.publish(42).unwrap();
+        publisher.flush(crate::time::FrameworkTime::from_nanoseconds(0));
+        subscriber.update();
+        assert_eq!(subscriber.input().value(), Some(&42));
     }
 }

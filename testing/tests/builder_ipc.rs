@@ -117,15 +117,18 @@ fn named_ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn ipc_fixture_mismatches_fail_during_allocation() {
-    for case in 0..3 {
+    for case in 0..4 {
         let mut builder = UnitTestExecutorBuilder::new();
-        builder.add_task(
+        let configuration = builder.add_task(
             "observe",
             Observe {
                 observations: Default::default(),
             },
             Duration::from_nanos(1),
         );
+        if case == 3 {
+            configuration.input_channel("input", "gate");
+        }
         match case {
             0 => {
                 builder.add_iox2_test_publisher::<u32>(&channel());
@@ -133,9 +136,10 @@ fn ipc_fixture_mismatches_fail_during_allocation() {
             1 => {
                 builder.add_test_publisher::<u64>(&channel());
             }
-            _ => {
+            2 => {
                 builder.add_iox2_test_notifier("missing");
             }
+            _ => {}
         }
         let error = builder.try_allocate().err().unwrap().to_string();
         assert!(
@@ -147,4 +151,59 @@ fn ipc_fixture_mismatches_fail_during_allocation() {
             "{error}"
         );
     }
+}
+
+struct Signal;
+#[task_callback]
+impl Signal {
+    fn run(&self, notify: task::iox2::Iox2NotifyOutput) {
+        notify.send();
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
+fn overrides_bind_ipc_data_events_notifiers_and_native_gates() {
+    let data_channel = format!("override_data_{}", std::process::id());
+    let event_channel = format!("override_events_{}", std::process::id());
+    let output_channel = format!("override_output_{}", std::process::id());
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let mut builder = UnitTestExecutorBuilder::new();
+    builder
+        .add_task(
+            "observe",
+            Observe {
+                observations: observations.clone(),
+            },
+            Duration::from_nanos(3),
+        )
+        .input_channel("input", &data_channel)
+        .input_channel("events", &event_channel)
+        .input_channel("gate", "custom_gate")
+        .output_channel("output", &output_channel);
+    builder
+        .add_scheduled_task(
+            "signal",
+            Signal,
+            Duration::from_nanos(1),
+            task::CallbackSchedule::on_start(),
+        )
+        .output_channel("notify", &event_channel);
+    let mut input = builder.add_iox2_test_publisher::<u64>(&data_channel);
+    let mut gate = builder.add_test_publisher::<u64>("custom_gate");
+    let output = builder.add_iox2_test_subscriber::<NonClonePayload>(&output_channel);
+    builder.run(|mut executor| {
+        input.send(77);
+        gate.send(11);
+        assert_eq!(executor.step().executed, [1]);
+        assert_eq!(executor.step().executed, [0]);
+        assert_eq!(
+            output.messages(&mut executor, |_, message| {
+                assert_eq!(message.message.value, 88);
+                assert_eq!(message.header.published_at.to_nanoseconds(), 1);
+            }),
+            1
+        );
+    });
+    assert_eq!(*observations.lock().unwrap(), [(77, 0, vec![(0, 1)])]);
 }

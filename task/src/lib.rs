@@ -25,6 +25,7 @@ pub mod testing_time;
 pub mod time;
 pub mod wake;
 
+pub use automatic::{ChannelOverrides, PortDirection, RegisteredTask, TaskRegistration};
 pub use callback::{
     BatchExecutionError, BatchFailure, Callback, CallbackNode, execute_callback,
     execute_callback_batch,

@@ -12,6 +12,9 @@ use syn::{
 /// `Task::declare(plans...)` creates keys before allocation; `task.bind(
 /// declaration, bindings...)` creates the callback afterward. Use `Declaration::from_keys`
 /// when several ports share a channel plan. The executor manages update/flush.
+/// Automatic construction through `TaskRegistration` supports per-instance port
+/// overrides. Explicit `declare` validates annotations; `from_keys` selects ports
+/// directly for manually configured layouts.
 #[proc_macro_attribute]
 pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemImpl);
@@ -548,6 +551,7 @@ fn automatic_registration(
     let mut channel_names = Vec::new();
     let mut keys = Vec::new();
     let mut bindings = Vec::new();
+    let mut schema = Vec::new();
     for (index, port) in ports.iter().enumerate() {
         let Port {
             name,
@@ -562,7 +566,23 @@ fn automatic_registration(
             .as_ref()
             .map(|c| quote!(#c))
             .unwrap_or_else(|| quote!(stringify!(#name)));
-        channel_names.push(quote!({ let value = #channel; ::core::convert::AsRef::<str>::as_ref(&value).to_owned() }));
+        let direction = if matches!(
+            port.kind,
+            PortKind::Input
+                | PortKind::Required
+                | PortKind::IoxInput
+                | PortKind::IoxSpan
+                | PortKind::IoxEvent
+        ) {
+            quote!(Input)
+        } else {
+            quote!(Output)
+        };
+        schema.push(quote!((stringify!(#name), ::task::automatic::PortDirection::#direction)));
+        channel_names.push(quote!(__cfw_overrides.resolve(stringify!(#name), ::task::automatic::PortDirection::#direction, || {
+            let value = #channel;
+            ::core::convert::AsRef::<str>::as_ref(&value).to_owned()
+        })?));
         let (key, binding) = match port.kind {
             PortKind::IoxInput | PortKind::IoxSpan => (
                 quote!(__cfw_plan.ipc_subscriber::<#payload>(&__cfw_names[#index], #capacity)?),
@@ -596,6 +616,10 @@ fn automatic_registration(
         struct #factory { user: #task, declaration: #declaration<'static>, names: Vec<String> }
         impl ::task::automatic::Task for #task {
             fn register(self: Box<Self>, __cfw_plan: &mut ::task::automatic::NamedPlan) -> Result<Box<dyn ::task::automatic::TaskFactory>, ::task::automatic::BuildError> {
+                <Self as ::task::automatic::Task>::register_with(self, __cfw_plan, &::task::automatic::ChannelOverrides::default())
+            }
+            fn register_with(self: Box<Self>, __cfw_plan: &mut ::task::automatic::NamedPlan, __cfw_overrides: &::task::automatic::ChannelOverrides) -> Result<Box<dyn ::task::automatic::TaskFactory>, ::task::automatic::BuildError> {
+                __cfw_overrides.validate(&[#(#schema),*])?;
                 let __cfw_names: Vec<String> = vec![#(#channel_names),*];
                 let declaration = #declaration::from_keys(#(#keys),*);
                 Ok(Box::new(#factory { user: *self, declaration, names: __cfw_names }))

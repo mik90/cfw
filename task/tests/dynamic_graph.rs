@@ -123,7 +123,7 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
 }
 
 #[test]
-fn keys_check_channel_identity_and_single_endpoint_ownership() {
+fn keys_check_channel_names_and_single_endpoint_ownership() {
     let mut first = ChannelPlan::<u64>::new("first");
     let publisher = first.publisher(1);
     let subscriber = first.subscriber(1);

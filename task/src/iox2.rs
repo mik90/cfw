@@ -82,7 +82,7 @@ impl Default for Iox2ChannelConfig {
 }
 
 struct Key {
-    identity: Arc<()>,
+    channel: Arc<str>,
     index: usize,
 }
 pub struct Iox2PublisherKey<T>(Key, PhantomData<fn(T) -> T>);
@@ -102,10 +102,9 @@ pub trait Iox2EventBindings {
 
 /// One named IPC channel, with data and optional event-trigger endpoints.
 pub struct Iox2ChannelPlan<T> {
-    name: String,
+    name: Arc<str>,
     runtime: Arc<Iox2Runtime>,
     config: Iox2ChannelConfig,
-    identity: Arc<()>,
     publishers: Vec<usize>,
     subscribers: Vec<usize>,
     events: Vec<usize>,
@@ -115,10 +114,9 @@ pub struct Iox2ChannelPlan<T> {
 impl<T> Iox2ChannelPlan<T> {
     pub fn new(name: impl Into<String>, runtime: &Arc<Iox2Runtime>) -> Self {
         Self {
-            name: name.into(),
+            name: name.into().into(),
             runtime: runtime.clone(),
             config: Iox2ChannelConfig::default(),
-            identity: Arc::new(()),
             publishers: Vec::new(),
             subscribers: Vec::new(),
             events: Vec::new(),
@@ -138,7 +136,7 @@ impl<T> Iox2ChannelPlan<T> {
         self.publishers.push(capacity);
         Iox2PublisherKey(
             Key {
-                identity: self.identity.clone(),
+                channel: self.name.clone(),
                 index,
             },
             PhantomData,
@@ -149,7 +147,7 @@ impl<T> Iox2ChannelPlan<T> {
         self.subscribers.push(capacity);
         Iox2SubscriberKey(
             Key {
-                identity: self.identity.clone(),
+                channel: self.name.clone(),
                 index,
             },
             PhantomData,
@@ -159,7 +157,7 @@ impl<T> Iox2ChannelPlan<T> {
         let index = self.events.len();
         self.events.push(capacity);
         Iox2EventKey(Key {
-            identity: self.identity.clone(),
+            channel: self.name.clone(),
             index,
         })
     }
@@ -170,7 +168,7 @@ impl<T> Iox2ChannelPlan<T> {
         let index = self.notifiers.len();
         self.notifiers.push(event_id);
         Iox2NotifierKey(Key {
-            identity: self.identity.clone(),
+            channel: self.name.clone(),
             index,
         })
     }
@@ -219,8 +217,8 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2Chan
         Ok(())
     }
     fn validate_channel_names(&self, names: &mut HashSet<String>) -> Result<(), StorageError> {
-        if !names.insert(self.name.clone()) {
-            return Err(StorageError::DuplicateChannel(self.name.clone()));
+        if !names.insert(self.name.to_string()) {
+            return Err(StorageError::DuplicateChannel(self.name.to_string()));
         }
         Ok(())
     }
@@ -275,7 +273,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
         let mut publishers = Vec::new();
         for &capacity in &self.plan.publishers {
             publishers.push(RefCell::new(Some(Iox2Publisher {
-                channel: self.plan.name.clone(),
+                channel: self.plan.name.to_string(),
                 capacity,
                 port: self
                     .data
@@ -298,7 +296,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
         let mut subscribers = Vec::new();
         for &capacity in &self.plan.subscribers {
             subscribers.push(RefCell::new(Some(Iox2Subscriber {
-                channel: self.plan.name.clone(),
+                channel: self.plan.name.to_string(),
                 capacity,
                 port: self
                     .data
@@ -316,7 +314,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
         let mut events = Vec::new();
         for &capacity in &self.plan.events {
             events.push(RefCell::new(Some(Iox2EventSubscriber {
-                channel: self.plan.name.clone(),
+                channel: self.plan.name.to_string(),
                 capacity,
                 listener: Some(self.event.listener_builder().create().map_err(transport)?),
                 staging: Arc::new(base::mpsc_queue::MpscQueue::new(capacity)),
@@ -328,7 +326,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
         let mut notifiers = Vec::new();
         for &id in &self.plan.notifiers {
             notifiers.push(RefCell::new(Some(Iox2Notifier {
-                channel: self.plan.name.clone(),
+                channel: self.plan.name.to_string(),
                 pending: false,
                 event_id: id,
                 port: self
@@ -341,7 +339,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
             })));
         }
         Ok(Iox2Bindings {
-            identity: self.plan.identity.clone(),
+            channel: self.plan.name.clone(),
             publishers,
             subscribers,
             events,
@@ -351,7 +349,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
 }
 
 pub struct Iox2Bindings<T: Debug + ZeroCopySend + Send + Sync + 'static> {
-    identity: Arc<()>,
+    channel: Arc<str>,
     publishers: Vec<RefCell<Option<Iox2Publisher<T>>>>,
     subscribers: Vec<RefCell<Option<Iox2Subscriber<T>>>>,
     events: Vec<RefCell<Option<Iox2EventSubscriber>>>,
@@ -362,10 +360,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Bindings<T> {
         &self,
         key: &Iox2PublisherKey<T>,
     ) -> Result<Iox2Publisher<T>, EndpointError> {
-        if !Arc::ptr_eq(&self.identity, &key.0.identity) {
+        if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
         }
-        self.publishers[key.0.index]
+        self.publishers
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
             .borrow_mut()
             .take()
             .ok_or(EndpointError::AlreadyTaken)
@@ -374,10 +374,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Bindings<T> {
         &self,
         key: &Iox2SubscriberKey<T>,
     ) -> Result<Iox2Subscriber<T>, EndpointError> {
-        if !Arc::ptr_eq(&self.identity, &key.0.identity) {
+        if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
         }
-        self.subscribers[key.0.index]
+        self.subscribers
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
             .borrow_mut()
             .take()
             .ok_or(EndpointError::AlreadyTaken)
@@ -385,22 +387,62 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Bindings<T> {
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2EventBindings for Iox2Bindings<T> {
     fn take_notifier(&self, key: &Iox2NotifierKey) -> Result<Iox2Notifier, EndpointError> {
-        if !Arc::ptr_eq(&self.identity, &key.0.identity) {
+        if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
         }
-        self.notifiers[key.0.index]
+        self.notifiers
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
             .borrow_mut()
             .take()
             .ok_or(EndpointError::AlreadyTaken)
     }
     fn take_event(&self, key: &Iox2EventKey) -> Result<Iox2EventSubscriber, EndpointError> {
-        if !Arc::ptr_eq(&self.identity, &key.0.identity) {
+        if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
         }
-        self.events[key.0.index]
+        self.events
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
             .borrow_mut()
             .take()
             .ok_or(EndpointError::AlreadyTaken)
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    #[test]
+    fn ipc_keys_check_names_and_all_four_endpoint_indices_without_transport_io() {
+        let bindings = Iox2Bindings::<u64> {
+            channel: Arc::from("channel"),
+            publishers: vec![],
+            subscribers: vec![],
+            events: vec![],
+            notifiers: vec![],
+        };
+        for (name, expected) in [
+            ("channel", EndpointError::InvalidIndex(3)),
+            ("other", EndpointError::WrongChannel),
+        ] {
+            let key = || Key {
+                channel: Arc::from(name),
+                index: 3,
+            };
+            assert!(
+                matches!(bindings.take_publisher(&Iox2PublisherKey(key(), PhantomData)), Err(error) if error == expected)
+            );
+            assert!(
+                matches!(bindings.take_subscriber(&Iox2SubscriberKey(key(), PhantomData)), Err(error) if error == expected)
+            );
+            assert!(
+                matches!(bindings.take_event(&Iox2EventKey(key())), Err(error) if error == expected)
+            );
+            assert!(
+                matches!(bindings.take_notifier(&Iox2NotifierKey(key())), Err(error) if error == expected)
+            );
+        }
     }
 }
 

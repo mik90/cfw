@@ -16,7 +16,7 @@ use std::{
 };
 use task::{
     CallbackSchedule, LoanError, Publisher, PublisherKey, SubscriberKey, SubscriberPolicy,
-    automatic::{BuildError, NamedBindings, NamedPlan, NamedStorage, Task, TaskFactory},
+    automatic::{BuildError, NamedBindings, NamedPlan, NamedStorage, Task},
     message::Message,
     testing_time::TimeSource,
     time::FrameworkTime,
@@ -274,7 +274,7 @@ impl<T: 'static> FixtureFactory for OutputFactory<T> {
 /// Plans named task ports and fixtures before allocating any native arenas.
 /// Generated tasks supply their declarations through `task::automatic::Task`.
 pub struct UnitTestExecutorBuilder {
-    tasks: Vec<(String, CallbackSchedule, Box<dyn Task>)>,
+    tasks: Vec<task::automatic::TaskRegistration>,
     fixtures: Vec<Box<dyn FixturePlan>>,
     captures: usize,
     config: UnitTestExecutorConfig,
@@ -303,6 +303,8 @@ impl UnitTestExecutorBuilder {
         }
     }
     /// Register an input-triggered task with an explicit modeled duration.
+    /// The returned task registration configures per-instance input/output
+    /// channels by callback argument name, before storage planning.
     /// Omitting the duration is a compile error:
     /// ```compile_fail
     /// use testing::UnitTestExecutorBuilder;
@@ -317,8 +319,8 @@ impl UnitTestExecutorBuilder {
         name: impl Into<String>,
         task: impl Task + 'static,
         duration: impl Into<ExecutionDuration>,
-    ) {
-        self.add_scheduled_task(name, task, duration, CallbackSchedule::default());
+    ) -> &mut task::automatic::TaskRegistration {
+        self.add_scheduled_task(name, task, duration, CallbackSchedule::default())
     }
     /// Register timing/pool policies. The required duration argument determines
     /// modeled occupancy, overriding any duration on `schedule`.
@@ -328,9 +330,13 @@ impl UnitTestExecutorBuilder {
         task: impl Task + 'static,
         duration: impl Into<ExecutionDuration>,
         schedule: CallbackSchedule,
-    ) {
-        self.tasks
-            .push((name.into(), duration.into().apply(schedule), Box::new(task)));
+    ) -> &mut task::automatic::TaskRegistration {
+        self.tasks.push(task::automatic::TaskRegistration::new(
+            name,
+            task,
+            duration.into().apply(schedule),
+        ));
+        self.tasks.last_mut().unwrap()
     }
     pub fn add_test_publisher<T: Send + Sync + 'static>(&mut self, channel: &str) -> TestInput<T> {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -379,14 +385,11 @@ impl UnitTestExecutorBuilder {
         }
         let mut factories = Vec::new();
         let mut names = HashSet::new();
-        for (name, schedule, task) in self.tasks {
-            if !names.insert(name.clone()) {
-                return Err(BuildError(format!("duplicate task '{name}'")));
+        for task in self.tasks {
+            if !names.insert(task.name().to_owned()) {
+                return Err(BuildError(format!("duplicate task '{}'", task.name())));
             }
-            let factory = task
-                .register(&mut plan)
-                .map_err(|e| BuildError(format!("task '{name}': {e}")))?;
-            factories.push((name, schedule, factory));
+            factories.push(task.register(&mut plan)?);
         }
         let fixtures = self
             .fixtures
@@ -423,7 +426,7 @@ impl UnitTestExecutorBuilder {
     }
 }
 struct Definition {
-    factories: Vec<(String, CallbackSchedule, Box<dyn TaskFactory>)>,
+    factories: Vec<task::automatic::RegisteredTask>,
     fixtures: Vec<Box<dyn FixtureFactory>>,
     config: UnitTestExecutorConfig,
 }
@@ -448,13 +451,8 @@ impl UnitTestSetup {
         let guard = SessionGuard(self.session.0.clone());
         let bindings = self.storage.bind()?;
         let mut graph = self.storage.graph_builder();
-        for (name, schedule, factory) in definition.factories {
-            let bindings = &bindings;
-            graph.add_boxed_callback(name, schedule, move || {
-                factory
-                    .build(bindings)
-                    .map_err(|e| Box::new(e) as task::FactoryError)
-            });
+        for task in definition.factories {
+            task.add_to_graph(&mut graph, &bindings);
         }
         let graph = graph.build().map_err(|e| BuildError(format!("{e:?}")))?;
         let start_time = definition.config.start_time;
