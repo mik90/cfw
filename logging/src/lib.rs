@@ -1,4 +1,6 @@
 pub mod capture;
+pub mod port_capture;
+pub use port_capture::PortCapture;
 pub mod log_file;
 #[cfg(feature = "serde")]
 pub mod log_file_json;

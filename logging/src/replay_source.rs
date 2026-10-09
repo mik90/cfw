@@ -42,6 +42,7 @@ impl<T> ReplaySourcePlan<T> {
 type Inject<'a> = Box<dyn FnMut(MessageHeader, &[u8]) -> Result<(), BoxedLogError> + Send + 'a>;
 pub struct ReplaySource<'a> {
     channel: String,
+    payload_type: &'static str,
     inject: Inject<'a>,
 }
 impl<'a> ReplaySource<'a> {
@@ -54,6 +55,7 @@ impl<'a> ReplaySource<'a> {
     {
         Self {
             channel: publisher.channel_name().into(),
+            payload_type: std::any::type_name::<T>(),
             inject: Box::new(move |header, bytes| {
                 publisher
                     .publish_with_header(header, T::deserialize(bytes)?)
@@ -76,6 +78,7 @@ impl<'a> ReplaySource<'a> {
     ) -> Self {
         Self {
             channel: publisher.channel_name().into(),
+            payload_type: std::any::type_name::<T>(),
             inject: Box::new(move |header, bytes| {
                 publisher
                     .publish(decode(bytes)?)
@@ -89,6 +92,27 @@ impl<'a> ReplaySource<'a> {
     }
     pub fn channel(&self) -> &str {
         &self.channel
+    }
+    pub fn payload_type(&self) -> &str {
+        self.payload_type
+    }
+    #[cfg(feature = "iceoryx2")]
+    pub fn ipc_input<T>(mut input: task::iox2::Iox2ReplayInput<T>) -> Self
+    where
+        T: Send + 'static,
+        for<'ctx> T: Loggable<Context<'ctx> = ()>,
+    {
+        Self {
+            channel: input.channel_name().into(),
+            payload_type: std::any::type_name::<T>(),
+            inject: Box::new(move |header, bytes| {
+                input
+                    .inject(header, T::deserialize(bytes)?)
+                    .map_err(|e| -> BoxedLogError {
+                        format!("IPC replay input failed: {e:?}").into()
+                    })
+            }),
+        }
     }
     pub fn inject(&mut self, header: MessageHeader, bytes: &[u8]) -> Result<(), BoxedLogError> {
         (self.inject)(header, bytes)

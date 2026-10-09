@@ -5,6 +5,26 @@ use crate::{Context, LoanError, Publisher, Subscriber};
 /// Executors invoke `execute_callback` or `execute_callback_batch` rather than
 /// calling `run` directly.
 pub trait Callback: Send {
+    /// Isolate framework-managed outputs from live channel delivery.
+    fn enable_exact_replay(&mut self) -> Result<(), LoanError> {
+        Err(LoanError::Transport(
+            "callback does not support exact replay".into(),
+        ))
+    }
+    /// Clear prepared and incoming snapshots before exact-replay hydration.
+    fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
+        Err(LoanError::Transport(
+            "callback does not support replay input reset".into(),
+        ))
+    }
+    fn stage_replay_event(
+        &mut self,
+        _ordinal: usize,
+        _event_id: usize,
+        _count: u64,
+    ) -> Result<(), LoanError> {
+        Err(LoanError::Transport("unknown replay event port".into()))
+    }
     fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
         None
     }

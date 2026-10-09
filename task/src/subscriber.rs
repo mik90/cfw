@@ -81,6 +81,9 @@ impl<'storage, T> Subscriber<'storage, T> {
     pub fn update(&self) {
         self.buffer.drain_writer_to_reader();
     }
+    pub fn clear(&self) {
+        self.buffer.clear();
+    }
 
     pub fn input(&self) -> Input<'_, 'storage, T> {
         Input {

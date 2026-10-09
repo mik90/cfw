@@ -449,14 +449,13 @@ dependencies = [
 name = "exact_replay_executor"
 version = "0.1.0"
 dependencies = [
- "live_executor",
+ "base",
+ "iceoryx2",
  "logging",
  "serde",
  "serde_json",
- "simulation_executor",
  "task",
  "task_macros",
- "testing",
 ]
 
 [[package]]

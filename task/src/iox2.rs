@@ -28,7 +28,7 @@ use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -290,6 +290,8 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                     .create()
                     .map_err(transport)?,
                 pending: Vec::with_capacity(capacity),
+                observers: Vec::new(),
+                replay_only: false,
                 runtime: self.plan.runtime.clone(),
             })));
         }
@@ -308,6 +310,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                     .map_err(transport)?,
                 read: RefCell::new(VecDeque::with_capacity(capacity)),
                 receive_errors: AtomicUsize::new(0),
+                replay: None,
                 _runtime: self.plan.runtime.clone(),
             })));
         }
@@ -329,6 +332,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                 channel: self.plan.name.to_string(),
                 pending: false,
                 event_id: id,
+                replay_only: false,
                 port: self
                     .event
                     .notifier_builder()
@@ -356,6 +360,45 @@ pub struct Iox2Bindings<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     notifiers: Vec<RefCell<Option<Iox2Notifier>>>,
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Bindings<T> {
+    pub fn configure_publisher<R>(
+        &self,
+        key: &Iox2PublisherKey<T>,
+        configure: impl FnOnce(&mut Iox2Publisher<T>) -> R,
+    ) -> Result<R, EndpointError> {
+        if self.channel != key.0.channel {
+            return Err(EndpointError::WrongChannel);
+        }
+        let mut slot = self
+            .publishers
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
+            .borrow_mut();
+        Ok(configure(slot.as_mut().ok_or(EndpointError::AlreadyTaken)?))
+    }
+    pub fn replay_input(
+        &self,
+        key: &Iox2SubscriberKey<T>,
+    ) -> Result<Iox2ReplayInput<T>, EndpointError> {
+        if self.channel != key.0.channel {
+            return Err(EndpointError::WrongChannel);
+        }
+        let mut slot = self
+            .subscribers
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
+            .borrow_mut();
+        let subscriber = slot.as_mut().ok_or(EndpointError::AlreadyTaken)?;
+        if subscriber.replay.is_some() {
+            return Err(EndpointError::AlreadyTaken);
+        }
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        subscriber.replay = Some(queue.clone());
+        Ok(Iox2ReplayInput {
+            channel: self.channel.to_string(),
+            capacity: subscriber.capacity,
+            queue,
+        })
+    }
     pub fn take_publisher(
         &self,
         key: &Iox2PublisherKey<T>,
@@ -452,9 +495,19 @@ pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     port: DataPublisher<ipc_threadsafe::Service, Message<T>, ()>,
     notifier: Notifier<ipc_threadsafe::Service>,
     pending: Vec<SampleMut<ipc_threadsafe::Service, Message<T>, ()>>,
+    observers: Vec<IpcPublishObserver<T>>,
+    replay_only: bool,
     runtime: Arc<Iox2Runtime>,
 }
+type IpcPublishObserver<T> = Box<dyn FnMut(&Message<T>) + Send>;
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
+    pub fn observe(&mut self, observer: impl FnMut(&Message<T>) + Send + 'static) {
+        self.observers.push(Box::new(observer));
+    }
+    /// Exact replay observes outputs locally without notifying external services.
+    pub fn suppress_transport(&mut self) {
+        self.replay_only = true;
+    }
     pub fn visit_pending_headers(&self, mut visit: impl FnMut(MessageHeader)) {
         for sample in &self.pending {
             visit(sample.header);
@@ -463,6 +516,11 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     /// Publish timestamped data without an event notification, for deterministic
     /// simulation/replay that schedules counted events independently.
     pub fn publish_with_header(&self, header: MessageHeader, value: T) -> Result<(), LoanError> {
+        if self.replay_only {
+            return Err(LoanError::Transport(
+                "immediate IPC publication is disabled during exact replay".into(),
+            ));
+        }
         self.port
             .loan_uninit()
             .map_err(|e| LoanError::Transport(e.to_string()))?
@@ -483,6 +541,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     pub fn flush(&mut self, timestamp: FrameworkTime) {
         for mut sample in self.pending.drain(..) {
             sample.header.published_at = timestamp;
+            for observer in &mut self.observers {
+                observer(&sample);
+            }
+            if self.replay_only {
+                continue;
+            }
             sample.send().expect("iceoryx2 send failed");
             self.notifier
                 .notify()
@@ -537,11 +601,55 @@ pub struct Iox2Subscriber<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     channel: String,
     capacity: usize,
     port: DataSubscriber<ipc_threadsafe::Service, Message<T>, ()>,
-    read: RefCell<VecDeque<Sample<ipc_threadsafe::Service, Message<T>, ()>>>,
+    read: RefCell<VecDeque<Received<T>>>,
+    replay: Option<ReplayQueue<T>>,
     receive_errors: AtomicUsize,
     _runtime: Arc<Iox2Runtime>,
 }
+type ReplayQueue<T> = Arc<Mutex<VecDeque<Box<Message<T>>>>>;
+enum Received<T: Debug + ZeroCopySend + Send + Sync + 'static> {
+    Transport(Sample<ipc_threadsafe::Service, Message<T>, ()>),
+    Replay(Box<Message<T>>),
+}
+impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Deref for Received<T> {
+    type Target = Message<T>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Transport(value) => value,
+            Self::Replay(value) => value,
+        }
+    }
+}
+/// An endpoint-local replay queue. It bypasses middleware delivery so multiple
+/// callback inputs on one IPC channel can restore different recorded snapshots.
+pub struct Iox2ReplayInput<T> {
+    channel: String,
+    capacity: usize,
+    queue: ReplayQueue<T>,
+}
+impl<T> Iox2ReplayInput<T> {
+    pub fn channel_name(&self) -> &str {
+        &self.channel
+    }
+    pub fn inject(&mut self, header: MessageHeader, value: T) -> Result<(), LoanError> {
+        let mut queue = self.queue.lock().unwrap();
+        if queue.len() >= self.capacity {
+            return Err(LoanError::LoanCapacityReached);
+        }
+        queue.push_back(Box::new(Message {
+            header,
+            message: value,
+        }));
+        Ok(())
+    }
+}
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
+    pub fn clear(&self) {
+        self.read.borrow_mut().clear();
+        if let Some(queue) = &self.replay {
+            queue.lock().unwrap().clear();
+        }
+    }
     pub fn visit_headers(&self, mut visit: impl FnMut(MessageHeader)) {
         for sample in self.read.borrow().iter() {
             visit(sample.header);
@@ -565,13 +673,22 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
     }
     pub fn update(&self) {
         let mut read = self.read.borrow_mut();
+        if let Some(queue) = &self.replay {
+            for message in std::mem::take(&mut *queue.lock().unwrap()) {
+                if read.len() == self.capacity {
+                    read.pop_front();
+                }
+                read.push_back(Received::Replay(message));
+            }
+            return;
+        }
         for _ in 0..self.capacity {
             match self.port.receive() {
                 Ok(Some(sample)) => {
                     if read.len() == self.capacity {
                         read.pop_front();
                     }
-                    read.push_back(sample);
+                    read.push_back(Received::Transport(sample));
                 }
                 Ok(None) => break,
                 Err(_) => {
@@ -583,7 +700,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
     }
 }
 pub struct Iox2OptionalInput<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> {
-    read: RefMut<'a, VecDeque<Sample<ipc_threadsafe::Service, Message<T>, ()>>>,
+    read: RefMut<'a, VecDeque<Received<T>>>,
 }
 impl<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2OptionalInput<'a, T> {
     pub fn new(subscriber: &'a Iox2Subscriber<T>) -> Self {
@@ -634,6 +751,22 @@ pub struct Iox2EventSubscriber {
     runtime: Arc<Iox2Runtime>,
 }
 impl Iox2EventSubscriber {
+    pub fn clear(&self) {
+        self.read.borrow_mut().clear();
+        while self.staging.pop().is_some() {}
+    }
+    pub fn stage_replay(&self, event_id: usize, count: u64) -> Result<(), LoanError> {
+        if count != 0 {
+            if self.staging.len() >= self.capacity {
+                return Err(LoanError::LoanCapacityReached);
+            }
+            self.staging.push(EventRecord {
+                event_id: EventId::new(event_id),
+                count,
+            });
+        }
+        Ok(())
+    }
     pub fn visit_records(&self, mut visit: impl FnMut(EventRecord)) {
         for record in self.read.borrow().iter() {
             visit(*record);
@@ -720,9 +853,13 @@ pub struct Iox2Notifier {
     port: Notifier<ipc_threadsafe::Service>,
     pending: bool,
     event_id: usize,
+    replay_only: bool,
     _runtime: Arc<Iox2Runtime>,
 }
 impl Iox2Notifier {
+    pub fn suppress_transport(&mut self) {
+        self.replay_only = true;
+    }
     pub fn pending_event(&self) -> Option<EventRecord> {
         self.pending.then_some(EventRecord {
             event_id: EventId::new(self.event_id),
@@ -736,7 +873,7 @@ impl Iox2Notifier {
         self.pending = false;
     }
     pub fn flush(&mut self, _timestamp: FrameworkTime) {
-        if std::mem::take(&mut self.pending) {
+        if std::mem::take(&mut self.pending) && !self.replay_only {
             self.port.notify().expect("iceoryx2 notification failed");
         }
     }

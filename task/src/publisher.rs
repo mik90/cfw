@@ -24,7 +24,9 @@ pub struct Publisher<'storage, T> {
     pending: Vec<ArenaPtr<'storage, Message<T>>>,
     subscribers: Vec<SubscriberWriter<'storage, T>>,
     channel: String,
+    observers: Vec<PublishObserver<'storage, T>>,
 }
+type PublishObserver<'a, T> = Box<dyn FnMut(&Message<T>) + Send + 'a>;
 
 impl<'storage, T> Publisher<'storage, T> {
     pub fn new(allocator: ArenaAllocator<'storage, Message<T>>, loan_capacity: usize) -> Self {
@@ -34,6 +36,7 @@ impl<'storage, T> Publisher<'storage, T> {
             pending: Vec::with_capacity(loan_capacity),
             subscribers: Vec::new(),
             channel: String::new(),
+            observers: Vec::new(),
         }
     }
 
@@ -46,6 +49,14 @@ impl<'storage, T> Publisher<'storage, T> {
 
     pub fn connect(&mut self, subscriber: &Subscriber<'storage, T>) {
         self.subscribers.push(subscriber.writer());
+    }
+    /// Observe this publisher's initialized, stamped outputs before fan-out.
+    /// References are scoped to the observer call and cannot escape it.
+    pub fn observe(&mut self, observer: impl FnMut(&Message<T>) + Send + 'storage) {
+        self.observers.push(Box::new(observer));
+    }
+    pub fn suppress_delivery(&mut self) {
+        self.subscribers.clear();
     }
 
     pub fn loan_uninit(&mut self) -> Result<OutputUninit<'_, 'storage, T>, LoanError> {
@@ -94,6 +105,11 @@ impl<'storage, T> Publisher<'storage, T> {
             // SAFETY: Pending pointers are initialized and exclusively owned;
             // no clones are exposed before the header is stamped.
             unsafe { (*ptr.payload.get()).assume_init_mut().header.published_at = timestamp };
+            for observer in &mut self.observers {
+                // SAFETY: pending outputs are fully initialized and immutable for
+                // observer access; stamping precedes observation and publication.
+                observer(unsafe { ptr.assume_init_ref() });
+            }
             for subscriber in &self.subscribers {
                 subscriber.write(ptr.clone());
             }

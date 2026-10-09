@@ -2,9 +2,9 @@
 #
 # The `default-miri` profile is auto-activated by `cargo miri nextest run`
 # (it fires when MIRI_SYSROOT is set, which `cargo miri` exports). It excludes
-# the slow, file-backed replay integration binaries; pass
+# the file-backed application replay integration binary; pass
 # `--ignore-default-filter` to run everything anyway. Tests that hang are
 # terminated after three minutes.
 [profile.default-miri]
-default-filter = 'not binary(forwarded_replay) and not binary(exact_replay_integration) and not binary(reproduce_unlogged)'
+default-filter = 'not binary(exact_replay_integration)'
 slow-timeout = { period = "60s", terminate-after = 3 }

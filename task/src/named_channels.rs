@@ -48,6 +48,7 @@ struct PublisherSpec {
 struct SubscriberSpec {
     capacity: usize,
     policy: crate::SubscriberPolicy,
+    sources: Option<Vec<usize>>,
 }
 
 /// Runtime endpoint declarations for one named channel.
@@ -102,7 +103,11 @@ impl<T> ChannelPlan<T> {
         policy: crate::SubscriberPolicy,
     ) -> SubscriberKey<T> {
         let index = self.subscribers.len();
-        self.subscribers.push(SubscriberSpec { capacity, policy });
+        self.subscribers.push(SubscriberSpec {
+            capacity,
+            policy,
+            sources: None,
+        });
         SubscriberKey(Key {
             channel: self.name.clone(),
             index,
@@ -126,6 +131,42 @@ impl<T> ChannelPlan<T> {
             .retained_capacity
             .checked_add(additional)
             .ok_or(StorageError::CapacityOverflow)?;
+        Ok(())
+    }
+
+    /// Restrict a subscriber to specified publishers before allocation. Ordinary
+    /// channel subscribers receive from every publisher. Capacity budgeting stays
+    /// conservative across the channel even for restricted connections.
+    pub fn restrict_subscriber_sources(
+        &mut self,
+        subscriber: &SubscriberKey<T>,
+        publishers: &[PublisherKey<T>],
+    ) -> Result<(), StorageError> {
+        if subscriber.0.channel != self.name {
+            return Err(StorageError::InvalidConnection(
+                "subscriber names another channel".into(),
+            ));
+        }
+        for publisher in publishers {
+            if publisher.0.channel != self.name {
+                return Err(StorageError::ForeignPublisherKey);
+            }
+            if publisher.0.index >= self.publishers.len() {
+                return Err(StorageError::InvalidPublisherIndex(publisher.0.index));
+            }
+        }
+        let spec = self
+            .subscribers
+            .get_mut(subscriber.0.index)
+            .ok_or_else(|| {
+                StorageError::InvalidConnection("subscriber index is out of range".into())
+            })?;
+        if spec.sources.is_some() {
+            return Err(StorageError::InvalidConnection(
+                "subscriber sources already restricted".into(),
+            ));
+        }
+        spec.sources = Some(publishers.iter().map(|key| key.0.index).collect());
         Ok(())
     }
 
@@ -214,11 +255,18 @@ impl<T> ChannelStorage<T> {
         let publishers = self
             .publishers
             .iter()
-            .map(|storage| {
+            .enumerate()
+            .map(|(index, storage)| {
                 let mut publisher = storage.publisher();
                 publisher.set_channel_name(&self.name);
-                for subscriber in &subscribers {
-                    publisher.connect(subscriber);
+                for (subscriber, spec) in subscribers.iter().zip(&self.subscribers) {
+                    if spec
+                        .sources
+                        .as_ref()
+                        .is_none_or(|sources| sources.contains(&index))
+                    {
+                        publisher.connect(subscriber);
+                    }
                 }
                 RefCell::new(Some(publisher))
             })
@@ -283,6 +331,21 @@ pub struct EndpointBindings<'storage, T> {
 }
 
 impl<'storage, T> EndpointBindings<'storage, T> {
+    pub fn configure_publisher<R>(
+        &self,
+        key: &PublisherKey<T>,
+        configure: impl FnOnce(&mut Publisher<'storage, T>) -> R,
+    ) -> Result<R, EndpointError> {
+        if self.channel != key.0.channel {
+            return Err(EndpointError::WrongChannel);
+        }
+        let mut slot = self
+            .publishers
+            .get(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
+            .borrow_mut();
+        Ok(configure(slot.as_mut().ok_or(EndpointError::AlreadyTaken)?))
+    }
     pub fn take_publisher(
         &self,
         key: &PublisherKey<T>,

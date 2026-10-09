@@ -321,6 +321,10 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let mut recorded_output_events = Vec::new();
     let mut input_ordinal = 0_usize;
     let mut output_ordinal = 0_usize;
+    let mut replay_resets = Vec::new();
+    let mut replay_isolation = Vec::new();
+    let mut replay_events = Vec::new();
+    let mut key_accessors = Vec::new();
     for port in ports {
         let Port {
             name,
@@ -346,6 +350,16 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             output_ordinal += 1;
             n
         };
+        if receiving {
+            replay_resets.push(quote!(self.#name.clear();));
+        } else if matches!(kind, PortKind::IoxOutput | PortKind::IoxNotifier) {
+            replay_isolation.push(quote!(self.#name.suppress_transport();));
+        } else {
+            replay_isolation.push(quote!(self.#name.suppress_delivery();));
+        }
+        if matches!(kind, PortKind::IoxEvent) {
+            replay_events.push(quote!(#ordinal => self.#name.stage_replay(event_id, count),));
+        }
         let direction = if receiving {
             quote!(Received)
         } else {
@@ -404,6 +418,8 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             ),
         };
         key_fields.push(quote!(#name: #key));
+        let accessor = format_ident!("{}_key", name);
+        key_accessors.push(quote!(pub fn #accessor(&self) -> &#key { &self.#name }));
         key_params.push(quote!(#name: #key));
         plan_params.push(quote!(#name: #plan));
         binding_params.push(quote!(#name: #bindings));
@@ -501,6 +517,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         }
         impl<'storage> #declaration<'storage> {
+            #(#key_accessors)*
             pub fn from_keys(#(#key_params),*) -> Self {
                 Self { #(#names,)* __cfw_lifetime: ::core::marker::PhantomData }
             }
@@ -509,6 +526,11 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         }
         impl<'storage> ::task::Callback for #callback<'storage> {
+            fn enable_exact_replay(&mut self) -> Result<(), ::task::LoanError> { #(#replay_isolation)* Ok(()) }
+            fn clear_replay_inputs(&mut self) -> Result<(), ::task::LoanError> { #(#replay_resets)* Ok(()) }
+            fn stage_replay_event(&mut self, ordinal: usize, event_id: usize, count: u64) -> Result<(), ::task::LoanError> {
+                match ordinal { #(#replay_events)* _ => Err(::task::LoanError::Transport("unknown replay event port".into())) }
+            }
             fn recording_endpoints(&self) -> Option<Vec<::task::recording::EndpointDescriptor>> { Some(vec![#(#descriptors),*]) }
             fn visit_prepared_messages(&self, visit: &mut dyn FnMut(::task::recording::LoggedMessage)) { #(#recorded_inputs)* }
             fn visit_pending_messages(&self, visit: &mut dyn FnMut(::task::recording::LoggedMessage)) { #(#recorded_outputs)* }

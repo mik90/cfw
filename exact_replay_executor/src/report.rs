@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use task::pub_sub::ChannelName;
+type ChannelName = String;
 
 /// Default cap on the number of mismatch details retained in a report. Pass a
 /// different value to [`ReplayReport::new`] to override.
@@ -160,8 +160,9 @@ impl ReplayReport {
         &self.mismatch_details
     }
 
-    /// Whether the entire recorded computation was reproduced exactly: every
-    /// execution consumed, no gaps, no mismatches, and no other errors.
+    /// Whether replay completed with no detected discrepancies: every execution
+    /// consumed, no gaps/mismatches/errors. Unlogged payloads are reproduced, not
+    /// independently byte-verified; consult logged_count and reproduced_count.
     pub fn is_exact(&self) -> bool {
         self.consumed_executions == self.total_executions
             && self.errors == 0
@@ -174,9 +175,15 @@ impl ReplayReport {
     pub fn exact_reproduction_ratio(&self) -> f32 {
         let total = self.total_messages();
         if total == 0 {
-            return 1.0;
+            return if self.errors == 0 && self.mismatch_count() == 0 {
+                1.0
+            } else {
+                0.0
+            };
         }
-        let exact = total - self.mismatch_count() - self.gap_count();
+        let exact = total
+            .saturating_sub(self.mismatch_count())
+            .saturating_sub(self.gap_count());
         exact as f32 / total as f32
     }
 }

@@ -15,6 +15,7 @@ pub enum StorageError {
     CapacityOverflow,
     ForeignPublisherKey,
     InvalidPublisherIndex(usize),
+    InvalidConnection(String),
     DuplicateChannel(String),
     Transport(String),
 }

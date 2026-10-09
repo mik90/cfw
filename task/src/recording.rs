@@ -185,6 +185,20 @@ struct Recorded<'a> {
     active: Option<ExecutionRecord>,
 }
 impl Callback for Recorded<'_> {
+    fn enable_exact_replay(&mut self) -> Result<(), LoanError> {
+        self.callback.enable_exact_replay()
+    }
+    fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
+        self.callback.clear_replay_inputs()
+    }
+    fn stage_replay_event(
+        &mut self,
+        ordinal: usize,
+        event_id: usize,
+        count: u64,
+    ) -> Result<(), LoanError> {
+        self.callback.stage_replay_event(ordinal, event_id, count)
+    }
     fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
         self.callback.recording_endpoints()
     }
