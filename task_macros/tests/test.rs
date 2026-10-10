@@ -430,6 +430,72 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
     assert_eq!(retained.message.forwarded.message, 42);
 }
 
+#[test]
+fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
+    use task::automatic::{NamedPlan, TaskRegistration};
+    let mut plan = NamedPlan::default();
+    let mut registration =
+        TaskRegistration::new("forward", Forward, task::CallbackSchedule::default());
+    registration
+        .input_channel("input", "source")
+        .output_channel("output", "forwarded");
+    let forward = registration.register(&mut plan).unwrap();
+    let injection = plan.native::<u64>("source").unwrap().publisher(1);
+    let capture = plan
+        .forwarded::<bool, u64>("forwarded")
+        .unwrap()
+        .subscriber(32);
+    let fanout = plan
+        .forwarded::<bool, u64>("forwarded")
+        .unwrap()
+        .subscriber(32);
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.bind().unwrap();
+    assert!(
+        bindings
+            .native::<task::ForwardedMessage<'static, bool, u64>>("forwarded")
+            .is_err()
+    );
+    let mut source = bindings
+        .native::<u64>("source")
+        .unwrap()
+        .take_publisher(&injection)
+        .unwrap();
+    let capture = bindings
+        .forwarded::<bool, u64>("forwarded")
+        .unwrap()
+        .take_subscriber(&task::automatic::forwarding::subscriber_key(capture))
+        .unwrap();
+    let fanout = bindings
+        .forwarded::<bool, u64>("forwarded")
+        .unwrap()
+        .take_subscriber(&task::automatic::forwarding::subscriber_key(fanout))
+        .unwrap();
+    let mut graph = storage.graph_builder();
+    forward.add_to_graph(&mut graph, &bindings);
+    let mut graph = graph.build().unwrap();
+    for value in 0..32 {
+        source.publish(value).unwrap();
+        source.flush(FrameworkTime::from_nanoseconds(value as i64));
+        graph
+            .step(FrameworkTime::from_nanoseconds(value as i64))
+            .unwrap();
+        capture.update();
+        fanout.update();
+    }
+    let retained: Vec<_> = capture.input().drain().collect();
+    assert_eq!(retained.len(), 32);
+    let shared: Vec<_> = fanout.input().drain().collect();
+    drop((graph, source, capture, fanout, bindings));
+    let second = storage.bind().unwrap();
+    assert!(second.forwarded::<bool, u64>("forwarded").is_ok());
+    drop(second);
+    for (index, message) in retained.iter().enumerate() {
+        assert_eq!(message.message.forwarded.message, index as u64);
+        assert_eq!(shared[index].message.forwarded.message, index as u64);
+    }
+}
+
 struct Feedback;
 #[task_callback]
 impl Feedback {

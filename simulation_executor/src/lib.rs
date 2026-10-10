@@ -15,7 +15,9 @@ pub mod log_simulation;
 pub mod state;
 pub use executor::SimulationExecutor;
 #[cfg(feature = "log_simulation")]
-pub use log_simulation::{LogSimulation, LogSimulationOptions};
+pub use log_simulation::{
+    CompletionReason, EofPolicy, LogSimulation, LogSimulationCompletion, LogSimulationOptions,
+};
 pub use state::{SimulationState, StepError, StepResult};
 pub use task::time::FrameworkTime;
 

@@ -55,7 +55,7 @@ fn transport(error: impl std::fmt::Display) -> StorageError {
     StorageError::Transport(error.to_string())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Iox2ChannelConfig {
     pub buffer_capacity: usize,
     pub max_borrowed_samples: usize,
@@ -69,8 +69,8 @@ pub struct Iox2ChannelConfig {
 impl Default for Iox2ChannelConfig {
     fn default() -> Self {
         Self {
-            buffer_capacity: 16,
-            max_borrowed_samples: 32,
+            buffer_capacity: 1024,
+            max_borrowed_samples: 2048,
             max_publishers: 8,
             max_subscribers: 16,
             max_nodes: 8,
@@ -129,11 +129,65 @@ pub struct Iox2ChannelPlan<T> {
     config: Iox2ChannelConfig,
     publishers: Vec<PublisherSpec>,
     subscribers: Vec<usize>,
+    subscriber_sources: Vec<Option<Vec<u32>>>,
     events: Vec<usize>,
     notifiers: Vec<usize>,
     payload: PhantomData<fn(T) -> T>,
 }
 impl<T> Iox2ChannelPlan<T> {
+    pub fn topology(&self) -> crate::automatic::topology::ChannelTopology {
+        crate::automatic::topology::ChannelTopology {
+            name: self.name.to_string(),
+            payload_type: std::any::type_name::<T>(),
+            transport: crate::recording::Transport::Ipc,
+            publishers: self.publishers.iter().map(|port| port.capacity).collect(),
+            subscribers: self.subscribers.clone(),
+            sources: self
+                .subscriber_sources
+                .iter()
+                .map(|sources| {
+                    sources
+                        .as_ref()
+                        .map(|ids| ids.iter().map(|id| *id as usize).collect())
+                })
+                .collect(),
+        }
+    }
+    pub fn config(&self) -> &Iox2ChannelConfig {
+        &self.config
+    }
+    pub fn set_config(&mut self, config: Iox2ChannelConfig) {
+        self.config = config;
+    }
+    /// Minimum local service limits from the completed endpoint declarations.
+    pub fn required_config(&self) -> Result<Iox2ChannelConfig, StorageError> {
+        let buffer_capacity = self.subscribers.iter().copied().max().unwrap_or(1);
+        let event_ids = self.publishers.iter().filter_map(|p| match p.notification {
+            Iox2Notification::Silent => None,
+            Iox2Notification::Event(id) => Some(id),
+        });
+        Ok(Iox2ChannelConfig {
+            buffer_capacity,
+            max_borrowed_samples: buffer_capacity
+                .checked_mul(2)
+                .ok_or(StorageError::CapacityOverflow)?,
+            max_publishers: self.publishers.len().max(1),
+            max_subscribers: self.subscribers.len().max(1),
+            max_nodes: 1,
+            max_listeners: self.events.len(),
+            max_notifiers: self
+                .publishers
+                .iter()
+                .filter(|p| matches!(p.notification, Iox2Notification::Event(_)))
+                .count()
+                .checked_add(self.notifiers.len())
+                .ok_or(StorageError::CapacityOverflow)?,
+            event_id_max_value: event_ids
+                .chain(self.notifiers.iter().copied())
+                .max()
+                .unwrap_or(0),
+        })
+    }
     pub(crate) fn publisher_key(&self, index: usize) -> Iox2PublisherKey<T> {
         assert!(index < self.publishers.len());
         Iox2PublisherKey(
@@ -161,6 +215,7 @@ impl<T> Iox2ChannelPlan<T> {
             config: Iox2ChannelConfig::default(),
             publishers: Vec::new(),
             subscribers: Vec::new(),
+            subscriber_sources: Vec::new(),
             events: Vec::new(),
             notifiers: Vec::new(),
             payload: PhantomData,
@@ -214,6 +269,7 @@ impl<T> Iox2ChannelPlan<T> {
     pub fn subscriber(&mut self, capacity: usize) -> Iox2SubscriberKey<T> {
         let index = self.subscribers.len();
         self.subscribers.push(capacity);
+        self.subscriber_sources.push(None);
         Iox2SubscriberKey(
             Key {
                 channel: self.name.clone(),
@@ -221,6 +277,29 @@ impl<T> Iox2ChannelPlan<T> {
             },
             PhantomData,
         )
+    }
+    /// Filter publications by plan-local publisher identity before retention.
+    pub fn restrict_subscriber_sources(
+        &mut self,
+        subscriber: &Iox2SubscriberKey<T>,
+        publishers: &[Iox2PublisherKey<T>],
+    ) -> Result<(), EndpointError> {
+        if subscriber.0.channel != self.name
+            || publishers.iter().any(|key| key.0.channel != self.name)
+        {
+            return Err(EndpointError::WrongChannel);
+        }
+        for key in publishers {
+            if key.0.index >= self.publishers.len() {
+                return Err(EndpointError::InvalidIndex(key.0.index));
+            }
+        }
+        *self
+            .subscriber_sources
+            .get_mut(subscriber.0.index)
+            .ok_or(EndpointError::InvalidIndex(subscriber.0.index))? =
+            Some(publishers.iter().map(|key| key.0.index as u32).collect());
+        Ok(())
     }
     pub fn events(&mut self, capacity: usize) -> Iox2EventKey {
         let index = self.events.len();
@@ -286,8 +365,8 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2Chan
                 .any(|&id| id > self.config.event_id_max_value)
         {
             return Err(transport(format!(
-                "invalid endpoint/service capacities on {}",
-                self.name
+                "invalid endpoint/service capacities on '{}': required {:?}, configured {:?} (borrowed samples must cover twice the service buffer)",
+                self.name, self.required_config()?, self.config
             )));
         }
         Ok(())
@@ -316,7 +395,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2Chan
                     .max_subscribers(self.config.max_subscribers)
                     .max_nodes(self.config.max_nodes)
                     .open_or_create()
-                    .map_err(transport)?,
+                    .map_err(|error| {
+                        transport(format!(
+                            "IPC data service '{}', requested {:?}: {error:?}",
+                            self.name, self.config
+                        ))
+                    })?,
             )
         };
         let event = self
@@ -329,7 +413,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2Chan
             .max_nodes(self.config.max_nodes)
             .event_id_max_value(self.config.event_id_max_value)
             .open_or_create()
-            .map_err(transport)?;
+            .map_err(|error| {
+                transport(format!(
+                    "IPC event service '{}', requested {:?}: {error:?}",
+                    self.name, self.config
+                ))
+            })?;
         Ok(Iox2ChannelStorage {
             plan: self,
             data,
@@ -378,7 +467,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
             })));
         }
         let mut subscribers = Vec::new();
-        for &capacity in &self.plan.subscribers {
+        for (index, &capacity) in self.plan.subscribers.iter().enumerate() {
             subscribers.push(RefCell::new(Some(Iox2Subscriber {
                 channel: self.plan.name.to_string(),
                 capacity,
@@ -393,6 +482,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                 read: RefCell::new(VecDeque::with_capacity(capacity)),
                 receive_errors: AtomicUsize::new(0),
                 replay: None,
+                sources: self.plan.subscriber_sources[index].clone(),
                 _runtime: self.plan.runtime.clone(),
             })));
         }
@@ -690,6 +780,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> DerefMut for Iox2Output<'_
 }
 
 pub struct Iox2Subscriber<T: Debug + ZeroCopySend + Send + Sync + 'static> {
+    sources: Option<Vec<u32>>,
     channel: String,
     capacity: usize,
     port: DataSubscriber<ipc_threadsafe::Service, Message<T>, ()>,
@@ -777,6 +868,13 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
         for _ in 0..self.capacity {
             match self.port.receive() {
                 Ok(Some(sample)) => {
+                    if self
+                        .sources
+                        .as_ref()
+                        .is_some_and(|sources| !sources.contains(&sample.header.publisher_index))
+                    {
+                        continue;
+                    }
                     if read.len() == self.capacity {
                         read.pop_front();
                     }

@@ -28,11 +28,25 @@ impl<T> Clone for Key<T> {
 pub struct PublisherKey<T>(Key<T>);
 pub struct SubscriberKey<T>(Key<T>);
 impl<T> PublisherKey<T> {
+    pub(crate) fn retype<U>(self) -> PublisherKey<U> {
+        PublisherKey(Key {
+            channel: self.0.channel,
+            index: self.0.index,
+            payload: PhantomData,
+        })
+    }
     pub(crate) fn index(&self) -> usize {
         self.0.index
     }
 }
 impl<T> SubscriberKey<T> {
+    pub(crate) fn retype<U>(self) -> SubscriberKey<U> {
+        SubscriberKey(Key {
+            channel: self.0.channel,
+            index: self.0.index,
+            payload: PhantomData,
+        })
+    }
     pub(crate) fn index(&self) -> usize {
         self.0.index
     }
@@ -70,6 +84,7 @@ struct SubscriberSpec {
 /// Keys address endpoints by channel name and declaration-order index; names
 /// must be unique within the graph.
 pub struct ChannelPlan<T> {
+    forwarding_retention: usize,
     name: Arc<str>,
     publishers: Vec<PublisherSpec>,
     subscribers: Vec<SubscriberSpec>,
@@ -77,6 +92,24 @@ pub struct ChannelPlan<T> {
 }
 
 impl<T> ChannelPlan<T> {
+    pub fn topology(&self) -> crate::automatic::topology::ChannelTopology {
+        crate::automatic::topology::ChannelTopology {
+            name: self.name.to_string(),
+            payload_type: std::any::type_name::<T>(),
+            transport: crate::recording::Transport::Native,
+            publishers: self
+                .publishers
+                .iter()
+                .map(|port| port.loan_capacity)
+                .collect(),
+            subscribers: self.subscribers.iter().map(|port| port.capacity).collect(),
+            sources: self
+                .subscribers
+                .iter()
+                .map(|port| port.sources.clone())
+                .collect(),
+        }
+    }
     pub(crate) fn publisher_key(&self, index: usize) -> PublisherKey<T> {
         assert!(index < self.publishers.len());
         PublisherKey(Key {
@@ -95,6 +128,7 @@ impl<T> ChannelPlan<T> {
     }
     pub fn new(name: impl Into<String>) -> Self {
         Self {
+            forwarding_retention: 0,
             name: name.into().into(),
             publishers: Vec::new(),
             subscribers: Vec::new(),
@@ -212,10 +246,16 @@ impl<T> ChannelPlan<T> {
     fn publisher_plan(&self, publisher: &PublisherSpec) -> PublisherStoragePlan<T> {
         let mut plan = PublisherStoragePlan::new(publisher.loan_capacity)
             .with_retained_capacity(publisher.retained_capacity);
+        if self.forwarding_retention > 0 {
+            plan = plan.with_subscriber(self.forwarding_retention);
+        }
         for subscriber in &self.subscribers {
             plan = plan.with_subscriber(subscriber.capacity);
         }
         plan
+    }
+    pub(crate) fn set_forwarding_retention(&mut self, capacity: usize) {
+        self.forwarding_retention = capacity;
     }
 }
 

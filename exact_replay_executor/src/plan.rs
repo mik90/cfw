@@ -152,6 +152,20 @@ impl<T> ReplayInputPlan<T> {
     }
 }
 pub(crate) type Port = (String, usize);
+impl<M: Send + Sync + 'static, S: Send + Sync + 'static>
+    ReplayInputPlan<task::ForwardedMessage<'static, M, S>>
+{
+    pub fn bind_forwarded_with_decoder<'a>(
+        self,
+        bindings: &EndpointBindings<'a, task::ForwardedMessage<'a, M, S>>,
+        decode: impl FnMut(&[u8]) -> Result<task::ForwardedMessage<'a, M, S>, BoxedLogError> + Send + 'a,
+    ) -> Result<ReplaySource<'a>, task::EndpointError> {
+        ReplayInputPlan {
+            publisher: task::automatic::forwarding::publisher_key(self.publisher),
+        }
+        .bind_with_decoder(bindings, decode)
+    }
+}
 pub(crate) type CacheLoader<'a> =
     Box<dyn FnMut(MessageHeader, &[u8]) -> Result<(), BoxedLogError> + Send + 'a>;
 /// Bindings use callback names and callback port ordinals, not channel indices.

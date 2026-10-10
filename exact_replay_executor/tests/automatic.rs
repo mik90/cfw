@@ -229,6 +229,147 @@ fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
 }
 
 struct Contextual(u64);
+struct ForwardSource(u64);
+#[task_callback]
+impl ForwardSource {
+    fn run(&mut self, output: &mut Publisher<u64>) -> Result<(), LoanError> {
+        output.publish(self.0)?;
+        self.0 += 1;
+        Ok(())
+    }
+}
+struct ForwardTask;
+#[task_callback]
+impl ForwardTask {
+    fn run<'storage>(
+        &self,
+        mut input: task::Input<'_, 'storage, u64>,
+        output: &mut Publisher<'storage, task::ForwardedMessage<'storage, bool, u64>>,
+    ) -> Result<(), LoanError> {
+        for source in input.drain() {
+            output.publish(task::ForwardedMessage::new(true, source))?;
+        }
+        Ok(())
+    }
+}
+struct ForwardSink;
+#[task_callback]
+impl ForwardSink {
+    fn run<'storage>(
+        &self,
+        mut input: task::Input<'_, 'storage, task::ForwardedMessage<'storage, bool, u64>>,
+        output: &mut Publisher<u64>,
+    ) -> Result<(), LoanError> {
+        for forwarded in input.drain() {
+            output.publish(forwarded.message.forwarded.message + 1)?;
+        }
+        Ok(())
+    }
+}
+fn forwarding_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task::automatic::RegisteredTask> {
+    let mut source =
+        TaskRegistration::new("source", ForwardSource(10), CallbackSchedule::default());
+    source.output_channel("output", "source-values");
+    let mut forward = TaskRegistration::new("forward", ForwardTask, CallbackSchedule::default());
+    forward
+        .input_channel("input", "source-values")
+        .output_channel("output", "forwarded");
+    let mut sink = TaskRegistration::new("sink", ForwardSink, CallbackSchedule::default());
+    sink.input_channel("input", "forwarded")
+        .output_channel("output", "result");
+    let tasks = if reverse {
+        vec![sink, forward, source]
+    } else {
+        vec![source, forward, sink]
+    };
+    tasks
+        .into_iter()
+        .map(|task| task.register(plan).unwrap())
+        .collect()
+}
+#[test]
+fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
+    use exact_replay_executor::{ExplicitReplayPort, ReplayInputPlan};
+    for logged in [false, true] {
+        let bytes = Bytes::default();
+        {
+            let mut plan = NamedPlan::default();
+            let tasks = forwarding_tasks(&mut plan, false);
+            let options = if logged {
+                CaptureOptions::new(8)
+            } else {
+                CaptureOptions::new(8).exclude("source-values")
+            };
+            let capture = AutomaticCapturePlan::declare(&mut plan, &options).unwrap();
+            let storage = plan.allocate().unwrap();
+            let bindings = storage.bind().unwrap();
+            let mut graph = storage.graph_builder();
+            for task in tasks {
+                task.add_to_graph(&mut graph, &bindings);
+            }
+            let recorder = ExecutionRecorder::new(9);
+            let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+            let log = LogSession::new(
+                logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
+                capture.bind(&bindings).unwrap(),
+            )
+            .with_recording(recorder)
+            .unwrap();
+            for time in 0..3 {
+                graph.step(FrameworkTime::from_nanoseconds(time)).unwrap();
+            }
+            log.finish().unwrap();
+        }
+        let log = ReplayLog::from_reader(
+            &logging::log_file_json::JsonLogFileReader::from_reader(
+                bytes.0.lock().unwrap().as_slice(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut plan = NamedPlan::default();
+        let tasks = forwarding_tasks(&mut plan, true);
+        let cache = AutomaticExactReplayPlan::source_cache::<u64>(&mut plan, &log, "source-values")
+            .unwrap();
+        let input = plan.forwarded_input_key::<bool, u64>("sink", 0).unwrap();
+        let manual =
+            ReplayInputPlan::declare(plan.forwarded::<bool, u64>("forwarded").unwrap(), &input)
+                .unwrap();
+        let automatic = AutomaticExactReplayPlan::declare_with_explicit(
+            &mut plan,
+            &log,
+            &std::collections::BTreeSet::from([ExplicitReplayPort::input("sink", 0)]),
+        )
+        .unwrap();
+        let storage = plan.allocate().unwrap();
+        let bindings = storage.bind().unwrap();
+        let mut replay = automatic.bind(&bindings).unwrap();
+        let cache = cache.bind(&bindings, &mut replay).unwrap();
+        replay
+            .add_input(
+                "sink",
+                0,
+                manual
+                    .bind_forwarded_with_decoder(
+                        bindings.forwarded::<bool, u64>("forwarded").unwrap(),
+                        move |bytes| cache.decode_forwarded::<bool>(bytes),
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        let mut graph = storage.graph_builder();
+        for task in tasks {
+            task.add_to_graph(&mut graph, &bindings);
+        }
+        assert!(
+            ExactReplayExecutor::new(graph.build().unwrap(), log, replay)
+                .unwrap()
+                .run()
+                .unwrap()
+                .is_exact()
+        );
+    }
+}
 impl task::loggable::Loggable for Contextual {
     type Context<'a> = &'a u64;
     fn serialize(&self, writer: &mut dyn Write) -> Result<(), task::loggable::SerializeError> {

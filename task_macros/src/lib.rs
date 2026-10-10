@@ -578,6 +578,30 @@ fn automatic_registration(
     declaration: &syn::Ident,
     ports: &[Port],
 ) -> proc_macro2::TokenStream {
+    fn forwarded(payload: &Type) -> Option<(Type, Type)> {
+        let Type::Path(path) = payload else {
+            return None;
+        };
+        let segment = path.path.segments.last()?;
+        if segment.ident != "ForwardedMessage" {
+            return None;
+        }
+        let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+            return None;
+        };
+        let types: Vec<_> = args
+            .args
+            .iter()
+            .filter_map(|arg| {
+                if let syn::GenericArgument::Type(ty) = arg {
+                    Some(ty.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        (types.len() == 2).then(|| (types[0].clone(), types[1].clone()))
+    }
     struct Borrowed(bool);
     impl VisitMut for Borrowed {
         fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
@@ -586,10 +610,12 @@ fn automatic_registration(
     }
     let mut borrowed = Borrowed(false);
     for port in ports {
-        borrowed.visit_type_mut(&mut port.payload.clone());
-    }
-    if borrowed.0 {
-        return quote!();
+        let mut port_borrowed = Borrowed(false);
+        port_borrowed.visit_type_mut(&mut port.payload.clone());
+        if port_borrowed.0 && forwarded(&port.payload).is_none() {
+            return quote!();
+        }
+        borrowed.0 |= port_borrowed.0;
     }
     let factory = format_ident!("{}AutomaticFactory", task);
     let mut channel_names = Vec::new();
@@ -597,6 +623,7 @@ fn automatic_registration(
     let mut bindings = Vec::new();
     let mut schema = Vec::new();
     let mut captures = Vec::new();
+    let mut rebuilt_keys = Vec::new();
     for (index, port) in ports.iter().enumerate() {
         let Port {
             name,
@@ -628,33 +655,67 @@ fn automatic_registration(
             let value = #channel;
             ::core::convert::AsRef::<str>::as_ref(&value).to_owned()
         })?));
-        let (key, binding) = match port.kind {
-            PortKind::IoxInput | PortKind::IoxSpan => (
-                quote!(__cfw_plan.ipc_subscriber::<#payload>(&__cfw_names[#index], #capacity)?),
-                quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
-            ),
-            PortKind::IoxOutput => (
-                quote!(__cfw_plan.ipc_publisher::<#payload>(&__cfw_names[#index], #capacity)?),
-                quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
-            ),
-            PortKind::IoxEvent => (
-                quote!(__cfw_plan.event(&__cfw_names[#index], #capacity)?),
-                quote!(__cfw_bindings.events(&self.names[#index])?),
-            ),
-            PortKind::IoxNotifier => (
-                quote!(__cfw_plan.notifier(&__cfw_names[#index])?),
-                quote!(__cfw_bindings.events(&self.names[#index])?),
-            ),
-            PortKind::Input | PortKind::Required => (
-                quote!(__cfw_plan.subscriber::<#payload>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })?),
-                quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
-            ),
-            _ => (
-                quote!(__cfw_plan.publisher::<#payload>(&__cfw_names[#index], #capacity)?),
-                quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
-            ),
+        let family = forwarded(payload).filter(|_| borrowed.0);
+        let (key, binding) = if let Some((message, source)) = &family {
+            match port.kind {
+                PortKind::Input | PortKind::Required => (
+                    quote!(__cfw_plan.forwarded_subscriber::<#message,#source>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
+                    quote!(__cfw_bindings.forwarded::<#message,#source>(&self.names[#index])?),
+                ),
+                PortKind::IoxInput
+                | PortKind::IoxSpan
+                | PortKind::IoxOutput
+                | PortKind::IoxEvent
+                | PortKind::IoxNotifier => return quote!(),
+                _ => (
+                    quote!(__cfw_plan.forwarded_publisher::<#message,#source>(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_bindings.forwarded::<#message,#source>(&self.names[#index])?),
+                ),
+            }
+        } else {
+            match port.kind {
+                PortKind::IoxInput | PortKind::IoxSpan => (
+                    quote!(__cfw_plan.ipc_subscriber::<#payload>(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
+                ),
+                PortKind::IoxOutput => (
+                    quote!(__cfw_plan.ipc_publisher::<#payload>(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
+                ),
+                PortKind::IoxEvent => (
+                    quote!(__cfw_plan.event(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_bindings.events(&self.names[#index])?),
+                ),
+                PortKind::IoxNotifier => (
+                    quote!(__cfw_plan.notifier(&__cfw_names[#index])),
+                    quote!(__cfw_bindings.events(&self.names[#index])?),
+                ),
+                PortKind::Input | PortKind::Required => (
+                    quote!(__cfw_plan.subscriber::<#payload>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
+                    quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
+                ),
+                _ => (
+                    quote!(__cfw_plan.publisher::<#payload>(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
+                ),
+            }
         };
-        keys.push(key);
+        if family.is_some() {
+            let retype = if matches!(port.kind, PortKind::Input | PortKind::Required) {
+                quote!(subscriber_key)
+            } else {
+                quote!(publisher_key)
+            };
+            rebuilt_keys
+                .push(quote!(::task::automatic::forwarding::#retype(self.declaration.#name)));
+        } else {
+            rebuilt_keys.push(quote!(self.declaration.#name));
+        }
+        keys.push(quote!({
+            let key = #key.map_err(|error| ::task::automatic::BuildError(format!("port '{}': {}", stringify!(#name), error)))?;
+            __cfw_plan.name_last_port(stringify!(#name));
+            key
+        }));
         bindings.push(binding);
         let capture_method = match port.kind {
             PortKind::IoxEvent | PortKind::IoxNotifier => None,
@@ -663,7 +724,9 @@ fn automatic_registration(
             }
             _ => Some(quote!(register_native)),
         };
-        if let Some(method) = capture_method {
+        if let Some((message, source)) = family {
+            captures.push(quote!(::task::automatic::forwarding::CaptureProbe::<#message,#source>::default().register(__cfw_plan, &__cfw_names[#index])?;));
+        } else if let Some(method) = capture_method {
             captures.push(quote!(::task::automatic::capture::CaptureProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
             captures.push(quote!(::task::automatic::replay::DecodeProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
         }
@@ -680,13 +743,15 @@ fn automatic_registration(
                 let declaration = #declaration::from_keys(#(#keys),*);
                 use ::task::automatic::capture::MaybeCapture as _;
                 use ::task::automatic::replay::MaybeDecode as _;
+                use ::task::automatic::forwarding::MaybeCapture as _;
                 #(#captures)*
                 Ok(Box::new(#factory { user: *self, declaration, names: __cfw_names }))
             }
         }
         impl ::task::automatic::TaskFactory for #factory {
             fn build<'storage>(self: Box<Self>, __cfw_bindings: &::task::automatic::NamedBindings<'storage>) -> Result<Box<dyn ::task::Callback + 'storage>, ::task::automatic::BuildError> {
-                Ok(Box::new(self.user.bind(self.declaration, #(#bindings),*)?))
+                let declaration = #declaration::from_keys(#(#rebuilt_keys),*);
+                Ok(Box::new(self.user.bind(declaration, #(#bindings),*)?))
             }
         }
     }

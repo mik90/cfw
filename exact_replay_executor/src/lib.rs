@@ -12,4 +12,4 @@ pub use replay::{
     DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, ReplayError, ReplayStep, StopSignal,
 };
 pub use replay_log::ReplayLog;
-pub use report::{ChannelStats, ReplayReport};
+pub use report::{ChannelStats, ReplayDetail, ReplayDetailKind, ReplayReport};

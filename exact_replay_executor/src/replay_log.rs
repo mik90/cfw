@@ -6,6 +6,7 @@ use task::{message::MessageHeader, recording::*, time::FrameworkTime};
 pub(crate) type Identity = (String, MessageHeader);
 
 pub struct ReplayLog {
+    pub(crate) intern_tables: InternTables,
     pub(crate) descriptor: ExecutionDescriptor,
     pub(crate) executions: Vec<ExecutionRecord>,
     pub(crate) payloads: BTreeMap<Identity, Vec<u8>>,
@@ -22,6 +23,7 @@ impl ReplayLog {
             .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         logging::intern_tables::validate_descriptor_tables(&tables, &log.descriptor)
             .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+        log.intern_tables = tables;
         for index in 0..reader.len() {
             let entry = reader
                 .entry(index)
@@ -42,6 +44,7 @@ impl ReplayLog {
                 .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         logging::intern_tables::validate_descriptor_tables(&tables, &log.descriptor)
             .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+        log.intern_tables = tables;
         while let Some(entry) = reader
             .next_entry()
             .map_err(|e| ReplayError::InvalidLog(e.to_string()))?
@@ -96,6 +99,7 @@ impl ReplayLog {
         }
         let logged = descriptor.logged_channels.iter().cloned().collect();
         Ok(Self {
+            intern_tables: InternTables::default(),
             descriptor,
             executions: vec![],
             payloads: BTreeMap::new(),

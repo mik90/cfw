@@ -108,8 +108,8 @@ fn type_and_service_setting_mismatches_are_reported() {
         Err(StorageError::Transport(_))
     ));
     let config = Iox2ChannelConfig {
-        buffer_capacity: 32,
-        max_borrowed_samples: 64,
+        buffer_capacity: 2048,
+        max_borrowed_samples: 4096,
         ..Default::default()
     };
     let mut incompatible = Iox2ChannelPlan::<u64>::new(&name, &runtime).with_config(config);

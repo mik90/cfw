@@ -58,6 +58,7 @@ pub struct StepResult {
 }
 
 struct NodeState {
+    input_requested: bool,
     requested: bool,
     ready_since: Option<FrameworkTime>,
     busy_until: FrameworkTime,
@@ -109,6 +110,7 @@ impl EventTarget {
 /// A failed step poisons the session: callback state and consumed inputs cannot
 /// be rolled back. Retained message handles remain valid for their storage borrow.
 pub struct SimulationState<'storage> {
+    timers: Arc<std::sync::atomic::AtomicBool>,
     callbacks: Vec<Box<dyn Callback + 'storage>>,
     names: Vec<String>,
     schedules: Vec<CallbackSchedule>,
@@ -147,6 +149,7 @@ impl<'storage> SimulationState<'storage> {
         }
         let (callbacks, metadata) = graph.into_parts();
         let mut state = Self {
+            timers: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             callbacks: Vec::new(),
             names: Vec::new(),
             schedules: Vec::new(),
@@ -219,7 +222,8 @@ impl<'storage> SimulationState<'storage> {
                 }
                 state.events.extend(registrations);
             }
-            let requested = node.schedule.run_on_start || node.callback.has_pending_inputs();
+            let input_requested = node.callback.has_pending_inputs();
+            let requested = node.schedule.run_on_start || input_requested;
             let next = if node.schedule.run_on_start {
                 Some(state.time)
             } else {
@@ -231,6 +235,7 @@ impl<'storage> SimulationState<'storage> {
                     })?
             };
             state.nodes.push(NodeState {
+                input_requested,
                 requested,
                 ready_since: None,
                 busy_until: state.time,
@@ -402,6 +407,10 @@ impl<'storage> SimulationState<'storage> {
         }
         result
     }
+    #[cfg(feature = "log_simulation")]
+    pub(crate) fn timer_control(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.timers.clone()
+    }
 
     pub fn run_until_idle(&mut self, max_steps: usize) -> Result<Vec<StepResult>, StepError> {
         let mut steps = Vec::new();
@@ -444,8 +453,14 @@ impl<'storage> SimulationState<'storage> {
     }
 
     fn refresh(&mut self) {
+        let timers = self.timers.load(Ordering::Acquire);
         for (index, node) in self.nodes.iter_mut().enumerate() {
             let notification = self.notifications[index].0.swap(0, Ordering::AcqRel);
+            node.input_requested |= notification & TRIGGER != 0;
+            if !timers {
+                node.next = None;
+                node.requested = node.input_requested;
+            }
             node.requested |=
                 notification & TRIGGER != 0 || node.next.is_some_and(|next| next <= self.time);
             if node.requested
@@ -543,12 +558,16 @@ impl<'storage> SimulationState<'storage> {
                             callback: self.names[index].clone(),
                             source: TimingError::Overflow,
                         })?;
-                    let next = self.schedules[index].next_after(finish).map_err(|source| {
-                        StepError::Timing {
-                            callback: self.names[index].clone(),
-                            source,
-                        }
-                    })?;
+                    let next = if self.timers.load(Ordering::Acquire) {
+                        self.schedules[index].next_after(finish).map_err(|source| {
+                            StepError::Timing {
+                                callback: self.names[index].clone(),
+                                source,
+                            }
+                        })?
+                    } else {
+                        None
+                    };
                     timing.push((finish, next));
                 }
                 Ok(timing)
@@ -566,6 +585,7 @@ impl<'storage> SimulationState<'storage> {
         })?;
         for (&index, (finish, next)) in executed.iter().zip(timing) {
             self.nodes[index].requested = false;
+            self.nodes[index].input_requested = false;
             self.nodes[index].busy_until = finish;
             self.nodes[index].next = next;
         }

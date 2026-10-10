@@ -25,7 +25,7 @@ use task::{
 #[cfg(feature = "iceoryx2")]
 mod ipc;
 #[cfg(feature = "iceoryx2")]
-pub use ipc::TestNotifier;
+pub use ipc::{DEFAULT_IPC_TEST_SUBSCRIBER_CAPACITY, TestNotifier};
 
 /// Required modeled duration. Zero is supported only when explicitly supplied.
 pub enum ExecutionDuration {
@@ -82,6 +82,12 @@ impl Drop for SessionGuard {
     }
 }
 type Queue<T> = Arc<Mutex<VecDeque<(FrameworkTime, T)>>>;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptureSources {
+    #[default]
+    TaskOutputs,
+    AllPublishers,
+}
 
 /// Owned injection handle, freely movable into the test closure. Values are
 /// stamped on send and published at the next step's input boundary.
@@ -229,6 +235,7 @@ impl<T: 'static> FixtureFactory for InputFactory<T> {
     }
 }
 struct OutputPlan<T> {
+    sources: CaptureSources,
     channel: String,
     capacity: usize,
     payload: PhantomData<T>,
@@ -243,6 +250,7 @@ impl<T: Send + Sync + 'static> FixturePlan for OutputPlan<T> {
         plan: &mut NamedPlan,
     ) -> Result<Box<dyn FixtureFactory>, BuildError> {
         plan.require(&self.channel, true)?;
+        let sources = plan.native_workload_publishers::<T>(&self.channel)?;
         let key = plan.native::<T>(&self.channel)?.subscriber_with_policy(
             self.capacity,
             SubscriberPolicy {
@@ -250,6 +258,10 @@ impl<T: Send + Sync + 'static> FixturePlan for OutputPlan<T> {
                 keep_across_runs: true,
             },
         );
+        if self.sources == CaptureSources::TaskOutputs {
+            plan.native::<T>(&self.channel)?
+                .restrict_subscriber_sources(&key, &sources)?;
+        }
         Ok(Box::new(OutputFactory {
             channel: self.channel,
             key,
@@ -281,6 +293,8 @@ pub struct UnitTestExecutorBuilder {
     session: SessionGuard,
     #[cfg(feature = "iceoryx2")]
     runtime: Option<Arc<task::iox2::Iox2Runtime>>,
+    #[cfg(feature = "iceoryx2")]
+    ipc_limits: std::collections::BTreeMap<String, task::iox2::Iox2ChannelConfig>,
 }
 impl Default for UnitTestExecutorBuilder {
     fn default() -> Self {
@@ -300,6 +314,8 @@ impl UnitTestExecutorBuilder {
             session: SessionGuard(Session::new()),
             #[cfg(feature = "iceoryx2")]
             runtime: None,
+            #[cfg(feature = "iceoryx2")]
+            ipc_limits: Default::default(),
         }
     }
     /// Register an input-triggered task with an explicit modeled duration.
@@ -360,9 +376,18 @@ impl UnitTestExecutorBuilder {
         channel: &str,
         capacity: usize,
     ) -> TestOutput<T> {
+        self.add_test_subscriber_with_sources(channel, capacity, CaptureSources::TaskOutputs)
+    }
+    pub fn add_test_subscriber_with_sources<T: Send + Sync + 'static>(
+        &mut self,
+        channel: &str,
+        capacity: usize,
+        sources: CaptureSources,
+    ) -> TestOutput<T> {
         let index = self.captures;
         self.captures += 1;
         self.fixtures.push(Box::new(OutputPlan::<T> {
+            sources,
             channel: channel.into(),
             capacity,
             payload: PhantomData,
@@ -382,6 +407,10 @@ impl UnitTestExecutorBuilder {
         #[cfg(feature = "iceoryx2")]
         if let Some(runtime) = self.runtime {
             plan = NamedPlan::with_iox2_runtime(runtime);
+        }
+        #[cfg(feature = "iceoryx2")]
+        for (channel, limits) in self.ipc_limits {
+            plan.set_ipc_service_limits(channel, limits);
         }
         let mut factories = Vec::new();
         let mut names = HashSet::new();
@@ -439,6 +468,9 @@ pub struct UnitTestSetup {
     session: SessionGuard,
 }
 impl UnitTestSetup {
+    pub fn topology(&self) -> &task::automatic::Topology {
+        self.storage.topology()
+    }
     pub fn build(&self) -> UnitTestExecutor<'_> {
         self.try_build().expect("could not build unit test")
     }

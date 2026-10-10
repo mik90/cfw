@@ -1,4 +1,4 @@
-//! Named construction for tasks with owned (`'static`) payload types.
+//! Named construction for owned payloads and the storage-borrowing ForwardedMessage family.
 //! Storage remains externally owned; only the construction metadata is erased.
 use crate::{
     Callback, ChannelPlan, ChannelStorage, EndpointBindings, GraphBuilder, StorageLayout,
@@ -11,8 +11,11 @@ use std::{
 };
 pub mod capture;
 pub mod exact;
+pub mod forwarding;
 pub mod port_capture;
 pub mod replay;
+pub mod topology;
+pub use topology::Topology;
 
 #[derive(Debug)]
 pub struct BuildError(pub String);
@@ -184,10 +187,13 @@ impl TaskRegistration {
             return Err(BuildError(format!("duplicate task '{}'", self.name)));
         }
         let start = plan.ports.len();
+        plan.active_task = Some(self.name.clone());
         let factory = self
             .task
             .register_with(plan, &self.channels)
-            .map_err(|e| BuildError(format!("task '{}': {e}", self.name)))?;
+            .map_err(|e| BuildError(format!("task '{}': {e}", self.name)));
+        plan.active_task = None;
+        let factory = factory?;
         plan.tasks
             .insert(self.name.clone(), plan.ports[start..].to_vec());
         Ok(RegisteredTask {
@@ -217,12 +223,25 @@ impl RegisteredTask {
 }
 
 trait Plan {
+    fn source_budget(&self) -> Result<Option<(TypeId, usize)>, BuildError> {
+        Ok(None)
+    }
+    fn set_source_budget(&mut self, _: &BTreeMap<TypeId, usize>) {}
+    fn topology(&self) -> topology::ChannelTopology;
+    fn validate(&self) -> Result<(), BuildError>;
+    fn payload_type(&self) -> &'static str;
     fn any_mut(&mut self) -> &mut dyn Any;
     fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError>;
     #[cfg(feature = "iceoryx2")]
     fn is_ipc(&self) -> bool {
         false
     }
+    #[cfg(feature = "iceoryx2")]
+    fn ipc_requirements(&self) -> Result<Option<crate::iox2::Iox2ChannelConfig>, BuildError> {
+        Ok(None)
+    }
+    #[cfg(feature = "iceoryx2")]
+    fn set_ipc_config(&mut self, _: crate::iox2::Iox2ChannelConfig) {}
 }
 trait Stored {
     fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError>;
@@ -240,11 +259,23 @@ trait Binding<'a> {
     }
 }
 impl<T: Send + Sync + 'static> Plan for ChannelPlan<T> {
+    fn set_source_budget(&mut self, budgets: &BTreeMap<TypeId, usize>) {
+        self.set_forwarding_retention(budgets.get(&TypeId::of::<T>()).copied().unwrap_or(0));
+    }
+    fn topology(&self) -> topology::ChannelTopology {
+        self.topology()
+    }
+    fn validate(&self) -> Result<(), BuildError> {
+        StorageLayout::validate(self).map_err(Into::into)
+    }
+    fn payload_type(&self) -> &'static str {
+        std::any::type_name::<T>()
+    }
     fn any_mut(&mut self) -> &mut dyn Any {
         self
     }
     fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError> {
-        self.validate()?;
+        StorageLayout::validate(self.as_ref())?;
         Ok(Box::new(StorageLayout::allocate(*self)?))
     }
 }
@@ -263,12 +294,14 @@ impl<'a, T: 'static> Binding<'a> for EndpointBindings<'a, T> {
 }
 
 struct Channel {
+    origin: Option<String>,
     plan: Box<dyn Plan>,
     publishers: usize,
     subscribers: usize,
 }
 #[derive(Default)]
 pub struct NamedPlan {
+    active_task: Option<String>,
     channels: BTreeMap<String, Channel>,
     captures: BTreeMap<String, Box<dyn capture::CaptureDeclaration>>,
     replay_sources: BTreeMap<String, Box<dyn replay::SourceDeclaration>>,
@@ -279,8 +312,75 @@ pub struct NamedPlan {
     events: BTreeMap<String, (crate::iox2::Iox2ChannelPlan<()>, usize)>,
     #[cfg(feature = "iceoryx2")]
     runtime: Option<Arc<crate::iox2::Iox2Runtime>>,
+    #[cfg(feature = "iceoryx2")]
+    ipc_limits: BTreeMap<String, crate::iox2::Iox2ChannelConfig>,
 }
 impl NamedPlan {
+    /// Generated registration annotates each endpoint after its checked declaration.
+    pub fn name_last_port(&mut self, name: &str) {
+        if let Some(port) = self.ports.last_mut() {
+            port.name = Some(name.into());
+        }
+    }
+    pub fn topology(&self) -> Topology {
+        let mut snapshot = Topology {
+            callbacks: self.tasks.keys().cloned().collect(),
+            channels: self
+                .channels
+                .values()
+                .map(|channel| channel.plan.topology())
+                .collect(),
+            ports: vec![],
+        };
+        #[cfg(feature = "iceoryx2")]
+        for (name, (plan, _)) in &self.events {
+            if !self.channels.contains_key(name) {
+                let mut channel = plan.topology();
+                channel.transport = crate::recording::Transport::Event;
+                snapshot.channels.push(channel);
+            }
+        }
+        snapshot.channels.sort_by(|a, b| a.name.cmp(&b.name));
+        for (callback, ports) in &self.tasks {
+            let mut ordinals = [0, 0];
+            for port in ports {
+                let ordinal = ordinals[usize::from(port.output)];
+                ordinals[usize::from(port.output)] += 1;
+                snapshot.ports.push(topology::PortTopology {
+                    callback: callback.clone(),
+                    port: port.name.clone().unwrap_or_else(|| ordinal.to_string()),
+                    ordinal,
+                    output: port.output,
+                    channel: port.channel.clone(),
+                    transport: port.transport,
+                    payload_type: port.payload_type,
+                    capacity: port.capacity,
+                    endpoint_index: port.index,
+                });
+            }
+        }
+        snapshot
+    }
+    pub fn native_workload_publishers<T: Send + Sync + 'static>(
+        &mut self,
+        name: &str,
+    ) -> Result<Vec<crate::PublisherKey<T>>, BuildError> {
+        let indices: Vec<_> = self
+            .ports
+            .iter()
+            .filter(|port| {
+                port.channel == name
+                    && port.output
+                    && port.transport == crate::recording::Transport::Native
+            })
+            .map(|port| port.index)
+            .collect();
+        let plan = self.native::<T>(name)?;
+        Ok(indices
+            .into_iter()
+            .map(|index| plan.publisher_key(index))
+            .collect())
+    }
     pub fn native<T: Send + Sync + 'static>(
         &mut self,
         name: &str,
@@ -292,13 +392,16 @@ impl NamedPlan {
             )));
         }
         let entry = self.channels.entry(name.into()).or_insert_with(|| Channel {
+            origin: self.active_task.clone(),
             plan: Box::new(ChannelPlan::<T>::new(name)),
             publishers: 0,
             subscribers: 0,
         });
+        let existing = entry.plan.payload_type();
+        let origin = entry.origin.as_deref().unwrap_or("direct declaration");
         entry.plan.any_mut().downcast_mut().ok_or_else(|| {
             BuildError(format!(
-                "channel '{name}': incompatible payload type or transport (requested {})",
+                "channel '{name}': incompatible payload type or transport (first declared by '{origin}' as {existing}, requested native {})",
                 std::any::type_name::<T>()
             ))
         })
@@ -357,7 +460,9 @@ impl NamedPlan {
             )))
         }
     }
-    pub fn allocate(self) -> Result<NamedStorage, BuildError> {
+    pub fn allocate(mut self) -> Result<NamedStorage, BuildError> {
+        self.prepare()?;
+        let topology = self.topology();
         let mut names = crate::string_interner::ChannelNameInterner::new();
         let mut channels = BTreeMap::new();
         for (name, channel) in self.channels {
@@ -374,20 +479,57 @@ impl NamedPlan {
             })
             .collect::<Result<_, BuildError>>()?;
         Ok(NamedStorage {
+            topology,
             channels,
             names: Arc::new(names),
             #[cfg(feature = "iceoryx2")]
             events,
         })
     }
+    /// Validate and finalize service budgets before any channel allocation.
+    pub fn prepare(&mut self) -> Result<(), BuildError> {
+        let mut source_budgets = BTreeMap::<TypeId, usize>::new();
+        for channel in self.channels.values() {
+            if let Some((source, capacity)) = channel.plan.source_budget()? {
+                let total = source_budgets.entry(source).or_default();
+                *total = total
+                    .checked_add(capacity)
+                    .ok_or(crate::StorageError::CapacityOverflow)?;
+            }
+        }
+        for channel in self.channels.values_mut() {
+            channel.plan.set_source_budget(&source_budgets);
+        }
+        #[cfg(feature = "iceoryx2")]
+        for (name, config) in self.ipc_service_limits()? {
+            if let Some(channel) = self.channels.get_mut(&name) {
+                channel.plan.set_ipc_config(config.clone());
+            }
+            if let Some((plan, _)) = self.events.get_mut(&name) {
+                plan.set_config(config);
+                StorageLayout::validate(plan)?;
+            }
+        }
+        for (name, channel) in &self.channels {
+            channel
+                .plan
+                .validate()
+                .map_err(|e| BuildError(format!("channel '{name}': {e}")))?;
+        }
+        Ok(())
+    }
 }
 pub struct NamedStorage {
+    topology: Topology,
     channels: BTreeMap<String, Box<dyn Stored>>,
     names: Arc<crate::string_interner::ChannelNameInterner>,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, Box<dyn Stored>>,
 }
 impl NamedStorage {
+    pub fn topology(&self) -> &Topology {
+        &self.topology
+    }
     pub fn bind(&self) -> Result<NamedBindings<'_>, BuildError> {
         Ok(NamedBindings {
             channels: self
@@ -439,6 +581,21 @@ mod ipc {
     use iceoryx2::prelude::ZeroCopySend;
     use std::fmt::Debug;
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Plan for Iox2ChannelPlan<T> {
+        fn topology(&self) -> topology::ChannelTopology {
+            self.topology()
+        }
+        fn validate(&self) -> Result<(), BuildError> {
+            StorageLayout::validate(self).map_err(Into::into)
+        }
+        fn payload_type(&self) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        fn ipc_requirements(&self) -> Result<Option<Iox2ChannelConfig>, BuildError> {
+            Ok(Some(self.required_config()?))
+        }
+        fn set_ipc_config(&mut self, config: Iox2ChannelConfig) {
+            self.set_config(config);
+        }
         fn any_mut(&mut self) -> &mut dyn Any {
             self
         }
@@ -446,7 +603,7 @@ mod ipc {
             true
         }
         fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError> {
-            self.validate()?;
+            StorageLayout::validate(self.as_ref())?;
             Ok(Box::new(StorageLayout::allocate(*self)?))
         }
     }
@@ -464,6 +621,83 @@ mod ipc {
         }
     }
     impl NamedPlan {
+        pub fn ipc_workload_publishers<T: Debug + ZeroCopySend + Send + Sync + 'static>(
+            &mut self,
+            name: &str,
+        ) -> Result<Vec<Iox2PublisherKey<T>>, BuildError> {
+            let indices: Vec<_> = self
+                .ports
+                .iter()
+                .filter(|port| {
+                    port.channel == name
+                        && port.output
+                        && port.transport == crate::recording::Transport::Ipc
+                })
+                .map(|port| port.index)
+                .collect();
+            let plan = self.ipc::<T>(name)?;
+            Ok(indices
+                .into_iter()
+                .map(|index| plan.publisher_key(index))
+                .collect())
+        }
+        /// Explicit limits are hard bounds; automatic limits otherwise grow from
+        /// the defaults to cover every task, capture and fixture endpoint.
+        pub fn set_ipc_service_limits(
+            &mut self,
+            channel: impl Into<String>,
+            limits: Iox2ChannelConfig,
+        ) {
+            self.ipc_limits.insert(channel.into(), limits);
+        }
+        pub fn ipc_service_limits(
+            &self,
+        ) -> Result<BTreeMap<String, Iox2ChannelConfig>, BuildError> {
+            let mut required = BTreeMap::new();
+            for (name, channel) in &self.channels {
+                if let Some(config) = channel.plan.ipc_requirements()? {
+                    required.insert(name.clone(), config);
+                }
+            }
+            for (name, (plan, _)) in &self.events {
+                let events = plan.required_config()?;
+                let config = required.entry(name.clone()).or_insert(Iox2ChannelConfig {
+                    max_listeners: 0,
+                    max_notifiers: 0,
+                    ..events.clone()
+                });
+                config.max_listeners = config
+                    .max_listeners
+                    .checked_add(events.max_listeners)
+                    .ok_or(crate::StorageError::CapacityOverflow)?;
+                config.max_notifiers = config
+                    .max_notifiers
+                    .checked_add(events.max_notifiers)
+                    .ok_or(crate::StorageError::CapacityOverflow)?;
+                config.event_id_max_value =
+                    config.event_id_max_value.max(events.event_id_max_value);
+            }
+            for name in self.ipc_limits.keys() {
+                if !required.contains_key(name) {
+                    return Err(BuildError(format!(
+                        "IPC limits configured for unknown/non-IPC channel '{name}'"
+                    )));
+                }
+            }
+            required.into_iter().map(|(name, needed)| {
+                let mut limits = Iox2ChannelConfig::default();
+                macro_rules! grow { ($($field:ident),*) => { $(limits.$field = limits.$field.max(needed.$field);)* }; }
+                grow!(buffer_capacity, max_borrowed_samples, max_publishers, max_subscribers, max_nodes, max_listeners, max_notifiers, event_id_max_value);
+                if let Some(explicit) = self.ipc_limits.get(&name) { limits = explicit.clone(); }
+                let mut insufficient = Vec::new();
+                if limits.max_listeners == 0 || limits.max_notifiers == 0 { insufficient.push("max_listeners and max_notifiers must be positive service limits".into()); }
+                macro_rules! check { ($($field:ident),*) => { $(if limits.$field < needed.$field { insufficient.push(format!("{} requires {}, configured {}", stringify!($field), needed.$field, limits.$field)); })* }; }
+                check!(buffer_capacity, max_borrowed_samples, max_publishers, max_subscribers, max_nodes, max_listeners, max_notifiers, event_id_max_value);
+                if limits.max_borrowed_samples < limits.buffer_capacity.checked_mul(2).ok_or(crate::StorageError::CapacityOverflow)? { insufficient.push("max_borrowed_samples must cover twice buffer_capacity".into()); }
+                if !insufficient.is_empty() { return Err(BuildError(format!("IPC service '{name}': {}", insufficient.join(", ")))); }
+                Ok((name, limits))
+            }).collect()
+        }
         pub fn with_iox2_runtime(runtime: Arc<Iox2Runtime>) -> Self {
             Self {
                 runtime: Some(runtime),
@@ -482,13 +716,16 @@ mod ipc {
         ) -> Result<&mut Iox2ChannelPlan<T>, BuildError> {
             let runtime = self.runtime()?;
             let channel = self.channels.entry(name.into()).or_insert_with(|| Channel {
+                origin: self.active_task.clone(),
                 plan: Box::new(Iox2ChannelPlan::<T>::new(name, &runtime)),
                 publishers: 0,
                 subscribers: 0,
             });
+            let existing = channel.plan.payload_type();
+            let origin = channel.origin.as_deref().unwrap_or("direct declaration");
             channel.plan.any_mut().downcast_mut().ok_or_else(|| {
                 BuildError(format!(
-                    "channel '{name}': incompatible payload type or transport"
+                    "channel '{name}': incompatible payload type or transport (first declared by '{origin}' as {existing}, requested IPC {})", std::any::type_name::<T>()
                 ))
             })
         }

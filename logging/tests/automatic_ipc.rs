@@ -142,6 +142,14 @@ fn ipc_capture_capacity_is_checked_by_storage_planning_and_exclusions_reserve_no
         let (data, _) = names();
         let mut plan = NamedPlan::default();
         plan.ipc_publisher::<Wire>(&data, 1).unwrap();
+        plan.set_ipc_service_limits(
+            &data,
+            task::iox2::Iox2ChannelConfig {
+                buffer_capacity: 16,
+                max_borrowed_samples: 32,
+                ..Default::default()
+            },
+        );
         plan.register_loggable_ipc::<Wire>(&data).unwrap();
         let mut options = CaptureOptions::new(17);
         if exclude {

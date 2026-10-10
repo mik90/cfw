@@ -27,6 +27,73 @@ impl Double {
 }
 
 #[test]
+fn feedback_captures_exclude_fixture_publications_without_breaking_feedback() {
+    let mut builder = UnitTestExecutorBuilder::new();
+    builder
+        .add_task("double", Double, ns(1))
+        .input_channel("input", "loop")
+        .output_channel("output", "loop");
+    let mut input = builder.add_test_publisher::<u64>("loop");
+    let output = builder.add_test_subscriber::<u64>("loop");
+    let all = builder.add_test_subscriber_with_sources::<u64>(
+        "loop",
+        8,
+        testing::CaptureSources::AllPublishers,
+    );
+    builder.run(|mut executor| {
+        input.send(3);
+        executor.step();
+        let mut outputs = Vec::new();
+        output.messages(&mut executor, |_, message| outputs.push(message.message));
+        assert_eq!(outputs, [6]);
+        let mut publications = Vec::new();
+        all.messages(&mut executor, |_, message| {
+            publications.push(message.message)
+        });
+        publications.sort();
+        assert_eq!(publications, [3, 6]);
+        executor.step();
+        assert_eq!(
+            output.messages(&mut executor, |_, message| assert_eq!(message.message, 12)),
+            1
+        );
+    });
+}
+
+struct Narrow;
+#[task_callback]
+impl Narrow {
+    fn run(&self, input: RequiredInput<u32>) {
+        let _ = input;
+    }
+}
+#[test]
+fn topology_exposes_ports_capacities_and_conflicting_declarations() {
+    let mut builder = UnitTestExecutorBuilder::new();
+    builder
+        .add_task("double\"quoted", Double, ns(1))
+        .input_channel("input", "loop")
+        .output_channel("output", "loop");
+    builder.add_test_publisher::<u64>("loop");
+    builder.add_test_subscriber::<u64>("loop");
+    let setup = builder.allocate();
+    let topology = setup.topology();
+    assert_eq!(topology.ports.len(), 2);
+    assert_eq!(topology.ports[0].port, "input");
+    assert_eq!(topology.ports[1].port, "output");
+    assert_eq!(topology.channels[0].sources[1], Some(vec![0]));
+    assert!(topology.to_string().contains("capacity="));
+    assert!(topology.dot().contains("double\\\"quoted"));
+    let mut builder = UnitTestExecutorBuilder::new();
+    builder.add_task("wide", Double, ns(1));
+    builder.add_task("narrow", Narrow, ns(1));
+    let error = builder.try_allocate().err().unwrap().to_string();
+    for word in ["wide", "narrow", "input", "u64", "u32"] {
+        assert!(error.contains(word), "{error}");
+    }
+}
+
+#[test]
 fn scoped_and_explicit_forms_share_named_binding_and_send_time() {
     for scoped in [false, true] {
         let mut builder = UnitTestExecutorBuilder::with_config(UnitTestExecutorConfig {
@@ -90,6 +157,77 @@ fn scoped_and_explicit_forms_share_named_binding_and_send_time() {
 }
 
 struct Batch;
+struct BorrowedSource {
+    value: usize,
+    drops: Arc<AtomicUsize>,
+}
+impl Drop for BorrowedSource {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+struct BorrowingForward;
+#[task_callback]
+impl BorrowingForward {
+    fn run<'storage>(
+        &self,
+        mut input: task::Input<'_, 'storage, BorrowedSource>,
+        output: &mut Publisher<'storage, task::ForwardedMessage<'storage, bool, BorrowedSource>>,
+    ) -> Result<(), LoanError> {
+        for source in input.drain() {
+            output.publish(task::ForwardedMessage::new(true, source))?;
+        }
+        Ok(())
+    }
+}
+struct RetainForwarded(Arc<AtomicUsize>);
+#[task_callback]
+impl RetainForwarded {
+    fn run<'storage>(
+        &self,
+        #[capacity(32)]
+        #[keep_across_runs(true)]
+        input: InputSpan<
+            '_,
+            'storage,
+            task::ForwardedMessage<'storage, bool, BorrowedSource>,
+        >,
+    ) {
+        let sum = input
+            .inputs()
+            .map(|message| message.message.forwarded.message.value)
+            .sum();
+        self.0.store(sum, Ordering::SeqCst);
+    }
+}
+#[test]
+fn named_borrowed_tasks_budget_nonclone_sources_and_destroy_retained_values() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let sum = Arc::new(AtomicUsize::new(0));
+    let mut builder = UnitTestExecutorBuilder::new();
+    builder
+        .add_task("forward", BorrowingForward, ns(1))
+        .input_channel("input", "source")
+        .output_channel("output", "borrowed");
+    builder
+        .add_task("retain", RetainForwarded(sum.clone()), ns(1))
+        .input_channel("input", "borrowed");
+    let mut input = builder.add_test_publisher::<BorrowedSource>("source");
+    builder.run(|mut executor| {
+        for value in 0..16 {
+            input.send(BorrowedSource {
+                value,
+                drops: drops.clone(),
+            });
+            for _ in 0..3 {
+                executor.step();
+            }
+        }
+        assert_eq!(sum.load(Ordering::SeqCst), (0..16).sum::<usize>());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+    });
+    assert_eq!(drops.load(Ordering::SeqCst), 16);
+}
 #[task_callback]
 impl Batch {
     fn run(

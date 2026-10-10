@@ -156,11 +156,128 @@ fn empty_logs_and_infinite_timers_have_explicit_completion_semantics() {
             .with_execution_duration(Duration::from_nanos(1)),
         || Ok(|_| Ok(())),
     );
-    let mut simulation = LogSimulation::new(graph.build().unwrap(), reader(vec![]), []).unwrap();
+    let mut simulation = LogSimulation::with_options(
+        graph.build().unwrap(),
+        reader(vec![]),
+        [],
+        LogSimulationOptions {
+            eof: simulation_executor::EofPolicy::Continue,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(matches!(
         simulation.run_until_idle(4),
         Err(StepError::StepLimitExceeded)
     ));
+}
+
+#[test]
+fn eof_drain_tail_and_cancellation_bound_periodic_work() {
+    use simulation_executor::{CompletionReason, EofPolicy};
+    for policy in [
+        EofPolicy::Drain,
+        EofPolicy::Tail(Duration::from_nanos(12)),
+        EofPolicy::Continue,
+    ] {
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = observed.clone();
+        let mut graph = GraphBuilder::new();
+        graph.add_scheduled_callback(
+            "timer",
+            CallbackSchedule::periodic(Duration::from_nanos(5))
+                .with_execution_duration(Duration::from_nanos(1)),
+            || {
+                Ok(move |time| {
+                    seen.lock().unwrap().push(time);
+                    Ok(())
+                })
+            },
+        );
+        let mut replay = LogSimulation::with_options(
+            graph.build().unwrap(),
+            reader(vec![]),
+            [],
+            LogSimulationOptions {
+                eof: policy,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let completion = replay.run_until(20, || true).unwrap();
+        assert!(completion.input_exhausted);
+        match policy {
+            EofPolicy::Drain => {
+                assert_eq!(completion.reason, CompletionReason::Drained);
+                assert!(observed.lock().unwrap().is_empty());
+            }
+            EofPolicy::Tail(_) => {
+                assert_eq!(completion.reason, CompletionReason::TailDrained);
+                assert!(completion.at >= at(12));
+                let observed = observed.lock().unwrap();
+                assert!(!observed.is_empty());
+                assert!(observed.iter().all(|time| *time < at(12)));
+            }
+            EofPolicy::Continue => {
+                assert_eq!(completion.reason, CompletionReason::StepBudgetExhausted);
+                assert_eq!(
+                    replay.run_until(20, || false).unwrap().reason,
+                    CompletionReason::Cancelled
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn eof_drain_finishes_inflight_work_and_bounds_feedback_cycles() {
+    use simulation_executor::{CompletionReason, EofPolicy};
+    let mut graph = GraphBuilder::new();
+    graph.add_scheduled_callback(
+        "slow",
+        CallbackSchedule::periodic(Duration::from_nanos(5))
+            .with_execution_duration(Duration::from_nanos(20)),
+        || Ok(|_| Ok(())),
+    );
+    let mut replay = LogSimulation::with_options(
+        graph.build().unwrap(),
+        reader(vec![]),
+        [],
+        LogSimulationOptions {
+            eof: EofPolicy::Tail(Duration::from_nanos(10)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let completion = replay.run_until(20, || true).unwrap();
+    assert_eq!(completion.reason, CompletionReason::TailDrained);
+    assert_eq!(completion.at, at(25));
+
+    let mut plan = task::automatic::NamedPlan::default();
+    let mut task = task::automatic::TaskRegistration::new(
+        "feedback",
+        Double,
+        CallbackSchedule::default().with_execution_duration(Duration::from_nanos(1)),
+    );
+    task.input_channel("input", "loop")
+        .output_channel("output", "loop");
+    let task = task.register(&mut plan).unwrap();
+    let source = ReplaySourcePlan::declare(plan.native::<u64>("loop").unwrap(), 1);
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.bind().unwrap();
+    let mut graph = storage.graph_builder();
+    task.add_to_graph(&mut graph, &bindings);
+    let mut replay = LogSimulation::new(
+        graph.build().unwrap(),
+        reader(vec![entry(0, "loop", b"1")]),
+        [source
+            .bind(bindings.native::<u64>("loop").unwrap())
+            .unwrap()],
+    )
+    .unwrap();
+    let completion = replay.run_until(16, || true).unwrap();
+    assert!(completion.input_exhausted);
+    assert_eq!(completion.reason, CompletionReason::StepBudgetExhausted);
 }
 
 #[test]

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone)]
 pub(super) struct PlannedPort {
+    pub name: Option<String>,
     pub channel: String,
     pub output: bool,
     pub transport: Transport,
@@ -24,6 +25,7 @@ impl PlannedPort {
         capacity: usize,
     ) -> Self {
         Self {
+            name: None,
             channel: channel.into(),
             output,
             transport: if event {
@@ -85,7 +87,7 @@ impl NamedExactPlan {
     }
 }
 impl NamedPlan {
-    fn port(
+    pub(super) fn port(
         &self,
         callback: &str,
         ordinal: usize,

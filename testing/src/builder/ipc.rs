@@ -2,6 +2,7 @@ use super::*;
 use iceoryx2::prelude::{EventId, ZeroCopySend};
 use std::fmt::Debug;
 use task::iox2::{EventRecord, Iox2Publisher, Iox2PublisherKey, Iox2Subscriber, Iox2SubscriberKey};
+pub const DEFAULT_IPC_TEST_SUBSCRIBER_CAPACITY: usize = 1024;
 
 pub struct TestNotifier {
     input: TestInput<EventRecord>,
@@ -23,8 +24,9 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> InputPump for IpcPump<T> {
     fn flush(&mut self) -> Result<(), LoanError> {
         let batch = std::mem::take(&mut *self.queue.lock().unwrap());
         for (at, value) in batch {
-            self.publisher
-                .publish_with_header(task::message::MessageHeader::new(at), value)?;
+            let mut header = task::message::MessageHeader::new(at);
+            header.publisher_index = self.publisher.publisher_index();
+            self.publisher.publish_with_header(header, value)?;
         }
         Ok(())
     }
@@ -74,6 +76,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> FixtureFactory for IpcInpu
     }
 }
 struct IpcOutputPlan<T> {
+    sources: CaptureSources,
     channel: String,
     capacity: usize,
     payload: PhantomData<T>,
@@ -88,7 +91,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> FixturePlan for IpcOutputP
         plan: &mut NamedPlan,
     ) -> Result<Box<dyn FixtureFactory>, BuildError> {
         plan.require(&self.channel, true)?;
+        let sources = plan.ipc_workload_publishers::<T>(&self.channel)?;
         let key = plan.ipc::<T>(&self.channel)?.subscriber(self.capacity);
+        if self.sources == CaptureSources::TaskOutputs {
+            plan.ipc::<T>(&self.channel)?
+                .restrict_subscriber_sources(&key, &sources)?;
+        }
         Ok(Box::new(IpcOutputFactory {
             channel: self.channel,
             key,
@@ -162,6 +170,14 @@ impl InputPump for EventPump {
     }
 }
 impl UnitTestExecutorBuilder {
+    pub fn set_ipc_service_limits(
+        &mut self,
+        channel: impl Into<String>,
+        limits: task::iox2::Iox2ChannelConfig,
+    ) -> &mut Self {
+        self.ipc_limits.insert(channel.into(), limits);
+        self
+    }
     pub fn with_iox2_runtime(mut self, runtime: Arc<task::iox2::Iox2Runtime>) -> Self {
         self.runtime = Some(runtime);
         self
@@ -184,7 +200,7 @@ impl UnitTestExecutorBuilder {
         &mut self,
         channel: &str,
     ) -> TestOutput<T> {
-        self.add_iox2_test_subscriber_with_capacity(channel, DEFAULT_TEST_SUBSCRIBER_CAPACITY)
+        self.add_iox2_test_subscriber_with_capacity(channel, DEFAULT_IPC_TEST_SUBSCRIBER_CAPACITY)
     }
     pub fn add_iox2_test_subscriber_with_capacity<
         T: Debug + ZeroCopySend + Send + Sync + 'static,
@@ -193,9 +209,20 @@ impl UnitTestExecutorBuilder {
         channel: &str,
         capacity: usize,
     ) -> TestOutput<T> {
+        self.add_iox2_test_subscriber_with_sources(channel, capacity, CaptureSources::TaskOutputs)
+    }
+    pub fn add_iox2_test_subscriber_with_sources<
+        T: Debug + ZeroCopySend + Send + Sync + 'static,
+    >(
+        &mut self,
+        channel: &str,
+        capacity: usize,
+        sources: CaptureSources,
+    ) -> TestOutput<T> {
         let index = self.captures;
         self.captures += 1;
         self.fixtures.push(Box::new(IpcOutputPlan::<T> {
+            sources,
             channel: channel.into(),
             capacity,
             payload: PhantomData,

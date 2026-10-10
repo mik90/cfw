@@ -26,6 +26,8 @@ pub enum DivergencePolicy {
 }
 pub struct ExactReplayConfig {
     pub divergence_policy: DivergencePolicy,
+    /// Shared entry cap for structured gap/mismatch/error details (zero disables
+    /// details). Each reason is capped at report::MAX_DETAIL_BYTES.
     pub max_mismatch_details: usize,
 }
 impl Default for ExactReplayConfig {
@@ -76,6 +78,8 @@ struct PublisherIndices {
 }
 
 pub struct ExactReplayExecutor<'storage> {
+    detail_port: Option<(Direction, usize)>,
+    detail_header: Option<task::message::MessageHeader>,
     callbacks: Vec<Box<dyn Callback + 'storage>>,
     mapping: Vec<usize>,
     publishers: Vec<BTreeMap<usize, PublisherIndices>>,
@@ -207,8 +211,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
                     .map_err(|e| ReplayError::Setup(format!("source cache '{channel}': {e}")))?;
             }
         }
-        let report = ReplayReport::new(log.executions.len(), config.max_mismatch_details);
+        let mut report = ReplayReport::new(log.executions.len(), config.max_mismatch_details);
+        report.set_intern_tables(log.intern_tables.clone());
         Ok(Self {
+            detail_port: None,
+            detail_header: None,
             callbacks: nodes.into_iter().map(|n| n.callback).collect(),
             mapping,
             publishers,
@@ -237,6 +244,8 @@ impl<'storage> ExactReplayExecutor<'storage> {
             return Ok(None);
         }
         let record = self.log.executions[self.cursor].clone();
+        self.detail_port = None;
+        self.detail_header = None;
         self.cursor += 1;
         self.report.mark_consumed();
         let callback = self.log.descriptor.callbacks[record.callback_id.index()]
@@ -254,6 +263,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
             self.failed = true;
             if !matches!(error, ReplayError::Gap { .. } | ReplayError::Divergence(_)) {
                 self.report.record_error();
+                self.detail(
+                    crate::report::ReplayDetailKind::Error,
+                    None,
+                    error.to_string(),
+                );
             }
         }
         result.map(Some)
@@ -263,6 +277,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
         Ok(self.replay_report())
     }
     fn gap(&mut self, channel: &str, reason: String) -> Result<(), ReplayError> {
+        self.detail(
+            crate::report::ReplayDetailKind::Gap,
+            Some(channel),
+            reason.clone(),
+        );
         self.report.record_gap(channel);
         self.report.record_error();
         if self.config.divergence_policy == DivergencePolicy::Strict {
@@ -275,6 +294,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
         }
     }
     fn mismatch(&mut self, channel: &str, detail: String) -> Result<(), ReplayError> {
+        self.detail(
+            crate::report::ReplayDetailKind::Mismatch,
+            Some(channel),
+            detail.clone(),
+        );
         self.report.record_mismatch(channel, detail.clone());
         self.report.record_error();
         if self.config.divergence_policy == DivergencePolicy::Strict {
@@ -302,6 +326,8 @@ impl<'storage> ExactReplayExecutor<'storage> {
             capture.clear();
         }
         for message in &record.inputs {
+            self.detail_port = Some((Direction::Received, message.ordinal));
+            self.detail_header = Some(message.header);
             let port = endpoint(&descriptor.endpoints, Direction::Received, message.ordinal);
             let identity = (port.channel.clone(), message.header);
             let logged = self.log.logged.contains(&port.channel);
@@ -337,6 +363,8 @@ impl<'storage> ExactReplayExecutor<'storage> {
             }
         }
         for event in &record.events {
+            self.detail_port = Some((Direction::Received, event.ordinal));
+            self.detail_header = None;
             self.callbacks[index]
                 .stage_replay_event(event.ordinal, event.event_id, event.count)
                 .map_err(|e| ReplayError::Callback {
@@ -345,6 +373,8 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 })?;
         }
         let mut hydration_error = None;
+        self.detail_port = None;
+        self.detail_header = None;
         let mut output_events = Vec::new();
         let mut checked = Checked {
             callback: self.callbacks[index].as_mut(),
@@ -355,6 +385,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         let executed =
             task::execute_callback(&mut checked, &self.metadata.context(record.execution_time));
         if let Some(ordinal) = hydration_error {
+            self.detail_port = Some((Direction::Received, ordinal));
             let port = endpoint(&descriptor.endpoints, Direction::Received, ordinal);
             self.gap(
                 &port.channel,
@@ -377,6 +408,8 @@ impl<'storage> ExactReplayExecutor<'storage> {
             .iter()
             .filter(|p| p.direction == Direction::Published && p.transport != Transport::Event)
         {
+            self.detail_port = Some((Direction::Published, port.ordinal));
+            self.detail_header = None;
             let mut actual = self
                 .bindings
                 .outputs
@@ -392,6 +425,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 .iter()
                 .find(|(header, _)| header.publisher_index != indices.current)
             {
+                self.detail_header = Some(*header);
                 self.mismatch(
                     &port.channel,
                     format!(
@@ -411,6 +445,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 .filter(|m| m.ordinal == port.ordinal)
                 .collect();
             for (position, expected) in expected.iter().enumerate() {
+                self.detail_header = Some(expected.header);
                 let identity = (port.channel.clone(), expected.header);
                 let logged = self.log.logged.contains(&port.channel);
                 let expected_body = if logged {
@@ -432,6 +467,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
                         self.report.record_reproduced(&port.channel);
                     } else {
                         self.report.record_gap(&port.channel);
+                        self.detail(
+                            crate::report::ReplayDetailKind::Gap,
+                            Some(&port.channel),
+                            "output was not reproduced".into(),
+                        );
                     }
                     None
                 };
@@ -460,7 +500,8 @@ impl<'storage> ExactReplayExecutor<'storage> {
                     _ => {}
                 }
             }
-            for position in expected.len()..actual.len() {
+            for (position, (header, _)) in actual.iter().enumerate().skip(expected.len()) {
+                self.detail_header = Some(*header);
                 self.mismatch(
                     &port.channel,
                     format!(
@@ -470,6 +511,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 )?;
             }
             for (header, body) in actual {
+                self.detail_header = Some(header);
                 if !self.log.logged.contains(&port.channel) {
                     let identity = (port.channel.clone(), header);
                     if self.reproduced.insert(identity, body.clone()).is_some() {
@@ -492,6 +534,33 @@ impl<'storage> ExactReplayExecutor<'storage> {
             time: record.execution_time,
             executed: true,
         })
+    }
+    fn detail(
+        &mut self,
+        kind: crate::report::ReplayDetailKind,
+        channel: Option<&str>,
+        reason: String,
+    ) {
+        let record = &self.log.executions[self.cursor - 1];
+        let channel = channel.or_else(|| {
+            self.detail_port.and_then(|(direction, ordinal)| {
+                self.log.descriptor.callbacks[record.callback_id.index()]
+                    .endpoints
+                    .iter()
+                    .find(|port| port.direction == direction && port.ordinal == ordinal)
+                    .map(|port| port.channel.as_str())
+            })
+        });
+        self.report.detail(crate::report::ReplayDetail {
+            kind,
+            callback: record.callback_id,
+            channel: channel.and_then(|name| self.log.intern_tables.channels.lookup_by_value(name)),
+            time: record.execution_time,
+            port: self.detail_port,
+            publication: self.detail_header,
+            reason,
+            reason_truncated: false,
+        });
     }
 }
 fn endpoint(

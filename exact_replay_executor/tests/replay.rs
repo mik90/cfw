@@ -249,6 +249,13 @@ fn publisher_translation_does_not_mask_invalid_publisher_time_or_batch_indices()
             assert_eq!(report.mismatch_count(), 2);
             assert_eq!(report.gap_count(), 2);
             assert_eq!(report.reproduced_count(), 0);
+            assert_eq!(report.details().len(), 1);
+            assert_eq!(
+                report.details()[0].kind,
+                exact_replay_executor::ReplayDetailKind::Mismatch
+            );
+            assert!(report.details()[0].publication.is_some());
+            assert!(report.omitted_details() > 0);
         },
     );
 }
@@ -276,6 +283,29 @@ fn strict_stops_and_best_effort_collects_byte_count_and_missing_output_mismatche
                 assert_eq!(report.consumed_executions(), 4);
                 assert_eq!(report.mismatch_count(), 2);
                 assert_eq!(report.mismatch_details().len(), 1);
+                assert_eq!(report.details().len(), 1);
+                let detail = &report.details()[0];
+                assert_eq!(
+                    detail.kind,
+                    exact_replay_executor::ReplayDetailKind::Mismatch
+                );
+                assert!(
+                    report
+                        .intern_tables()
+                        .callbacks
+                        .try_lookup_by_id(detail.callback)
+                        .is_some()
+                );
+                assert!(
+                    report
+                        .intern_tables()
+                        .channels
+                        .try_lookup_by_id(detail.channel.unwrap())
+                        .is_some()
+                );
+                assert!(detail.port.is_some());
+                assert!(detail.publication.is_some());
+                assert_eq!(report.omitted_details(), 1);
                 assert!(!report.is_exact());
             },
         );
@@ -293,6 +323,10 @@ fn panic_is_terminal_even_in_best_effort_and_stop_is_scope_local_metadata() {
                 assert!(matches!(replay.run(), Err(ReplayError::Callback { .. })));
                 assert!(matches!(replay.step(), Err(ReplayError::Poisoned)));
                 assert_eq!(replay.replay_report().error_count(), 1);
+                assert_eq!(
+                    replay.replay_report().details()[0].kind,
+                    exact_replay_executor::ReplayDetailKind::Error
+                );
             },
         );
     }
@@ -395,6 +429,12 @@ fn missing_and_ambiguous_payloads_and_failed_records_cannot_claim_exactness() {
         |mut replay| {
             let step = replay.step().unwrap().unwrap();
             assert!(!step.executed);
+            let report = replay.replay_report();
+            assert_eq!(
+                report.details()[0].kind,
+                exact_replay_executor::ReplayDetailKind::Gap
+            );
+            assert!(report.details()[0].publication.is_some());
             assert!(!replay.run().unwrap().is_exact());
         },
     );

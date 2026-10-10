@@ -22,6 +22,34 @@ type ChannelName = String;
 /// Default cap on the number of mismatch details retained in a report. Pass a
 /// different value to [`ReplayReport::new`] to override.
 pub const DEFAULT_MAX_MISMATCH_DETAILS: usize = 10;
+pub const MAX_DETAIL_BYTES: usize = 1024;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayDetailKind {
+    Gap,
+    Mismatch,
+    Error,
+}
+#[derive(Clone, Debug)]
+pub struct ReplayDetail {
+    pub kind: ReplayDetailKind,
+    pub callback: task::string_interner::CallbackId,
+    pub channel: Option<task::string_interner::ChannelId>,
+    pub time: task::time::FrameworkTime,
+    pub port: Option<(task::recording::Direction, usize)>,
+    pub publication: Option<task::message::MessageHeader>,
+    pub reason: String,
+    pub reason_truncated: bool,
+}
+fn truncate_detail(mut text: String) -> String {
+    if text.len() > MAX_DETAIL_BYTES {
+        let mut end = MAX_DETAIL_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text.into_boxed_str().into_string()
+}
 
 /// Per-channel tally of how message references were resolved.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,6 +83,9 @@ impl ChannelStats {
 /// [`replay_report`]: crate::ExactReplayExecutor::replay_report
 #[derive(Debug, Clone, Default)]
 pub struct ReplayReport {
+    intern_tables: task::recording::InternTables,
+    details: Vec<ReplayDetail>,
+    omitted_details: usize,
     total_executions: usize,
     consumed_executions: usize,
     channels: HashMap<ChannelName, ChannelStats>,
@@ -66,6 +97,9 @@ pub struct ReplayReport {
 impl ReplayReport {
     pub(crate) fn new(total_executions: usize, max_mismatch_details: usize) -> Self {
         ReplayReport {
+            intern_tables: Default::default(),
+            details: Vec::new(),
+            omitted_details: 0,
             total_executions,
             consumed_executions: 0,
             channels: HashMap::new(),
@@ -73,6 +107,27 @@ impl ReplayReport {
             mismatch_details: Vec::new(),
             errors: 0,
         }
+    }
+    pub(crate) fn set_intern_tables(&mut self, tables: task::recording::InternTables) {
+        self.intern_tables = tables;
+    }
+    pub fn intern_tables(&self) -> &task::recording::InternTables {
+        &self.intern_tables
+    }
+    pub fn details(&self) -> &[ReplayDetail] {
+        &self.details
+    }
+    pub fn omitted_details(&self) -> usize {
+        self.omitted_details
+    }
+    pub(crate) fn detail(&mut self, mut detail: ReplayDetail) {
+        if self.details.len() == self.max_mismatch_details {
+            self.omitted_details = self.omitted_details.saturating_add(1);
+            return;
+        }
+        detail.reason_truncated = detail.reason.len() > MAX_DETAIL_BYTES;
+        detail.reason = truncate_detail(detail.reason);
+        self.details.push(detail);
     }
 
     pub(crate) fn mark_consumed(&mut self) {
@@ -100,7 +155,7 @@ impl ReplayReport {
             .or_default()
             .mismatches += 1;
         if self.mismatch_details.len() < self.max_mismatch_details {
-            self.mismatch_details.push(detail);
+            self.mismatch_details.push(truncate_detail(detail));
         }
     }
 
@@ -190,6 +245,39 @@ impl ReplayReport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostic_count_and_utf8_reasons_are_bounded() {
+        use super::*;
+        for cap in [0, 2] {
+            let mut report = ReplayReport::new(0, cap);
+            for _ in 0..5 {
+                report.detail(ReplayDetail {
+                    kind: ReplayDetailKind::Gap,
+                    callback: task::string_interner::CallbackId::from_index(0).unwrap(),
+                    channel: None,
+                    time: task::time::FrameworkTime::from_nanoseconds(0),
+                    port: None,
+                    publication: None,
+                    reason: "界".repeat(1000),
+                    reason_truncated: false,
+                });
+            }
+            assert_eq!(report.details().len(), cap);
+            assert_eq!(report.omitted_details(), 5 - cap);
+            assert!(
+                report
+                    .details()
+                    .iter()
+                    .all(|detail| detail.reason.len() <= MAX_DETAIL_BYTES)
+            );
+            assert!(
+                report
+                    .details()
+                    .iter()
+                    .all(|detail| detail.reason_truncated)
+            );
+        }
+    }
     use super::*;
 
     /// Compare a ratio to an expected value within float epsilon, avoiding
