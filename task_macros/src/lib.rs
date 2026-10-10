@@ -1,5 +1,3 @@
-// TODO(port-callback-surface): Audit remaining forwarding/span-output conveniences;
-// migrate test_tasks and remaining examples to declarations and factories.
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::visit_mut::VisitMut;
@@ -28,6 +26,7 @@ enum PortKind {
     Input,
     Required,
     Output,
+    OutputSpan,
     Uninit,
     Publisher,
     IoxInput,
@@ -153,6 +152,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             "Input" | "OptionalInput" | "InputSpan" if reference.is_none() => PortKind::Input,
             "RequiredInput" if reference.is_none() => PortKind::Required,
             "Output" if reference.is_none() => PortKind::Output,
+            "OutputSpan" if reference.is_none() => PortKind::OutputSpan,
             "OutputUninit" if reference.is_none() => PortKind::Uninit,
             "Iox2OptionalInput" if reference.is_none() => PortKind::IoxInput,
             "Iox2SpanInput" if reference.is_none() => PortKind::IoxSpan,
@@ -165,7 +165,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             _ => {
                 return Err(syn::Error::new_spanned(
                     &arg.ty,
-                    "expected Input, RequiredInput, OptionalInput, InputSpan, Output, OutputUninit, &mut Publisher, or &Context",
+                    "expected Input, RequiredInput, OptionalInput, InputSpan, Output, OutputSpan, OutputUninit, &mut Publisher, or &Context",
                 ));
             }
         };
@@ -244,7 +244,10 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
                 .any(|name| a.path().is_ident(name))
         });
         let capacity = capacity.unwrap_or_else(|| {
-            if segment.ident == "InputSpan" || segment.ident == "Iox2SpanInput" {
+            if segment.ident == "InputSpan"
+                || segment.ident == "Iox2SpanInput"
+                || segment.ident == "OutputSpan"
+            {
                 parse_quote!(4)
             } else {
                 parse_quote!(1)
@@ -254,6 +257,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             PortKind::Input => quote!(self.#name.input()),
             PortKind::Required => quote!(::task::RequiredInput::new(&self.#name)),
             PortKind::Output => quote!(self.#name.loan(::core::default::Default::default())?),
+            PortKind::OutputSpan => quote!(self.#name.span()),
             PortKind::Uninit => quote!(self.#name.loan_uninit()?),
             PortKind::Publisher => quote!(&mut self.#name),
             PortKind::IoxInput => quote!(::task::iox2::Iox2OptionalInput::new(&self.#name)),

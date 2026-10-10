@@ -9,8 +9,8 @@ use super::Subscriber;
 use crate::message::{Message, MessageHeader};
 use crate::time::FrameworkTime;
 
-mod batch;
-pub use batch::{BatchOutput, BatchOutputUninit, OutputBatch};
+mod span;
+pub use span::{OutputSpan, SpanOutput, SpanOutputUninit};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoanError {
@@ -89,7 +89,7 @@ impl<'storage, T> Publisher<'storage, T> {
         Ok(())
     }
 
-    /// Borrow this publisher for a batch of simultaneously outstanding loans.
+    /// Borrow this publisher for a span of simultaneously outstanding loans.
     /// Sent outputs join the ordinary pending queue in send order; the executor
     /// stamps and publishes them only after the callback succeeds.
     ///
@@ -99,9 +99,9 @@ impl<'storage, T> Publisher<'storage, T> {
     /// let storage = Arena::<Message<u64>>::new(2);
     /// let mut publisher = Publisher::new(storage.allocator(), 2);
     /// {
-    ///     let batch = publisher.batch();
-    ///     let first = batch.loan_uninit().unwrap();
-    ///     let second = batch.loan_uninit().unwrap();
+    ///     let span = publisher.span();
+    ///     let first = span.loan_uninit().unwrap();
+    ///     let second = span.loan_uninit().unwrap();
     ///     let first = first.write(10);
     ///     let second = second.write(*first + 1);
     ///     second.send();
@@ -109,8 +109,8 @@ impl<'storage, T> Publisher<'storage, T> {
     /// }
     /// publisher.flush(FrameworkTime::from_nanoseconds(123));
     /// ```
-    pub fn batch(&mut self) -> OutputBatch<'_, 'storage, T> {
-        OutputBatch::new(self)
+    pub fn span(&mut self) -> OutputSpan<'_, 'storage, T> {
+        OutputSpan::new(self)
     }
 
     /// Release sent-but-unpublished outputs after a failed callback.

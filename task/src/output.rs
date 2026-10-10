@@ -1,1 +1,1 @@
-pub use crate::publisher::{BatchOutput, BatchOutputUninit, Output, OutputBatch, OutputUninit};
+pub use crate::publisher::{Output, OutputSpan, OutputUninit, SpanOutput, SpanOutputUninit};

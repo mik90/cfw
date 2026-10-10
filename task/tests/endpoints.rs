@@ -131,23 +131,23 @@ fn loans_are_exclusive_and_cancelled_outputs_release_capacity() {
 }
 
 #[test]
-fn batch_loans_share_quota_and_publish_in_send_order() {
+fn span_loans_share_quota_and_publish_in_send_order() {
     let arena = Arena::new(4);
     let subscriber = Subscriber::new(4);
     let mut publisher = Publisher::new(arena.allocator(), 4);
     publisher.connect(&subscriber);
     publisher.publish(10).unwrap();
     {
-        let batch = publisher.batch();
-        let first = batch.loan_uninit().unwrap();
-        let second = batch.loan_uninit().unwrap();
-        let cancelled = batch.loan(99).unwrap();
+        let span = publisher.span();
+        let first = span.loan_uninit().unwrap();
+        let second = span.loan_uninit().unwrap();
+        let cancelled = span.loan(99).unwrap();
         assert!(matches!(
-            batch.loan_uninit(),
+            span.loan_uninit(),
             Err(LoanError::LoanCapacityReached)
         ));
         drop(cancelled);
-        let mut third = batch.loan_uninit().unwrap();
+        let mut third = span.loan_uninit().unwrap();
         third.payload_uninit().write(30);
         // SAFETY: The entire u64 payload was initialized above.
         let third = unsafe { third.assume_init() };
@@ -158,7 +158,7 @@ fn batch_loans_share_quota_and_publish_in_send_order() {
         first.send();
         second.send();
         assert!(matches!(
-            batch.loan_uninit(),
+            span.loan_uninit(),
             Err(LoanError::LoanCapacityReached)
         ));
     }
@@ -180,43 +180,40 @@ fn batch_loans_share_quota_and_publish_in_send_order() {
             .all(|m| m.header.published_at == timestamp())
     );
     subscriber.clear();
-    publisher.batch().loan(40).unwrap().send();
+    publisher.span().loan(40).unwrap().send();
     publisher.discard_pending();
     assert!(arena.try_allocate_uninit().is_some());
 }
 
 #[test]
-fn batch_arena_exhaustion_and_unwind_release_unsent_and_cancel_sent_outputs() {
+fn span_arena_exhaustion_and_unwind_release_unsent_and_cancel_sent_outputs() {
     let drops = Arc::new(AtomicUsize::new(0));
     let arena = Arena::new(2);
     let mut publisher = Publisher::new(arena.allocator(), 3);
     {
-        let batch = publisher.batch();
-        let first = batch.loan_uninit().unwrap();
-        let second = batch.loan(Counted(drops.clone())).unwrap();
-        assert!(matches!(
-            batch.loan_uninit(),
-            Err(LoanError::ArenaExhausted)
-        ));
+        let span = publisher.span();
+        let first = span.loan_uninit().unwrap();
+        let second = span.loan(Counted(drops.clone())).unwrap();
+        assert!(matches!(span.loan_uninit(), Err(LoanError::ArenaExhausted)));
         drop(first);
-        drop(batch.loan_uninit().unwrap());
+        drop(span.loan_uninit().unwrap());
         second.send();
     }
     publisher.discard_pending();
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let batch = publisher.batch();
-        let _unsent = batch.loan(Counted(drops.clone())).unwrap();
-        batch.loan(Counted(drops.clone())).unwrap().send();
+        let span = publisher.span();
+        let _unsent = span.loan(Counted(drops.clone())).unwrap();
+        span.loan(Counted(drops.clone())).unwrap().send();
         panic!("callback initialization failed");
     }));
     assert!(failure.is_err());
     assert_eq!(drops.load(Ordering::Relaxed), 2);
     publisher.discard_pending();
     assert_eq!(drops.load(Ordering::Relaxed), 3);
-    let batch = publisher.batch();
-    let _first = batch.loan_uninit().unwrap();
-    let _second = batch.loan_uninit().unwrap();
+    let span = publisher.span();
+    let _first = span.loan_uninit().unwrap();
+    let _second = span.loan_uninit().unwrap();
 }
 
 #[test]

@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use task::time::FrameworkTime;
 use task::{
-    ChannelPlan, Context, GraphBuilder, GraphPlan, Input, LoanError, Output, OutputUninit,
-    Publisher, RequiredInput,
+    ChannelPlan, Context, GraphBuilder, GraphPlan, Input, InputSpan, LoanError, Output, OutputSpan,
+    OutputUninit, Publisher, RequiredInput,
 };
 use task_macros::task_callback;
 
@@ -208,34 +208,120 @@ fn generated_pending_outputs_are_discarded_on_error_and_panic() {
 
 struct InPlace;
 
-struct BatchFailure {
+// Intentionally neither Clone nor Default: spans inspect/initialize real payloads.
+struct SpanValue(u64);
+struct SpanTransform {
+    runs: usize,
+}
+#[task_callback]
+impl SpanTransform {
+    fn run(
+        &mut self,
+        #[channel("span_in")]
+        #[capacity(3)]
+        mut input: InputSpan<SpanValue>,
+        #[channel("span_out")]
+        #[capacity(3)]
+        output: OutputSpan<SpanValue>,
+    ) -> Result<(), LoanError> {
+        self.runs += 1;
+        if self.runs == 3 {
+            assert!(input.is_empty());
+            return Ok(());
+        }
+        assert_eq!(input.len(), 3);
+        for _ in 0..2 {
+            assert_eq!(
+                input
+                    .inputs()
+                    .map(|m| (m.message.0, m.header.published_at.to_nanoseconds()))
+                    .collect::<Vec<_>>(),
+                [(5, 100), (7, 101), (11, 102)]
+            );
+        }
+        let mut loans = Vec::new();
+        for message in input.inputs() {
+            let loan = output.loan_uninit()?;
+            loans.push(loan.write(SpanValue(message.message.0 * 2)));
+        }
+        assert!(matches!(
+            output.loan_uninit(),
+            Err(LoanError::LoanCapacityReached)
+        ));
+        for loan in loans.into_iter().rev() {
+            loan.send();
+        }
+        if self.runs == 2 {
+            assert_eq!(input.drain().count(), 3);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
+    let mut input = ChannelPlan::new("span_in");
+    let mut output = ChannelPlan::new("span_out");
+    let declaration = SpanTransform::declare(&mut input, &mut output).unwrap();
+    let source_key = input.publisher(1);
+    let capture_key = output.subscriber(3);
+    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let input = storage.channels().0.build();
+    let output = storage.channels().1.build();
+    let mut source = input.take_publisher(&source_key).unwrap();
+    let capture = output.take_subscriber(&capture_key).unwrap();
+    let mut graph = GraphBuilder::with_storage(&storage);
+    graph.add_callback("spans", || {
+        Ok(SpanTransform { runs: 0 }.bind(declaration, &input, &output)?)
+    });
+    let mut graph = graph.build().unwrap();
+    for (index, value) in [5, 7, 11].into_iter().enumerate() {
+        source.publish(SpanValue(value)).unwrap();
+        source.flush(FrameworkTime::from_nanoseconds(100 + index as i64));
+    }
+    assert!(capture.input().is_empty());
+    for time in [200, 201] {
+        graph.step(FrameworkTime::from_nanoseconds(time)).unwrap();
+        capture.update();
+        let values: Vec<_> = capture
+            .input()
+            .drain()
+            .map(|m| (m.message.0, m.header.published_at.to_nanoseconds()))
+            .collect();
+        assert_eq!(values, [(22, time), (14, time), (10, time)]);
+    }
+    graph.step(FrameworkTime::from_nanoseconds(202)).unwrap();
+    capture.update();
+    assert!(capture.input().is_empty());
+}
+
+struct SpanFailure {
     drops: Arc<AtomicUsize>,
     panic: bool,
 }
 #[task_callback]
-impl BatchFailure {
-    fn run(&self, #[capacity(3)] output: &mut task::Publisher<Counted>) -> Result<(), LoanError> {
-        let batch = output.batch();
-        let first = batch.loan_uninit()?;
-        let _unsent = batch.loan(Counted(Some(self.drops.clone())))?;
+impl SpanFailure {
+    fn run(&self, #[capacity(3)] output: OutputSpan<Counted>) -> Result<(), LoanError> {
+        let first = output.loan_uninit()?;
+        let _unsent = output.loan(Counted(Some(self.drops.clone())))?;
         first.write(Counted(Some(self.drops.clone()))).send();
-        let _uninitialized = batch.loan_uninit()?;
-        assert!(!self.panic, "batch callback failed");
+        let _uninitialized = output.loan_uninit()?;
+        assert!(!self.panic, "span callback failed");
         Err(LoanError::LoanCapacityReached)
     }
 }
 
 #[test]
-fn generated_batch_outputs_cancel_sent_and_unsent_loans_on_failure() {
+fn generated_span_outputs_cancel_sent_and_unsent_loans_on_failure() {
     for panic in [false, true] {
         let drops = Arc::new(AtomicUsize::new(0));
-        let mut plan = ChannelPlan::new("batch");
-        let declaration = BatchFailure::declare(&mut plan).unwrap();
+        let mut plan = ChannelPlan::new("span");
+        let declaration = SpanFailure::declare(&mut plan).unwrap();
         let capture_key = plan.subscriber(3);
         let storage = GraphPlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
-        let mut callback = BatchFailure {
+        let mut callback = SpanFailure {
             drops: drops.clone(),
             panic,
         }
