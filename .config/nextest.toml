@@ -1,10 +1,8 @@
 # Nextest repository configuration.
 #
 # The `default-miri` profile is auto-activated by `cargo miri nextest run`
-# (it fires when MIRI_SYSROOT is set, which `cargo miri` exports). It excludes
-# the file-backed application replay integration binary; pass
-# `--ignore-default-filter` to run everything anyway. Tests that hang are
-# terminated after three minutes.
+# (it fires when MIRI_SYSROOT is set, which `cargo miri` exports).
+# OS-dependent tests are individually ignored under Miri. Tests that hang
+# are terminated after three minutes.
 [profile.default-miri]
-default-filter = 'not binary(exact_replay_integration)'
 slow-timeout = { period = "60s", terminate-after = 3 }

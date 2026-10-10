@@ -9,5 +9,8 @@ publish = false
 task = { path = "../task" }
 task_macros = { path = "../task_macros" }
 
+[dev-dependencies]
+testing = { path = "../testing" }
+
 [lints]
 workspace = true

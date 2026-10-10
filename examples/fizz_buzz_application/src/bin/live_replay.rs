@@ -1,82 +1,73 @@
 use clap::Parser;
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
-use fizz_buzz_application::build_replay_graph;
-use live_replay_executor::LiveReplayExecutor;
-use task::executor::{Executor, ExecutorParams};
+use fizz_buzz_application::{BuildError, with_replay_graph};
+use live_replay_executor::{LiveReplayConfig, LiveReplayExecutor};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
 struct CliArgs {
-    /// Path to the NDJSON log file to replay.
     #[arg(short, long)]
     log_path: PathBuf,
-
-    /// Playback speed multiplier (1.0 = real-time, 2.0 = double speed).
-    #[arg(short, long, default_value = "1.0")]
-    speed: f32,
-
-    /// Comma-separated channel names to exclude from replay.
-    #[arg(long, default_value = "fizz_buzz_string,execution_log")]
-    denylist: String,
-
-    /// Print the task graph and exit without running.
+    #[arg(short, long, default_value_t = 1.0)]
+    speed: f64,
+    /// Replay recorded strings directly (also supports logs with unlogged integers).
+    #[arg(long)]
+    strings_only: bool,
     #[arg(long)]
     print: bool,
 }
 
-fn main() {
-    let term = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))
-        .expect("Could not register signal hook");
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
-        .expect("Could not register signal hook");
-
+fn main() -> Result<(), BuildError> {
     let args = CliArgs::parse();
-    let denylist: HashSet<String> = args
-        .denylist
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    println!(
-        "Building fizz buzz callback nodes for live replay (speed: {:.1}x)",
-        args.speed
-    );
-
-    let stop_signal_cell = Arc::new(std::sync::OnceLock::new());
-    let (mut built, replay_cfg) = build_replay_graph(
-        &args.log_path,
-        args.speed,
-        denylist,
-        stop_signal_cell.clone(),
-    )
-    .expect("Could not build replay task graph");
-
     if args.print {
-        built.graph.print();
-        return;
+        fizz_buzz_application::print_graph(args.strings_only, true);
+        return Ok(());
     }
-
-    let mut executor = LiveReplayExecutor::new_with_execution_log(
-        ExecutorParams::new(std::mem::take(&mut built.graph.pools)),
-        std::mem::take(&mut built.graph.execution_log_publishers),
-        Duration::from_millis(500),
-        replay_cfg,
-    );
-    built.stop_signal_cell.set(executor.stop_signal()).ok();
-    executor.start();
-
-    while !term.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    println!("Received stop signal, stopping threads");
-
-    let stop_result = executor.stop();
-    println!("Done: {:?}", stop_result);
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, term.clone())?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, term.clone())?;
+    with_replay_graph(args.strings_only, |graph, sources, collected| {
+        let reader = logging::SortedLogStreamReader::from_path(&args.log_path, 1024)?;
+        let selected = if args.strings_only {
+            test_tasks::FIZZ_BUZZ_STRING_CHANNEL
+        } else {
+            test_tasks::INTEGER_CHANNEL
+        };
+        if !reader
+            .channel_names()
+            .iter()
+            .any(|channel| channel == selected)
+        {
+            return Err(format!(
+                "log has no '{selected}' payloads; select a recorded source channel"
+            )
+            .into());
+        }
+        let executor = LiveReplayExecutor::new(
+            graph,
+            reader,
+            sources,
+            LiveReplayConfig {
+                speed: args.speed,
+                denylist: fizz_buzz_application::replay_denylist(args.strings_only),
+                ..Default::default()
+            },
+        )?;
+        let (_, completion) = executor.run_with(|control| {
+            while !control.is_stopped() && !term.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })?;
+        for value in collected.stored_strings() {
+            println!("{value}");
+        }
+        println!("{completion:?}");
+        Ok(())
+    })
 }

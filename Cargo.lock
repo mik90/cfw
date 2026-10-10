@@ -623,6 +623,7 @@ dependencies = [
  "live_replay_executor",
  "logging",
  "signal-hook",
+ "simulation_executor",
  "task",
  "task_macros",
  "test_tasks",
@@ -1144,8 +1145,9 @@ version = "0.1.0"
 dependencies = [
  "logging",
  "serde_json",
+ "simulation_executor",
  "task",
- "testing",
+ "task_macros",
 ]
 
 [[package]]
@@ -1567,6 +1569,7 @@ version = "0.1.0"
 dependencies = [
  "task",
  "task_macros",
+ "testing",
 ]
 
 [[package]]

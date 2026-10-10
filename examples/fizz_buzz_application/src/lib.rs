@@ -1,139 +1,214 @@
-use logging::LoggingStrategy;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
-use task::channel_registry::ChannelRegistry;
-use task::execution_log::ExecutionLogLevel;
-use task::executor::{ExecutorParams, ExecutorStopSignal};
-use task::task_graph_builder::{BuiltTaskGraph, TaskGraphBuilder};
+use std::path::Path;
 
-pub struct BuiltGraph {
-    pub graph: BuiltTaskGraph,
-    pub stop_signal_cell: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
-}
+use exact_replay_executor::{
+    ExactReplayConfig, ExactReplayExecutor, ReplayBindings, ReplayInputPlan, ReplayLog,
+};
+use logging::{
+    CapturePlan, ExecutionRecorder, LogSession, PortCapture, ReplaySource, ReplaySourcePlan,
+};
+use task::{BuiltGraph, ChannelPlan, GraphBuilder, GraphPlan};
+use test_tasks::{
+    FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, IncrementingIntegerPublisher,
+    StringCollector,
+};
 
-/// Constructs the callback graph in live mode (original publishers + logging).
 pub type BuildError = Box<dyn std::error::Error + Send + Sync>;
+const CAPACITY: usize = 64;
+pub const PRODUCER: &str = "integer_publisher";
+pub const CALCULATOR: &str = "fizz_buzz";
+pub const COLLECTOR: &str = "string_collector";
 
-/// The standard fizz-buzz application graph: a single 2-thread pool with the
-/// integer publisher, calculator, and string collector. Callers layer on
-/// build steps / execution-logging settings as needed.
-fn app_graph_builder() -> TaskGraphBuilder {
-    TaskGraphBuilder::new().add_pool(2, |p| {
-        p.add_callback(test_tasks::IncrementingIntegerPublisher::build_callback_node())
-            .add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
-            .add_callback(test_tasks::StringCollector::build_callback_node_lite())
-    })
-}
-
-pub fn build_live_graph(log_path: &std::path::Path) -> Result<BuiltGraph, BuildError> {
-    build_live_graph_with(log_path, true)
-}
-
-/// Like [`build_live_graph`], but `log_integer: false` adds the `integer`
-/// channel to the logging build step's unlogged-channels denylist, so the
-/// intermediate `integer` channel is **not** written to the ordinary log.
-/// Exact replay then reproduces the integer values by re-running the producer
-/// (see the exact replay executor's reproduction store).
-pub fn build_live_graph_with(
-    log_path: &std::path::Path,
-    log_integer: bool,
-) -> Result<BuiltGraph, BuildError> {
-    let config = logging::LogTaskConfiguration {
-        output_path: log_path.to_path_buf(),
-        strategy: LoggingStrategy::Continuous {
-            period: Duration::from_millis(1000),
-        },
-        num_tasks: 1,
-    };
-
-    let mut logging_build_step = logging::log_build_step::LoggingBuildStep::new(config);
-    if !log_integer {
-        logging_build_step = logging_build_step.with_unlogged_channels(["integer"]);
+pub fn replay_denylist(strings_only: bool) -> std::collections::HashSet<String> {
+    [if strings_only {
+        INTEGER_CHANNEL
+    } else {
+        FIZZ_BUZZ_STRING_CHANNEL
     }
-    let logging_build_step = Box::new(logging_build_step);
+    .into()]
+    .into()
+}
 
-    let stop_signal_cell = Arc::new(OnceLock::new());
-    let graph = app_graph_builder()
-        .add_build_step(logging_build_step)
-        .with_execution_log_level(ExecutionLogLevel::Whole)
-        .build()
-        .map_err(|e| -> BuildError { e.to_string().into() })?;
+/// Storage belongs to this application scope; callbacks and log captures borrow it.
+/// The caller flushes periodically and finishes the session after workers join.
+pub fn with_recording<R>(
+    path: &Path,
+    log_integer: bool,
+    run: impl for<'s> FnOnce(BuiltGraph<'s>, LogSession<'s>, StringCollector) -> Result<R, BuildError>,
+) -> Result<R, BuildError> {
+    let mut integers = ChannelPlan::new(INTEGER_CHANNEL);
+    let mut strings = ChannelPlan::new(FIZZ_BUZZ_STRING_CHANNEL);
+    let producer = IncrementingIntegerPublisher::declare(&mut integers)?;
+    let calculator = FizzBuzzCalculator::declare(&mut integers, &mut strings)?;
+    let collector = StringCollector::declare(&mut strings)?;
+    let integer_capture = log_integer.then(|| CapturePlan::declare(&mut integers, CAPACITY));
+    let string_capture = CapturePlan::declare(&mut strings, CAPACITY);
+    let storage = GraphPlan::new((integers, strings))
+        .allocate()
+        .map_err(|e| format!("{e:?}"))?;
+    let integers = storage.channels().0.build();
+    let strings = storage.channels().1.build();
+    let collected = StringCollector::default();
+    let mut graph = GraphBuilder::with_storage(&storage);
+    graph.add_scheduled_callback(PRODUCER, IncrementingIntegerPublisher::schedule(), || {
+        Ok(IncrementingIntegerPublisher::default().bind(producer, &integers)?)
+    });
+    graph.add_scheduled_callback(CALCULATOR, FizzBuzzCalculator::schedule(), || {
+        Ok(FizzBuzzCalculator.bind(calculator, &integers, &strings)?)
+    });
+    graph.add_scheduled_callback(COLLECTOR, StringCollector::schedule(), || {
+        Ok(collected.clone().bind(collector, &strings)?)
+    });
+    let recorder = ExecutionRecorder::new(CAPACITY * 3);
+    let graph = recorder.attach(graph.build().map_err(|e| format!("{e:?}"))?)?;
+    let mut captures = vec![string_capture.bind(&strings)?];
+    if let Some(capture) = integer_capture {
+        captures.push(capture.bind(&integers)?);
+    }
+    let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(
+        std::fs::File::create(path)?,
+    ));
+    let session = LogSession::new(writer, captures).with_recording(recorder)?;
+    run(graph, session, collected)
+}
 
-    Ok(BuiltGraph {
-        graph,
-        stop_signal_cell,
+/// Record a bounded simulation, including explicit modeled callback durations.
+pub fn record_simulation(
+    path: &Path,
+    log_integer: bool,
+    count: usize,
+) -> Result<Vec<String>, BuildError> {
+    with_recording(path, log_integer, |graph, mut session, collected| {
+        let mut simulation = simulation_executor::SimulationState::new(graph)?;
+        while collected.len() < count {
+            simulation.step()?;
+            session.flush()?;
+        }
+        session.finish()?;
+        Ok(collected.stored_strings())
     })
 }
 
-pub fn build_replay_graph(
-    log_path: &std::path::Path,
-    speed: f32,
-    denylist: std::collections::HashSet<String>,
-    stop_signal_cell: Arc<OnceLock<Arc<dyn ExecutorStopSignal>>>,
-) -> Result<(BuiltGraph, live_replay_executor::LiveReplayConfig), BuildError> {
-    let mut registry = ChannelRegistry::new();
-    registry.register_channel::<u64>("integer".into());
+pub fn with_exact_replay<R>(
+    path: &Path,
+    config: ExactReplayConfig,
+    run: impl for<'s> FnOnce(ExactReplayExecutor<'s>, StringCollector) -> Result<R, BuildError>,
+) -> Result<R, BuildError> {
+    let log = ReplayLog::from_sorted(logging::SortedLogStreamReader::from_path(path, 1024)?)?;
+    with_exact_replay_log(log, config, run)
+}
 
-    let registry = Arc::new(registry);
-    let (replay_cfg, build_step) = live_replay_executor::build_replay(
-        log_path.to_path_buf(),
-        speed,
-        registry,
-        denylist,
-        stop_signal_cell.clone(),
+pub fn with_exact_replay_log<R>(
+    log: ReplayLog,
+    config: ExactReplayConfig,
+    run: impl for<'s> FnOnce(ExactReplayExecutor<'s>, StringCollector) -> Result<R, BuildError>,
+) -> Result<R, BuildError> {
+    let mut integers = ChannelPlan::new(INTEGER_CHANNEL);
+    let mut strings = ChannelPlan::new(FIZZ_BUZZ_STRING_CHANNEL);
+    let producer = IncrementingIntegerPublisher::declare(&mut integers)?;
+    let calculator = FizzBuzzCalculator::declare(&mut integers, &mut strings)?;
+    let collector = StringCollector::declare(&mut strings)?;
+    let integer_input = ReplayInputPlan::declare(&mut integers, calculator.integer_key())
+        .map_err(|e| format!("{e:?}"))?;
+    let string_input = ReplayInputPlan::declare(&mut strings, collector.string_key())
+        .map_err(|e| format!("{e:?}"))?;
+    let storage = GraphPlan::new((integers, strings))
+        .allocate()
+        .map_err(|e| format!("{e:?}"))?;
+    let integers = storage.channels().0.build();
+    let strings = storage.channels().1.build();
+    let mut bindings = ReplayBindings::new();
+    bindings.add_input(CALCULATOR, 0, integer_input.bind(&integers)?)?;
+    bindings.add_input(COLLECTOR, 0, string_input.bind(&strings)?)?;
+    bindings.add_output(
+        PRODUCER,
+        0,
+        integers
+            .configure_publisher(producer.output_key(), |p| PortCapture::native(p, CAPACITY))?,
     )?;
-
-    let graph = TaskGraphBuilder::new()
-        .add_pool(2, |p| {
-            p.add_callback(test_tasks::FizzBuzzCalculator::build_callback_node())
-                .add_callback(test_tasks::StringCollector::build_callback_node_lite())
-        })
-        .add_build_step(Box::new(build_step))
-        .build()
-        .map_err(|e| -> BuildError { e.to_string().into() })?;
-
-    Ok((
-        BuiltGraph {
-            graph,
-            stop_signal_cell,
-        },
-        replay_cfg,
-    ))
+    bindings.add_output(
+        CALCULATOR,
+        0,
+        strings.configure_publisher(calculator.fizz_buzz_string_key(), |p| {
+            PortCapture::native(p, CAPACITY)
+        })?,
+    )?;
+    let collected = StringCollector::default();
+    let mut graph = GraphBuilder::with_storage(&storage);
+    graph.add_scheduled_callback(PRODUCER, IncrementingIntegerPublisher::schedule(), || {
+        Ok(IncrementingIntegerPublisher::default().bind(producer, &integers)?)
+    });
+    graph.add_scheduled_callback(CALCULATOR, FizzBuzzCalculator::schedule(), || {
+        Ok(FizzBuzzCalculator.bind(calculator, &integers, &strings)?)
+    });
+    graph.add_scheduled_callback(COLLECTOR, StringCollector::schedule(), || {
+        Ok(collected.clone().bind(collector, &strings)?)
+    });
+    run(
+        ExactReplayExecutor::with_config(
+            graph.build().map_err(|e| format!("{e:?}"))?,
+            log,
+            bindings,
+            config,
+        )?,
+        collected,
+    )
 }
 
-/// Everything the exact replay executor needs to replay a recorded log: the
-/// application thread pools (rebuilt in the same global order as the original
-/// run, with their interned channel/callback names), a channel registry for
-/// deserialization/output capture, and the parsed log file.
-pub struct ExactReplayGraph {
-    pub executor_params: ExecutorParams,
-    pub registry: ChannelRegistry,
-    pub log_reader: Box<dyn logging::log_file::LogFileReader>,
+/// Replay integers through the calculator, or recorded strings directly to the collector.
+pub fn with_replay_graph<R>(
+    strings_only: bool,
+    run: impl for<'s> FnOnce(
+        BuiltGraph<'s>,
+        Vec<ReplaySource<'s>>,
+        StringCollector,
+    ) -> Result<R, BuildError>,
+) -> Result<R, BuildError> {
+    let mut integers = ChannelPlan::new(INTEGER_CHANNEL);
+    let mut strings = ChannelPlan::new(FIZZ_BUZZ_STRING_CHANNEL);
+    let calculator = if strings_only {
+        None
+    } else {
+        Some(FizzBuzzCalculator::declare(&mut integers, &mut strings)?)
+    };
+    let collector = StringCollector::declare(&mut strings)?;
+    let integer_source =
+        (!strings_only).then(|| ReplaySourcePlan::declare(&mut integers, CAPACITY));
+    let string_source = strings_only.then(|| ReplaySourcePlan::declare(&mut strings, CAPACITY));
+    let storage = GraphPlan::new((integers, strings))
+        .allocate()
+        .map_err(|e| format!("{e:?}"))?;
+    let integers = storage.channels().0.build();
+    let strings = storage.channels().1.build();
+    let mut sources = Vec::new();
+    if let Some(source) = integer_source {
+        sources.push(source.bind(&integers)?);
+    }
+    if let Some(source) = string_source {
+        sources.push(source.bind(&strings)?);
+    }
+    let collected = StringCollector::default();
+    let mut graph = GraphBuilder::with_storage(&storage);
+    if let Some(calculator) = calculator {
+        graph.add_scheduled_callback(CALCULATOR, FizzBuzzCalculator::schedule(), || {
+            Ok(FizzBuzzCalculator.bind(calculator, &integers, &strings)?)
+        });
+    }
+    graph.add_scheduled_callback(COLLECTOR, StringCollector::schedule(), || {
+        Ok(collected.clone().bind(collector, &strings)?)
+    });
+    run(
+        graph.build().map_err(|e| format!("{e:?}"))?,
+        sources,
+        collected,
+    )
 }
 
-/// Builds the application callback graph for exact replay. Unlike the live
-/// builder, this does **not** add logging tasks (they would truncate the log
-/// being replayed) and does not enable execution logging.
-pub fn build_exact_replay_graph(
-    log_path: &std::path::Path,
-) -> Result<ExactReplayGraph, BuildError> {
-    // The builder auto-registers every loggable channel it sees across the
-    // graph's publishers/subscribers (plus the execution-log channel), so the
-    // built graph's registry carries the serializers/deserializers the exact
-    // replay executor needs for output capture and input hydration.
-    let mut graph = app_graph_builder()
-        .build()
-        .map_err(|e| -> BuildError { e.to_string().into() })?;
-
-    let file = std::fs::File::open(log_path)?;
-    let reader = std::io::BufReader::new(file);
-    let log_reader = Box::new(logging::log_file_json::JsonLogFileReader::from_reader(
-        reader,
-    )?);
-
-    Ok(ExactReplayGraph {
-        executor_params: ExecutorParams::new(std::mem::take(&mut graph.pools)),
-        registry: std::mem::take(&mut graph.channel_registry),
-        log_reader,
-    })
+pub fn print_graph(strings_only: bool, replay: bool) {
+    if !replay {
+        println!("{PRODUCER}: -> {INTEGER_CHANNEL}");
+    }
+    if !strings_only {
+        println!("{CALCULATOR}: {INTEGER_CHANNEL} -> {FIZZ_BUZZ_STRING_CHANNEL}");
+    }
+    println!("{COLLECTOR}: {FIZZ_BUZZ_STRING_CHANNEL} -> collected strings");
 }

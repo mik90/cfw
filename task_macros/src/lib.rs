@@ -494,6 +494,14 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         }
     };
+    let binding_arity = (binding_params.len() + 2 > 7).then(|| quote! {
+        #[expect(clippy::too_many_arguments, reason = "one typed binding per declared endpoint")]
+    });
+    let declaration_arity = (plan_params.len() > 7).then(|| {
+        quote! {
+            #[expect(clippy::too_many_arguments, reason = "one typed plan per declared endpoint")]
+        }
+    });
     Ok(quote! {
         #item
         #automatic
@@ -508,19 +516,23 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
         }
         impl #task_name {
+            #declaration_arity
             pub fn declare<'storage>(#(#plan_params),*) -> Result<#declaration<'storage>, ::task::DeclarationError> {
                 #(#validation)*
                 Ok(#declaration { #(#registration,)* __cfw_lifetime: ::core::marker::PhantomData })
             }
+            #binding_arity
             pub fn bind<'storage>(self, __cfw_declaration: #declaration<'storage>, #(#binding_params),*) -> Result<#callback<'storage>, ::task::EndpointError> {
                 __cfw_declaration.build(self, #(#names),*)
             }
         }
         impl<'storage> #declaration<'storage> {
             #(#key_accessors)*
+            #declaration_arity
             pub fn from_keys(#(#key_params),*) -> Self {
                 Self { #(#names,)* __cfw_lifetime: ::core::marker::PhantomData }
             }
+            #binding_arity
             fn build(self, __cfw_user: #task_name, #(#binding_params),*) -> Result<#callback<'storage>, ::task::EndpointError> {
                 Ok(#callback { __cfw_user, #(#construction,)* __cfw_lifetime: ::core::marker::PhantomData })
             }

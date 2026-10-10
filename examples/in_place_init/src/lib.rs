@@ -1,4 +1,3 @@
-use task::callback_builder::CallbackBuilder;
 use task::output::OutputUninit;
 use task_macros::task_callback;
 
@@ -13,7 +12,7 @@ pub struct LargeMessage {
 impl MyTask {
     fn run(&mut self, mut output_uninit: OutputUninit<LargeMessage>) {
         println!("MyTask run");
-        let large_message_uninit = output_uninit.value_uninit();
+        let large_message_uninit = output_uninit.payload_uninit();
         let ptr = large_message_uninit.as_mut_ptr();
         // SAFETY: The loan provides exclusive access to this allocation. Raw
         // writes initialize every array element before assuming init.
@@ -24,13 +23,7 @@ impl MyTask {
             }
         }
         // SAFETY: The whole LargeMessage has been initialized.
-        unsafe { output_uninit.send_assume_init() };
-    }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_periodic_execution(std::time::Duration::from_millis(500))
-            .with_execution_duration_callback(|| std::time::Duration::from_millis(1))
+        unsafe { output_uninit.assume_init() }.send();
     }
 }
 
@@ -43,21 +36,25 @@ mod tests {
     #[test]
     fn send_message() {
         let large_message_channel = "LargeMessage";
-        let my_task = MyTask::callback_builder(MyTask {})
-            .with_publisher_channels(&[large_message_channel])
-            .build()
-            .expect("Could not build callback");
+        let mut builder = UnitTestExecutorBuilder::new();
+        builder
+            .add_scheduled_task(
+                "in_place",
+                MyTask {},
+                std::time::Duration::from_millis(1),
+                task::CallbackSchedule::on_start(),
+            )
+            .output_channel("output_uninit", large_message_channel);
 
-        let mut builder = UnitTestExecutorBuilder::new(vec![my_task]);
-
-        let mut large_message_subscriber =
+        let large_message_subscriber =
             builder.add_test_subscriber::<LargeMessage>(large_message_channel);
 
-        let mut test_executor = builder.build();
+        let setup = builder.allocate();
+        let mut test_executor = setup.build();
 
         test_executor.step();
 
-        let count = large_message_subscriber.messages(|index, message| {
+        let count = large_message_subscriber.messages(&mut test_executor, |index, message| {
             assert_eq!(index, 0);
             assert_eq!(
                 message.header.published_at,

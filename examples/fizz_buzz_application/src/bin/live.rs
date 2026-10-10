@@ -1,62 +1,58 @@
 use clap::Parser;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
-use fizz_buzz_application::build_live_graph_with;
-use live_executor::LiveExecutor;
-use task::executor::{Executor, ExecutorParams};
+use fizz_buzz_application::{BuildError, with_recording};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
 struct CliArgs {
-    /// File to log to including file extension.
     #[arg(short, long, default_value = "./tmp/log.ndjson")]
     log_path: PathBuf,
-
-    /// Do not log the intermediate `integer` channel, so exact replay must
-    /// reproduce the integers by re-running the producer.
+    /// Reproduce integers during exact replay instead of recording their payloads.
     #[arg(long)]
     no_log_integer: bool,
-
-    /// Print the task graph and exit without running.
+    /// Stop after this many collected strings; otherwise run until interrupted.
+    #[arg(long)]
+    count: Option<usize>,
     #[arg(long)]
     print: bool,
 }
 
-fn main() {
-    let term = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))
-        .expect("Could not register signal hook");
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))
-        .expect("Could not register signal hook");
-
+fn main() -> Result<(), BuildError> {
     let args = CliArgs::parse();
-
-    println!("Building fizz buzz callback nodes for live execution");
-
-    let mut built = build_live_graph_with(&args.log_path, !args.no_log_integer)
-        .expect("Could not build task graph");
-
     if args.print {
-        built.graph.print();
-        return;
+        fizz_buzz_application::print_graph(false, false);
+        return Ok(());
     }
-
-    let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
-        ExecutorParams::new(std::mem::take(&mut built.graph.pools)),
-        std::mem::take(&mut built.graph.execution_log_publishers),
-        Duration::from_millis(500),
-    );
-    built.stop_signal_cell.set(executor.stop_signal()).ok();
-    executor.start_threads();
-
-    while !term.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    println!("Received stop signal, stopping threads");
-
-    executor.stop_threads().expect("Could not stop threads");
-    println!("Done");
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, term.clone())?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, term.clone())?;
+    with_recording(
+        &args.log_path,
+        !args.no_log_integer,
+        |graph, mut session, collected| {
+            live_executor::LiveExecutor::new(2, graph)?.run_with(
+                |stop| -> Result<(), BuildError> {
+                    while !term.load(Ordering::Relaxed)
+                        && !stop.is_stopped()
+                        && !args.count.is_some_and(|count| collected.len() >= count)
+                    {
+                        session.flush()?;
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Ok(())
+                },
+            )??;
+            session.finish()?;
+            for value in collected.stored_strings() {
+                println!("{value}");
+            }
+            Ok(())
+        },
+    )
 }

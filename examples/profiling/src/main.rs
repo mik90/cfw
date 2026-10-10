@@ -7,13 +7,9 @@ use arrayvec::ArrayString;
 use clap::Parser;
 use live_executor::LiveExecutor;
 use signal_hook::consts::{SIGINT, SIGTERM};
-use task::callback::CallbackNode;
-use task::callback_builder::CallbackBuilder;
-use task::execution_log::ExecutionLogLevel;
-use task::executor::ExecutorParams;
 use task::input::RequiredInput;
 use task::output::Output;
-use task::task_graph_builder::TaskGraphBuilder;
+use task::{CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan};
 use task_macros::task_callback;
 
 const FIZZ_BUZZ_STRING_CHANNEL: &str = "fizz_buzz_string";
@@ -22,7 +18,6 @@ type FizzBuzzString = ArrayString<32>;
 
 struct IncrementingIntegerPublisher {
     value: u64,
-    period: Duration,
 }
 
 #[task_callback]
@@ -31,13 +26,6 @@ impl IncrementingIntegerPublisher {
         *output = self.value;
         self.value = self.value.wrapping_add(1);
         output.send();
-    }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        let period = self.period;
-        self.builder()
-            .with_periodic_execution(period)
-            .with_execution_duration_callback(|| Duration::ZERO)
     }
 }
 
@@ -60,11 +48,6 @@ impl FizzBuzzCalculator {
             write_u64_truncated(&mut fizz_buzz_string, n);
         }
         fizz_buzz_string.send();
-    }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_execution_duration_callback(|| Duration::ZERO)
     }
 }
 
@@ -95,11 +78,6 @@ impl StringCollector {
     fn run(&self, string: RequiredInput<FizzBuzzString>) {
         self.counter
             .fetch_add(string.len() as u64, Ordering::Relaxed);
-    }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_execution_duration_callback(|| Duration::ZERO)
     }
 }
 
@@ -138,66 +116,73 @@ fn main() {
     let counter = Arc::new(AtomicU64::new(0));
     let period = Duration::from_micros(args.period_us);
 
-    let mut callbacks: Vec<CallbackNode> = Vec::new();
+    let mut strings = ChannelPlan::new(FIZZ_BUZZ_STRING_CHANNEL);
+    let mut declarations = Vec::new();
+    let mut storage = Vec::new();
     for set in 0..args.sets {
         let integer_channel = format!("integer_{set}");
-        callbacks.push(
-            IncrementingIntegerPublisher { value: 0, period }
-                .callback_builder()
-                .with_name(format!("IncrementingIntegerPublisher({integer_channel})"))
-                .with_publisher_channels(&[integer_channel.as_str()])
-                .build()
-                .expect("build publisher"),
-        );
-        callbacks.push(
-            FizzBuzzCalculator
-                .callback_builder()
-                .with_name(format!("FizzBuzzCalculator({integer_channel})"))
-                .with_subscriber_channels(&[integer_channel.as_str()])
-                .with_publisher_channels(&[FIZZ_BUZZ_STRING_CHANNEL])
-                .build()
-                .expect("build calculator"),
+        let mut integers = ChannelPlan::new(integer_channel);
+        let producer =
+            IncrementingIntegerPublisher::declare(&mut integers).expect("declare producer");
+        let calculator =
+            FizzBuzzCalculator::declare(&mut integers, &mut strings).expect("declare calculator");
+        declarations.push((producer, calculator));
+        storage.push(
+            GraphPlan::new(integers)
+                .allocate()
+                .expect("allocate integer storage"),
         );
     }
-    callbacks.push(
-        StringCollector {
+    let collector = StringCollector::declare(&mut strings).expect("declare collector");
+    let string_storage = GraphPlan::new(strings)
+        .allocate()
+        .expect("allocate strings");
+    let strings = string_storage.channels().build();
+    let integers: Vec<_> = storage.iter().map(|s| s.channels().build()).collect();
+    let mut builder = GraphBuilder::new();
+    for (set, ((producer, calculator), integers)) in
+        declarations.into_iter().zip(&integers).enumerate()
+    {
+        builder.add_scheduled_callback(
+            format!("producer_{set}"),
+            CallbackSchedule::periodic(period),
+            move || Ok(IncrementingIntegerPublisher { value: 0 }.bind(producer, integers)?),
+        );
+        let strings = &strings;
+        builder.add_callback(format!("calculator_{set}"), move || {
+            Ok(FizzBuzzCalculator.bind(calculator, integers, strings)?)
+        });
+    }
+    builder.add_callback("collector", || {
+        Ok(StringCollector {
             counter: counter.clone(),
         }
-        .callback_builder()
-        .with_subscriber_channels(&[FIZZ_BUZZ_STRING_CHANNEL])
-        .build()
-        .expect("build collector"),
-    );
-    let mut graph = TaskGraphBuilder::new()
-        .add_pool(args.threads, move |p| {
-            callbacks.into_iter().fold(p, |p, cb| p.add_callback(cb))
-        })
-        .with_execution_log_level(ExecutionLogLevel::Whole)
-        .build()
-        .expect("Could not build profiling task graph");
+        .bind(collector, &strings)?)
+    });
+    let graph = builder.build().expect("build profiling graph");
 
     if args.print {
-        graph.print();
+        for node in graph.into_parts().0 {
+            println!("{}: {:?}", node.name, node.schedule);
+        }
         return;
     }
 
-    let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
-        ExecutorParams::new(std::mem::take(&mut graph.pools)),
-        std::mem::take(&mut graph.execution_log_publishers),
-        Duration::from_millis(500),
-    );
-    executor.start_threads();
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(args.duration_secs);
-    let timed_out = loop {
-        if term.load(Ordering::Relaxed) {
-            break false;
-        }
-        if std::time::Instant::now() >= deadline {
-            break true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
+    let executor = LiveExecutor::new(args.threads, graph).expect("construct executor");
+    let timed_out = executor
+        .run_with(|stop| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(args.duration_secs);
+            loop {
+                if term.load(Ordering::Relaxed) || stop.is_stopped() {
+                    break false;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+        .expect("run profiling graph");
 
     if timed_out {
         println!("Auto-stopped after {} seconds", args.duration_secs);
@@ -205,9 +190,8 @@ fn main() {
         println!("Received stop signal, stopping threads");
     }
 
-    executor.stop_threads().expect("Could not stop threads");
     println!(
-        "Collected {} fizz-buzz strings",
+        "Collected {} fizz-buzz string bytes",
         counter.load(Ordering::Relaxed)
     );
 }

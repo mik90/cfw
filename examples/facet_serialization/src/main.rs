@@ -16,9 +16,8 @@
 //!
 //! 1. Implement [`Loggable`] with `Context<'a> = ()`, `serialize` writing
 //!    through your backend, and `deserialize_with_ctx` reading it back.
-//! 2. Keep the type `Send + Sync` so automatic channel registration during
-//!    graph build populates the serializer *and* deserializer + publisher
-//!    factory (which is what makes replay work).
+//! 2. Declare a typed capture before allocating graph storage; bind it to a
+//!    log session. A typed replay source uses the same codec when replaying.
 //! 3. Don't also derive serde on the type — the blanket impl would claim it
 //!    and there's no way to override it.
 //!
@@ -34,15 +33,13 @@
 use clap::{Parser, Subcommand};
 use facet::Facet;
 use live_executor::LiveExecutor;
-use logging::log_build_step::LoggingStrategy;
+use logging::{CapturePlan, ExecutionRecorder, LogSession};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use task::execution_log::ExecutionLogLevel;
-use task::executor::ExecutorParams;
 use task::loggable::Loggable;
-use task::{CallbackBuilder, Output, task_graph_builder};
+use task::{CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, Output};
 use task_macros::task_callback;
 
 // ───────────────────────────── CLI ────────────────────────────────────────
@@ -102,12 +99,14 @@ macro_rules! facet_loggable {
                 Ok(())
             }
 
-            fn deserialize_with_ctx(
+            fn deserialize_with_ctx<'a>(
                 bytes: &[u8],
-                _ctx: Self::Context<'_>,
-            ) -> Result<Self, task::loggable::DeserializeError> {
-                facet_json::from_slice(bytes)
-                    .map_err(|e| task::loggable::DeserializeError::Other(Box::new(e)))
+                _ctx: Self::Context<'a>,
+            ) -> Result<Self, task::loggable::DeserializeError>
+            where
+                Self: 'a,
+            {
+                facet_json::from_slice(bytes).map_err(Into::into)
             }
         }
     };
@@ -131,18 +130,11 @@ impl MyTask {
         output.string = output.integer.to_string();
         output.send();
     }
-
-    fn callback_builder(self) -> CallbackBuilder {
-        self.builder()
-            .with_name("CustomTask")
-            .with_periodic_execution(Duration::from_millis(100))
-            .with_execution_duration_callback(|| Duration::from_micros(100))
-    }
 }
 
 // ───────────────────────────── Runners ────────────────────────────────────
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = CliArgs::parse();
     match args.command {
         Subcommands::Live { log_path } => run_live(log_path, args.print),
@@ -150,59 +142,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Build the graph (with the logging build step) and run it until a stop
+/// Build the graph and bound captures, then run until a stop
 /// signal arrives, writing facet-serialized `custom_data` messages to `log_path`.
-fn run_live(log_path: PathBuf, print: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run_live(
+    log_path: PathBuf,
+    print: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let term = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term))?;
 
     println!("Building the facet-serialized task graph for live execution");
 
-    let logging_build_step = Box::new(logging::log_build_step::LoggingBuildStep::new(
-        logging::LogTaskConfiguration {
-            output_path: log_path,
-            strategy: LoggingStrategy::Continuous {
-                period: Duration::from_millis(1000),
-            },
-            num_tasks: 1,
-        },
-    ));
-
-    let mut graph = task_graph_builder::TaskGraphBuilder::new()
-        .add_pool(1, |p| p.add_callback_builder(MyTask {}.callback_builder()))
-        .with_execution_log_level(ExecutionLogLevel::Whole)
-        .add_build_step(logging_build_step)
-        .build()
-        .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
-
     if print {
-        graph.print();
+        println!("CustomTask -> custom_data (100ms period)");
         return Ok(());
     }
-
-    let mut executor = LiveExecutor::new_multi_pool_with_execution_log(
-        ExecutorParams::new(std::mem::take(&mut graph.pools)),
-        std::mem::take(&mut graph.execution_log_publishers),
-        Duration::from_millis(500),
+    let mut channel = ChannelPlan::new("custom_data");
+    let declaration = MyTask::declare(&mut channel)?;
+    let capture = CapturePlan::declare(&mut channel, 32);
+    let storage = GraphPlan::new(channel)
+        .allocate()
+        .map_err(|e| format!("{e:?}"))?;
+    let bindings = storage.channels().build();
+    let mut builder = GraphBuilder::with_storage(&storage);
+    builder.add_scheduled_callback(
+        "CustomTask",
+        CallbackSchedule::periodic(Duration::from_millis(100))
+            .with_execution_duration(Duration::from_micros(100)),
+        || Ok(MyTask {}.bind(declaration, &bindings)?),
     );
-    executor.start_threads();
-
-    while !term.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    println!("Received stop signal, stopping threads");
-
-    executor
-        .stop_threads()
-        .map_err(|e| -> Box<dyn std::error::Error> { format!("{e:?}").into() })?;
+    let recorder = ExecutionRecorder::new(32);
+    let graph = recorder.attach(builder.build().map_err(|e| format!("{e:?}"))?)?;
+    let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(
+        std::fs::File::create(log_path)?,
+    ));
+    let mut session =
+        LogSession::new(writer, vec![capture.bind(&bindings)?]).with_recording(recorder)?;
+    LiveExecutor::new(1, graph)?.run_with(|stop| -> Result<(), logging::BoxedLogError> {
+        while !term.load(Ordering::Relaxed) && !stop.is_stopped() {
+            session.flush()?;
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    })??;
+    session.finish()?;
     println!("Done");
     Ok(())
 }
 
 /// Read a recorded log back and deserialize every `custom_data` payload with
 /// facet, printing the reconstructed values.
-fn verify(log_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn verify(log_path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use logging::log_file::LogFileReader;
 
     let file = std::fs::File::open(log_path)?;

@@ -11,6 +11,7 @@ live_executor = { path = "../../live_executor" }
 live_replay_executor = { path = "../../live_replay_executor" }
 exact_replay_executor = { path = "../../exact_replay_executor" }
 logging = { path = "../../logging" }
+simulation_executor = { path = "../../simulation_executor", features = ["log_simulation"] }
 signal-hook = "0.3"
 clap = { version = "4.6.3", features = ["derive"] }
 
