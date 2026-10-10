@@ -87,6 +87,16 @@ struct Key {
 }
 pub struct Iox2PublisherKey<T>(Key, PhantomData<fn(T) -> T>);
 pub struct Iox2SubscriberKey<T>(Key, PhantomData<fn(T) -> T>);
+impl<T> Iox2PublisherKey<T> {
+    pub(crate) fn index(&self) -> usize {
+        self.0.index
+    }
+}
+impl<T> Iox2SubscriberKey<T> {
+    pub(crate) fn index(&self) -> usize {
+        self.0.index
+    }
+}
 pub struct Iox2EventKey(Key);
 pub struct Iox2NotifierKey(Key);
 
@@ -124,6 +134,26 @@ pub struct Iox2ChannelPlan<T> {
     payload: PhantomData<fn(T) -> T>,
 }
 impl<T> Iox2ChannelPlan<T> {
+    pub(crate) fn publisher_key(&self, index: usize) -> Iox2PublisherKey<T> {
+        assert!(index < self.publishers.len());
+        Iox2PublisherKey(
+            Key {
+                channel: self.name.clone(),
+                index,
+            },
+            PhantomData,
+        )
+    }
+    pub(crate) fn subscriber_key(&self, index: usize) -> Iox2SubscriberKey<T> {
+        assert!(index < self.subscribers.len());
+        Iox2SubscriberKey(
+            Key {
+                channel: self.name.clone(),
+                index,
+            },
+            PhantomData,
+        )
+    }
     pub fn new(name: impl Into<String>, runtime: &Arc<Iox2Runtime>) -> Self {
         Self {
             name: name.into().into(),

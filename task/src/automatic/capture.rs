@@ -60,6 +60,11 @@ impl<T: Loggable + Send + Sync> SerializedCapture for NativeCapture<'_, T> {
 }
 
 pub(super) trait CaptureDeclaration {
+    fn declare_output(
+        &self,
+        plan: &mut NamedPlan,
+        port: &super::exact::PlannedPort,
+    ) -> Result<Box<dyn super::exact::ExactFactory>, BuildError>;
     fn declare(
         &self,
         plan: &mut NamedPlan,
@@ -79,6 +84,17 @@ struct NativeFactory<T> {
     subscriber: SubscriberKey<T>,
 }
 impl<T: Loggable + Send + Sync + 'static> CaptureDeclaration for NativeDeclaration<T> {
+    fn declare_output(
+        &self,
+        plan: &mut NamedPlan,
+        port: &super::exact::PlannedPort,
+    ) -> Result<Box<dyn super::exact::ExactFactory>, BuildError> {
+        Ok(Box::new(NativeOutputFactory {
+            channel: port.channel.clone(),
+            publisher: plan.native::<T>(&port.channel)?.publisher_key(port.index),
+            capacity: port.capacity,
+        }))
+    }
     fn declare(
         &self,
         plan: &mut NamedPlan,
@@ -96,6 +112,25 @@ impl<T: Loggable + Send + Sync + 'static> CaptureDeclaration for NativeDeclarati
             channel: channel.into(),
             subscriber,
         }))
+    }
+}
+struct NativeOutputFactory<T> {
+    channel: String,
+    publisher: crate::PublisherKey<T>,
+    capacity: usize,
+}
+impl<T: Loggable + Send + Sync + 'static> super::exact::ExactFactory for NativeOutputFactory<T> {
+    fn bind<'a>(
+        self: Box<Self>,
+        bindings: &NamedBindings<'a>,
+    ) -> Result<super::exact::ExactPort<'a>, BuildError> {
+        Ok(super::exact::ExactPort::Output(
+            bindings
+                .native::<T>(&self.channel)?
+                .configure_publisher(&self.publisher, |publisher| {
+                    super::port_capture::PortCapture::native(publisher, self.capacity)
+                })?,
+        ))
     }
 }
 impl<T: Loggable + Send + Sync + 'static> CaptureFactory for NativeFactory<T> {
@@ -243,6 +278,17 @@ mod ipc {
     impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static> CaptureDeclaration
         for IpcDeclaration<T>
     {
+        fn declare_output(
+            &self,
+            plan: &mut NamedPlan,
+            port: &super::super::exact::PlannedPort,
+        ) -> Result<Box<dyn super::super::exact::ExactFactory>, BuildError> {
+            Ok(Box::new(IpcOutputFactory {
+                channel: port.channel.clone(),
+                publisher: plan.ipc::<T>(&port.channel)?.publisher_key(port.index),
+                capacity: port.capacity,
+            }))
+        }
         fn declare(
             &self,
             plan: &mut NamedPlan,
@@ -254,6 +300,28 @@ mod ipc {
                 channel: channel.into(),
                 subscriber,
             }))
+        }
+    }
+    struct IpcOutputFactory<T> {
+        channel: String,
+        publisher: crate::iox2::Iox2PublisherKey<T>,
+        capacity: usize,
+    }
+    impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>
+        super::super::exact::ExactFactory for IpcOutputFactory<T>
+    {
+        fn bind<'a>(
+            self: Box<Self>,
+            bindings: &NamedBindings<'a>,
+        ) -> Result<super::super::exact::ExactPort<'a>, BuildError> {
+            Ok(super::super::exact::ExactPort::Output(
+                bindings.ipc::<T>(&self.channel)?.configure_publisher(
+                    &self.publisher,
+                    |publisher| {
+                        super::super::port_capture::PortCapture::ipc(publisher, self.capacity)
+                    },
+                )?,
+            ))
         }
     }
     impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static> CaptureFactory for IpcFactory<T> {

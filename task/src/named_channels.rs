@@ -27,6 +27,16 @@ impl<T> Clone for Key<T> {
 /// Typed declaration handle: channel name and index within its endpoint list.
 pub struct PublisherKey<T>(Key<T>);
 pub struct SubscriberKey<T>(Key<T>);
+impl<T> PublisherKey<T> {
+    pub(crate) fn index(&self) -> usize {
+        self.0.index
+    }
+}
+impl<T> SubscriberKey<T> {
+    pub(crate) fn index(&self) -> usize {
+        self.0.index
+    }
+}
 
 impl<T> Clone for PublisherKey<T> {
     fn clone(&self) -> Self {
@@ -67,6 +77,22 @@ pub struct ChannelPlan<T> {
 }
 
 impl<T> ChannelPlan<T> {
+    pub(crate) fn publisher_key(&self, index: usize) -> PublisherKey<T> {
+        assert!(index < self.publishers.len());
+        PublisherKey(Key {
+            channel: self.name.clone(),
+            index,
+            payload: PhantomData,
+        })
+    }
+    pub(crate) fn subscriber_key(&self, index: usize) -> SubscriberKey<T> {
+        assert!(index < self.subscribers.len());
+        SubscriberKey(Key {
+            channel: self.name.clone(),
+            index,
+            payload: PhantomData,
+        })
+    }
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into().into(),

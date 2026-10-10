@@ -10,6 +10,8 @@ use std::{
     sync::Arc,
 };
 pub mod capture;
+pub mod exact;
+pub mod port_capture;
 pub mod replay;
 
 #[derive(Debug)]
@@ -178,10 +180,16 @@ impl TaskRegistration {
         self
     }
     pub fn register(self, plan: &mut NamedPlan) -> Result<RegisteredTask, BuildError> {
+        if plan.tasks.contains_key(&self.name) {
+            return Err(BuildError(format!("duplicate task '{}'", self.name)));
+        }
+        let start = plan.ports.len();
         let factory = self
             .task
             .register_with(plan, &self.channels)
             .map_err(|e| BuildError(format!("task '{}': {e}", self.name)))?;
+        plan.tasks
+            .insert(self.name.clone(), plan.ports[start..].to_vec());
         Ok(RegisteredTask {
             name: self.name,
             schedule: self.schedule,
@@ -264,6 +272,9 @@ pub struct NamedPlan {
     channels: BTreeMap<String, Channel>,
     captures: BTreeMap<String, Box<dyn capture::CaptureDeclaration>>,
     replay_sources: BTreeMap<String, Box<dyn replay::SourceDeclaration>>,
+    ports: Vec<exact::PlannedPort>,
+    tasks: BTreeMap<String, Vec<exact::PlannedPort>>,
+    exact_planned: bool,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, (crate::iox2::Iox2ChannelPlan<()>, usize)>,
     #[cfg(feature = "iceoryx2")]
@@ -298,6 +309,14 @@ impl NamedPlan {
         capacity: usize,
     ) -> Result<crate::PublisherKey<T>, BuildError> {
         let key = self.native::<T>(name)?.publisher(capacity);
+        self.ports.push(exact::PlannedPort::new::<T>(
+            name,
+            true,
+            false,
+            false,
+            key.index(),
+            capacity,
+        ));
         self.channels.get_mut(name).unwrap().publishers += 1;
         Ok(key)
     }
@@ -311,6 +330,14 @@ impl NamedPlan {
             .native::<T>(name)?
             .subscriber_with_policy(capacity, policy);
         self.channels.get_mut(name).unwrap().subscribers += 1;
+        self.ports.push(exact::PlannedPort::new::<T>(
+            name,
+            false,
+            false,
+            false,
+            key.index(),
+            capacity,
+        ));
         Ok(key)
     }
     pub fn require(&self, name: &str, publisher: bool) -> Result<(), BuildError> {
@@ -471,6 +498,14 @@ mod ipc {
             capacity: usize,
         ) -> Result<Iox2PublisherKey<T>, BuildError> {
             let key = self.ipc::<T>(name)?.publisher(capacity);
+            self.ports.push(exact::PlannedPort::new::<T>(
+                name,
+                true,
+                true,
+                false,
+                key.index(),
+                capacity,
+            ));
             self.channels.get_mut(name).unwrap().publishers += 1;
             Ok(key)
         }
@@ -480,6 +515,14 @@ mod ipc {
             capacity: usize,
         ) -> Result<Iox2SubscriberKey<T>, BuildError> {
             let key = self.ipc::<T>(name)?.subscriber(capacity);
+            self.ports.push(exact::PlannedPort::new::<T>(
+                name,
+                false,
+                true,
+                false,
+                key.index(),
+                capacity,
+            ));
             self.channels.get_mut(name).unwrap().subscribers += 1;
             Ok(key)
         }
@@ -501,10 +544,17 @@ mod ipc {
         pub fn event(&mut self, name: &str, capacity: usize) -> Result<Iox2EventKey, BuildError> {
             let entry = self.event_plan(name)?;
             entry.1 += 1;
-            Ok(entry.0.events(capacity))
+            let key = entry.0.events(capacity);
+            self.ports.push(exact::PlannedPort::new::<()>(
+                name, false, true, true, 0, capacity,
+            ));
+            Ok(key)
         }
         pub fn notifier(&mut self, name: &str) -> Result<Iox2NotifierKey, BuildError> {
-            Ok(self.event_plan(name)?.0.notifier())
+            let key = self.event_plan(name)?.0.notifier();
+            self.ports
+                .push(exact::PlannedPort::new::<()>(name, true, true, true, 0, 1));
+            Ok(key)
         }
         pub fn require_event(&self, name: &str) -> Result<(), BuildError> {
             if self.events.get(name).is_some_and(|(_, count)| *count > 0) {

@@ -25,6 +25,11 @@ impl SerializedSource<'_> {
 }
 
 pub(super) trait SourceDeclaration {
+    fn declare_exact(
+        &self,
+        plan: &mut NamedPlan,
+        port: &super::exact::PlannedPort,
+    ) -> Result<Box<dyn super::exact::ExactFactory>, BuildError>;
     fn declare(
         &self,
         plan: &mut NamedPlan,
@@ -47,6 +52,20 @@ impl<T: Send + Sync + 'static> SourceDeclaration for NativeDeclaration<T>
 where
     for<'ctx> T: Loggable<Context<'ctx> = ()>,
 {
+    fn declare_exact(
+        &self,
+        plan: &mut NamedPlan,
+        port: &super::exact::PlannedPort,
+    ) -> Result<Box<dyn super::exact::ExactFactory>, BuildError> {
+        let channel = plan.native::<T>(&port.channel)?;
+        let subscriber = channel.subscriber_key(port.index);
+        let publisher = channel.publisher(1);
+        channel.restrict_subscriber_sources(&subscriber, std::slice::from_ref(&publisher))?;
+        Ok(Box::new(NativeExactFactory(NativeFactory {
+            channel: port.channel.clone(),
+            publisher,
+        })))
+    }
     fn declare(
         &self,
         plan: &mut NamedPlan,
@@ -58,6 +77,20 @@ where
             channel: channel.into(),
             publisher,
         }))
+    }
+}
+struct NativeExactFactory<T>(NativeFactory<T>);
+impl<T: Send + Sync + 'static> super::exact::ExactFactory for NativeExactFactory<T>
+where
+    for<'ctx> T: Loggable<Context<'ctx> = ()>,
+{
+    fn bind<'a>(
+        self: Box<Self>,
+        bindings: &NamedBindings<'a>,
+    ) -> Result<super::exact::ExactPort<'a>, BuildError> {
+        Ok(super::exact::ExactPort::Input(
+            Box::new(self.0).bind(bindings)?,
+        ))
     }
 }
 impl<T: Send + Sync + 'static> SourceFactory for NativeFactory<T>
@@ -206,6 +239,17 @@ mod ipc {
     where
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
     {
+        fn declare_exact(
+            &self,
+            plan: &mut NamedPlan,
+            port: &super::super::exact::PlannedPort,
+        ) -> Result<Box<dyn super::super::exact::ExactFactory>, BuildError> {
+            let channel = plan.ipc::<T>(&port.channel)?;
+            Ok(Box::new(IpcExactFactory {
+                channel: port.channel.clone(),
+                subscriber: channel.subscriber_key(port.index),
+            }))
+        }
         fn declare(
             &self,
             plan: &mut NamedPlan,
@@ -218,6 +262,34 @@ mod ipc {
             Ok(Box::new(IpcFactory {
                 channel: channel.into(),
                 publisher,
+            }))
+        }
+    }
+    struct IpcExactFactory<T> {
+        channel: String,
+        subscriber: crate::iox2::Iox2SubscriberKey<T>,
+    }
+    impl<T: Debug + ZeroCopySend + Send + Sync + 'static> super::super::exact::ExactFactory
+        for IpcExactFactory<T>
+    where
+        for<'ctx> T: Loggable<Context<'ctx> = ()>,
+    {
+        fn bind<'a>(
+            self: Box<Self>,
+            bindings: &NamedBindings<'a>,
+        ) -> Result<super::super::exact::ExactPort<'a>, BuildError> {
+            let bindings = bindings.ipc::<T>(&self.channel)?;
+            let mut input = bindings.replay_input(&self.subscriber)?;
+            Ok(super::super::exact::ExactPort::Input(SerializedSource {
+                channel: self.channel,
+                payload_type: std::any::type_name::<T>(),
+                inject: Box::new(move |header, bytes| {
+                    input
+                        .inject(header, T::deserialize(bytes)?)
+                        .map_err(|e| -> ReplayError {
+                            format!("IPC replay hydration failed: {e:?}").into()
+                        })
+                }),
             }))
         }
     }
