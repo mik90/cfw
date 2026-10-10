@@ -18,8 +18,8 @@ rust_test(
 )
 
 rust_test(
-    name = "forwarded_replay_test",
-    srcs = ["tests/forwarded_replay.rs"],
+    name = "replay_test",
+    srcs = ["tests/replay.rs"],
     deps = [":exact_replay_executor"] + all_crate_deps(
         normal = True,
         normal_dev = True,
@@ -27,8 +27,9 @@ rust_test(
 )
 
 rust_test(
-    name = "reproduce_unlogged_test",
-    srcs = ["tests/reproduce_unlogged.rs"],
+    name = "ipc_test",
+    srcs = ["tests/ipc.rs"],
+    crate_features = ["iceoryx2"],
     deps = [":exact_replay_executor"] + all_crate_deps(
         normal = True,
         normal_dev = True,

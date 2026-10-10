@@ -625,7 +625,6 @@ dependencies = [
  "signal-hook",
  "simulation_executor",
  "task",
- "task_macros",
  "test_tasks",
 ]
 

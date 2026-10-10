@@ -4,17 +4,8 @@ load("@crates//:defs.bzl", "all_crate_deps")
 package(default_visibility = ["//visibility:public"])
 
 rust_test(
-    name = "event_logging_test",
-    srcs = ["tests/event_logging_test.rs"],
-    deps = all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ),
-)
-
-rust_test(
-    name = "logging_build_step_test",
-    srcs = ["tests/logging_build_step_test.rs"],
+    name = "recording_test",
+    srcs = ["tests/recording.rs"],
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
@@ -22,13 +13,7 @@ rust_test(
 )
 
 miri_test(
-    name = "event_logging_test_miri",
-    srcs = ["tests/event_logging_test.rs"],
-    deps = all_crate_deps(normal = True),
-)
-
-miri_test(
-    name = "logging_build_step_test_miri",
-    srcs = ["tests/logging_build_step_test.rs"],
+    name = "recording_test_miri",
+    srcs = ["tests/recording.rs"],
     deps = all_crate_deps(normal = True),
 )

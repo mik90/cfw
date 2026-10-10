@@ -2,10 +2,7 @@
 name = "logging_test"
 version = "0.1.0"
 edition = "2024"
-# Tests for the logging crate that need an executor (`testing`/`simulation`).
-# Kept out of `logging` so the crate graph stays acyclic: `logging` must not
-# dev-depend on `testing`/`simulation_executor`, both of which depend back on
-# `logging`.
+# Cross-crate integration tests for logging with simulated execution.
 publish = false
 
 [dependencies]

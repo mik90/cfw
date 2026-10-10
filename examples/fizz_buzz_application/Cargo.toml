@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 task = { path = "../../task" }
 test_tasks = { path = "../../test_tasks" }
-task_macros = { path = "../../task_macros" }
 live_executor = { path = "../../live_executor" }
 live_replay_executor = { path = "../../live_replay_executor" }
 exact_replay_executor = { path = "../../exact_replay_executor" }
