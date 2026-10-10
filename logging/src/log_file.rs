@@ -22,7 +22,8 @@ pub trait LogFileWriter: Send {
     ) -> Result<(), BoxedLogError>;
 
     /// Write a single artifact line: `{"artifact":"<name>","body":<json>}`.
-    /// Called once per artifact (e.g. the execution-log descriptor). The `body`
+    /// Called once per artifact (e.g. the execution-log descriptor), except for
+    /// sticky recording-incompleteness snapshots which may repeat. The `body`
     /// must be valid JSON; the implementation embeds it as a JSON value.
     fn write_artifact(&mut self, name: &str, body: &[u8]) -> Result<(), BoxedLogError>;
 

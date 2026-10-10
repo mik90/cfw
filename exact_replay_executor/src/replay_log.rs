@@ -12,6 +12,10 @@ pub struct ReplayLog {
 }
 impl ReplayLog {
     pub fn from_reader(reader: &dyn LogFileReader) -> Result<Self, ReplayError> {
+        logging::incompleteness::reject_incomplete_recording(
+            reader.artifact(logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT),
+        )
+        .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         let mut log = Self::descriptor(reader.artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT))?;
         for index in 0..reader.len() {
             let entry = reader
@@ -23,6 +27,10 @@ impl ReplayLog {
         Ok(log)
     }
     pub fn from_sorted(mut reader: SortedLogStreamReader) -> Result<Self, ReplayError> {
+        logging::incompleteness::reject_incomplete_recording(
+            reader.artifact(logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT),
+        )
+        .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         let mut log = Self::descriptor(reader.artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT))?;
         while let Some(entry) = reader
             .next_entry()

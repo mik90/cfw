@@ -34,6 +34,9 @@ impl<'a> ReplayFeed<'a> {
         sources: impl IntoIterator<Item = ReplaySource<'a>>,
         denied: HashSet<String>,
     ) -> Result<Self, BoxedLogError> {
+        crate::incompleteness::reject_incomplete_recording(
+            reader.artifact(crate::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT),
+        )?;
         let mut map = BTreeMap::new();
         for source in sources {
             let name = source.channel().to_owned();

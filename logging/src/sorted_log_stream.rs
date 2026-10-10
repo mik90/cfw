@@ -244,7 +244,10 @@ impl SortedLogStreamReader {
                 source,
             })? {
                 Row::Artifact(artifact) => {
-                    if artifacts.contains_key(&artifact.artifact) {
+                    if artifacts.contains_key(&artifact.artifact)
+                        && artifact.artifact
+                            != crate::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT
+                    {
                         return Err(LogReadError::Invalid(format!(
                             "duplicate artifact '{}' at line {line_number}",
                             artifact.artifact

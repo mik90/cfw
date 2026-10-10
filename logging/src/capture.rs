@@ -33,12 +33,22 @@ impl<T> CapturePlan<T> {
 type Visitor<'a> = dyn FnMut(MessageHeader, &[u8]) -> Result<(), BoxedLogError> + 'a;
 trait Drain: Send {
     fn drain(&mut self, visit: &mut Visitor<'_>) -> Result<(), BoxedLogError>;
+    #[cfg(feature = "serde")]
+    fn loss_counts(&self) -> (u64, u64, u64);
 }
 struct Native<'a, T> {
     subscriber: Subscriber<'a, T>,
     scratch: Vec<u8>,
 }
 impl<T: Loggable + Send + Sync> Drain for Native<'_, T> {
+    #[cfg(feature = "serde")]
+    fn loss_counts(&self) -> (u64, u64, u64) {
+        (
+            self.subscriber.writer_drops() as u64,
+            self.subscriber.reader_drops() as u64,
+            0,
+        )
+    }
     fn drain(&mut self, visit: &mut Visitor<'_>) -> Result<(), BoxedLogError> {
         self.subscriber.update();
         let messages: Vec<_> = self.subscriber.input().drain().collect();
@@ -76,6 +86,16 @@ impl<'a> Capture<'a> {
     }
     pub fn channel(&self) -> &str {
         &self.channel
+    }
+    #[cfg(feature = "serde")]
+    pub(crate) fn loss(&self) -> crate::incompleteness::CaptureLoss {
+        let (writer_drops, reader_drops, receive_errors) = self.drain.loss_counts();
+        crate::incompleteness::CaptureLoss {
+            channel: self.channel.clone(),
+            writer_drops,
+            reader_drops,
+            receive_errors,
+        }
     }
     pub fn drain(
         &mut self,
@@ -116,6 +136,10 @@ mod ipc {
                     + 'static,
             > Drain for Ipc<T>
             {
+                #[cfg(feature = "serde")]
+                fn loss_counts(&self) -> (u64, u64, u64) {
+                    (0, 0, self.0.receive_errors() as u64)
+                }
                 fn drain(&mut self, visit: &mut Visitor<'_>) -> Result<(), BoxedLogError> {
                     self.0.update();
                     if self.0.receive_errors() != 0 {

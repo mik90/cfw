@@ -10,6 +10,34 @@ use std::{
 use task::{ChannelPlan, GraphPlan, message::MessageHeader, time::FrameworkTime};
 
 #[test]
+fn incomplete_recordings_fail_before_any_replay_injection() {
+    let mut plan = ChannelPlan::<u64>::new("input");
+    let source = ReplaySourcePlan::declare(&mut plan, 1);
+    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let bindings = storage.channels().build();
+    let source = source
+        .bind_with_decoder(&bindings, |_| -> Result<u64, logging::BoxedLogError> {
+            panic!("incomplete log must never be decoded");
+        })
+        .unwrap();
+    let reader = SortedLogStreamReader::from_entries(
+        vec![OwnedLogEntry {
+            channel_name: "input".into(),
+            header: MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
+            serialized_body: b"1".to_vec(),
+        }],
+        HashMap::from([(
+            logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT.into(),
+            b"null".to_vec(),
+        )]),
+    )
+    .unwrap();
+    assert!(
+        matches!(ReplayFeed::new(reader, [source], HashSet::new()), Err(e) if e.to_string().contains("incomplete"))
+    );
+}
+
+#[test]
 fn paused_batch_preserves_cursor_without_claiming_eof_or_duplicating_inputs() {
     let mut plan = ChannelPlan::<u64>::new("input");
     let source = ReplaySourcePlan::declare(&mut plan, 1);

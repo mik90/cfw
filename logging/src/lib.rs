@@ -1,4 +1,6 @@
 pub mod capture;
+#[cfg(feature = "serde")]
+pub mod incompleteness;
 pub mod port_capture;
 pub use port_capture::PortCapture;
 pub mod log_file;

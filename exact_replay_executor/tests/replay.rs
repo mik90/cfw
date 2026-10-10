@@ -497,6 +497,49 @@ fn publisher_lookup_and_batch_headers_are_validated_before_execution() {
     ));
 }
 
+#[test]
+fn incomplete_logs_are_rejected_even_when_the_surviving_trace_is_valid() {
+    use logging::{LogFileWriter, incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT};
+    for body in [
+        b"null".as_slice(),
+        b"{}",
+        b"{\"errors\":[\"dropped records\"]}",
+    ] {
+        let bytes = Bytes::default();
+        let mut writer = logging::log_file_json::JsonLogFileWriter::new(bytes.clone());
+        writer
+            .write_artifact(
+                task::recording::EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
+                &serde_json::to_vec(recorded(true).descriptor_ref()).unwrap(),
+            )
+            .unwrap();
+        writer
+            .write_artifact(RECORDING_INCOMPLETENESS_ARTIFACT, body)
+            .unwrap();
+        // Later snapshots cannot clear the sticky marker.
+        writer
+            .write_artifact(RECORDING_INCOMPLETENESS_ARTIFACT, b"{}")
+            .unwrap();
+        let raw = bytes.0.lock().unwrap().clone();
+        let reader =
+            logging::log_file_json::JsonLogFileReader::from_reader(raw.as_slice()).unwrap();
+        assert!(
+            matches!(ReplayLog::from_reader(&reader), Err(ReplayError::InvalidLog(reason)) if reason.contains("incomplete"))
+        );
+        #[cfg(not(miri))]
+        let reader = logging::SortedLogStreamReader::from_reader(raw.as_slice(), 1).unwrap();
+        #[cfg(miri)]
+        let reader = logging::SortedLogStreamReader::from_entries(
+            vec![],
+            HashMap::from([(RECORDING_INCOMPLETENESS_ARTIFACT.into(), body.to_vec())]),
+        )
+        .unwrap();
+        assert!(
+            matches!(ReplayLog::from_sorted(reader), Err(ReplayError::InvalidLog(reason)) if reason.contains("incomplete"))
+        );
+    }
+}
+
 struct TwoInputs;
 #[task_callback]
 impl TwoInputs {

@@ -252,6 +252,235 @@ fn bounded_recording_and_capture_overflow_are_observable() {
 }
 
 #[test]
+fn incompleteness_persists_all_overflows_and_is_sticky_across_flushes() {
+    use logging::incompleteness::{RECORDING_INCOMPLETENESS_ARTIFACT, RecordingIncompleteness};
+    for (capture_capacity, recorder_capacity) in [(1, 4), (4, 1), (1, 1)] {
+        let mut plan = ChannelPlan::new("output");
+        let declaration = Source::declare(&mut plan).unwrap();
+        let capture = CapturePlan::declare(&mut plan, capture_capacity);
+        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let bindings = storage.channels().build();
+        let mut graph = GraphBuilder::new();
+        graph.add_callback("source", || {
+            Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
+        });
+        let recorder = ExecutionRecorder::new(recorder_capacity);
+        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let bytes = Bytes::default();
+        let mut session = LogSession::new(
+            logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
+            vec![capture.bind(&bindings).unwrap()],
+        )
+        .with_recording(recorder)
+        .unwrap();
+        session.flush().unwrap();
+        assert!(
+            logging::log_file_json::JsonLogFileReader::from_reader(
+                bytes.0.lock().unwrap().as_slice()
+            )
+            .unwrap()
+            .artifact(RECORDING_INCOMPLETENESS_ARTIFACT)
+            .is_none()
+        );
+        graph.step(at(0)).unwrap();
+        graph.step(at(1)).unwrap();
+        assert!(session.flush().is_err());
+        graph.step(at(2)).unwrap();
+        assert!(session.finish().is_err());
+        let raw = bytes.0.lock().unwrap().clone();
+        let reader =
+            logging::log_file_json::JsonLogFileReader::from_reader(raw.as_slice()).unwrap();
+        let snapshot: RecordingIncompleteness =
+            serde_json::from_slice(reader.artifact(RECORDING_INCOMPLETENESS_ARTIFACT).unwrap())
+                .unwrap();
+        assert_eq!(
+            snapshot.recorder_entries_dropped,
+            usize::from(recorder_capacity == 1)
+        );
+        assert_eq!(
+            snapshot.captures[0].writer_drops + snapshot.captures[0].reader_drops,
+            u64::from(capture_capacity == 1)
+        );
+        if capture_capacity == 1 && recorder_capacity == 1 {
+            assert!(snapshot.errors.iter().any(|e| e.contains("capture")));
+            assert!(
+                snapshot
+                    .errors
+                    .iter()
+                    .any(|e| e.contains("execution recording overflow"))
+            );
+        }
+        #[cfg(not(miri))]
+        let sorted = logging::SortedLogStreamReader::from_reader(raw.as_slice(), 2).unwrap();
+        #[cfg(miri)]
+        let sorted = logging::SortedLogStreamReader::from_entries(
+            vec![],
+            std::collections::HashMap::from([(
+                RECORDING_INCOMPLETENESS_ARTIFACT.into(),
+                reader
+                    .artifact(RECORDING_INCOMPLETENESS_ARTIFACT)
+                    .unwrap()
+                    .to_vec(),
+            )]),
+        )
+        .unwrap();
+        assert!(
+            matches!(logging::ReplayFeed::new(sorted, [], Default::default()), Err(e) if e.to_string().contains("incomplete"))
+        );
+    }
+}
+
+struct RecoveringWriter {
+    inner: logging::log_file_json::JsonLogFileWriter<Bytes>,
+    fail_message: bool,
+    fail_artifact: bool,
+    fail_flush: bool,
+}
+impl LogFileWriter for RecoveringWriter {
+    fn store_message(
+        &mut self,
+        channel: &str,
+        header: &MessageHeader,
+        body: &[u8],
+    ) -> Result<(), logging::BoxedLogError> {
+        if std::mem::take(&mut self.fail_message) {
+            return Err("message sink failure".into());
+        }
+        self.inner.store_message(channel, header, body)
+    }
+    fn write_artifact(&mut self, name: &str, body: &[u8]) -> Result<(), logging::BoxedLogError> {
+        if std::mem::take(&mut self.fail_artifact) {
+            return Err("artifact sink failure".into());
+        }
+        self.inner.write_artifact(name, body)
+    }
+    fn flush(&mut self) -> Result<(), logging::BoxedLogError> {
+        if std::mem::take(&mut self.fail_flush) {
+            return Err("flush sink failure".into());
+        }
+        self.inner.flush()
+    }
+}
+
+#[test]
+fn recovered_writer_cannot_turn_failed_recording_into_a_complete_log() {
+    use logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT;
+    for (fail_message, fail_artifact, fail_flush) in [
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+    ] {
+        let mut plan = ChannelPlan::<u64>::new("output");
+        let source = ReplaySourcePlan::declare(&mut plan, 1);
+        let capture = CapturePlan::declare(&mut plan, 1);
+        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let bindings = storage.channels().build();
+        source
+            .bind(&bindings)
+            .unwrap()
+            .inject(header(0), b"42")
+            .unwrap();
+        let bytes = Bytes::default();
+        let mut session = LogSession::new(
+            RecoveringWriter {
+                inner: logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
+                fail_message,
+                fail_artifact,
+                fail_flush,
+            },
+            vec![capture.bind(&bindings).unwrap()],
+        );
+        assert!(session.flush().is_err());
+        session.flush().unwrap();
+        assert!(session.finish().is_err());
+        let reader = logging::log_file_json::JsonLogFileReader::from_reader(
+            bytes.0.lock().unwrap().as_slice(),
+        )
+        .unwrap();
+        assert!(reader.artifact(RECORDING_INCOMPLETENESS_ARTIFACT).is_some());
+    }
+}
+
+#[test]
+fn failed_descriptor_write_attempts_a_marker_during_cleanup() {
+    let mut plan = ChannelPlan::new("output");
+    let declaration = Source::declare(&mut plan).unwrap();
+    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let bindings = storage.channels().build();
+    let mut graph = GraphBuilder::new();
+    graph.add_callback("source", || {
+        Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
+    });
+    let recorder = ExecutionRecorder::new(1);
+    let _graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let bytes = Bytes::default();
+    let session = LogSession::new(
+        RecoveringWriter {
+            inner: logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
+            fail_message: false,
+            fail_artifact: true,
+            fail_flush: false,
+        },
+        vec![],
+    );
+    let status = session.status();
+    assert!(session.with_recording(recorder).is_err());
+    assert!(status.errors()[0].contains("execution descriptor"));
+    let reader =
+        logging::log_file_json::JsonLogFileReader::from_reader(bytes.0.lock().unwrap().as_slice())
+            .unwrap();
+    assert!(
+        reader
+            .artifact(logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT)
+            .is_some()
+    );
+}
+
+#[test]
+fn serialization_failure_is_marked_on_session_drop() {
+    struct Unserializable;
+    impl task::loggable::Loggable for Unserializable {
+        type Context<'a> = ();
+        fn deserialize_with_ctx<'a>(
+            _: &[u8],
+            _: (),
+        ) -> Result<Self, task::loggable::DeserializeError>
+        where
+            Self: 'a,
+        {
+            Ok(Self)
+        }
+        fn serialize(&self, _: &mut dyn Write) -> Result<(), task::loggable::SerializeError> {
+            Err("payload serialization failed".into())
+        }
+    }
+    let mut plan = ChannelPlan::new("broken");
+    let publisher = plan.publisher(1);
+    let capture = CapturePlan::declare(&mut plan, 1);
+    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let bindings = storage.channels().build();
+    let mut publisher = bindings.take_publisher(&publisher).unwrap();
+    publisher.publish(Unserializable).unwrap();
+    publisher.flush(at(0));
+    let bytes = Bytes::default();
+    let session = LogSession::new(
+        logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
+        vec![capture.bind(&bindings).unwrap()],
+    );
+    let status = session.status();
+    drop(session);
+    assert!(status.errors()[0].contains("serialization failed"));
+    let reader =
+        logging::log_file_json::JsonLogFileReader::from_reader(bytes.0.lock().unwrap().as_slice())
+            .unwrap();
+    assert!(
+        reader
+            .artifact(logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT)
+            .is_some()
+    );
+}
+
+#[test]
 fn metadata_panic_before_commit_cannot_leave_outputs_on_a_cancelled_record() {
     struct MetadataFailure;
     impl task::Callback for MetadataFailure {
@@ -320,8 +549,8 @@ fn final_flush_runs_during_assertion_unwind_and_reports_writer_errors() {
             }))
             .is_err()
         );
-        assert_eq!(flushes.load(Ordering::SeqCst), 1);
-        assert_eq!(status.errors().len(), 1);
+        assert_eq!(flushes.load(Ordering::SeqCst), if panic { 1 } else { 2 });
+        assert_eq!(status.errors().len(), if panic { 1 } else { 2 });
     }
 }
 
@@ -352,8 +581,8 @@ fn capture_write_failure_still_attempts_final_writer_flush() {
             .to_string()
             .contains("write failed")
     );
-    assert_eq!(flushes.load(Ordering::SeqCst), 1);
-    assert_eq!(status.errors().len(), 2);
+    assert_eq!(flushes.load(Ordering::SeqCst), 2);
+    assert_eq!(status.errors().len(), 3);
 }
 
 #[test]
