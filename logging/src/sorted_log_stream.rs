@@ -363,6 +363,9 @@ impl SortedLogStreamReader {
     pub fn channel_names(&self) -> &HashSet<String> {
         &self.channels
     }
+    pub fn intern_tables(&self) -> Result<crate::InternTables, crate::BoxedLogError> {
+        crate::intern_tables::decode_intern_tables(self.artifact(crate::INTERN_TABLES_ARTIFACT))
+    }
     pub fn artifact(&self, name: &str) -> Option<&[u8]> {
         self.artifacts.get(name).map(Vec::as_slice)
     }

@@ -64,6 +64,10 @@ impl<'a> ReplayFeed<'a> {
             .map(serde_json::from_slice::<ExecutionDescriptor>)
             .transpose()?;
         if let Some(descriptor) = &descriptor {
+            let tables = crate::intern_tables::decode_intern_tables(
+                reader.artifact(crate::INTERN_TABLES_ARTIFACT),
+            )?;
+            crate::intern_tables::validate_descriptor_tables(&tables, descriptor)?;
             let mut names = HashSet::new();
             for callback in &descriptor.callbacks {
                 if !names.insert(&callback.name) {
@@ -121,7 +125,7 @@ impl<'a> ReplayFeed<'a> {
                         .descriptor
                         .as_ref()
                         .ok_or("execution record has no descriptor")?;
-                    if record.callback_index >= descriptor.callbacks.len()
+                    if record.callback_id.index() >= descriptor.callbacks.len()
                         || record.execution_time != entry.header.published_at
                     {
                         return Err("invalid execution record index or timestamp".into());
@@ -135,7 +139,7 @@ impl<'a> ReplayFeed<'a> {
                     let callback = self
                         .descriptor
                         .as_ref()
-                        .and_then(|d| d.callbacks.get(event.callback_index))
+                        .and_then(|d| d.callbacks.get(event.callback_id.index()))
                         .ok_or("event record has no matching callback descriptor")?;
                     let mut ports = callback.endpoints.iter().filter(|p| {
                         p.direction == Direction::Received && p.ordinal == event.event.ordinal

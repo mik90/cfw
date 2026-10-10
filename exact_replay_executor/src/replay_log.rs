@@ -18,6 +18,10 @@ impl ReplayLog {
         )
         .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         let mut log = Self::descriptor(reader.artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT))?;
+        let tables = logging::read_intern_tables(reader)
+            .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+        logging::intern_tables::validate_descriptor_tables(&tables, &log.descriptor)
+            .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         for index in 0..reader.len() {
             let entry = reader
                 .entry(index)
@@ -33,6 +37,11 @@ impl ReplayLog {
         )
         .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         let mut log = Self::descriptor(reader.artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT))?;
+        let tables =
+            logging::intern_tables::decode_intern_tables(reader.artifact(INTERN_TABLES_ARTIFACT))
+                .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+        logging::intern_tables::validate_descriptor_tables(&tables, &log.descriptor)
+            .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         while let Some(entry) = reader
             .next_entry()
             .map_err(|e| ReplayError::InvalidLog(e.to_string()))?
@@ -124,7 +133,7 @@ impl ReplayLog {
                 }
                 if self
                     .endpoint(
-                        event.callback_index,
+                        event.callback_id.index(),
                         Direction::Received,
                         event.event.ordinal,
                         true,
@@ -192,7 +201,7 @@ impl ReplayLog {
                     record.outcome
                 )));
             }
-            if record.callback_index >= self.descriptor.callbacks.len() {
+            if record.callback_id.index() >= self.descriptor.callbacks.len() {
                 return Err(ReplayError::InvalidLog("unknown callback index".into()));
             }
             for (direction, messages) in [
@@ -200,8 +209,12 @@ impl ReplayLog {
                 (Direction::Published, &record.outputs),
             ] {
                 for message in messages {
-                    let port =
-                        self.endpoint(record.callback_index, direction, message.ordinal, false)?;
+                    let port = self.endpoint(
+                        record.callback_id.index(),
+                        direction,
+                        message.ordinal,
+                        false,
+                    )?;
                     if message.header.published_at == FrameworkTime::INVALID {
                         return Err(ReplayError::InvalidLog("invalid message reference".into()));
                     }
@@ -230,7 +243,7 @@ impl ReplayLog {
             for event in &record.events {
                 if self
                     .endpoint(
-                        record.callback_index,
+                        record.callback_id.index(),
                         Direction::Received,
                         event.ordinal,
                         true,
@@ -245,7 +258,7 @@ impl ReplayLog {
             }
             for event in &record.output_events {
                 self.endpoint(
-                    record.callback_index,
+                    record.callback_id.index(),
                     Direction::Published,
                     event.ordinal,
                     true,
@@ -270,7 +283,7 @@ impl ReplayLog {
             for output in &record.outputs {
                 if self
                     .endpoint(
-                        record.callback_index,
+                        record.callback_id.index(),
                         Direction::Published,
                         output.ordinal,
                         false,

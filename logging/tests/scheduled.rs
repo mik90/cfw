@@ -234,7 +234,13 @@ fn scheduled_errors_do_not_stop_workload_and_remain_sticky_after_recovery() {
         assert!(!status.errors().is_empty());
         let diagnostics = status.diagnostics();
         assert_eq!(diagnostics[0].0, 0);
-        assert_eq!(diagnostics[0].1.channel.as_deref(), Some("data"));
+        assert_eq!(
+            status
+                .intern_tables()
+                .channels
+                .lookup_by_id(diagnostics[0].1.channel.unwrap()),
+            "data"
+        );
         assert_eq!(diagnostics[0].1.at, Some(at(1)));
         assert_eq!(diagnostics[0].1.kind, logging::DiagnosticKind::Write);
         writer.0.lock().unwrap().fail = false;

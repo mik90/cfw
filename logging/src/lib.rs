@@ -14,6 +14,10 @@ pub mod replay_source;
 #[cfg(feature = "serde")]
 pub use replay_feed::ReplayFeed;
 pub mod diagnostics;
+pub mod intern_tables;
+#[cfg(feature = "serde")]
+pub use intern_tables::read_intern_tables;
+pub use intern_tables::{INTERN_TABLES_ARTIFACT, InternTables};
 pub mod scheduled;
 pub mod session;
 pub use diagnostics::{DiagnosticKind, DiagnosticPolicy, LogDiagnostic};

@@ -132,7 +132,7 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     assert_eq!(activation.observed_at.to_nanoseconds(), 10);
     assert_eq!(
         (
-            activation.callback_index,
+            activation.callback_id.index(),
             activation.event.ordinal,
             activation.event.count
         ),

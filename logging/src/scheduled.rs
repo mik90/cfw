@@ -26,6 +26,9 @@ pub struct LoggingStatus {
     shards: Vec<LogStatus>,
 }
 impl LoggingStatus {
+    pub fn intern_tables(&self) -> crate::InternTables {
+        self.shards[0].intern_tables()
+    }
     pub fn diagnostics(&self) -> Vec<(usize, crate::LogDiagnostic)> {
         self.shards
             .iter()
@@ -162,6 +165,7 @@ impl<'a> FlushTrigger<'a> {
 /// }
 /// ```
 pub struct LoggingScope<'storage> {
+    registry: crate::intern_tables::Registry,
     sessions: Vec<Mutex<Option<LogSession<'storage>>>>,
     status: LoggingStatus,
     channels: Vec<String>,
@@ -181,7 +185,7 @@ impl<'storage> LoggingScope<'storage> {
         shards: usize,
     ) -> Self {
         let count = Self::planned_shard_count(captures.len(), shards);
-        let channels = captures
+        let channels: Vec<String> = captures
             .iter()
             .map(|capture| capture.channel().to_owned())
             .collect();
@@ -190,14 +194,16 @@ impl<'storage> LoggingScope<'storage> {
             groups[index % count].push(capture);
         }
         let writer = SharedLogFileWriter::new(Box::new(writer));
+        let registry = crate::intern_tables::Registry::new(channels.iter().map(String::as_str));
         let sessions: Vec<_> = groups
             .into_iter()
-            .map(|captures| LogSession::new(writer.clone(), captures))
+            .map(|captures| LogSession::with_registry(writer.clone(), captures, registry.clone()))
             .collect();
         let status = LoggingStatus {
             shards: sessions.iter().map(LogSession::status).collect(),
         };
         Self {
+            registry,
             sessions: sessions
                 .into_iter()
                 .map(|session| Mutex::new(Some(session)))
@@ -309,7 +315,18 @@ impl<'storage> LoggingScope<'storage> {
                 });
         let result = graph
             .append_callbacks(callbacks)
-            .map_err(|error| -> BoxedLogError { format!("logging attachment: {error:?}").into() });
+            .map_err(|error| -> BoxedLogError { format!("logging attachment: {error:?}").into() })
+            .and_then(|graph| {
+                self.registry
+                    .configure(crate::InternTables::from_metadata(graph.metadata()))?;
+                self.sessions[0]
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_mut()
+                    .unwrap()
+                    .start()?;
+                Ok(graph)
+            });
         if result.is_err() {
             self.attached.store(false, Ordering::Release);
         }

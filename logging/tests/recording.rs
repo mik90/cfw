@@ -76,7 +76,7 @@ fn recording_modes_preserve_execution_and_select_metadata() {
             assert_eq!(
                 record.outputs.len(),
                 usize::from(
-                    descriptor.callbacks[record.callback_index].recording_mode
+                    descriptor.callbacks[record.callback_id.index()].recording_mode
                         == RecordingMode::Full
                 )
             );
@@ -153,7 +153,13 @@ fn diagnostic_policies_keep_channel_time_header_and_flush_before_panic() {
         assert_eq!(flushes.load(Ordering::SeqCst), 2);
         let diagnostics = status.diagnostics();
         assert_eq!(diagnostics[0].kind, DiagnosticKind::Write);
-        assert_eq!(diagnostics[0].channel.as_deref(), Some("diagnostic-output"));
+        assert_eq!(
+            status
+                .intern_tables()
+                .channels
+                .lookup_by_id(diagnostics[0].channel.unwrap()),
+            "diagnostic-output"
+        );
         assert_eq!(diagnostics[0].at, Some(at(9)));
         assert_eq!(diagnostics[0].header, Some(header(5)));
         drop(log);
@@ -232,16 +238,137 @@ fn planned_capture_replay_and_execution_records_round_trip_through_json() {
     assert_eq!(descriptor.callbacks[0].name, "double");
     assert_eq!(descriptor.callbacks[0].endpoints[0].ordinal, 0);
     assert_eq!(descriptor.callbacks[0].endpoints[1].ordinal, 0);
+    let tables = reader.intern_tables().unwrap();
+    let first: serde_json::Value =
+        serde_json::from_slice(raw.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
+    assert_eq!(first["artifact"], logging::INTERN_TABLES_ARTIFACT);
     assert_eq!(reader.len(), 3);
     assert_eq!(reader.entry(0).unwrap().header, header(5));
     assert_eq!(reader.entry(1).unwrap().serialized_body, b"42");
     let entry = reader.entry(2).unwrap();
     assert_eq!(entry.channel_name, EXECUTION_LOG_CHANNEL);
     let record: ExecutionRecord = serde_json::from_slice(entry.serialized_body).unwrap();
+    assert_eq!(tables.callbacks.lookup_by_id(record.callback_id), "double");
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(entry.serialized_body).unwrap()["callback_id"]
+            .is_number()
+    );
     assert_eq!(record.execution_time, at(10));
     assert_eq!(record.inputs[0].header, header(5));
     assert_eq!(record.outputs[0].header, header(10));
     assert_eq!(record.outcome, Outcome::Committed);
+}
+
+#[test]
+fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop() {
+    use task::automatic::{NamedPlan, TaskRegistration};
+    let bytes = Bytes::default();
+    let status;
+    {
+        let mut plan = NamedPlan::default();
+        let mut tasks = Vec::new();
+        for name in ["z", "a"] {
+            let mut task =
+                TaskRegistration::new(name, Source { fail: 0 }, CallbackSchedule::default());
+            task.output_channel("output", format!("{name}-output"));
+            tasks.push(task.register(&mut plan).unwrap());
+        }
+        let capture =
+            logging::AutomaticCapturePlan::declare(&mut plan, &logging::CaptureOptions::new(4))
+                .unwrap();
+        let storage = plan.allocate().unwrap();
+        let bindings = storage.bind().unwrap();
+        let mut graph = storage.graph_builder();
+        for task in tasks {
+            task.add_to_graph(&mut graph, &bindings);
+        }
+        let recorder = ExecutionRecorder::new(8);
+        let graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let logger = logging::LoggingScope::new(
+            RecoveringWriter {
+                inner: logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
+                fail_message: true,
+                fail_artifact: false,
+                fail_flush: false,
+            },
+            capture.bind(&bindings).unwrap(),
+            2,
+        )
+        .with_recording(recorder)
+        .unwrap();
+        status = logger.status();
+        {
+            let mut graph = logger
+                .attach_periodic(graph, Duration::from_nanos(1))
+                .unwrap();
+            let raw = bytes.0.lock().unwrap().clone();
+            let lines: Vec<serde_json::Value> = raw
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .map(|line| serde_json::from_slice(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 2);
+            assert_eq!(lines[0]["artifact"], logging::INTERN_TABLES_ARTIFACT);
+            assert_eq!(lines[1]["artifact"], EXECUTION_LOG_DESCRIPTOR_ARTIFACT);
+            let tables = status.intern_tables();
+            for name in ["z", "a", "LogTask[0]", "LogTask[1]"] {
+                assert_eq!(
+                    tables.callbacks.lookup_by_value(name),
+                    graph.metadata().callback_names.lookup_by_value(name)
+                );
+            }
+            for name in ["z-output", "a-output"] {
+                assert_eq!(
+                    tables.channels.lookup_by_value(name),
+                    graph.metadata().channel_names.lookup_by_value(name)
+                );
+            }
+            graph.step(at(0)).unwrap();
+        }
+        assert!(logger.finish().is_err());
+    }
+    let raw = bytes.0.lock().unwrap().clone();
+    let lines: Vec<serde_json::Value> = raw
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line["artifact"] == logging::INTERN_TABLES_ARTIFACT)
+            .count(),
+        1
+    );
+    let reader = logging::log_file_json::JsonLogFileReader::from_reader(raw.as_slice()).unwrap();
+    let tables = reader.intern_tables().unwrap();
+    let incomplete: logging::incompleteness::RecordingIncompleteness = serde_json::from_slice(
+        reader
+            .artifact(logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT)
+            .unwrap(),
+    )
+    .unwrap();
+    let diagnostic = &incomplete.diagnostics[0];
+    let channel = tables.channels.lookup_by_id(diagnostic.channel.unwrap());
+    assert!(matches!(channel, "a-output" | "z-output"));
+    let status_tables = status.intern_tables();
+    assert_eq!(
+        status_tables
+            .channels
+            .lookup_by_id(diagnostic.channel.unwrap()),
+        channel
+    );
+    assert!(status.errors().iter().any(|error| error.contains(channel)));
+    for entry in reader
+        .iter()
+        .filter(|entry| entry.channel_name == EXECUTION_LOG_CHANNEL)
+    {
+        let record: ExecutionRecord = serde_json::from_slice(entry.serialized_body).unwrap();
+        assert!(matches!(
+            tables.callbacks.lookup_by_id(record.callback_id),
+            "a" | "z"
+        ));
+    }
 }
 
 struct Source {
@@ -523,6 +650,9 @@ fn recovered_writer_cannot_turn_failed_recording_into_a_complete_log() {
             vec![capture.bind(&bindings).unwrap()],
         );
         assert!(session.flush().is_err());
+        if fail_artifact && fail_message {
+            assert!(session.flush().is_err());
+        }
         session.flush().unwrap();
         assert!(session.finish().is_err());
         let reader = logging::log_file_json::JsonLogFileReader::from_reader(
@@ -557,7 +687,7 @@ fn failed_descriptor_write_attempts_a_marker_during_cleanup() {
     );
     let status = session.status();
     assert!(session.with_recording(recorder).is_err());
-    assert!(status.errors()[0].contains("execution descriptor"));
+    assert!(status.errors()[0].contains("startup artifacts"));
     let reader =
         logging::log_file_json::JsonLogFileReader::from_reader(bytes.0.lock().unwrap().as_slice())
             .unwrap();

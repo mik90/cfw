@@ -239,7 +239,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         let record = self.log.executions[self.cursor].clone();
         self.cursor += 1;
         self.report.mark_consumed();
-        let callback = self.log.descriptor.callbacks[record.callback_index]
+        let callback = self.log.descriptor.callbacks[record.callback_id.index()]
             .name
             .clone();
         let result =
@@ -284,9 +284,9 @@ impl<'storage> ExactReplayExecutor<'storage> {
         }
     }
     fn execute(&mut self, record: &ExecutionRecord) -> Result<ReplayStep, ReplayError> {
-        let descriptor = self.log.descriptor.callbacks[record.callback_index].clone();
+        let descriptor = self.log.descriptor.callbacks[record.callback_id.index()].clone();
         let name = descriptor.name;
-        let index = self.mapping[record.callback_index];
+        let index = self.mapping[record.callback_id.index()];
         let skipped = || ReplayStep {
             callback: name.clone(),
             time: record.execution_time,
@@ -387,7 +387,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                     callback: name.clone(),
                     reason: format!("capture: {e}"),
                 })?;
-            let indices = &self.publishers[record.callback_index][&port.ordinal];
+            let indices = &self.publishers[record.callback_id.index()][&port.ordinal];
             if let Some((header, _)) = actual
                 .iter()
                 .find(|(header, _)| header.publisher_index != indices.current)

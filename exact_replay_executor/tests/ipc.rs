@@ -119,7 +119,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
             .store_message(&input_name, &input_header(4, 1), b"11")
             .unwrap();
         let observed = task::recording::ObservedEvent {
-            callback_index: 0,
+            callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
             observed_at: at(5),
             event: task::recording::LoggedEvent {
                 ordinal: 2,

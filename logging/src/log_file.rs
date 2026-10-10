@@ -107,6 +107,10 @@ pub trait LogFileReader {
     fn artifact(&self, _name: &str) -> Option<&[u8]> {
         None
     }
+    #[cfg(feature = "serde")]
+    fn intern_tables(&self) -> Result<crate::InternTables, BoxedLogError> {
+        crate::intern_tables::decode_intern_tables(self.artifact(crate::INTERN_TABLES_ARTIFACT))
+    }
 
     fn iter(&self) -> LogEntryIter<'_>
     where

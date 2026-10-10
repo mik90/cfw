@@ -61,7 +61,7 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
             session.finish().unwrap();
         }
         let data = data.lock().unwrap();
-        assert_eq!(data.artifacts().len(), 1);
+        assert_eq!(data.artifacts().len(), 2);
         let payloads: Vec<_> = data
             .messages()
             .iter()

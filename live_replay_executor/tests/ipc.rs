@@ -149,7 +149,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
     let mut rows = vec![row(0, &channel, b"42")];
     for (index, count) in [(0, 3), (1, 5)] {
         let event = ObservedEvent {
-            callback_index: index,
+            callback_id: task::string_interner::CallbackId::from_index(index).unwrap(),
             observed_at: FrameworkTime::from_nanoseconds(0),
             event: LoggedEvent {
                 ordinal: 0,
@@ -165,10 +165,19 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
     }
     let reader = SortedLogStreamReader::from_entries(
         rows,
-        HashMap::from([(
-            EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
-            serde_json::to_vec(&descriptor).unwrap(),
-        )]),
+        HashMap::from([
+            (
+                EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
+                serde_json::to_vec(&descriptor).unwrap(),
+            ),
+            (
+                logging::INTERN_TABLES_ARTIFACT.into(),
+                serde_json::to_vec(&serde_json::json!({
+                    "channels": [channel], "callbacks": ["a", "b"]
+                }))
+                .unwrap(),
+            ),
+        ]),
     )
     .unwrap();
     let completion = LiveReplayExecutor::new(

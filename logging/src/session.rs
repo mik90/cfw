@@ -16,11 +16,19 @@ pub struct LogSession<'a> {
 }
 impl<'a> LogSession<'a> {
     pub fn new(writer: impl LogFileWriter + 'static, captures: Vec<Capture<'a>>) -> Self {
+        let registry = crate::intern_tables::Registry::new(captures.iter().map(Capture::channel));
+        Self::with_registry(writer, captures, registry)
+    }
+    pub(crate) fn with_registry(
+        writer: impl LogFileWriter + 'static,
+        captures: Vec<Capture<'a>>,
+        registry: crate::intern_tables::Registry,
+    ) -> Self {
         Self {
             captures,
             writer: Box::new(writer),
             recorder: None,
-            status: LogStatus::default(),
+            status: LogStatus::new(registry),
             policy: DiagnosticPolicy::Silent,
             finished: false,
         }
@@ -40,6 +48,7 @@ impl<'a> LogSession<'a> {
             .map(|c| c.channel().to_owned())
             .collect();
         self.attach_recording(recorder, channels)?;
+        self.start()?;
         Ok(self)
     }
     #[cfg(feature = "serde")]
@@ -54,17 +63,32 @@ impl<'a> LogSession<'a> {
         descriptor.logged_channels = channels;
         descriptor.logged_channels.sort();
         descriptor.logged_channels.dedup();
+        self.status.registry.configure(
+            recorder
+                .intern_tables()
+                .ok_or("recorder name tables missing")?,
+        )?;
+        self.status.registry.recording(descriptor)?;
         self.recorder = Some(recorder);
-        if let Err(error) = self.writer.write_artifact(
-            task::recording::EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
-            &serde_json::to_vec(&descriptor)?,
-        ) {
+        Ok(())
+    }
+    /// Supply graph tables before starting a standalone session. Scoped loggers
+    /// obtain them from the attached graph, and recorders supply them automatically.
+    pub fn with_intern_tables(self, tables: crate::InternTables) -> Result<Self, BoxedLogError> {
+        self.status.registry.configure(tables)?;
+        Ok(self)
+    }
+    /// Write intern tables first, then the execution descriptor when present.
+    /// Idempotent. Scope attachment and with_recording call this before returning;
+    /// capture-only sessions can call it explicitly or start on their first flush.
+    pub fn start(&mut self) -> Result<(), BoxedLogError> {
+        if let Err(error) = self.status.registry.start(self.writer.as_mut()) {
             let start = self.status.diagnostics().len();
             self.report(
-                DiagnosticKind::Descriptor,
+                DiagnosticKind::Artifact,
                 None,
                 None,
-                format!("execution descriptor: {error}"),
+                format!("logging startup artifacts: {error}"),
             );
             let _ = self.flush_impl(None, false);
             self.apply_policy(start, true);
@@ -85,12 +109,16 @@ impl<'a> LogSession<'a> {
         self.status.push(LogDiagnostic {
             kind,
             at,
-            channel: channel.map(str::to_owned),
+            channel: channel.map(|name| self.status.registry.channel(name)),
             header: None,
             error: error.to_string(),
         });
     }
     fn flush_inner(&mut self, at: Option<FrameworkTime>) -> Result<(), BoxedLogError> {
+        self.status
+            .registry
+            .start(self.writer.as_mut())
+            .inspect_err(|error| self.report(DiagnosticKind::Artifact, at, None, error))?;
         let mut first = None;
         for capture in &mut self.captures {
             let channel = capture.channel().to_owned();
@@ -114,10 +142,10 @@ impl<'a> LogSession<'a> {
                     .unwrap_or((DiagnosticKind::Capture, None));
                 self.status.push(LogDiagnostic {
                     kind,
-                    channel: Some(channel.clone()),
+                    channel: Some(self.status.registry.channel(&channel)),
                     at,
                     header,
-                    error: format!("capture '{channel}': {error}"),
+                    error: error.to_string(),
                 });
                 first.get_or_insert(error);
             }
@@ -183,6 +211,7 @@ impl<'a> LogSession<'a> {
         if errors.is_empty() {
             return Ok(());
         }
+        self.status.registry.start(self.writer.as_mut())?;
         let snapshot = crate::incompleteness::RecordingIncompleteness {
             captures: self.captures.iter().map(Capture::loss).collect(),
             recorder_entries_dropped: self.recorder.as_ref().map_or(0, ExecutionRecorder::dropped),
@@ -238,13 +267,17 @@ impl<'a> LogSession<'a> {
             DiagnosticPolicy::Print => {
                 use std::io::Write;
                 for diagnostic in new {
-                    let _ = writeln!(std::io::stderr().lock(), "{diagnostic}");
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "{}",
+                        self.status.format(diagnostic)
+                    );
                 }
             }
             DiagnosticPolicy::Panic
                 if allow_panic && !std::thread::panicking() && !new.is_empty() =>
             {
-                panic!("logging failure: {}", new[0])
+                panic!("logging failure: {}", self.status.format(&new[0]))
             }
             _ => {}
         }

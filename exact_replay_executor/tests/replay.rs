@@ -315,6 +315,13 @@ fn log_from(
     payloads: Vec<(&str, i64, Vec<u8>)>,
 ) -> Result<ReplayLog, ReplayError> {
     use task::{message::MessageHeader, recording::*};
+    let mut tables = InternTables::default();
+    for callback in &descriptor.callbacks {
+        tables.callbacks.intern(&callback.name);
+        for port in &callback.endpoints {
+            tables.channels.intern(&port.channel);
+        }
+    }
     let mut entries: Vec<_> = payloads
         .into_iter()
         .map(|(channel, time, serialized_body)| logging::OwnedLogEntry {
@@ -331,10 +338,16 @@ fn log_from(
     ReplayLog::from_sorted(
         logging::SortedLogStreamReader::from_entries(
             entries,
-            HashMap::from([(
-                EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
-                serde_json::to_vec(&descriptor).unwrap(),
-            )]),
+            HashMap::from([
+                (
+                    EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
+                    serde_json::to_vec(&descriptor).unwrap(),
+                ),
+                (
+                    INTERN_TABLES_ARTIFACT.into(),
+                    serde_json::to_vec(&tables).unwrap(),
+                ),
+            ]),
         )
         .unwrap(),
     )
@@ -353,7 +366,7 @@ fn missing_and_ambiguous_payloads_and_failed_records_cannot_claim_exactness() {
         .is_err()
     );
     let mut record = ExecutionRecord {
-        callback_index: 1,
+        callback_id: task::string_interner::CallbackId::from_index(1).unwrap(),
         execution_time: at(0),
         body_duration_ns: 1,
         inputs: vec![LoggedMessage {
@@ -433,7 +446,7 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
 
     let descriptor = recorded(true).descriptor_ref().clone();
     let record = ExecutionRecord {
-        callback_index: 0,
+        callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
         execution_time: at(0),
         body_duration_ns: 1,
         inputs: vec![],
@@ -468,7 +481,7 @@ fn publisher_lookup_and_batch_headers_are_validated_before_execution() {
         MessageHeader::new(at(1)),
     ] {
         let record = ExecutionRecord {
-            callback_index: 0,
+            callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
             execution_time: at(0),
             body_duration_ns: 0,
             inputs: vec![],

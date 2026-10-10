@@ -8,6 +8,23 @@ use std::{
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
 pub const EXECUTION_EVENT_CHANNEL: &str = "execution_events";
 pub const EXECUTION_LOG_DESCRIPTOR_ARTIFACT: &str = "execution_log_descriptor";
+pub const INTERN_TABLES_ARTIFACT: &str = "intern_tables";
+
+/// Persisted ID space shared by execution records and logging diagnostics.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct InternTables {
+    pub channels: crate::string_interner::ChannelNameInterner,
+    pub callbacks: crate::string_interner::CallbackNameInterner,
+}
+impl InternTables {
+    pub fn from_metadata(metadata: &crate::GraphMetadata) -> Self {
+        Self {
+            channels: (*metadata.channel_names).clone(),
+            callbacks: (*metadata.callback_names).clone(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -94,7 +111,7 @@ pub struct LoggedEvent {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObservedEvent {
-    pub callback_index: usize,
+    pub callback_id: crate::string_interner::CallbackId,
     pub observed_at: FrameworkTime,
     pub event: LoggedEvent,
 }
@@ -112,7 +129,7 @@ pub enum Outcome {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExecutionRecord {
-    pub callback_index: usize,
+    pub callback_id: crate::string_interner::CallbackId,
     pub execution_time: FrameworkTime,
     /// Measured body runtime, not simulator modeled occupancy.
     pub body_duration_ns: u64,
@@ -124,6 +141,7 @@ pub struct ExecutionRecord {
     pub outcome: Outcome,
 }
 struct State {
+    intern_tables: Option<InternTables>,
     attached: bool,
     descriptor: Option<ExecutionDescriptor>,
     records: VecDeque<ExecutionRecord>,
@@ -141,6 +159,7 @@ impl ExecutionRecorder {
         );
         Self(Arc::new(Mutex::new(State {
             attached: false,
+            intern_tables: None,
             descriptor: None,
             records: VecDeque::with_capacity(capacity),
             events: VecDeque::new(),
@@ -150,6 +169,9 @@ impl ExecutionRecorder {
     }
     pub fn descriptor(&self) -> Option<ExecutionDescriptor> {
         self.0.lock().unwrap().descriptor.clone()
+    }
+    pub fn intern_tables(&self) -> Option<InternTables> {
+        self.0.lock().unwrap().intern_tables.clone()
     }
     pub fn dropped(&self) -> usize {
         self.0.lock().unwrap().dropped
@@ -206,8 +228,10 @@ impl ExecutionRecorder {
                 return Err("recorder already attached".into());
             }
             state.attached = true;
+            state.intern_tables = Some(InternTables::from_metadata(graph.metadata()));
         }
         let mut descriptors = Vec::new();
+        let callback_names = graph.metadata().callback_names.clone();
         let graph = graph.try_map_callbacks(|index, name, callback| {
             let mode = options
                 .callbacks
@@ -234,6 +258,9 @@ impl ExecutionRecorder {
                 callback,
                 recorder: self.clone(),
                 index,
+                callback_id: callback_names
+                    .lookup_by_value(name)
+                    .expect("callback must be interned"),
                 active: None,
                 mode,
             }) as Box<dyn Callback + 'a>)
@@ -246,6 +273,7 @@ impl ExecutionRecorder {
     }
 }
 struct Recorded<'a> {
+    callback_id: crate::string_interner::CallbackId,
     mode: RecordingMode,
     callback: Box<dyn Callback + 'a>,
     recorder: ExecutionRecorder,
@@ -336,14 +364,14 @@ impl Callback for Recorded<'_> {
             );
             let previous = registration.observer.take();
             let recorder = self.recorder.clone();
-            let callback_index = self.index;
+            let callback_id = self.callback_id;
             let ordinal = port.ordinal;
             registration.observer = Some(Arc::new(move |observed_at, event| {
                 if let Some(previous) = &previous {
                     previous(observed_at, event);
                 }
                 recorder.observe_event(ObservedEvent {
-                    callback_index,
+                    callback_id,
                     observed_at,
                     event: LoggedEvent {
                         ordinal,
@@ -357,7 +385,7 @@ impl Callback for Recorded<'_> {
     }
     fn run(&mut self, context: &Context) -> Result<(), LoanError> {
         let mut record = ExecutionRecord {
-            callback_index: self.index,
+            callback_id: self.callback_id,
             execution_time: context.now(),
             body_duration_ns: 0,
             inputs: Vec::new(),

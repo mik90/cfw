@@ -300,7 +300,7 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
         logged_channels: vec![],
     };
     let event = ObservedEvent {
-        callback_index: 0,
+        callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
         observed_at: at(10),
         event: LoggedEvent {
             ordinal,
@@ -314,12 +314,30 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
             EXECUTION_EVENT_CHANNEL,
             &serde_json::to_vec(&event).unwrap(),
         )],
-        HashMap::from([(
-            EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
-            serde_json::to_vec(&descriptor).unwrap(),
-        )]),
+        descriptor_artifacts(&descriptor),
     )
     .unwrap()
+}
+fn descriptor_artifacts(
+    descriptor: &task::recording::ExecutionDescriptor,
+) -> HashMap<String, Vec<u8>> {
+    let mut tables = logging::InternTables::default();
+    for callback in &descriptor.callbacks {
+        tables.callbacks.intern(&callback.name);
+        for port in &callback.endpoints {
+            tables.channels.intern(&port.channel);
+        }
+    }
+    HashMap::from([
+        (
+            task::recording::EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
+            serde_json::to_vec(descriptor).unwrap(),
+        ),
+        (
+            logging::INTERN_TABLES_ARTIFACT.into(),
+            serde_json::to_vec(&tables).unwrap(),
+        ),
+    ])
 }
 #[test]
 fn events_validate_descriptors_targets_and_channel_filters() {
@@ -475,7 +493,8 @@ mod ipc {
                 10,
                 EXECUTION_EVENT_CHANNEL,
                 &serde_json::to_vec(&ObservedEvent {
-                    callback_index,
+                    callback_id: task::string_interner::CallbackId::from_index(callback_index)
+                        .unwrap(),
                     observed_at: at(10),
                     event: LoggedEvent {
                         ordinal: 0,
@@ -488,14 +507,8 @@ mod ipc {
         }
         rows.push(entry(10, &name, b"42"));
         rows.push(entry(15, "gate", b"7"));
-        let log = SortedLogStreamReader::from_entries(
-            rows,
-            HashMap::from([(
-                EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
-                serde_json::to_vec(&descriptor).unwrap(),
-            )]),
-        )
-        .unwrap();
+        let log =
+            SortedLogStreamReader::from_entries(rows, descriptor_artifacts(&descriptor)).unwrap();
         let mut simulation = LogSimulation::with_options(
             graph.build().unwrap(),
             log,
