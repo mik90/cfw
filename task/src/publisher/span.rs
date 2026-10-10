@@ -1,8 +1,8 @@
-use super::{LoanError, Publisher};
+use super::{LoanError, Publisher, allocate_output};
 use crate::message::Message;
-use base::arena::{ArenaPtr, ArenaPtrUninit};
+use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
 };
@@ -11,24 +11,29 @@ use std::{
 /// distinct arena slot. Outstanding and sent loans share the publisher's quota.
 /// Drop unsent handles to return their slots and quota before reserving again.
 pub struct OutputSpan<'output, 'storage, T> {
-    publisher: RefCell<&'output mut Publisher<'storage, T>>,
+    allocator: &'output ArenaAllocator<'storage, Message<T>>,
+    pending: &'output Cell<Vec<ArenaPtr<'storage, Message<T>>>>,
+    loan_capacity: usize,
+    pending_len: Cell<usize>,
     outstanding: Cell<usize>,
 }
 
 impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
     pub(super) fn new(publisher: &'output mut Publisher<'storage, T>) -> Self {
         Self {
-            publisher: RefCell::new(publisher),
+            allocator: &publisher.allocator,
+            loan_capacity: publisher.loan_capacity,
+            pending_len: Cell::new(publisher.pending.len()),
+            pending: Cell::from_mut(&mut publisher.pending),
             outstanding: Cell::new(0),
         }
     }
 
     pub fn loan_uninit(&self) -> Result<SpanOutputUninit<'_, 'output, 'storage, T>, LoanError> {
-        let mut publisher = self.publisher.borrow_mut();
-        if self.outstanding.get() >= publisher.loan_capacity - publisher.pending.len() {
+        if self.outstanding.get() >= self.loan_capacity - self.pending_len.get() {
             return Err(LoanError::LoanCapacityReached);
         }
-        let super::OutputUninit { ptr, .. } = publisher.loan_uninit()?;
+        let ptr = allocate_output(self.allocator)?;
         self.outstanding.set(self.outstanding.get() + 1);
         Ok(SpanOutputUninit {
             ptr,
@@ -38,6 +43,17 @@ impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
 
     pub fn loan(&self, value: T) -> Result<SpanOutput<'_, 'output, 'storage, T>, LoanError> {
         self.loan_uninit().map(|loan| loan.write(value))
+    }
+
+    fn enqueue(&self, ptr: ArenaPtr<'storage, Message<T>>) {
+        // The publisher exclusively lends its queue for the span's lifetime.
+        // Reservations enforce pending + outstanding <= loan_capacity, and the
+        // queue is preallocated to that capacity. Pushing this reserved slot
+        // cannot grow the allocation or invoke user code while the Cell is empty.
+        let mut pending = self.pending.take();
+        pending.push(ptr);
+        self.pending_len.set(pending.len());
+        self.pending.set(pending);
     }
 }
 
@@ -89,12 +105,7 @@ pub struct SpanOutput<'span, 'output, 'storage, T> {
 }
 impl<T> SpanOutput<'_, '_, '_, T> {
     pub fn send(self) {
-        self.reservation
-            .span
-            .publisher
-            .borrow_mut()
-            .pending
-            .push(self.ptr);
+        self.reservation.span.enqueue(self.ptr);
     }
 }
 impl<T> Deref for SpanOutput<'_, '_, '_, T> {

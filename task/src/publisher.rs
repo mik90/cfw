@@ -66,14 +66,7 @@ impl<'storage, T> Publisher<'storage, T> {
         if self.pending.len() >= self.loan_capacity {
             return Err(LoanError::LoanCapacityReached);
         }
-        let mut ptr = self
-            .allocator
-            .try_allocate_uninit()
-            .ok_or(LoanError::ArenaExhausted)?;
-        let message = ptr.payload_uninit().as_mut_ptr();
-        // SAFETY: This reservation exclusively owns storage. Raw field writes
-        // initialize the header without creating a reference to uninitialized T.
-        unsafe { (&raw mut (*message).header).write(MessageHeader::default()) };
+        let ptr = allocate_output(&self.allocator)?;
         Ok(OutputUninit {
             publisher: self,
             ptr,
@@ -142,6 +135,19 @@ impl<'storage, T> Publisher<'storage, T> {
             }
         }
     }
+}
+
+fn allocate_output<'storage, T>(
+    allocator: &ArenaAllocator<'storage, Message<T>>,
+) -> Result<ArenaPtrUninit<'storage, Message<T>>, LoanError> {
+    let mut ptr = allocator
+        .try_allocate_uninit()
+        .ok_or(LoanError::ArenaExhausted)?;
+    let message = ptr.payload_uninit().as_mut_ptr();
+    // SAFETY: This reservation exclusively owns storage. Raw field writes
+    // initialize the header without creating a reference to uninitialized T.
+    unsafe { (&raw mut (*message).header).write(MessageHeader::default()) };
+    Ok(ptr)
 }
 
 /// Exclusive in-place output reservation. A normal drop releases the slot
