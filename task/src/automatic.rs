@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 pub mod capture;
+pub mod replay;
 
 #[derive(Debug)]
 pub struct BuildError(pub String);
@@ -262,6 +263,7 @@ struct Channel {
 pub struct NamedPlan {
     channels: BTreeMap<String, Channel>,
     captures: BTreeMap<String, Box<dyn capture::CaptureDeclaration>>,
+    replay_sources: BTreeMap<String, Box<dyn replay::SourceDeclaration>>,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, (crate::iox2::Iox2ChannelPlan<()>, usize)>,
     #[cfg(feature = "iceoryx2")]

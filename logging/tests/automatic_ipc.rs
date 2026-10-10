@@ -11,6 +11,58 @@ use task::{
 };
 use task_macros::task_callback;
 
+#[test]
+#[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
+fn automatic_ipc_replay_injects_full_headers_without_notifications() {
+    use logging::{AutomaticReplayPlan, ReplayOptions};
+    use task::iox2::Iox2EventBindings;
+    struct NoWake;
+    impl task::wake::Wake for NoWake {
+        fn wake(&self) {}
+    }
+    let (data, event) = names();
+    let mut plan = NamedPlan::default();
+    let mut registration = TaskRegistration::new("ipc", Source, CallbackSchedule::default());
+    registration
+        .output_channel("output", &data)
+        .output_channel("notify", &event);
+    let _source = registration.register(&mut plan).unwrap();
+    assert_eq!(
+        plan.replayable_channels().collect::<Vec<_>>(),
+        [data.as_str()]
+    );
+    let events = plan.ipc::<Wire>(&data).unwrap().events(4);
+    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(2)).unwrap();
+    let replay = AutomaticReplayPlan::declare(&mut plan, [&data], &ReplayOptions::new(1)).unwrap();
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.bind().unwrap();
+    let mut listener = bindings
+        .ipc::<Wire>(&data)
+        .unwrap()
+        .take_event(&events)
+        .unwrap();
+    listener.set_waker(std::sync::Arc::new(NoWake));
+    let registration = listener.take_registration().unwrap();
+    let mut sources = replay.bind(&bindings).unwrap();
+    let mut captures = captures.bind(&bindings).unwrap();
+    let header = task::message::MessageHeader {
+        published_at: FrameworkTime::from_nanoseconds(17),
+        publisher_index: 8,
+        batch_index: 2,
+    };
+    sources[0].inject(header, &42_u64.to_le_bytes()).unwrap();
+    assert_eq!(
+        captures[0].drain_to_vec().unwrap(),
+        [(header, 42_u64.to_le_bytes().to_vec())]
+    );
+    let mut events = Vec::new();
+    registration
+        .listener
+        .try_wait(|event| events.push(event.id.as_value()))
+        .unwrap();
+    assert!(events.is_empty());
+}
+
 #[repr(C)]
 #[derive(Debug, Default, ZeroCopySend)]
 struct Wire(u64);

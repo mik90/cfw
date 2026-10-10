@@ -46,6 +46,15 @@ pub struct ReplaySource<'a> {
     inject: Inject<'a>,
 }
 impl<'a> ReplaySource<'a> {
+    pub(crate) fn from_serialized(
+        mut source: task::automatic::replay::SerializedSource<'a>,
+    ) -> Self {
+        Self {
+            channel: source.channel().into(),
+            payload_type: source.payload_type(),
+            inject: Box::new(move |header, bytes| source.inject(header, bytes)),
+        }
+    }
     /// Publish silently; replay drivers inject counted events separately.
     #[cfg(feature = "iceoryx2")]
     pub fn ipc<T>(publisher: task::iox2::Iox2Publisher<T>) -> Self

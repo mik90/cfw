@@ -1,4 +1,5 @@
 use logging::{AutomaticCapturePlan, CaptureOptions};
+use logging::{AutomaticReplayPlan, ReplayOptions};
 use task::{
     CallbackSchedule, InputSpan, LoanError, OutputSpan, Publisher,
     automatic::{NamedPlan, TaskRegistration},
@@ -22,6 +23,20 @@ impl Loggable for Value {
     }
 }
 struct Hidden;
+struct Contextual;
+impl Loggable for Contextual {
+    type Context<'a> = &'a u64;
+    fn serialize(&self, writer: &mut dyn std::io::Write) -> Result<(), SerializeError> {
+        writer.write_all(b"contextual")?;
+        Ok(())
+    }
+    fn deserialize_with_ctx<'a>(_: &[u8], _: &'a u64) -> Result<Self, DeserializeError>
+    where
+        Self: 'a,
+    {
+        Ok(Self)
+    }
+}
 struct Source(u64);
 #[task_callback]
 impl Source {
@@ -164,6 +179,184 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
         .unwrap()
         .step(FrameworkTime::from_nanoseconds(0))
         .unwrap();
+}
+
+#[test]
+fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
+    let mut plan = NamedPlan::default();
+    let mut tasks = Vec::new();
+    for name in ["first", "second"] {
+        let mut task = TaskRegistration::new(name, Sum, CallbackSchedule::default());
+        task.input_channel("input", "wire")
+            .output_channel("summary", format!("{name}_result"));
+        tasks.push(task.register(&mut plan).unwrap());
+    }
+    let replay = AutomaticReplayPlan::declare(
+        &mut plan,
+        ["wire", "wire", "unknown"],
+        &ReplayOptions::new(1).exclude("unknown"),
+    )
+    .unwrap();
+    assert_eq!(replay.channels(), ["wire"]);
+    assert!(plan.require("wire", true).is_err());
+    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(4)).unwrap();
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.bind().unwrap();
+    let mut sources = replay.bind(&bindings).unwrap();
+    let mut captures = captures.bind(&bindings).unwrap();
+    let mut graph = storage.graph_builder();
+    for task in tasks {
+        task.add_to_graph(&mut graph, &bindings);
+    }
+    let mut graph = graph.build().unwrap();
+    let header = task::message::MessageHeader {
+        published_at: FrameworkTime::from_nanoseconds(9),
+        publisher_index: 12,
+        batch_index: 3,
+    };
+    sources[0].inject(header, &10_u64.to_le_bytes()).unwrap();
+    sources[0]
+        .inject(
+            task::message::MessageHeader {
+                batch_index: 4,
+                ..header
+            },
+            &20_u64.to_le_bytes(),
+        )
+        .unwrap();
+    assert!(sources[0].inject(header, b"bad").is_err());
+    graph.step(FrameworkTime::from_nanoseconds(10)).unwrap();
+    for capture in &mut captures {
+        let messages = capture.drain_to_vec().unwrap();
+        if capture.channel() == "wire" {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].0, header);
+            assert_eq!(messages[1].0.batch_index, 4);
+        } else {
+            assert_eq!(Value::deserialize(&messages[0].1).unwrap().0, 30);
+        }
+    }
+}
+
+#[test]
+fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publishers() {
+    struct Consumer;
+    #[task_callback]
+    impl Consumer {
+        fn run(
+            &self,
+            input: InputSpan<Value>,
+            opaque: InputSpan<Hidden>,
+            contextual: InputSpan<Contextual>,
+        ) {
+            let _ = (input, opaque, contextual);
+        }
+    }
+    let mut plan = NamedPlan::default();
+    let _task = TaskRegistration::new("consumer", Consumer, CallbackSchedule::default())
+        .register(&mut plan)
+        .unwrap();
+    assert_eq!(plan.replayable_channels().collect::<Vec<_>>(), ["input"]);
+    assert_eq!(
+        plan.loggable_channels().collect::<Vec<_>>(),
+        ["contextual", "input"]
+    );
+    for channel in [
+        "opaque",
+        "contextual",
+        "missing",
+        task::recording::EXECUTION_LOG_CHANNEL,
+    ] {
+        assert!(
+            AutomaticReplayPlan::declare(&mut plan, ["input", channel], &ReplayOptions::new(1))
+                .is_err()
+        );
+    }
+    assert!(AutomaticReplayPlan::declare(&mut plan, ["input"], &ReplayOptions::new(0)).is_err());
+    let key = plan.native::<Value>("input").unwrap().publisher(1);
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.bind().unwrap();
+    assert_eq!(
+        bindings
+            .native::<Value>("input")
+            .unwrap()
+            .take_publisher(&key)
+            .unwrap()
+            .publisher_index(),
+        0
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn log_driven_source_selection_carries_exclusions_into_replay_feed() {
+    use logging::{OwnedLogEntry, SortedLogStreamReader};
+    use std::collections::HashMap;
+    let mut plan = NamedPlan::default();
+    let _task = TaskRegistration::new("sum", Sum, CallbackSchedule::default())
+        .register(&mut plan)
+        .unwrap();
+    let header = task::message::MessageHeader {
+        published_at: FrameworkTime::from_nanoseconds(5),
+        publisher_index: 2,
+        batch_index: 1,
+    };
+    let reader = SortedLogStreamReader::from_entries(
+        vec![
+            OwnedLogEntry {
+                channel_name: "input".into(),
+                header,
+                serialized_body: 42_u64.to_le_bytes().to_vec(),
+            },
+            OwnedLogEntry {
+                channel_name: "excluded".into(),
+                header,
+                serialized_body: vec![],
+            },
+        ],
+        HashMap::new(),
+    )
+    .unwrap();
+    let replay = AutomaticReplayPlan::from_log(
+        &mut plan,
+        &reader,
+        &ReplayOptions::new(1).exclude("excluded"),
+    )
+    .unwrap();
+    assert_eq!(replay.channels(), ["input"]);
+    let captures =
+        AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1).exclude("summary"))
+            .unwrap();
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.bind().unwrap();
+    let mut captures = captures.bind(&bindings).unwrap();
+    let mut feed = replay.bind_feed(&bindings, reader).unwrap();
+    feed.inject_due_while(header.published_at, |_, _, _| Ok(()), || true)
+        .unwrap();
+    assert!(feed.exhausted());
+    assert_eq!(
+        captures[0].drain_to_vec().unwrap(),
+        [(header, 42_u64.to_le_bytes().to_vec())]
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn log_driven_planning_rejects_incomplete_logs_before_allocating_sources() {
+    let mut plan = NamedPlan::default();
+    plan.native::<Value>("data").unwrap();
+    plan.register_replay_native::<Value>("data").unwrap();
+    let reader = logging::SortedLogStreamReader::from_entries(
+        vec![],
+        std::collections::HashMap::from([(
+            logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT.into(),
+            b"null".to_vec(),
+        )]),
+    )
+    .unwrap();
+    assert!(
+        matches!(AutomaticReplayPlan::from_log(&mut plan, &reader, &ReplayOptions::new(1)), Err(e) if e.to_string().contains("incomplete"))
+    );
 }
 
 #[cfg(feature = "serde")]

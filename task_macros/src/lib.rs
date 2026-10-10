@@ -665,6 +665,7 @@ fn automatic_registration(
         };
         if let Some(method) = capture_method {
             captures.push(quote!(::task::automatic::capture::CaptureProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
+            captures.push(quote!(::task::automatic::replay::DecodeProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
         }
     }
     quote! {
@@ -678,6 +679,7 @@ fn automatic_registration(
                 let __cfw_names: Vec<String> = vec![#(#channel_names),*];
                 let declaration = #declaration::from_keys(#(#keys),*);
                 use ::task::automatic::capture::MaybeCapture as _;
+                use ::task::automatic::replay::MaybeDecode as _;
                 #(#captures)*
                 Ok(Box::new(#factory { user: *self, declaration, names: __cfw_names }))
             }
