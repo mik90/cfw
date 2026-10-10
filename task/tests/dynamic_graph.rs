@@ -12,6 +12,64 @@ fn timestamp() -> FrameworkTime {
 }
 
 #[test]
+fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names() {
+    struct Infrastructure;
+    impl task::Callback for Infrastructure {
+        fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) {
+            visit("flush");
+        }
+        fn run(&mut self, context: &task::Context) -> Result<(), LoanError> {
+            assert!(context.channel_names().lookup_by_value("flush").is_some());
+            assert!(context.callback_names().lookup_by_value("logger").is_some());
+            Ok(())
+        }
+    }
+    let mut builder = GraphBuilder::new();
+    builder.add_callback("workload", || Ok(|_: FrameworkTime| Ok(())));
+    let graph = builder.build().unwrap();
+    let id = graph
+        .metadata()
+        .callback_names
+        .lookup_by_value("workload")
+        .unwrap();
+    let mut graph = graph
+        .append_callbacks([task::ScheduledCallback {
+            name: "logger".into(),
+            callback: Box::new(Infrastructure),
+            schedule: task::CallbackSchedule::default(),
+        }])
+        .unwrap();
+    assert_eq!(
+        graph
+            .metadata()
+            .callback_names
+            .lookup_by_value("workload")
+            .unwrap(),
+        id
+    );
+    graph.step(timestamp()).unwrap();
+    assert!(matches!(
+        graph.append_callbacks([task::ScheduledCallback {
+            name: "logger".into(),
+            callback: Box::new(Infrastructure),
+            schedule: task::CallbackSchedule::default(),
+        }]),
+        Err(GraphBuildError::DuplicateCallback(_))
+    ));
+    assert!(matches!(
+        GraphBuilder::new()
+            .build()
+            .unwrap()
+            .append_callbacks([task::ScheduledCallback {
+                name: "logger".into(),
+                callback: Box::new(Infrastructure),
+                schedule: task::CallbackSchedule::periodic(std::time::Duration::ZERO),
+            }]),
+        Err(GraphBuildError::ZeroPeriod(_))
+    ));
+}
+
+#[test]
 fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
     let mut declarations = [ChannelPlan::<u64>::new("a"), ChannelPlan::<u64>::new("b")];
     let first_input = declarations[0].subscriber(4);

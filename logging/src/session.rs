@@ -35,14 +35,24 @@ impl<'a> LogSession<'a> {
     }
     #[cfg(feature = "serde")]
     pub fn with_recording(mut self, recorder: ExecutionRecorder) -> Result<Self, BoxedLogError> {
-        let mut descriptor = recorder
-            .descriptor()
-            .ok_or("recorder must be attached before constructing the log session")?;
-        descriptor.logged_channels = self
+        let channels = self
             .captures
             .iter()
             .map(|capture| capture.channel().to_owned())
             .collect();
+        self.attach_recording(recorder, channels)?;
+        Ok(self)
+    }
+    #[cfg(feature = "serde")]
+    pub(crate) fn attach_recording(
+        &mut self,
+        recorder: ExecutionRecorder,
+        channels: Vec<String>,
+    ) -> Result<(), BoxedLogError> {
+        let mut descriptor = recorder
+            .descriptor()
+            .ok_or("recorder must be attached before constructing the log session")?;
+        descriptor.logged_channels = channels;
         descriptor.logged_channels.sort();
         descriptor.logged_channels.dedup();
         self.recorder = Some(recorder);
@@ -57,7 +67,7 @@ impl<'a> LogSession<'a> {
                 .push(format!("execution descriptor: {error}"));
             return Err(error);
         }
-        Ok(self)
+        Ok(())
     }
     pub fn status(&self) -> LogStatus {
         self.status.clone()

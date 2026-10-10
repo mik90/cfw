@@ -13,7 +13,9 @@ pub mod replay_feed;
 pub mod replay_source;
 #[cfg(feature = "serde")]
 pub use replay_feed::ReplayFeed;
+pub mod scheduled;
 pub mod session;
+pub use scheduled::{FlushEventPlan, FlushTrigger, LoggingScope, LoggingStatus};
 #[cfg(feature = "serde")]
 pub mod sorted_log_stream;
 #[cfg(feature = "serde")]

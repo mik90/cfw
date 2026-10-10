@@ -153,6 +153,36 @@ pub struct BuiltGraph<'storage> {
 }
 
 impl<'storage> BuiltGraph<'storage> {
+    /// Append infrastructure callbacks without changing existing callback indices.
+    pub fn append_callbacks(
+        mut self,
+        callbacks: impl IntoIterator<Item = ScheduledCallback<'storage>>,
+    ) -> Result<Self, GraphBuildError> {
+        let callbacks: Vec<_> = callbacks.into_iter().collect();
+        let mut names: HashSet<_> = self
+            .callbacks
+            .iter()
+            .map(|node| node.name.clone())
+            .collect();
+        for node in &callbacks {
+            if node.schedule.period.is_some_and(|period| period.is_zero()) {
+                return Err(GraphBuildError::ZeroPeriod(node.name.clone()));
+            }
+            if !names.insert(node.name.clone()) {
+                return Err(GraphBuildError::DuplicateCallback(node.name.clone()));
+            }
+        }
+        for node in &callbacks {
+            Arc::make_mut(&mut self.metadata.callback_names).intern(&node.name);
+            node.callback.visit_channel_names(&mut |channel| {
+                if !channel.is_empty() {
+                    Arc::make_mut(&mut self.metadata.channel_names).intern(channel);
+                }
+            });
+        }
+        self.callbacks.extend(callbacks);
+        Ok(self)
+    }
     pub fn try_map_callbacks<E>(
         self,
         mut map: impl FnMut(
