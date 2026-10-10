@@ -557,10 +557,6 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     pub fn publisher_index(&self) -> u32 {
         self.publisher_index
     }
-    /// Restore the channel-local recorded index when constructing exact replay.
-    pub fn set_publisher_index(&mut self, index: u32) {
-        self.publisher_index = index;
-    }
     pub fn observe(&mut self, observer: impl FnMut(&Message<T>) + Send + 'static) {
         self.observers.push(Box::new(observer));
     }

@@ -58,7 +58,7 @@ impl<'storage, T> Publisher<'storage, T> {
     pub fn publisher_index(&self) -> u32 {
         self.publisher_index
     }
-    /// Configure an unplanned publisher, or restore its recorded index for replay.
+    /// Configure the channel-local index of an unplanned publisher.
     /// Planned endpoints receive their index automatically during binding.
     pub fn set_publisher_index(&mut self, index: u32) {
         self.publisher_index = index;

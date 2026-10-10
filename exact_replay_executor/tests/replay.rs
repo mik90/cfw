@@ -65,6 +65,23 @@ impl Source {
         if self.mode == 3 {
             panic!("callback panic");
         }
+        if self.mode == 5 {
+            output.set_publisher_index(999);
+        }
+        if matches!(self.mode, 6 | 7) {
+            let header = task::message::MessageHeader {
+                published_at: if self.mode == 6 {
+                    at(context.now().to_nanoseconds() + 1)
+                } else {
+                    context.now()
+                },
+                publisher_index: output.publisher_index(),
+                batch_index: u32::from(self.mode == 7),
+            };
+            output.publish_with_header(header, Value(self.next))?;
+            self.next += 1;
+            return Ok(());
+        }
         if self.mode != 2 {
             output.publish(Value(if self.mode == 4 { u64::MAX } else { self.next }))?;
         }
@@ -205,6 +222,35 @@ fn logged_and_reproduced_channels_replay_nonclone_payloads() {
             },
         );
     }
+}
+
+#[test]
+fn publisher_translation_does_not_mask_invalid_publisher_time_or_batch_indices() {
+    for mode in [5, 6, 7] {
+        replay(
+            recorded(false),
+            2,
+            mode,
+            DivergencePolicy::Strict,
+            |mut executor| {
+                assert!(matches!(executor.run(), Err(ReplayError::Divergence(_))));
+                assert!(!executor.replay_report().is_exact());
+            },
+        );
+    }
+    replay(
+        recorded(false),
+        2,
+        5,
+        DivergencePolicy::BestEffort,
+        |mut executor| {
+            let report = executor.run().unwrap();
+            assert!(!report.is_exact());
+            assert_eq!(report.mismatch_count(), 2);
+            assert_eq!(report.gap_count(), 2);
+            assert_eq!(report.reproduced_count(), 0);
+        },
+    );
 }
 #[test]
 fn strict_stops_and_best_effort_collects_byte_count_and_missing_output_mismatches() {

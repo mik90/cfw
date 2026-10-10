@@ -187,9 +187,6 @@ struct Recorded<'a> {
     active: Option<ExecutionRecord>,
 }
 impl Callback for Recorded<'_> {
-    fn set_replay_publisher_index(&mut self, ordinal: usize, index: u32) -> Result<(), LoanError> {
-        self.callback.set_replay_publisher_index(ordinal, index)
-    }
     fn enable_exact_replay(&mut self) -> Result<(), LoanError> {
         self.callback.enable_exact_replay()
     }

@@ -70,9 +70,15 @@ pub struct ReplayStep {
     pub executed: bool,
 }
 
+struct PublisherIndices {
+    current: u32,
+    recorded: u32,
+}
+
 pub struct ExactReplayExecutor<'storage> {
     callbacks: Vec<Box<dyn Callback + 'storage>>,
     mapping: Vec<usize>,
+    publishers: Vec<BTreeMap<usize, PublisherIndices>>,
     metadata: GraphMetadata,
     log: ReplayLog,
     bindings: ReplayBindings<'storage>,
@@ -109,6 +115,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             ));
         }
         let mut mapping = Vec::new();
+        let mut publishers = Vec::new();
         let mut inputs = HashSet::new();
         let mut outputs = HashSet::new();
         for descriptor in &log.descriptor.callbacks {
@@ -127,13 +134,20 @@ impl<'storage> ExactReplayExecutor<'storage> {
             let mut expected = descriptor.endpoints.clone();
             actual.sort_by_key(|p| (p.direction == Direction::Published, p.ordinal));
             expected.sort_by_key(|p| (p.direction == Direction::Published, p.ordinal));
-            // Publisher declaration order may differ in the replay plan.
-            for port in &mut actual {
-                if port.publisher_index.is_some() {
-                    port.publisher_index = expected
-                        .iter()
-                        .find(|p| p.direction == port.direction && p.ordinal == port.ordinal)
-                        .and_then(|p| p.publisher_index);
+            let mut publisher_indices = BTreeMap::new();
+            // Only publisher storage indices may differ between endpoint layouts.
+            for (port, recorded) in actual.iter_mut().zip(&expected) {
+                if let (Some(current), Some(index)) =
+                    (port.publisher_index, recorded.publisher_index)
+                {
+                    publisher_indices.insert(
+                        recorded.ordinal,
+                        PublisherIndices {
+                            current,
+                            recorded: index,
+                        },
+                    );
+                    port.publisher_index = Some(index);
                 }
             }
             if actual != expected {
@@ -162,15 +176,6 @@ impl<'storage> ExactReplayExecutor<'storage> {
                         inputs.insert(key);
                     }
                     Direction::Published => {
-                        nodes[index]
-                            .callback
-                            .set_replay_publisher_index(
-                                port.ordinal,
-                                port.publisher_index.expect("validated data output index"),
-                            )
-                            .map_err(|e| {
-                                ReplayError::Setup(format!("publisher mapping for {key:?}: {e:?}"))
-                            })?;
                         let capture = bindings.outputs.get(&key).ok_or_else(|| {
                             ReplayError::Setup(format!("missing output capture {key:?}"))
                         })?;
@@ -189,6 +194,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 ReplayError::Setup(format!("callback '{}': {e:?}", descriptor.name))
             })?;
             mapping.push(index);
+            publishers.push(publisher_indices);
         }
         if inputs.len() != bindings.inputs.len() || outputs.len() != bindings.outputs.len() {
             return Err(ReplayError::Setup(
@@ -205,6 +211,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         Ok(Self {
             callbacks: nodes.into_iter().map(|n| n.callback).collect(),
             mapping,
+            publishers,
             metadata,
             log,
             bindings,
@@ -370,7 +377,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             .iter()
             .filter(|p| p.direction == Direction::Published && p.transport != Transport::Event)
         {
-            let actual = self
+            let mut actual = self
                 .bindings
                 .outputs
                 .get_mut(&(name.clone(), port.ordinal))
@@ -380,6 +387,24 @@ impl<'storage> ExactReplayExecutor<'storage> {
                     callback: name.clone(),
                     reason: format!("capture: {e}"),
                 })?;
+            let indices = &self.publishers[record.callback_index][&port.ordinal];
+            if let Some((header, _)) = actual
+                .iter()
+                .find(|(header, _)| header.publisher_index != indices.current)
+            {
+                self.mismatch(
+                    &port.channel,
+                    format!(
+                        "'{name}' publisher {} captured index {}, expected current index {}",
+                        port.ordinal, header.publisher_index, indices.current
+                    ),
+                )?;
+                // A misattributed port cannot safely populate reproduced/source caches.
+                continue;
+            }
+            for (header, _) in &mut actual {
+                header.publisher_index = indices.recorded;
+            }
             let expected: Vec<_> = record
                 .outputs
                 .iter()

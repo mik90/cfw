@@ -5,14 +5,6 @@ use crate::{Context, LoanError, Publisher, Subscriber};
 /// Executors invoke `execute_callback` or `execute_callback_batch` rather than
 /// calling `run` directly.
 pub trait Callback: Send {
-    /// Restore a data output port's recorded channel-local publisher index.
-    fn set_replay_publisher_index(
-        &mut self,
-        _ordinal: usize,
-        _index: u32,
-    ) -> Result<(), LoanError> {
-        Err(LoanError::Transport("unknown replay publisher port".into()))
-    }
     /// Isolate framework-managed outputs from live channel delivery.
     fn enable_exact_replay(&mut self) -> Result<(), LoanError> {
         Err(LoanError::Transport(

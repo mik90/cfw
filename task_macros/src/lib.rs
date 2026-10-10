@@ -328,7 +328,6 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let mut replay_resets = Vec::new();
     let mut replay_isolation = Vec::new();
     let mut replay_events = Vec::new();
-    let mut replay_publishers = Vec::new();
     let mut key_accessors = Vec::new();
     for port in ports {
         let Port {
@@ -376,8 +375,6 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             _ => quote!(Native),
         };
         let publisher_index = if !receiving && !matches!(kind, PortKind::IoxNotifier) {
-            replay_publishers
-                .push(quote!(#ordinal => { self.#name.set_publisher_index(index); Ok(()) },));
             quote!(Some(self.#name.publisher_index()))
         } else {
             quote!(None)
@@ -551,9 +548,6 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         }
         impl<'storage> ::task::Callback for #callback<'storage> {
-            fn set_replay_publisher_index(&mut self, ordinal: usize, index: u32) -> Result<(), ::task::LoanError> {
-                match ordinal { #(#replay_publishers)* _ => Err(::task::LoanError::Transport("unknown replay publisher port".into())) }
-            }
             fn enable_exact_replay(&mut self) -> Result<(), ::task::LoanError> { #(#replay_isolation)* Ok(()) }
             fn clear_replay_inputs(&mut self) -> Result<(), ::task::LoanError> { #(#replay_resets)* Ok(()) }
             fn stage_replay_event(&mut self, ordinal: usize, event_id: usize, count: u64) -> Result<(), ::task::LoanError> {
