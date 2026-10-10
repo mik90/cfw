@@ -1,13 +1,42 @@
 //! Owned execution metadata; recording never retains endpoint/storage borrows.
 use crate::{Callback, Context, LoanError, message::MessageHeader, time::FrameworkTime};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
     time::Instant,
 };
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
 pub const EXECUTION_EVENT_CHANNEL: &str = "execution_events";
 pub const EXECUTION_LOG_DESCRIPTOR_ARTIFACT: &str = "execution_log_descriptor";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RecordingMode {
+    /// Execute normally without recording invocations or observed events.
+    Off,
+    /// Record callback identity, execution time, body duration and outcome only.
+    DurationOnly,
+    /// Also record input/output publication identities and events for exact replay.
+    #[default]
+    Full,
+}
+#[derive(Debug, Clone, Default)]
+pub struct RecordingOptions {
+    pub default_mode: RecordingMode,
+    pub callbacks: BTreeMap<String, RecordingMode>,
+}
+impl RecordingOptions {
+    pub fn new(default_mode: RecordingMode) -> Self {
+        Self {
+            default_mode,
+            callbacks: BTreeMap::new(),
+        }
+    }
+    pub fn with_callback(mut self, name: impl Into<String>, mode: RecordingMode) -> Self {
+        self.callbacks.insert(name.into(), mode);
+        self
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -37,6 +66,8 @@ pub struct EndpointDescriptor {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CallbackDescriptor {
     pub name: String,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub recording_mode: RecordingMode,
     pub endpoints: Vec<EndpointDescriptor>,
 }
 #[derive(Debug, Clone)]
@@ -150,6 +181,25 @@ impl ExecutionRecorder {
         &self,
         graph: crate::BuiltGraph<'a>,
     ) -> Result<crate::BuiltGraph<'a>, String> {
+        self.attach_with_options(graph, RecordingOptions::default())
+    }
+    /// Per-name overrides take precedence over the global mode. Payload capture
+    /// is configured independently. Unknown callback names are rejected.
+    pub fn attach_with_options<'a>(
+        &self,
+        graph: crate::BuiltGraph<'a>,
+        options: RecordingOptions,
+    ) -> Result<crate::BuiltGraph<'a>, String> {
+        for name in options.callbacks.keys() {
+            if graph
+                .metadata()
+                .callback_names
+                .lookup_by_value(name)
+                .is_none()
+            {
+                return Err(format!("unknown recording callback '{name}'"));
+            }
+        }
         {
             let mut state = self.0.lock().unwrap();
             if state.attached {
@@ -159,18 +209,33 @@ impl ExecutionRecorder {
         }
         let mut descriptors = Vec::new();
         let graph = graph.try_map_callbacks(|index, name, callback| {
-            let endpoints = callback.recording_endpoints().ok_or_else(|| {
-                format!("callback '{name}' does not implement recording metadata")
-            })?;
+            let mode = options
+                .callbacks
+                .get(name)
+                .copied()
+                .unwrap_or(options.default_mode);
+            let endpoints = match (mode, callback.recording_endpoints()) {
+                (RecordingMode::Full, None) => {
+                    return Err(format!(
+                        "callback '{name}' does not implement recording metadata"
+                    ));
+                }
+                (_, endpoints) => endpoints.unwrap_or_default(),
+            };
             descriptors.push(CallbackDescriptor {
                 name: name.into(),
+                recording_mode: mode,
                 endpoints,
             });
+            if mode == RecordingMode::Off {
+                return Ok(callback);
+            }
             Ok::<_, String>(Box::new(Recorded {
                 callback,
                 recorder: self.clone(),
                 index,
                 active: None,
+                mode,
             }) as Box<dyn Callback + 'a>)
         })?;
         self.0.lock().unwrap().descriptor = Some(ExecutionDescriptor {
@@ -181,6 +246,7 @@ impl ExecutionRecorder {
     }
 }
 struct Recorded<'a> {
+    mode: RecordingMode,
     callback: Box<dyn Callback + 'a>,
     recorder: ExecutionRecorder,
     index: usize,
@@ -240,6 +306,9 @@ impl Callback for Recorded<'_> {
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         let mut registrations = self.callback.take_iox2_events();
+        if self.mode != RecordingMode::Full {
+            return registrations;
+        }
         let ports: Vec<_> = {
             let state = self.recorder.0.lock().unwrap();
             state
@@ -297,10 +366,12 @@ impl Callback for Recorded<'_> {
             outputs: Vec::new(),
             outcome: Outcome::Cancelled,
         };
-        self.callback
-            .visit_prepared_messages(&mut |message| record.inputs.push(message));
-        self.callback
-            .visit_prepared_events(&mut |event| record.events.push(event));
+        if self.mode == RecordingMode::Full {
+            self.callback
+                .visit_prepared_messages(&mut |message| record.inputs.push(message));
+            self.callback
+                .visit_prepared_events(&mut |event| record.events.push(event));
+        }
         let start = Instant::now();
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.callback.run(context)));
@@ -317,7 +388,9 @@ impl Callback for Recorded<'_> {
         }
     }
     fn flush_outputs(&mut self, time: FrameworkTime) {
-        if let Some(record) = &mut self.active {
+        if self.mode == RecordingMode::Full
+            && let Some(record) = &mut self.active
+        {
             self.callback.visit_pending_messages(&mut |mut message| {
                 message.header.published_at = time;
                 record.outputs.push(message);

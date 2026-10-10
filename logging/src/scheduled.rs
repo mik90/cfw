@@ -26,6 +26,18 @@ pub struct LoggingStatus {
     shards: Vec<LogStatus>,
 }
 impl LoggingStatus {
+    pub fn diagnostics(&self) -> Vec<(usize, crate::LogDiagnostic)> {
+        self.shards
+            .iter()
+            .enumerate()
+            .flat_map(|(index, status)| {
+                status
+                    .diagnostics()
+                    .into_iter()
+                    .map(move |diagnostic| (index, diagnostic))
+            })
+            .collect()
+    }
     pub fn errors(&self) -> Vec<String> {
         self.shards
             .iter()
@@ -209,6 +221,17 @@ impl<'storage> LoggingScope<'storage> {
         self.pool = pool;
         self
     }
+    pub fn with_diagnostic_policy(mut self, policy: crate::DiagnosticPolicy) -> Self {
+        for session in &mut self.sessions {
+            session
+                .get_mut()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_mut()
+                .unwrap()
+                .set_diagnostic_policy(policy);
+        }
+        self
+    }
     /// Attach the recorder to the workload graph first, then configure this scope,
     /// then append logger callbacks. Only shard zero drains recording metadata.
     #[cfg(feature = "serde")]
@@ -336,7 +359,7 @@ impl Callback for LogTask<'_, '_> {
     fn required_inputs_ready(&self) -> bool {
         self.trigger.as_ref().is_none_or(FlushTrigger::ready)
     }
-    fn run(&mut self, _: &Context) -> Result<(), LoanError> {
+    fn run(&mut self, context: &Context) -> Result<(), LoanError> {
         if let Some(trigger) = &self.trigger {
             trigger.clear();
         }
@@ -349,7 +372,7 @@ impl Callback for LogTask<'_, '_> {
         let _ = session
             .as_mut()
             .expect("logging session must outlive its graph")
-            .flush();
+            .flush_at(context.now);
         Ok(())
     }
     #[cfg(feature = "iceoryx2")]

@@ -13,8 +13,10 @@ pub mod replay_feed;
 pub mod replay_source;
 #[cfg(feature = "serde")]
 pub use replay_feed::ReplayFeed;
+pub mod diagnostics;
 pub mod scheduled;
 pub mod session;
+pub use diagnostics::{DiagnosticKind, DiagnosticPolicy, LogDiagnostic};
 pub use scheduled::{FlushEventPlan, FlushTrigger, LoggingScope, LoggingStatus};
 #[cfg(feature = "serde")]
 pub mod sorted_log_stream;
@@ -26,7 +28,10 @@ pub mod testing;
 pub use capture::{Capture, CapturePlan};
 pub use replay_source::{ReplaySource, ReplaySourcePlan};
 pub use session::{LogSession, LogStatus};
-pub use task::recording::{ExecutionDescriptor, ExecutionRecord, ExecutionRecorder, ObservedEvent};
+pub use task::recording::{
+    ExecutionDescriptor, ExecutionRecord, ExecutionRecorder, ObservedEvent, RecordingMode,
+    RecordingOptions,
+};
 #[cfg(feature = "testing")]
 pub use testing::InMemoryWriter;
 

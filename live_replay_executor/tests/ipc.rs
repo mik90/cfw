@@ -132,6 +132,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
         callbacks: ["a", "b"]
             .into_iter()
             .map(|name| CallbackDescriptor {
+                recording_mode: task::recording::RecordingMode::Full,
                 name: name.into(),
                 endpoints: vec![EndpointDescriptor {
                     ordinal: 0,

@@ -8,6 +8,37 @@ use std::{collections::BTreeSet, marker::PhantomData};
 pub type CaptureError = Box<dyn std::error::Error + Send + Sync>;
 pub type CaptureVisitor<'a> = dyn FnMut(MessageHeader, &[u8]) -> Result<(), CaptureError> + 'a;
 
+#[derive(Debug, Clone, Copy)]
+pub enum CaptureFailureKind {
+    Overflow,
+    Serialization,
+    Write,
+    Receive,
+}
+#[derive(Debug)]
+pub struct CaptureFailure {
+    pub kind: CaptureFailureKind,
+    pub header: Option<MessageHeader>,
+    pub error: String,
+}
+impl std::fmt::Display for CaptureFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.error)
+    }
+}
+impl std::error::Error for CaptureFailure {}
+fn failure(
+    kind: CaptureFailureKind,
+    header: Option<MessageHeader>,
+    error: impl ToString,
+) -> CaptureError {
+    Box::new(CaptureFailure {
+        kind,
+        header,
+        error: error.to_string(),
+    })
+}
+
 /// An already-bound serialized subscriber; payloads never pass through Any.
 pub trait SerializedCapture: Send {
     fn channel(&self) -> &str;
@@ -44,16 +75,23 @@ impl<T: Loggable + Send + Sync> SerializedCapture for NativeCapture<'_, T> {
         let messages: Vec<_> = self.subscriber.input().drain().collect();
         let (writer, reader, _) = self.loss_counts();
         if writer != 0 || reader != 0 {
-            return Err(format!(
-                "capture '{}' overflowed (writer {writer}, reader {reader})",
-                self.channel()
-            )
-            .into());
+            return Err(failure(
+                CaptureFailureKind::Overflow,
+                None,
+                format!(
+                    "capture '{}' overflowed (writer {writer}, reader {reader})",
+                    self.channel()
+                ),
+            ));
         }
         for message in messages {
             self.scratch.clear();
-            message.message.serialize(&mut self.scratch)?;
-            visit(message.header, &self.scratch)?;
+            message
+                .message
+                .serialize(&mut self.scratch)
+                .map_err(|e| failure(CaptureFailureKind::Serialization, Some(message.header), e))?;
+            visit(message.header, &self.scratch)
+                .map_err(|e| failure(CaptureFailureKind::Write, Some(message.header), e))?;
         }
         Ok(())
     }
@@ -255,15 +293,23 @@ mod ipc {
         fn drain(&mut self, visit: &mut CaptureVisitor<'_>) -> Result<(), CaptureError> {
             self.0.update();
             if self.0.receive_errors() != 0 {
-                return Err("IPC capture receive error".into());
+                return Err(failure(
+                    CaptureFailureKind::Receive,
+                    None,
+                    "IPC capture receive error",
+                ));
             }
             let mut result = Ok(());
             self.0.inspect_messages(|_, message| {
                 if result.is_ok() {
                     result = (|| {
                         let mut body = Vec::new();
-                        message.message.serialize(&mut body)?;
-                        visit(message.header, &body)
+                        message.message.serialize(&mut body).map_err(|e| {
+                            failure(CaptureFailureKind::Serialization, Some(message.header), e)
+                        })?;
+                        visit(message.header, &body).map_err(|e| {
+                            failure(CaptureFailureKind::Write, Some(message.header), e)
+                        })
                     })();
                 }
             });

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use task::{message::MessageHeader, recording::*, time::FrameworkTime};
 
 pub(crate) type Identity = (String, MessageHeader);
+
 pub struct ReplayLog {
     pub(crate) descriptor: ExecutionDescriptor,
     pub(crate) executions: Vec<ExecutionRecord>,
@@ -50,6 +51,12 @@ impl ReplayLog {
         let mut names = HashSet::new();
         let mut publishers = HashSet::new();
         for callback in &descriptor.callbacks {
+            if callback.recording_mode != RecordingMode::Full {
+                return Err(ReplayError::InvalidLog(format!(
+                    "callback '{}' was not fully recorded",
+                    callback.name
+                )));
+            }
             if !names.insert(&callback.name) {
                 return Err(ReplayError::InvalidLog("duplicate callback name".into()));
             }
@@ -278,5 +285,33 @@ impl ReplayLog {
     }
     pub fn descriptor_ref(&self) -> &ExecutionDescriptor {
         &self.descriptor
+    }
+}
+
+#[cfg(test)]
+mod recording_mode_tests {
+    use super::*;
+    #[test]
+    fn reduced_recording_is_not_an_exact_trace() {
+        for mode in [
+            RecordingMode::Off,
+            RecordingMode::DurationOnly,
+            RecordingMode::Full,
+        ] {
+            let descriptor = ExecutionDescriptor {
+                callbacks: vec![CallbackDescriptor {
+                    name: "work".into(),
+                    recording_mode: mode,
+                    endpoints: vec![],
+                }],
+                logged_channels: vec![],
+            };
+            let bytes = serde_json::to_vec(&descriptor).unwrap();
+            let result = ReplayLog::descriptor(Some(&bytes));
+            assert_eq!(result.is_ok(), mode == RecordingMode::Full);
+            if let Err(error) = result {
+                assert!(error.to_string().contains("not fully recorded"));
+            }
+        }
     }
 }

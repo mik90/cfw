@@ -27,6 +27,138 @@ fn at(n: i64) -> FrameworkTime {
 fn header(n: i64) -> MessageHeader {
     MessageHeader::new(at(n))
 }
+
+#[test]
+fn recording_modes_preserve_execution_and_select_metadata() {
+    use task::recording::{RecordingMode, RecordingOptions};
+    for default in [
+        RecordingMode::Off,
+        RecordingMode::DurationOnly,
+        RecordingMode::Full,
+    ] {
+        let mut plan = task::automatic::NamedPlan::default();
+        let tasks: Vec<_> = ["default", "off", "duration", "full"]
+            .into_iter()
+            .map(|name| {
+                task::automatic::TaskRegistration::new(
+                    name,
+                    Source { fail: 0 },
+                    CallbackSchedule::default(),
+                )
+                .register(&mut plan)
+                .unwrap()
+            })
+            .collect();
+        let storage = plan.allocate().unwrap();
+        let bindings = storage.bind().unwrap();
+        let mut graph = storage.graph_builder();
+        for task in tasks {
+            task.add_to_graph(&mut graph, &bindings);
+        }
+        let recorder = ExecutionRecorder::new(4);
+        let options = RecordingOptions::new(default)
+            .with_callback("off", RecordingMode::Off)
+            .with_callback("duration", RecordingMode::DurationOnly)
+            .with_callback("full", RecordingMode::Full);
+        let mut graph = recorder
+            .attach_with_options(graph.build().unwrap(), options)
+            .unwrap();
+        graph.step(at(7)).unwrap();
+        let records = recorder.drain();
+        assert_eq!(
+            records.len(),
+            if default == RecordingMode::Off { 2 } else { 3 }
+        );
+        let descriptor = recorder.descriptor().unwrap();
+        for record in records {
+            assert_eq!(record.execution_time, at(7));
+            assert_eq!(record.outcome, Outcome::Committed);
+            assert_eq!(
+                record.outputs.len(),
+                usize::from(
+                    descriptor.callbacks[record.callback_index].recording_mode
+                        == RecordingMode::Full
+                )
+            );
+        }
+        assert_eq!(descriptor.callbacks[0].recording_mode, default);
+        assert_eq!(descriptor.callbacks[1].recording_mode, RecordingMode::Off);
+    }
+}
+
+#[test]
+fn reduced_recording_does_not_visit_payloads_and_retains_failure_outcomes() {
+    use task::recording::{RecordingMode, RecordingOptions};
+    struct Bare;
+    impl task::Callback for Bare {
+        fn run(&mut self, _: &task::Context) -> Result<(), LoanError> {
+            Err(LoanError::LoanCapacityReached)
+        }
+        fn visit_prepared_messages(&self, _: &mut dyn FnMut(task::recording::LoggedMessage)) {
+            panic!("payload visitation disabled");
+        }
+    }
+    for mode in [RecordingMode::Off, RecordingMode::DurationOnly] {
+        let mut graph = GraphBuilder::new();
+        graph.add_callback("bare", || Ok(Bare));
+        let recorder = ExecutionRecorder::new(1);
+        let mut graph = recorder
+            .attach_with_options(graph.build().unwrap(), RecordingOptions::new(mode))
+            .unwrap();
+        assert!(graph.step(at(1)).is_err());
+        let records = recorder.drain();
+        assert_eq!(
+            records.len(),
+            usize::from(mode == RecordingMode::DurationOnly)
+        );
+        if let Some(record) = records.first() {
+            assert!(matches!(record.outcome, Outcome::BodyError(_)));
+        }
+    }
+}
+
+#[test]
+fn diagnostic_policies_keep_channel_time_header_and_flush_before_panic() {
+    use logging::{DiagnosticKind, DiagnosticPolicy};
+    for policy in [
+        DiagnosticPolicy::Silent,
+        DiagnosticPolicy::Print,
+        DiagnosticPolicy::Panic,
+    ] {
+        let mut plan = ChannelPlan::<u64>::new("diagnostic-output");
+        let source = ReplaySourcePlan::declare(&mut plan, 1);
+        let capture = CapturePlan::declare(&mut plan, 1);
+        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let bindings = storage.channels().build();
+        source
+            .bind(&bindings)
+            .unwrap()
+            .inject(header(5), b"42")
+            .unwrap();
+        let flushes = Arc::new(AtomicUsize::new(0));
+        let mut log = LogSession::new(
+            FailingWriter {
+                flushes: flushes.clone(),
+                panic: false,
+            },
+            vec![capture.bind(&bindings).unwrap()],
+        )
+        .with_diagnostic_policy(policy);
+        let status = log.status();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| log.flush_at(at(9))));
+        assert_eq!(result.is_err(), policy == DiagnosticPolicy::Panic);
+        if let Ok(result) = result {
+            assert!(result.is_err());
+        }
+        assert_eq!(flushes.load(Ordering::SeqCst), 2);
+        let diagnostics = status.diagnostics();
+        assert_eq!(diagnostics[0].kind, DiagnosticKind::Write);
+        assert_eq!(diagnostics[0].channel.as_deref(), Some("diagnostic-output"));
+        assert_eq!(diagnostics[0].at, Some(at(9)));
+        assert_eq!(diagnostics[0].header, Some(header(5)));
+        drop(log);
+    }
+}
 #[derive(Clone, Default)]
 struct Bytes(Arc<Mutex<Vec<u8>>>);
 impl Write for Bytes {

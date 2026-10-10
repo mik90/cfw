@@ -286,6 +286,7 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
     use task::recording::*;
     let descriptor = ExecutionDescriptor {
         callbacks: vec![CallbackDescriptor {
+            recording_mode: RecordingMode::Full,
             name: "absent".into(),
             endpoints: vec![EndpointDescriptor {
                 ordinal: 0,
@@ -436,6 +437,7 @@ mod ipc {
             callbacks: ["a", "b"]
                 .into_iter()
                 .map(|callback| CallbackDescriptor {
+                    recording_mode: RecordingMode::Full,
                     name: callback.into(),
                     endpoints: vec![
                         EndpointDescriptor {

@@ -20,6 +20,8 @@ pub struct RecordingIncompleteness {
     /// Aggregate loss from the recorder's shared execution/event queue budget.
     pub recorder_entries_dropped: usize,
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub diagnostics: Vec<crate::LogDiagnostic>,
 }
 
 /// Presence alone is disqualifying, including malformed marker contents.
