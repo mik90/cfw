@@ -7,14 +7,17 @@ pub(crate) fn run<T: TimeSource>(scheduler: &Scheduler, timed: Vec<usize>, clock
         while scheduler.timer_rx.try_recv().is_ok() {}
         let now = clock.now();
         for &node in &timed {
-            if scheduler.claim_due(node, now) {
-                scheduler.trigger(node);
-            }
+            scheduler.dispatch_due(node, now);
         }
-        let next = timed
-            .iter()
-            .filter_map(|&node| scheduler.deadline(node))
-            .min();
+        let next = scheduler
+            .timers_enabled()
+            .then(|| {
+                timed
+                    .iter()
+                    .filter_map(|&node| scheduler.deadline(node))
+                    .min()
+            })
+            .flatten();
         // Re-check injected/scaled clocks even without a callback completion.
         let timeout = next.map_or(Duration::from_millis(100), |next| {
             let nanos = (i128::from(next.to_nanoseconds()) - i128::from(now.to_nanoseconds()))

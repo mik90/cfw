@@ -343,6 +343,67 @@ fn missing_and_ambiguous_payloads_and_failed_records_cannot_claim_exactness() {
     assert!(log_from(descriptor, vec![record], vec![]).is_err());
 }
 
+#[test]
+fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
+    use task::recording::*;
+    let empty = logging::log_file_json::JsonLogFileReader::from_reader(b"".as_slice()).unwrap();
+    assert!(matches!(
+        ReplayLog::from_reader(&empty),
+        Err(ReplayError::InvalidLog(_))
+    ));
+    assert!(matches!(
+        ExactReplayExecutor::new(
+            GraphBuilder::new().build().unwrap(),
+            recorded(true),
+            ReplayBindings::new()
+        ),
+        Err(ReplayError::Setup(_))
+    ));
+
+    let mut source = ChannelPlan::new("source");
+    let mut output = ChannelPlan::new("output");
+    let a = Source::declare(&mut source).unwrap();
+    let b = Transform::declare(&mut source, &mut output).unwrap();
+    let storage = GraphPlan::new((source, output)).allocate().unwrap();
+    let source = storage.channels().0.build();
+    let output = storage.channels().1.build();
+    let mut graph = GraphBuilder::new();
+    graph.add_callback("source", || {
+        Ok(Source { next: 1, mode: 0 }.bind(a, &source)?)
+    });
+    graph.add_callback("transform", || {
+        Ok(Transform { factor: 2 }.bind(b, &source, &output)?)
+    });
+    let error = ExactReplayExecutor::new(
+        graph.build().unwrap(),
+        recorded(true),
+        ReplayBindings::new(),
+    )
+    .err()
+    .unwrap();
+    assert!(
+        matches!(error, ReplayError::Setup(reason) if reason.contains("missing output capture"))
+    );
+
+    let descriptor = recorded(true).descriptor_ref().clone();
+    let record = ExecutionRecord {
+        callback_index: 0,
+        execution_time: at(0),
+        body_duration_ns: 1,
+        inputs: vec![],
+        events: vec![],
+        output_events: vec![],
+        outputs: vec![LoggedMessage {
+            ordinal: 0,
+            header: task::message::MessageHeader::new(at(0)),
+        }],
+        outcome: Outcome::Committed,
+    };
+    assert!(
+        matches!(log_from(descriptor, vec![record.clone(), record], vec![]), Err(ReplayError::InvalidLog(reason)) if reason.contains("ambiguous publication"))
+    );
+}
+
 struct TwoInputs;
 #[task_callback]
 impl TwoInputs {

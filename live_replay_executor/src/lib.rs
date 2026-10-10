@@ -1,199 +1,281 @@
-mod replay;
-
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
-use live_executor::LiveExecutor;
-use task::execution_log::ExecutionLogMessage;
-use task::executor::{Executor, ExecutorParams, ExecutorStopSignal, TimeSource};
-use task::publisher::Publisher;
-use task::time::FrameworkTime;
-
-pub use replay::{ReplayBuildStep, build_replay};
-
-/// Log-driven time source. Advances at `speed × wall_clock` relative to
-/// the first logged timestamp.
-pub struct ReplayTimeSource {
-    paused: Arc<AtomicBool>,
-    first_log_time: FrameworkTime,
-    speed: f32,
-    replay_start_wall: std::sync::OnceLock<FrameworkTime>,
-    frozen_at: Mutex<Option<FrameworkTime>>,
-}
-
-impl ReplayTimeSource {
-    fn new(speed: f32, first_log_time: FrameworkTime, paused: Arc<AtomicBool>) -> Self {
-        ReplayTimeSource {
-            paused,
-            first_log_time,
-            speed,
-            replay_start_wall: std::sync::OnceLock::new(),
-            frozen_at: Mutex::new(None),
-        }
-    }
-}
-
-impl TimeSource for ReplayTimeSource {
-    fn now(&self) -> FrameworkTime {
-        let start = *self
-            .replay_start_wall
-            .get_or_init(FrameworkTime::from_wall_clock);
-
-        if self.paused.load(Ordering::Acquire) {
-            return self
-                .frozen_at
-                .lock()
-                .unwrap()
-                .unwrap_or(self.first_log_time);
-        }
-
-        let wall = FrameworkTime::from_wall_clock();
-        let elapsed_ns = wall.to_nanoseconds().saturating_sub(start.to_nanoseconds());
-        let scaled_ns = (elapsed_ns as f64 * self.speed as f64) as i64;
-        let scaled = Duration::from_nanos(scaled_ns.max(0) as u64);
-        let scaled_first_log_time = self.first_log_time + scaled;
-
-        *self.frozen_at.lock().unwrap() = Some(scaled_first_log_time);
-        scaled_first_log_time
-    }
-}
-
-#[derive(Debug)]
-pub struct LiveReplayExecutorError {
-    pub panicked_thread_indices: Vec<usize>,
-}
-
-impl std::fmt::Display for LiveReplayExecutorError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "threads panicked: {:?}", self.panicked_thread_indices)
-    }
-}
-
-impl std::error::Error for LiveReplayExecutorError {}
+//! Wall-clock-paced log input replay with scoped workers and explicit EOF draining.
+mod clock;
+pub use clock::{MonotonicClock, ReplayTimeSource};
+use live_executor::{LiveExecutor, StopSignal};
+use logging::{ReplayFeed, ReplaySource, SortedLogStreamReader};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+use task::{BuiltGraph, executor::TimeSource, time::FrameworkTime};
 
 pub struct LiveReplayConfig {
-    pub replay_speed: f32,
-    pub first_log_time: FrameworkTime,
-    pub paused: Arc<AtomicBool>,
+    pub speed: f64,
+    pub start_paused: bool,
+    pub pool_threads: Vec<usize>,
+    pub poll_interval: Duration,
+    pub drain_timeout: Duration,
+    /// Continue the replay clock beyond the final recorded timestamp, allowing
+    /// delayed periodic consumers to run before timer generation is stopped.
+    pub tail_duration: Duration,
+    pub denylist: HashSet<String>,
 }
-
-pub struct LiveReplayExecutor {
-    inner: LiveExecutor<ReplayTimeSource>,
-    paused: Arc<AtomicBool>,
-}
-
-impl LiveReplayExecutor {
-    pub fn new(params: ExecutorParams, config: LiveReplayConfig) -> Self {
-        let time_source = ReplayTimeSource::new(
-            config.replay_speed,
-            config.first_log_time,
-            config.paused.clone(),
-        );
-        let inner = LiveExecutor::new_multi_pool_with_time(params, time_source);
-        LiveReplayExecutor {
-            inner,
-            paused: config.paused.clone(),
+impl Default for LiveReplayConfig {
+    fn default() -> Self {
+        Self {
+            speed: 1.0,
+            start_paused: false,
+            pool_threads: vec![1],
+            poll_interval: Duration::from_millis(1),
+            drain_timeout: Duration::from_secs(10),
+            tail_duration: Duration::ZERO,
+            denylist: HashSet::new(),
         }
     }
-
-    pub fn new_with_execution_log(
-        params: ExecutorParams,
-        log_publishers: Vec<Publisher<ExecutionLogMessage>>,
-        flush_period: Duration,
-        config: LiveReplayConfig,
-    ) -> Self {
-        let time_source = ReplayTimeSource::new(
-            config.replay_speed,
-            config.first_log_time,
-            config.paused.clone(),
-        );
-        let inner = LiveExecutor::new_multi_pool_with_execution_log_and_time(
-            params,
-            log_publishers,
-            flush_period,
-            time_source,
-        );
-        LiveReplayExecutor {
-            inner,
-            paused: config.paused.clone(),
+}
+#[derive(Debug)]
+pub enum LiveReplayError {
+    Setup(String),
+    Input(String),
+    DrainTimeout,
+    ProducerPanicked,
+    Live(live_executor::LiveExecutorError),
+}
+impl std::fmt::Display for LiveReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "live replay: {self:?}")
+    }
+}
+impl std::error::Error for LiveReplayError {}
+pub struct ReplayControl<C: TimeSource = MonotonicClock> {
+    clock: ReplayTimeSource<C>,
+    stop: StopSignal,
+    exhausted: Arc<AtomicBool>,
+}
+impl<C: TimeSource> Clone for ReplayControl<C> {
+    fn clone(&self) -> Self {
+        Self {
+            clock: self.clock.clone(),
+            stop: self.stop.clone(),
+            exhausted: self.exhausted.clone(),
         }
     }
-
+}
+impl<C: TimeSource> ReplayControl<C> {
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Release);
+        self.clock.pause();
     }
-
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Release);
+        self.clock.resume();
     }
-
     pub fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::Acquire)
+        self.clock.is_paused()
+    }
+    pub fn set_speed(&self, speed: f64) -> Result<(), String> {
+        self.clock.set_speed(speed)
+    }
+    pub fn now(&self) -> FrameworkTime {
+        self.clock.now()
+    }
+    pub fn request_stop(&self) {
+        self.stop.request_stop();
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.stop.is_stopped()
+    }
+    pub fn wait(&self) {
+        self.stop.wait();
+    }
+    pub fn input_exhausted(&self) -> bool {
+        self.exhausted.load(Ordering::Acquire)
     }
 }
-
-impl Executor for LiveReplayExecutor {
-    type Error = LiveReplayExecutorError;
-
-    fn start(&mut self) {
-        self.inner.start();
+#[derive(Debug)]
+pub struct ReplayCompletion {
+    pub input_exhausted: bool,
+    pub drained: bool,
+    pub final_time: FrameworkTime,
+}
+pub struct LiveReplayExecutor<'storage, C: TimeSource = MonotonicClock> {
+    inner: LiveExecutor<'storage, ReplayTimeSource<C>>,
+    feed: ReplayFeed<'storage>,
+    control: ReplayControl<C>,
+    config: LiveReplayConfig,
+}
+impl<'storage> LiveReplayExecutor<'storage> {
+    pub fn new(
+        graph: BuiltGraph<'storage>,
+        reader: SortedLogStreamReader,
+        sources: impl IntoIterator<Item = ReplaySource<'storage>>,
+        config: LiveReplayConfig,
+    ) -> Result<Self, LiveReplayError> {
+        Self::with_clock(graph, reader, sources, config, MonotonicClock::default())
     }
-
-    fn stop(&mut self) -> Result<(), LiveReplayExecutorError> {
-        self.inner.stop().map_err(|e| LiveReplayExecutorError {
-            panicked_thread_indices: e.panicked_thread_indices,
+}
+struct StopOnDrop(StopSignal);
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.request_stop();
+    }
+}
+impl<'storage, C: TimeSource> LiveReplayExecutor<'storage, C> {
+    pub fn with_clock(
+        graph: BuiltGraph<'storage>,
+        reader: SortedLogStreamReader,
+        sources: impl IntoIterator<Item = ReplaySource<'storage>>,
+        mut config: LiveReplayConfig,
+        base: C,
+    ) -> Result<Self, LiveReplayError> {
+        if config.poll_interval.is_zero() || config.drain_timeout.is_zero() {
+            return Err(LiveReplayError::Setup(
+                "poll interval and drain timeout must be positive".into(),
+            ));
+        }
+        let first = reader
+            .first_log_time()
+            .unwrap_or_else(|| FrameworkTime::from_nanoseconds(0));
+        let clock = ReplayTimeSource::new(base, first, config.speed, config.start_paused)
+            .map_err(LiveReplayError::Setup)?;
+        let feed = ReplayFeed::new(reader, sources, std::mem::take(&mut config.denylist))
+            .map_err(|e| LiveReplayError::Setup(e.to_string()))?;
+        let inner = LiveExecutor::new_multi_pool_with_time(
+            config.pool_threads.clone(),
+            graph,
+            clock.clone(),
+        )
+        .map_err(|e| LiveReplayError::Setup(e.to_string()))?;
+        let control = ReplayControl {
+            clock,
+            stop: inner.stop_signal(),
+            exhausted: Arc::new(AtomicBool::new(feed.exhausted())),
+        };
+        Ok(Self {
+            inner,
+            feed,
+            control,
+            config,
         })
     }
-
-    fn stop_signal(&self) -> Arc<dyn ExecutorStopSignal> {
-        self.inner.stop_signal()
+    pub fn control(&self) -> ReplayControl<C> {
+        self.control.clone()
     }
-
-    fn is_running(&self) -> bool {
-        self.inner.is_running()
+    pub fn run(self) -> Result<ReplayCompletion, LiveReplayError> {
+        self.run_with(|control| control.wait())
+            .map(|(_, completion)| completion)
+    }
+    /// The controller runs on the calling thread; source playback and all workers
+    /// are scoped and joined, including when the controller panics or returns early.
+    pub fn run_with<R>(
+        self,
+        controller: impl FnOnce(&ReplayControl<C>) -> R,
+    ) -> Result<(R, ReplayCompletion), LiveReplayError> {
+        let Self {
+            inner,
+            mut feed,
+            control,
+            config,
+        } = self;
+        inner
+            .run_with(|stop| {
+                std::thread::scope(|scope| {
+                    let _controller_stop = StopOnDrop(stop.clone());
+                    control.clock.start();
+                    let producer_control = control.clone();
+                    let handle = scope.spawn(move || {
+                        let _producer_stop = StopOnDrop(producer_control.stop.clone());
+                        play(&mut feed, &producer_control, &config)
+                    });
+                    let result = controller(&control);
+                    stop.request_stop();
+                    let completion = handle
+                        .join()
+                        .map_err(|_| LiveReplayError::ProducerPanicked)?;
+                    Ok::<_, LiveReplayError>((result, completion?))
+                })
+            })
+            .map_err(LiveReplayError::Live)?
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
-    use task::executor::TimeSource;
-
-    use super::*;
-
-    #[test]
-    fn test_replay_time_source_basic() {
-        let paused = Arc::new(AtomicBool::new(false));
-        let source = ReplayTimeSource::new(
-            1.0,
-            FrameworkTime::from_nanoseconds(1_000_000_000),
-            paused.clone(),
-        );
-
-        let t1 = source.now();
-        let t2 = source.now();
-        assert!(t2 >= t1);
-
-        // With speed 1.0, the diff in log time should be roughly the diff in wall time
-        let diff = t2.to_nanoseconds() - t1.to_nanoseconds();
-        assert!(diff >= 0);
+fn play<C: TimeSource>(
+    feed: &mut ReplayFeed<'_>,
+    control: &ReplayControl<C>,
+    config: &LiveReplayConfig,
+) -> Result<ReplayCompletion, LiveReplayError> {
+    let stopped = || ReplayCompletion {
+        input_exhausted: feed.exhausted(),
+        drained: false,
+        final_time: control.now(),
+    };
+    if control.is_stopped() {
+        return Ok(stopped());
     }
-
-    #[test]
-    fn test_replay_time_source_paused() {
-        let paused = Arc::new(AtomicBool::new(false));
-        let source =
-            ReplayTimeSource::new(2.0, FrameworkTime::from_nanoseconds(100), paused.clone());
-
-        let t1 = source.now();
-        paused.store(true, Ordering::Release);
-        // small sleep to ensure wall clock would advance
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let t2 = source.now();
-        // When paused, time should be frozen at the last snapshot
-        assert_eq!(t1.to_nanoseconds(), t2.to_nanoseconds());
+    while !feed.exhausted() {
+        if control.is_stopped() {
+            return Ok(ReplayCompletion {
+                input_exhausted: feed.exhausted(),
+                drained: false,
+                final_time: control.now(),
+            });
+        }
+        if !control.is_paused() {
+            feed.inject_due_while(
+                control.now(),
+                |callback, channel, event| {
+                    #[cfg(feature = "iceoryx2")]
+                    {
+                        control
+                            .stop
+                            .inject_event(
+                                callback,
+                                event.event.ordinal,
+                                channel,
+                                control.now(),
+                                event.event.event_id,
+                                event.event.count,
+                            )
+                            .map_err(Into::into)
+                    }
+                    #[cfg(not(feature = "iceoryx2"))]
+                    {
+                        let _ = (callback, channel, event);
+                        Err("replaying event records requires iceoryx2".into())
+                    }
+                },
+                || !control.is_stopped() && !control.is_paused(),
+            )
+            .map_err(|e| LiveReplayError::Input(e.to_string()))?;
+            control.exhausted.store(feed.exhausted(), Ordering::Release);
+        }
+        if !feed.exhausted() {
+            let _ = control.stop.receiver().recv_timeout(config.poll_interval);
+        }
     }
+    let end = feed
+        .last_time()
+        .unwrap_or_else(|| control.now())
+        .checked_add_duration(config.tail_duration)
+        .ok_or_else(|| LiveReplayError::Input("replay tail time overflow".into()))?;
+    while !control.is_stopped() && control.now() < end {
+        let _ = control.stop.receiver().recv_timeout(config.poll_interval);
+    }
+    if control.is_stopped() {
+        return Ok(ReplayCompletion {
+            input_exhausted: true,
+            drained: false,
+            final_time: control.now(),
+        });
+    }
+    let drained = control.stop.drain(control.now(), config.drain_timeout);
+    if !drained && !control.is_stopped() {
+        return Err(LiveReplayError::DrainTimeout);
+    }
+    Ok(ReplayCompletion {
+        input_exhausted: true,
+        drained,
+        final_time: control.now(),
+    })
 }

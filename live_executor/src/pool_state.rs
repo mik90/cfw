@@ -1,5 +1,5 @@
 use crossbeam::channel::{self, Receiver, Sender};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use task::CallbackSchedule;
 use task::wake::{Wake, WakeHandle};
@@ -25,6 +25,17 @@ struct NodeState {
 
 /// Scheduling metadata only: this may outlive a run, but owns no borrowed nodes.
 pub(crate) struct Scheduler {
+    active: AtomicUsize,
+    completed: AtomicUsize,
+    timers_enabled: Mutex<bool>,
+    #[cfg(feature = "iceoryx2")]
+    poll_requested: AtomicUsize,
+    #[cfg(feature = "iceoryx2")]
+    poll_completed: AtomicUsize,
+    #[cfg(feature = "iceoryx2")]
+    pub event_targets: std::sync::OnceLock<
+        std::collections::BTreeMap<(String, usize), crate::stop_signal::EventTarget>,
+    >,
     #[cfg(feature = "iceoryx2")]
     external_stop: std::sync::OnceLock<WakeHandle>,
     pub pools: Vec<PoolState>,
@@ -54,6 +65,15 @@ impl Scheduler {
         let (stop_tx, stop_rx) = channel::bounded(0);
         let (timer_tx, timer_rx) = channel::bounded(1);
         Arc::new(Self {
+            active: AtomicUsize::new(0),
+            completed: AtomicUsize::new(0),
+            timers_enabled: Mutex::new(true),
+            #[cfg(feature = "iceoryx2")]
+            poll_requested: AtomicUsize::new(0),
+            #[cfg(feature = "iceoryx2")]
+            poll_completed: AtomicUsize::new(0),
+            #[cfg(feature = "iceoryx2")]
+            event_targets: std::sync::OnceLock::new(),
             #[cfg(feature = "iceoryx2")]
             external_stop: std::sync::OnceLock::new(),
             pools,
@@ -75,6 +95,64 @@ impl Scheduler {
 
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
+    }
+    pub fn is_idle(&self) -> bool {
+        self.active.load(Ordering::Acquire) == 0
+    }
+    pub fn completion_epoch(&self) -> usize {
+        self.completed.load(Ordering::Acquire)
+    }
+    pub fn timers_enabled(&self) -> bool {
+        *self
+            .timers_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+    pub fn dispatch_due(&self, node: usize, now: task::time::FrameworkTime) {
+        let enabled = self
+            .timers_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *enabled && self.claim_due(node, now) {
+            self.trigger(node);
+        }
+    }
+    pub fn quiesce_timers(&self, now: task::time::FrameworkTime) {
+        let mut enabled = self
+            .timers_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *enabled {
+            for node in 0..self.nodes.len() {
+                if self.claim_due(node, now) {
+                    self.trigger(node);
+                }
+            }
+            *enabled = false;
+        }
+        let _ = self.timer_tx.try_send(());
+    }
+    #[cfg(feature = "iceoryx2")]
+    pub fn request_poll(&self) -> usize {
+        let ticket = self.poll_requested.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some(wake) = self.external_stop.get() {
+            wake.wake();
+        } else {
+            self.poll_completed.fetch_max(ticket, Ordering::Release);
+        }
+        ticket
+    }
+    #[cfg(feature = "iceoryx2")]
+    pub fn poll_request(&self) -> usize {
+        self.poll_requested.load(Ordering::Acquire)
+    }
+    #[cfg(feature = "iceoryx2")]
+    pub fn acknowledge_poll(&self, ticket: usize) {
+        self.poll_completed.fetch_max(ticket, Ordering::Release);
+    }
+    #[cfg(feature = "iceoryx2")]
+    pub fn polled(&self, ticket: usize) -> bool {
+        self.poll_completed.load(Ordering::Acquire) >= ticket
     }
 
     pub fn set_deadline(&self, node: usize, time: Option<task::time::FrameworkTime>) {
@@ -168,6 +246,10 @@ impl Scheduler {
                 QUEUED | RETRIGGERED => current,
                 _ => unreachable!(),
             };
+            let new_work = next == QUEUED && current != QUEUED;
+            if new_work {
+                self.active.fetch_add(1, Ordering::AcqRel);
+            }
             match state.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => {
                     if next == QUEUED && current != QUEUED {
@@ -175,7 +257,12 @@ impl Scheduler {
                     }
                     return;
                 }
-                Err(actual) => current = actual,
+                Err(actual) => {
+                    if new_work {
+                        self.active.fetch_sub(1, Ordering::AcqRel);
+                    }
+                    current = actual;
+                }
             }
         }
     }
@@ -222,6 +309,9 @@ impl Scheduler {
                 Ok(_) => {
                     if next == QUEUED {
                         self.enqueue(node);
+                    } else {
+                        self.completed.fetch_add(1, Ordering::AcqRel);
+                        self.active.fetch_sub(1, Ordering::AcqRel);
                     }
                     return;
                 }

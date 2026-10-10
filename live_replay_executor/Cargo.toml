@@ -4,9 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-task = { path = "../task" }
-logging = { path = "../logging" }
-live_executor = { path = "../live_executor" }
+task = { path = "../task", default-features = false }
+logging = { path = "../logging", default-features = false, features = ["serde"] }
+live_executor = { path = "../live_executor", default-features = false }
+
+[features]
+default = ["iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "logging/iceoryx2", "live_executor/iceoryx2"]
+
+[dev-dependencies]
+task_macros = { path = "../task_macros" }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

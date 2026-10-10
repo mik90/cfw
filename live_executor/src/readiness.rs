@@ -35,10 +35,19 @@ pub(crate) fn run<T: task::executor::TimeSource>(
         let result = waitset.wait_and_process_once_with_timeout(
             |attachment| {
                 if attachment.has_event_from(&shutdown_guard) {
-                    return CallbackProgression::Stop;
+                    if scheduler.is_stopped() {
+                        return CallbackProgression::Stop;
+                    }
+                    if let Err(error) = shutdown.listener.try_wait(|_| {}) {
+                        failure = Some(error.to_string());
+                        return CallbackProgression::Stop;
+                    }
                 }
+                let ticket = scheduler.poll_request();
+                let poll_all =
+                    attachment.has_event_from(&shutdown_guard) || !scheduler.polled(ticket);
                 for (registration, guard) in registrations.iter().zip(&guards) {
-                    if !attachment.has_event_from(guard) {
+                    if !poll_all && !attachment.has_event_from(guard) {
                         continue;
                     }
                     let mut observed = false;
@@ -59,6 +68,9 @@ pub(crate) fn run<T: task::executor::TimeSource>(
                     if observed {
                         registration.wake.wake();
                     }
+                }
+                if poll_all {
+                    scheduler.acknowledge_poll(ticket);
                 }
                 CallbackProgression::Continue
                 // The shutdown notification normally wakes immediately. The timeout

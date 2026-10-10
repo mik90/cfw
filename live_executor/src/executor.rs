@@ -102,6 +102,8 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
         let mut periodic = Vec::new();
         #[cfg(feature = "iceoryx2")]
         let mut registrations = Vec::new();
+        #[cfg(feature = "iceoryx2")]
+        let mut event_targets = std::collections::BTreeMap::new();
         for (index, node) in nodes.iter_mut().enumerate() {
             if node.schedule.is_timed() {
                 let next = if node.schedule.run_on_start {
@@ -118,7 +120,58 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
             }
             node.callback.set_waker(scheduler.waker(index));
             #[cfg(feature = "iceoryx2")]
-            registrations.extend(node.callback.take_iox2_events());
+            {
+                let events = node.callback.take_iox2_events();
+                if let Some(endpoints) = node.callback.recording_endpoints() {
+                    let ports: Vec<_> = endpoints
+                        .into_iter()
+                        .filter(|p| {
+                            p.direction == task::recording::Direction::Received
+                                && p.transport == task::recording::Transport::Event
+                        })
+                        .collect();
+                    if ports.len() != events.len()
+                        || ports
+                            .iter()
+                            .zip(&events)
+                            .any(|(p, e)| p.channel != e.channel)
+                    {
+                        return Err(LiveExecutorError::Start(LiveExecutorStartError {
+                            reason: format!("event metadata mismatch for '{}'", node.name),
+                        }));
+                    }
+                    for (port, event) in ports.into_iter().zip(&events) {
+                        let queue = event.staging.clone();
+                        let wake = event.wake.clone();
+                        let observer = event.observer.clone();
+                        let target = crate::stop_signal::EventTarget {
+                            channel: event.channel.clone(),
+                            inject: Box::new(move |at, id, count| {
+                                if count != 0 {
+                                    let record = task::iox2::EventRecord {
+                                        event_id: iceoryx2::prelude::EventId::new(id),
+                                        count,
+                                    };
+                                    if let Some(observer) = &observer {
+                                        observer(at, record);
+                                    }
+                                    queue.push(record);
+                                    wake.wake();
+                                }
+                            }),
+                        };
+                        if event_targets
+                            .insert((node.name.clone(), port.ordinal), target)
+                            .is_some()
+                        {
+                            return Err(LiveExecutorError::Start(LiveExecutorStartError {
+                                reason: "duplicate event ordinal".into(),
+                            }));
+                        }
+                    }
+                }
+                registrations.extend(events);
+            }
         }
         #[cfg(feature = "iceoryx2")]
         let shutdown = if registrations.is_empty() {
@@ -132,6 +185,8 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
             scheduler.set_external_stop(shutdown.wake.clone());
             Some(shutdown)
         };
+        #[cfg(feature = "iceoryx2")]
+        assert!(scheduler.event_targets.set(event_targets).is_ok());
         let initial: Vec<_> = nodes
             .iter()
             .enumerate()

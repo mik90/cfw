@@ -1114,7 +1114,9 @@ version = "0.1.0"
 dependencies = [
  "live_executor",
  "logging",
+ "serde_json",
  "task",
+ "task_macros",
 ]
 
 [[package]]

@@ -4,7 +4,11 @@ pub use port_capture::PortCapture;
 pub mod log_file;
 #[cfg(feature = "serde")]
 pub mod log_file_json;
+#[cfg(feature = "serde")]
+pub mod replay_feed;
 pub mod replay_source;
+#[cfg(feature = "serde")]
+pub use replay_feed::ReplayFeed;
 pub mod session;
 #[cfg(feature = "serde")]
 pub mod sorted_log_stream;
