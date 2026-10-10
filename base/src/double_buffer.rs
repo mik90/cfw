@@ -57,6 +57,15 @@ impl<'a, 'arena, T> ReadBufferGuard<'a, 'arena, T> {
         self.buffer.storage.len()
     }
 
+    /// Inspect the retained window without consuming or rearranging its entries.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &T> + DoubleEndedIterator {
+        self.buffer.storage.iter().map(|ptr| {
+            // SAFETY: Read-buffer entries are initialized and the guard prevents
+            // mutation or removal while these references are borrowed.
+            unsafe { ptr.assume_init_ref() }
+        })
+    }
+
     /// Mut because it makes the slice contiguous
     pub fn as_slice(&mut self) -> impl Iterator<Item = &T> {
         self.buffer.storage.make_contiguous().iter().map(|ptr|

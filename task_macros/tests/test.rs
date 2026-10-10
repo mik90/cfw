@@ -207,6 +207,63 @@ fn generated_pending_outputs_are_discarded_on_error_and_panic() {
 }
 
 struct InPlace;
+
+struct BatchFailure {
+    drops: Arc<AtomicUsize>,
+    panic: bool,
+}
+#[task_callback]
+impl BatchFailure {
+    fn run(&self, #[capacity(3)] output: &mut task::Publisher<Counted>) -> Result<(), LoanError> {
+        let batch = output.batch();
+        let first = batch.loan_uninit()?;
+        let _unsent = batch.loan(Counted(Some(self.drops.clone())))?;
+        first.write(Counted(Some(self.drops.clone()))).send();
+        let _uninitialized = batch.loan_uninit()?;
+        assert!(!self.panic, "batch callback failed");
+        Err(LoanError::LoanCapacityReached)
+    }
+}
+
+#[test]
+fn generated_batch_outputs_cancel_sent_and_unsent_loans_on_failure() {
+    for panic in [false, true] {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut plan = ChannelPlan::new("batch");
+        let declaration = BatchFailure::declare(&mut plan).unwrap();
+        let capture_key = plan.subscriber(3);
+        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let bindings = storage.channels().build();
+        let capture = bindings.take_subscriber(&capture_key).unwrap();
+        let mut callback = BatchFailure {
+            drops: drops.clone(),
+            panic,
+        }
+        .bind(declaration, &bindings)
+        .unwrap();
+        for invocation in 1..=2 {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                task::execute_callback(
+                    &mut callback,
+                    &Context::new(
+                        FrameworkTime::from_nanoseconds(invocation),
+                        &Default::default(),
+                        &Default::default(),
+                    ),
+                )
+            }));
+            if panic {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap(), Err(LoanError::LoanCapacityReached));
+            }
+            assert_eq!(drops.load(Ordering::Relaxed), invocation as usize * 2);
+            capture.update();
+            assert!(capture.input().is_empty());
+        }
+    }
+}
+
 #[task_callback]
 impl InPlace {
     fn run(&mut self, mut output: OutputUninit<String>) {

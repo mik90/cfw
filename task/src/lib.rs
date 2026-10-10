@@ -42,7 +42,8 @@ pub use named_channels::{
     SubscriberKey,
 };
 pub use publisher::{
-    LoanError, Output, OutputUninit, Publisher, PublisherOps, ReplayError, ReplayPublisher,
+    BatchOutput, BatchOutputUninit, LoanError, Output, OutputBatch, OutputUninit, Publisher,
+    PublisherOps, ReplayError, ReplayPublisher,
 };
 pub use storage::{
     ChannelEndpoints, GraphPlan, GraphStorage, PublisherStorage, PublisherStoragePlan,

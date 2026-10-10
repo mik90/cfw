@@ -100,12 +100,24 @@ pub trait Iox2EventBindings {
     fn take_notifier(&self, key: &Iox2NotifierKey) -> Result<Iox2Notifier, EndpointError>;
 }
 
+/// Notification accompanying each committed data sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Iox2Notification {
+    Silent,
+    Event(usize),
+}
+
+struct PublisherSpec {
+    capacity: usize,
+    notification: Iox2Notification,
+}
+
 /// One named IPC channel, with data and optional event-trigger endpoints.
 pub struct Iox2ChannelPlan<T> {
     name: Arc<str>,
     runtime: Arc<Iox2Runtime>,
     config: Iox2ChannelConfig,
-    publishers: Vec<usize>,
+    publishers: Vec<PublisherSpec>,
     subscribers: Vec<usize>,
     events: Vec<usize>,
     notifiers: Vec<usize>,
@@ -132,8 +144,19 @@ impl<T> Iox2ChannelPlan<T> {
         &self.name
     }
     pub fn publisher(&mut self, capacity: usize) -> Iox2PublisherKey<T> {
+        self.publisher_with_notification(capacity, Iox2Notification::Event(0))
+    }
+    /// Event IDs must fit the channel's configured event_id_max_value.
+    pub fn publisher_with_notification(
+        &mut self,
+        capacity: usize,
+        notification: Iox2Notification,
+    ) -> Iox2PublisherKey<T> {
         let index = self.publishers.len();
-        self.publishers.push(capacity);
+        self.publishers.push(PublisherSpec {
+            capacity,
+            notification,
+        });
         Iox2PublisherKey(
             Key {
                 channel: self.name.clone(),
@@ -141,6 +164,22 @@ impl<T> Iox2ChannelPlan<T> {
             },
             PhantomData,
         )
+    }
+    /// Configure a declared publisher before allocating storage (including keys
+    /// obtained from a generated task declaration).
+    pub fn set_publisher_notification(
+        &mut self,
+        key: &Iox2PublisherKey<T>,
+        notification: Iox2Notification,
+    ) -> Result<(), EndpointError> {
+        if self.name != key.0.channel {
+            return Err(EndpointError::WrongChannel);
+        }
+        self.publishers
+            .get_mut(key.0.index)
+            .ok_or(EndpointError::InvalidIndex(key.0.index))?
+            .notification = notification;
+        Ok(())
     }
     pub fn subscriber(&mut self, capacity: usize) -> Iox2SubscriberKey<T> {
         let index = self.subscribers.len();
@@ -191,6 +230,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2Chan
         if self
             .publishers
             .iter()
+            .map(|p| &p.capacity)
             .chain(&self.subscribers)
             .chain(&self.events)
             .any(|&n| n == 0)
@@ -203,7 +243,9 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2Chan
             || self.publishers.len() > self.config.max_publishers
             || self.subscribers.len() > self.config.max_subscribers
             || self.events.len() > self.config.max_listeners
-            || self.publishers.len() + self.notifiers.len() > self.config.max_notifiers
+            || self.publishers.iter().filter(|p| matches!(p.notification, Iox2Notification::Event(_))).count()
+                + self.notifiers.len() > self.config.max_notifiers
+            || self.publishers.iter().any(|p| matches!(p.notification, Iox2Notification::Event(id) if id > self.config.event_id_max_value))
             || self
                 .notifiers
                 .iter()
@@ -271,7 +313,8 @@ pub struct Iox2ChannelStorage<T: Debug + ZeroCopySend + Send + Sync + 'static> {
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
     pub fn build(&self) -> Result<Iox2Bindings<T>, StorageError> {
         let mut publishers = Vec::new();
-        for &capacity in &self.plan.publishers {
+        for spec in &self.plan.publishers {
+            let capacity = spec.capacity;
             publishers.push(RefCell::new(Some(Iox2Publisher {
                 channel: self.plan.name.to_string(),
                 capacity,
@@ -283,12 +326,16 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                     .max_loaned_samples(capacity)
                     .create()
                     .map_err(transport)?,
-                notifier: self
-                    .event
-                    .notifier_builder()
-                    .default_event_id(EventId::new(0))
-                    .create()
-                    .map_err(transport)?,
+                notifier: match spec.notification {
+                    Iox2Notification::Silent => None,
+                    Iox2Notification::Event(id) => Some(
+                        self.event
+                            .notifier_builder()
+                            .default_event_id(EventId::new(id))
+                            .create()
+                            .map_err(transport)?,
+                    ),
+                },
                 pending: Vec::with_capacity(capacity),
                 observers: Vec::new(),
                 replay_only: false,
@@ -493,7 +540,7 @@ pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     channel: String,
     capacity: usize,
     port: DataPublisher<ipc_threadsafe::Service, Message<T>, ()>,
-    notifier: Notifier<ipc_threadsafe::Service>,
+    notifier: Option<Notifier<ipc_threadsafe::Service>>,
     pending: Vec<SampleMut<ipc_threadsafe::Service, Message<T>, ()>>,
     observers: Vec<IpcPublishObserver<T>>,
     replay_only: bool,
@@ -548,9 +595,9 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
                 continue;
             }
             sample.send().expect("iceoryx2 send failed");
-            self.notifier
-                .notify()
-                .expect("iceoryx2 notification failed");
+            if let Some(notifier) = &self.notifier {
+                notifier.notify().expect("iceoryx2 notification failed");
+            }
         }
     }
     pub fn loan(&mut self, value: T) -> Result<Iox2Output<'_, T>, LoanError> {

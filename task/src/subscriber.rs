@@ -138,6 +138,20 @@ impl<'storage, T> Input<'_, 'storage, T> {
         self.guard.front().map(|message| &message.message)
     }
 
+    /// Inspect all prepared messages, including headers, without consuming them.
+    /// References cannot outlive this view or overlap a consuming operation.
+    pub fn inputs(&self) -> impl ExactSizeIterator<Item = &Message<T>> + DoubleEndedIterator {
+        self.guard.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.guard.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.guard.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.guard.pop_front();
     }

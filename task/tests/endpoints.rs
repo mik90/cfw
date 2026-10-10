@@ -21,6 +21,69 @@ fn timestamp() -> FrameworkTime {
 }
 
 #[test]
+fn span_inspection_retains_headers_and_payloads_until_consumed_or_evicted() {
+    struct Value(u64, Counted);
+    let drops = Arc::new(AtomicUsize::new(0));
+    let arena = Arena::new(4);
+    {
+        let subscriber = Subscriber::new(2);
+        let mut publisher = Publisher::new(arena.allocator(), 2);
+        publisher.connect(&subscriber);
+        for value in 0..2 {
+            publisher
+                .publish(Value(value, Counted(drops.clone())))
+                .unwrap();
+        }
+        publisher.flush(timestamp());
+        subscriber.update();
+        for _ in 0..2 {
+            let input = subscriber.input();
+            assert_eq!(input.len(), 2);
+            assert!(!input.is_empty());
+            assert_eq!(
+                input.inputs().map(|m| m.message.0).collect::<Vec<_>>(),
+                [0, 1]
+            );
+            assert!(input.inputs().all(|m| m.header.published_at == timestamp()));
+            assert_eq!(
+                input
+                    .inputs()
+                    .rev()
+                    .map(|m| m.message.0)
+                    .collect::<Vec<_>>(),
+                [1, 0]
+            );
+        }
+        subscriber.finish_iteration();
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        publisher.publish(Value(2, Counted(drops.clone()))).unwrap();
+        publisher.flush(FrameworkTime::from_nanoseconds(456));
+        subscriber.update();
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(subscriber.reader_drops(), 1);
+        let mut input = subscriber.input();
+        assert_eq!(
+            input.inputs().map(|m| m.message.0).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(input.pop().unwrap().message.0, 1);
+        assert_eq!(
+            input
+                .inputs()
+                .next()
+                .unwrap()
+                .header
+                .published_at
+                .to_nanoseconds(),
+            456
+        );
+        assert_eq!(input.drain().count(), 1);
+        assert!(input.is_empty());
+    }
+    assert_eq!(drops.load(Ordering::Relaxed), 3);
+}
+
+#[test]
 fn retained_fanout_messages_outlive_endpoints() {
     let drops = Arc::new(AtomicUsize::new(0));
     let arena = Arena::new(1);
@@ -65,6 +128,95 @@ fn loans_are_exclusive_and_cancelled_outputs_release_capacity() {
     drop(publisher);
     assert_eq!(drops.load(Ordering::Relaxed), 2);
     assert!(arena.try_allocate_uninit().is_some());
+}
+
+#[test]
+fn batch_loans_share_quota_and_publish_in_send_order() {
+    let arena = Arena::new(4);
+    let subscriber = Subscriber::new(4);
+    let mut publisher = Publisher::new(arena.allocator(), 4);
+    publisher.connect(&subscriber);
+    publisher.publish(10).unwrap();
+    {
+        let batch = publisher.batch();
+        let first = batch.loan_uninit().unwrap();
+        let second = batch.loan_uninit().unwrap();
+        let cancelled = batch.loan(99).unwrap();
+        assert!(matches!(
+            batch.loan_uninit(),
+            Err(LoanError::LoanCapacityReached)
+        ));
+        drop(cancelled);
+        let mut third = batch.loan_uninit().unwrap();
+        third.payload_uninit().write(30);
+        // SAFETY: The entire u64 payload was initialized above.
+        let third = unsafe { third.assume_init() };
+        let mut first = first.write(1);
+        let second = second.write(20);
+        *first += *second;
+        third.send();
+        first.send();
+        second.send();
+        assert!(matches!(
+            batch.loan_uninit(),
+            Err(LoanError::LoanCapacityReached)
+        ));
+    }
+    assert!(subscriber.input().is_empty());
+    publisher.flush(timestamp());
+    subscriber.update();
+    assert_eq!(
+        subscriber
+            .input()
+            .inputs()
+            .map(|m| m.message)
+            .collect::<Vec<_>>(),
+        [10, 30, 21, 20]
+    );
+    assert!(
+        subscriber
+            .input()
+            .inputs()
+            .all(|m| m.header.published_at == timestamp())
+    );
+    subscriber.clear();
+    publisher.batch().loan(40).unwrap().send();
+    publisher.discard_pending();
+    assert!(arena.try_allocate_uninit().is_some());
+}
+
+#[test]
+fn batch_arena_exhaustion_and_unwind_release_unsent_and_cancel_sent_outputs() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let arena = Arena::new(2);
+    let mut publisher = Publisher::new(arena.allocator(), 3);
+    {
+        let batch = publisher.batch();
+        let first = batch.loan_uninit().unwrap();
+        let second = batch.loan(Counted(drops.clone())).unwrap();
+        assert!(matches!(
+            batch.loan_uninit(),
+            Err(LoanError::ArenaExhausted)
+        ));
+        drop(first);
+        drop(batch.loan_uninit().unwrap());
+        second.send();
+    }
+    publisher.discard_pending();
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let batch = publisher.batch();
+        let _unsent = batch.loan(Counted(drops.clone())).unwrap();
+        batch.loan(Counted(drops.clone())).unwrap().send();
+        panic!("callback initialization failed");
+    }));
+    assert!(failure.is_err());
+    assert_eq!(drops.load(Ordering::Relaxed), 2);
+    publisher.discard_pending();
+    assert_eq!(drops.load(Ordering::Relaxed), 3);
+    let batch = publisher.batch();
+    let _first = batch.loan_uninit().unwrap();
+    let _second = batch.loan_uninit().unwrap();
 }
 
 #[test]

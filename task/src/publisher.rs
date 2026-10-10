@@ -9,6 +9,9 @@ use super::Subscriber;
 use crate::message::{Message, MessageHeader};
 use crate::time::FrameworkTime;
 
+mod batch;
+pub use batch::{BatchOutput, BatchOutputUninit, OutputBatch};
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoanError {
     LoanCapacityReached,
@@ -84,6 +87,30 @@ impl<'storage, T> Publisher<'storage, T> {
     pub fn publish(&mut self, value: T) -> Result<(), LoanError> {
         self.loan(value)?.send();
         Ok(())
+    }
+
+    /// Borrow this publisher for a batch of simultaneously outstanding loans.
+    /// Sent outputs join the ordinary pending queue in send order; the executor
+    /// stamps and publishes them only after the callback succeeds.
+    ///
+    /// ```
+    /// use base::arena::Arena;
+    /// use task::{Publisher, message::Message, time::FrameworkTime};
+    /// let storage = Arena::<Message<u64>>::new(2);
+    /// let mut publisher = Publisher::new(storage.allocator(), 2);
+    /// {
+    ///     let batch = publisher.batch();
+    ///     let first = batch.loan_uninit().unwrap();
+    ///     let second = batch.loan_uninit().unwrap();
+    ///     let first = first.write(10);
+    ///     let second = second.write(*first + 1);
+    ///     second.send();
+    ///     first.send();
+    /// }
+    /// publisher.flush(FrameworkTime::from_nanoseconds(123));
+    /// ```
+    pub fn batch(&mut self) -> OutputBatch<'_, 'storage, T> {
+        OutputBatch::new(self)
     }
 
     /// Release sent-but-unpublished outputs after a failed callback.
