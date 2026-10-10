@@ -227,6 +227,10 @@ impl<T> crate::storage::private::Sealed for Iox2ChannelPlan<T> {}
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2ChannelPlan<T> {
     type Storage = Iox2ChannelStorage<T>;
     fn validate(&self) -> Result<(), StorageError> {
+        u32::try_from(self.publishers.len()).map_err(|_| StorageError::CapacityOverflow)?;
+        for publisher in &self.publishers {
+            u32::try_from(publisher.capacity).map_err(|_| StorageError::CapacityOverflow)?;
+        }
         if self
             .publishers
             .iter()
@@ -313,10 +317,11 @@ pub struct Iox2ChannelStorage<T: Debug + ZeroCopySend + Send + Sync + 'static> {
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
     pub fn build(&self) -> Result<Iox2Bindings<T>, StorageError> {
         let mut publishers = Vec::new();
-        for spec in &self.plan.publishers {
+        for (index, spec) in self.plan.publishers.iter().enumerate() {
             let capacity = spec.capacity;
             publishers.push(RefCell::new(Some(Iox2Publisher {
                 channel: self.plan.name.to_string(),
+                publisher_index: u32::try_from(index).map_err(transport)?,
                 capacity,
                 port: self
                     .data
@@ -538,6 +543,7 @@ mod key_tests {
 
 pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     channel: String,
+    publisher_index: u32,
     capacity: usize,
     port: DataPublisher<ipc_threadsafe::Service, Message<T>, ()>,
     notifier: Option<Notifier<ipc_threadsafe::Service>>,
@@ -548,6 +554,13 @@ pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
 }
 type IpcPublishObserver<T> = Box<dyn FnMut(&Message<T>) + Send>;
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
+    pub fn publisher_index(&self) -> u32 {
+        self.publisher_index
+    }
+    /// Restore the channel-local recorded index when constructing exact replay.
+    pub fn set_publisher_index(&mut self, index: u32) {
+        self.publisher_index = index;
+    }
     pub fn observe(&mut self, observer: impl FnMut(&Message<T>) + Send + 'static) {
         self.observers.push(Box::new(observer));
     }
@@ -556,8 +569,11 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
         self.replay_only = true;
     }
     pub fn visit_pending_headers(&self, mut visit: impl FnMut(MessageHeader)) {
-        for sample in &self.pending {
-            visit(sample.header);
+        for (index, sample) in self.pending.iter().enumerate() {
+            let mut header = sample.header;
+            header.publisher_index = self.publisher_index;
+            header.batch_index = u32::try_from(index).expect("publisher batch index overflow");
+            visit(header);
         }
     }
     /// Publish timestamped data without an event notification, for deterministic
@@ -586,8 +602,11 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
         self.pending.clear();
     }
     pub fn flush(&mut self, timestamp: FrameworkTime) {
-        for mut sample in self.pending.drain(..) {
+        for (index, mut sample) in self.pending.drain(..).enumerate() {
             sample.header.published_at = timestamp;
+            sample.header.publisher_index = self.publisher_index;
+            sample.header.batch_index =
+                u32::try_from(index).expect("publisher batch index overflow");
             for observer in &mut self.observers {
                 observer(&sample);
             }

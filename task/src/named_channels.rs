@@ -199,6 +199,7 @@ impl<T> StorageLayout for ChannelPlan<T> {
     type Storage = ChannelStorage<T>;
 
     fn validate(&self) -> Result<(), StorageError> {
+        u32::try_from(self.publishers.len()).map_err(|_| StorageError::CapacityOverflow)?;
         // Validate disconnected subscribers too; they still own bounded queues.
         if self.subscribers.iter().any(|s| s.capacity == 0) {
             return Err(StorageError::ZeroSubscriberCapacity);
@@ -259,6 +260,9 @@ impl<T> ChannelStorage<T> {
             .map(|(index, storage)| {
                 let mut publisher = storage.publisher();
                 publisher.set_channel_name(&self.name);
+                publisher.set_publisher_index(
+                    u32::try_from(index).expect("publisher storage index overflow"),
+                );
                 for (subscriber, spec) in subscribers.iter().zip(&self.subscribers) {
                     if spec
                         .sources

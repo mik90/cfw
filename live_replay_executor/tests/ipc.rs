@@ -139,6 +139,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
                     direction: Direction::Received,
                     transport: Transport::Event,
                     payload_type: "()".into(),
+                    publisher_index: None,
                 }],
             })
             .collect(),

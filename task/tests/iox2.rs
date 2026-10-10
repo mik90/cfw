@@ -49,6 +49,52 @@ fn unsent_and_cancelled_loans_release_capacity_and_success_stamps_headers() {
 
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
+fn same_timestamp_ipc_batches_preserve_publisher_indices_and_send_order() {
+    let runtime = Iox2Runtime::new().unwrap();
+    let mut plan = Iox2ChannelPlan::<u64>::new(name(), &runtime);
+    let first = plan.publisher_with_notification(2, Iox2Notification::Silent);
+    let second = plan.publisher_with_notification(2, Iox2Notification::Silent);
+    let capture = plan.subscriber(4);
+    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let bindings = storage.channels().build().unwrap();
+    let mut first = bindings.take_publisher(&first).unwrap();
+    let mut second = bindings.take_publisher(&second).unwrap();
+    let capture = bindings.take_subscriber(&capture).unwrap();
+    let stamp = FrameworkTime::from_nanoseconds(77);
+    first.loan(10).unwrap().send();
+    first.loan(11).unwrap().send();
+    second.loan(20).unwrap().send();
+    second.loan(21).unwrap().send();
+    let mut predicted = Vec::new();
+    first.visit_pending_headers(|mut h| {
+        h.published_at = stamp;
+        predicted.push(h);
+    });
+    second.visit_pending_headers(|mut h| {
+        h.published_at = stamp;
+        predicted.push(h);
+    });
+    first.flush(stamp);
+    second.flush(stamp);
+    capture.update();
+    let mut actual = Vec::new();
+    capture.inspect_messages(|_, m| actual.push((m.message, m.header)));
+    actual.sort_by_key(|(value, _)| *value);
+    assert_eq!(
+        actual.iter().map(|(_, h)| *h).collect::<Vec<_>>(),
+        predicted
+    );
+    assert_eq!(
+        actual
+            .iter()
+            .map(|(_, h)| (h.publisher_index, h.batch_index))
+            .collect::<Vec<_>>(),
+        [(0, 0), (0, 1), (1, 0), (1, 1)]
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn type_and_service_setting_mismatches_are_reported() {
     let runtime = Iox2Runtime::new().unwrap();
     let name = name();

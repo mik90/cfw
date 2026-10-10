@@ -34,7 +34,11 @@ fn custom_codec_and_nonclone_payload_work_without_serde() {
     let bindings = storage.channels().build();
     let mut replay = replay.bind(&bindings).unwrap();
     let mut capture = capture.bind(&bindings).unwrap();
-    let header = MessageHeader::new(FrameworkTime::from_nanoseconds(123));
+    let header = MessageHeader {
+        published_at: FrameworkTime::from_nanoseconds(123),
+        publisher_index: 7,
+        batch_index: 3,
+    };
     assert!(replay.inject(header, &[1]).is_err());
     replay.inject(header, &42_u64.to_le_bytes()).unwrap();
     let messages = capture.drain_to_vec().unwrap();

@@ -27,6 +27,13 @@ impl Write for Bytes {
 fn at(n: i64) -> FrameworkTime {
     FrameworkTime::from_nanoseconds(n)
 }
+fn input_header(publisher_index: u32, batch_index: u32) -> MessageHeader {
+    MessageHeader {
+        published_at: at(1),
+        publisher_index,
+        batch_index,
+    }
+}
 #[repr(C)]
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize, ZeroCopySend)]
 struct Value {
@@ -47,8 +54,8 @@ impl Observe {
             event.records().collect::<Vec<_>>(),
             [(iceoryx2::prelude::EventId::new(9), 5)]
         );
-        assert_eq!(first.header().unwrap().published_at, at(1));
-        assert_eq!(second.header().unwrap().published_at, at(2));
+        assert_eq!(*first.header().unwrap(), input_header(3, 0));
+        assert_eq!(*second.header().unwrap(), input_header(4, 1));
         output.value = first.value().unwrap() + second.value().unwrap() + event.count();
         output.send();
         notify.send();
@@ -65,6 +72,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
     {
         let mut input = Iox2ChannelPlan::new(&input_name, &runtime);
         let mut output = Iox2ChannelPlan::new(&output_name, &runtime);
+        output.publisher(1); // Unused storage precedes the recorded output port.
         let mut notify =
             Iox2ChannelPlan::<()>::new(&notify_name, &runtime).with_config(Iox2ChannelConfig {
                 event_id_max_value: 17,
@@ -88,12 +96,12 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         input
             .replay_input(declaration.first_key())
             .unwrap()
-            .inject(MessageHeader::new(at(1)), 7)
+            .inject(input_header(3, 0), 7)
             .unwrap();
         input
             .replay_input(declaration.second_key())
             .unwrap()
-            .inject(MessageHeader::new(at(2)), 11)
+            .inject(input_header(4, 1), 11)
             .unwrap();
         let mut callback = Observe
             .bind(declaration, &input, &input, &input, &output, &notify)
@@ -105,10 +113,10 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(bytes.clone());
         writer
-            .store_message(&input_name, &MessageHeader::new(at(1)), b"7")
+            .store_message(&input_name, &input_header(3, 0), b"7")
             .unwrap();
         writer
-            .store_message(&input_name, &MessageHeader::new(at(2)), b"11")
+            .store_message(&input_name, &input_header(4, 1), b"11")
             .unwrap();
         let observed = task::recording::ObservedEvent {
             callback_index: 0,

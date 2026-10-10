@@ -27,6 +27,15 @@ rust_test(
 )
 
 rust_test(
+    name = "identities_test",
+    srcs = ["tests/identities.rs"],
+    deps = [":exact_replay_executor"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "ipc_test",
     srcs = ["tests/ipc.rs"],
     crate_features = ["iceoryx2"],

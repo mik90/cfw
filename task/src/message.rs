@@ -6,24 +6,35 @@ use std::fmt::Debug;
 
 /// Metadata attached to every message as it passes through the pub/sub system.
 /// Set by the executor at flush time — the executor is the sole source of time.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Within a channel, publications are keyed by timestamp, publisher index and
+/// batch index. Separate batches from one publisher at an identical timestamp
+/// collide and are rejected by exact replay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "iceoryx2", repr(C), derive(iceoryx2::prelude::ZeroCopySend))]
 pub struct MessageHeader {
     pub published_at: FrameworkTime,
+    /// Declaration-order index within the channel's publisher storage.
+    pub publisher_index: u32,
+    /// Send-order index within this publisher's committed batch.
+    pub batch_index: u32,
 }
 
 impl MessageHeader {
+    /// A timestamped header for publisher zero, batch element zero.
+    /// Ordinary publishers stamp their planned index and batch position at flush.
     pub fn new(published_at: FrameworkTime) -> Self {
-        MessageHeader { published_at }
+        MessageHeader {
+            published_at,
+            publisher_index: 0,
+            batch_index: 0,
+        }
     }
 }
 
 impl Default for MessageHeader {
     fn default() -> Self {
-        MessageHeader {
-            published_at: FrameworkTime::INVALID,
-        }
+        Self::new(FrameworkTime::INVALID)
     }
 }
 
@@ -83,11 +94,12 @@ mod iox2_layout_tests {
     fn wire_layout_is_stable() {
         assert_eq!(size_of::<FrameworkTime>(), 8);
         assert_eq!(align_of::<FrameworkTime>(), 8);
-        assert_eq!(size_of::<MessageHeader>(), 8);
+        assert_eq!(size_of::<MessageHeader>(), 16);
         assert_eq!(offset_of!(MessageHeader, published_at), 0);
-        assert_eq!(offset_of!(Message<u64>, message), 8);
-        assert_eq!(size_of::<Message<u64>>(), 16);
-        // Align16 requires padding between the 8-byte header and payload.
+        assert_eq!(offset_of!(MessageHeader, publisher_index), 8);
+        assert_eq!(offset_of!(MessageHeader, batch_index), 12);
+        assert_eq!(offset_of!(Message<u64>, message), 16);
+        assert_eq!(size_of::<Message<u64>>(), 24);
         assert_eq!(offset_of!(Message<Align16>, message), 16);
         assert_eq!(size_of::<Message<Align16>>(), 32);
         assert_zero_copy::<Message<Align16>>();

@@ -127,6 +127,15 @@ impl<'storage> ExactReplayExecutor<'storage> {
             let mut expected = descriptor.endpoints.clone();
             actual.sort_by_key(|p| (p.direction == Direction::Published, p.ordinal));
             expected.sort_by_key(|p| (p.direction == Direction::Published, p.ordinal));
+            // Publisher declaration order may differ in the replay plan.
+            for port in &mut actual {
+                if port.publisher_index.is_some() {
+                    port.publisher_index = expected
+                        .iter()
+                        .find(|p| p.direction == port.direction && p.ordinal == port.ordinal)
+                        .and_then(|p| p.publisher_index);
+                }
+            }
             if actual != expected {
                 return Err(ReplayError::Setup(format!(
                     "endpoint layout differs for '{}'",
@@ -153,6 +162,15 @@ impl<'storage> ExactReplayExecutor<'storage> {
                         inputs.insert(key);
                     }
                     Direction::Published => {
+                        nodes[index]
+                            .callback
+                            .set_replay_publisher_index(
+                                port.ordinal,
+                                port.publisher_index.expect("validated data output index"),
+                            )
+                            .map_err(|e| {
+                                ReplayError::Setup(format!("publisher mapping for {key:?}: {e:?}"))
+                            })?;
                         let capture = bindings.outputs.get(&key).ok_or_else(|| {
                             ReplayError::Setup(format!("missing output capture {key:?}"))
                         })?;
@@ -177,9 +195,9 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 "extra or event-only data bindings".into(),
             ));
         }
-        for ((channel, time), bytes) in &log.payloads {
+        for ((channel, header), bytes) in &log.payloads {
             if let Some(load) = bindings.caches.get_mut(channel) {
-                load(task::message::MessageHeader::new(*time), bytes)
+                load(*header, bytes)
                     .map_err(|e| ReplayError::Setup(format!("source cache '{channel}': {e}")))?;
             }
         }
@@ -278,7 +296,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         }
         for message in &record.inputs {
             let port = endpoint(&descriptor.endpoints, Direction::Received, message.ordinal);
-            let identity = (port.channel.clone(), message.header.published_at);
+            let identity = (port.channel.clone(), message.header);
             let logged = self.log.logged.contains(&port.channel);
             let bytes = if logged {
                 self.log.payloads.get(&identity).cloned()
@@ -288,10 +306,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             let Some(bytes) = bytes else {
                 self.gap(
                     &port.channel,
-                    format!(
-                        "missing input for '{name}' at {}",
-                        message.header.published_at
-                    ),
+                    format!("missing input for '{name}': {:?}", message.header),
                 )?;
                 return Ok(skipped());
             };
@@ -371,7 +386,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 .filter(|m| m.ordinal == port.ordinal)
                 .collect();
             for (position, expected) in expected.iter().enumerate() {
-                let identity = (port.channel.clone(), expected.header.published_at);
+                let identity = (port.channel.clone(), expected.header);
                 let logged = self.log.logged.contains(&port.channel);
                 let expected_body = if logged {
                     match self.log.payloads.get(&identity).cloned() {
@@ -431,7 +446,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             }
             for (header, body) in actual {
                 if !self.log.logged.contains(&port.channel) {
-                    let identity = (port.channel.clone(), header.published_at);
+                    let identity = (port.channel.clone(), header);
                     if self.reproduced.insert(identity, body.clone()).is_some() {
                         return Err(ReplayError::Callback {
                             callback: name.clone(),

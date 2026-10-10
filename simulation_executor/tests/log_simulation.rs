@@ -293,6 +293,7 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
                 direction: Direction::Received,
                 transport: Transport::Event,
                 payload_type: "()".into(),
+                publisher_index: None,
             }],
         }],
         logged_channels: vec![],
@@ -443,6 +444,7 @@ mod ipc {
                             direction: Direction::Received,
                             transport: Transport::Event,
                             payload_type: "()".into(),
+                            publisher_index: None,
                         },
                         EndpointDescriptor {
                             ordinal: 1,
@@ -450,6 +452,7 @@ mod ipc {
                             direction: Direction::Received,
                             transport: Transport::Native,
                             payload_type: "u64".into(),
+                            publisher_index: None,
                         },
                         EndpointDescriptor {
                             ordinal: 2,
@@ -457,6 +460,7 @@ mod ipc {
                             direction: Direction::Received,
                             transport: Transport::Ipc,
                             payload_type: "u64".into(),
+                            publisher_index: None,
                         },
                     ],
                 })

@@ -3,7 +3,7 @@ use logging::{LogFileReader, SortedLogStreamReader};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use task::{message::MessageHeader, recording::*, time::FrameworkTime};
 
-pub(crate) type Identity = (String, FrameworkTime);
+pub(crate) type Identity = (String, MessageHeader);
 pub struct ReplayLog {
     pub(crate) descriptor: ExecutionDescriptor,
     pub(crate) executions: Vec<ExecutionRecord>,
@@ -40,12 +40,28 @@ impl ReplayLog {
             })?)
             .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
         let mut names = HashSet::new();
+        let mut publishers = HashSet::new();
         for callback in &descriptor.callbacks {
             if !names.insert(&callback.name) {
                 return Err(ReplayError::InvalidLog("duplicate callback name".into()));
             }
             let mut ports = HashSet::new();
             for port in &callback.endpoints {
+                let data_output =
+                    port.direction == Direction::Published && port.transport != Transport::Event;
+                if data_output != port.publisher_index.is_some() {
+                    return Err(ReplayError::InvalidLog(
+                        "publisher index must identify a data output port".into(),
+                    ));
+                }
+                if let Some(index) = port.publisher_index
+                    && !publishers.insert((port.channel.clone(), index))
+                {
+                    return Err(ReplayError::InvalidLog(format!(
+                        "duplicate publisher index on '{}'",
+                        port.channel
+                    )));
+                }
                 if !ports.insert((port.direction == Direction::Received, port.ordinal)) {
                     return Err(ReplayError::InvalidLog(format!(
                         "duplicate ordinal on '{}'",
@@ -112,11 +128,10 @@ impl ReplayLog {
                         "payload channel '{channel}' is not declared logged"
                     )));
                 }
-                let key = (channel.into(), header.published_at);
+                let key = (channel.into(), header);
                 if self.payloads.insert(key, bytes.to_vec()).is_some() {
                     return Err(ReplayError::InvalidLog(format!(
-                        "ambiguous payload identity on '{channel}' at {}",
-                        header.published_at
+                        "ambiguous payload identity on '{channel}': {header:?}"
                     )));
                 }
             }
@@ -155,6 +170,7 @@ impl ReplayLog {
         self.executions.sort_by_key(|record| record.execution_time);
         let mut produced = BTreeSet::new();
         for record in &self.executions {
+            let mut batch_indices = BTreeMap::<usize, u32>::new();
             if record.outcome != Outcome::Committed {
                 return Err(ReplayError::InvalidLog(format!(
                     "cannot exactly replay {:?} execution",
@@ -174,13 +190,25 @@ impl ReplayLog {
                     if message.header.published_at == FrameworkTime::INVALID {
                         return Err(ReplayError::InvalidLog("invalid message reference".into()));
                     }
-                    if direction == Direction::Published
-                        && !produced.insert((port.channel.clone(), message.header.published_at))
-                    {
-                        return Err(ReplayError::InvalidLog(format!(
-                            "ambiguous publication identity on '{}' at {}",
-                            port.channel, message.header.published_at
-                        )));
+                    if direction == Direction::Published {
+                        if !produced.insert((port.channel.clone(), message.header)) {
+                            return Err(ReplayError::InvalidLog(format!(
+                                "ambiguous publication identity on '{}': {:?}",
+                                port.channel, message.header
+                            )));
+                        }
+                        let next = batch_indices.entry(message.ordinal).or_default();
+                        if port.publisher_index != Some(message.header.publisher_index)
+                            || message.header.batch_index != *next
+                            || message.header.published_at != record.execution_time
+                        {
+                            return Err(ReplayError::InvalidLog(
+                                "output header differs from publisher/batch metadata".into(),
+                            ));
+                        }
+                        *next = next.checked_add(1).ok_or_else(|| {
+                            ReplayError::InvalidLog("publisher batch index overflow".into())
+                        })?;
                     }
                 }
             }
@@ -217,11 +245,11 @@ impl ReplayLog {
     /// Upper bound for a source cache when reproducing this trace without extra
     /// publications. Includes logged source values and unlogged output identities.
     pub fn source_capacity(&self, channel: &str) -> usize {
-        let mut times: BTreeSet<_> = self
+        let mut headers: BTreeSet<_> = self
             .payloads
             .keys()
             .filter(|(name, _)| name == channel)
-            .map(|(_, time)| *time)
+            .map(|(_, header)| *header)
             .collect();
         for record in &self.executions {
             for output in &record.outputs {
@@ -234,11 +262,11 @@ impl ReplayLog {
                     )
                     .is_ok_and(|port| port.channel == channel)
                 {
-                    times.insert(output.header.published_at);
+                    headers.insert(output.header);
                 }
             }
         }
-        times.len()
+        headers.len()
     }
     pub fn descriptor_ref(&self) -> &ExecutionDescriptor {
         &self.descriptor

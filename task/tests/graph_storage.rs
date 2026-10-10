@@ -219,7 +219,7 @@ fn invalid_layouts_are_rejected_before_allocating_any_channel() {
     // If allocation begins before whole-layout validation, this first channel
     // would attempt an impossible allocation instead of reporting the second's error.
     let invalid = (
-        PublisherStoragePlan::<u64>::new(usize::MAX),
+        PublisherStoragePlan::<u64>::new(u32::MAX as usize),
         PublisherStoragePlan::<u64>::new(1).with_subscriber(0),
     );
     assert!(matches!(

@@ -92,9 +92,8 @@ impl<'a, T> SourceCache<'a, T> {
             return Err("forwarded-source cache capacity exceeded".into());
         }
         data.publisher
-            .publish(value)
+            .publish_with_header(header, value)
             .map_err(|e| -> BoxedLogError { format!("{e:?}").into() })?;
-        data.publisher.flush(header.published_at);
         data.subscriber.update();
         let message = data
             .subscriber

@@ -21,6 +21,49 @@ fn timestamp() -> FrameworkTime {
 }
 
 #[test]
+fn header_injection_preserves_identity_without_flushing_an_existing_batch() {
+    use task::message::MessageHeader;
+    let arena = Arena::new(4);
+    let subscriber = Subscriber::new(4);
+    let mut publisher = Publisher::new(arena.allocator(), 2);
+    publisher.set_publisher_index(7);
+    publisher.connect(&subscriber);
+    let header = MessageHeader {
+        published_at: timestamp(),
+        publisher_index: 9,
+        batch_index: 3,
+    };
+    publisher.publish(10).unwrap();
+    assert!(publisher.publish_with_header(header, 99).is_err());
+    subscriber.update();
+    assert!(subscriber.input().is_empty());
+    publisher.flush(timestamp());
+    subscriber.update();
+    let ordinary = subscriber.input().pop().unwrap();
+    assert_eq!(ordinary.message, 10);
+    assert_eq!(
+        ordinary.header,
+        MessageHeader {
+            published_at: timestamp(),
+            publisher_index: 7,
+            batch_index: 0
+        }
+    );
+    publisher.publish_with_header(header, 42).unwrap();
+    subscriber.update();
+    let injected = subscriber.input().pop().unwrap();
+    assert_eq!(injected.message, 42);
+    assert_eq!(injected.header, header);
+    // Cancelling a pending batch leaves the next ordinary batch starting at zero.
+    publisher.publish(100).unwrap();
+    publisher.discard_pending();
+    publisher.publish(11).unwrap();
+    publisher.flush(FrameworkTime::from_nanoseconds(124));
+    subscriber.update();
+    assert_eq!(subscriber.input().pop().unwrap().header.batch_index, 0);
+}
+
+#[test]
 fn span_inspection_retains_headers_and_payloads_until_consumed_or_evicted() {
     struct Value(u64, Counted);
     let drops = Arc::new(AtomicUsize::new(0));
@@ -178,6 +221,14 @@ fn span_loans_share_quota_and_publish_in_send_order() {
             .input()
             .inputs()
             .all(|m| m.header.published_at == timestamp())
+    );
+    assert_eq!(
+        subscriber
+            .input()
+            .inputs()
+            .map(|m| (m.header.publisher_index, m.header.batch_index))
+            .collect::<Vec<_>>(),
+        [(0, 0), (0, 1), (0, 2), (0, 3)]
     );
     subscriber.clear();
     publisher.span().loan(40).unwrap().send();

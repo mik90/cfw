@@ -27,18 +27,24 @@ pub struct Publisher<'storage, T> {
     pending: Vec<ArenaPtr<'storage, Message<T>>>,
     subscribers: Vec<SubscriberWriter<'storage, T>>,
     channel: String,
+    publisher_index: u32,
     observers: Vec<PublishObserver<'storage, T>>,
 }
 type PublishObserver<'a, T> = Box<dyn FnMut(&Message<T>) + Send + 'a>;
 
 impl<'storage, T> Publisher<'storage, T> {
     pub fn new(allocator: ArenaAllocator<'storage, Message<T>>, loan_capacity: usize) -> Self {
+        assert!(
+            u32::try_from(loan_capacity).is_ok(),
+            "publisher batch capacity exceeds u32"
+        );
         Self {
             allocator,
             loan_capacity,
             pending: Vec::with_capacity(loan_capacity),
             subscribers: Vec::new(),
             channel: String::new(),
+            publisher_index: 0,
             observers: Vec::new(),
         }
     }
@@ -48,6 +54,14 @@ impl<'storage, T> Publisher<'storage, T> {
     }
     pub fn channel_name(&self) -> &str {
         &self.channel
+    }
+    pub fn publisher_index(&self) -> u32 {
+        self.publisher_index
+    }
+    /// Configure an unplanned publisher, or restore its recorded index for replay.
+    /// Planned endpoints receive their index automatically during binding.
+    pub fn set_publisher_index(&mut self, index: u32) {
+        self.publisher_index = index;
     }
 
     pub fn connect(&mut self, subscriber: &Subscriber<'storage, T>) {
@@ -111,20 +125,49 @@ impl<'storage, T> Publisher<'storage, T> {
         self.pending.clear();
     }
     pub fn visit_pending_headers(&self, mut visit: impl FnMut(MessageHeader)) {
-        for message in &self.pending {
+        for (index, message) in self.pending.iter().enumerate() {
             // SAFETY: pending contains initialized loans; publication/mutation
             // requires an exclusive publisher borrow.
-            visit(unsafe { message.assume_init_ref() }.header);
+            let mut header = unsafe { message.assume_init_ref() }.header;
+            header.publisher_index = self.publisher_index;
+            header.batch_index = u32::try_from(index).expect("publisher batch index overflow");
+            visit(header);
         }
     }
 
     /// Publish a fully initialized batch at an executor-provided timestamp.
     /// Unsent outputs are released when their output handle is dropped.
     pub fn flush(&mut self, timestamp: FrameworkTime) {
-        for ptr in self.pending.drain(..) {
+        let publisher_index = self.publisher_index;
+        self.flush_headers(|index| MessageHeader {
+            published_at: timestamp,
+            publisher_index,
+            batch_index: u32::try_from(index).expect("publisher batch index overflow"),
+        });
+    }
+
+    /// Inject one message with its original publication identity intact.
+    /// Cannot be mixed with an outstanding ordinary output batch.
+    pub fn publish_with_header(
+        &mut self,
+        header: MessageHeader,
+        value: T,
+    ) -> Result<(), LoanError> {
+        if !self.pending.is_empty() {
+            return Err(LoanError::Transport(
+                "header injection requires an empty pending batch".into(),
+            ));
+        }
+        self.publish(value)?;
+        self.flush_headers(|_| header);
+        Ok(())
+    }
+
+    fn flush_headers(&mut self, mut header: impl FnMut(usize) -> MessageHeader) {
+        for (index, ptr) in self.pending.drain(..).enumerate() {
             // SAFETY: Pending pointers are initialized and exclusively owned;
             // no clones are exposed before the header is stamped.
-            unsafe { (*ptr.payload.get()).assume_init_mut().header.published_at = timestamp };
+            unsafe { (*ptr.payload.get()).assume_init_mut().header = header(index) };
             for observer in &mut self.observers {
                 // SAFETY: pending outputs are fully initialized and immutable for
                 // observer access; stamping precedes observation and publication.

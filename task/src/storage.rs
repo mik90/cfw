@@ -61,6 +61,7 @@ impl<T> PublisherStoragePlan<T> {
     /// Pending loans + retained messages + each subscriber's read/write queues
     /// and one pointer in flight while transferring between them.
     pub fn capacity(&self) -> Result<usize, StorageError> {
+        u32::try_from(self.loan_capacity).map_err(|_| StorageError::CapacityOverflow)?;
         let mut total = self
             .loan_capacity
             .checked_add(self.retained_capacity)

@@ -404,6 +404,53 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
     );
 }
 
+#[test]
+fn publisher_lookup_and_batch_headers_are_validated_before_execution() {
+    use task::{message::MessageHeader, recording::*};
+    let descriptor = recorded(true).descriptor_ref().clone();
+    for header in [
+        MessageHeader {
+            published_at: at(0),
+            publisher_index: 1,
+            batch_index: 0,
+        },
+        MessageHeader {
+            published_at: at(0),
+            publisher_index: 0,
+            batch_index: 1,
+        },
+        MessageHeader::new(at(1)),
+    ] {
+        let record = ExecutionRecord {
+            callback_index: 0,
+            execution_time: at(0),
+            body_duration_ns: 0,
+            inputs: vec![],
+            events: vec![],
+            output_events: vec![],
+            outputs: vec![LoggedMessage { ordinal: 0, header }],
+            outcome: Outcome::Committed,
+        };
+        assert!(matches!(
+            log_from(descriptor.clone(), vec![record], vec![]),
+            Err(ReplayError::InvalidLog(_))
+        ));
+    }
+    let mut duplicate = descriptor.clone();
+    let mut output = duplicate.callbacks[0].endpoints[0].clone();
+    output.ordinal = 1;
+    duplicate.callbacks[0].endpoints.push(output);
+    assert!(
+        matches!(log_from(duplicate, vec![], vec![]), Err(ReplayError::InvalidLog(reason)) if reason.contains("duplicate publisher index"))
+    );
+    let mut absent = descriptor;
+    absent.callbacks[0].endpoints[0].publisher_index = None;
+    assert!(matches!(
+        log_from(absent, vec![], vec![]),
+        Err(ReplayError::InvalidLog(_))
+    ));
+}
+
 struct TwoInputs;
 #[task_callback]
 impl TwoInputs {
@@ -518,9 +565,11 @@ impl TwoOutputs {
         second: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         if self.swapped {
+            first.publish(7)?;
             second.publish(42)
         } else {
-            first.publish(42)
+            first.publish(42)?;
+            second.publish(7)
         }
     }
 }
@@ -530,7 +579,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
     {
         let mut plan = ChannelPlan::new("shared");
         let declaration = TwoOutputsDeclaration::from_keys(plan.publisher(1), plan.publisher(1));
-        let capture = CapturePlan::declare(&mut plan, 1);
+        let capture = CapturePlan::declare(&mut plan, 2);
         let storage = GraphPlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         let mut graph = GraphBuilder::new();
@@ -554,7 +603,9 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
     )
     .unwrap();
     let mut plan = ChannelPlan::new("shared");
-    let declaration = TwoOutputsDeclaration::from_keys(plan.publisher(1), plan.publisher(1));
+    let second = plan.publisher(1);
+    let first = plan.publisher(1);
+    let declaration = TwoOutputsDeclaration::from_keys(first, second);
     let storage = GraphPlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut ports = ReplayBindings::new();

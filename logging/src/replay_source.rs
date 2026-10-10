@@ -81,11 +81,10 @@ impl<'a> ReplaySource<'a> {
             payload_type: std::any::type_name::<T>(),
             inject: Box::new(move |header, bytes| {
                 publisher
-                    .publish(decode(bytes)?)
+                    .publish_with_header(header, decode(bytes)?)
                     .map_err(|e| -> BoxedLogError {
                         format!("replay publication failed: {e:?}").into()
                     })?;
-                publisher.flush(header.published_at);
                 Ok(())
             }),
         }

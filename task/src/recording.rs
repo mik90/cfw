@@ -30,6 +30,8 @@ pub struct EndpointDescriptor {
     pub direction: Direction,
     pub transport: Transport,
     pub payload_type: String,
+    /// Channel-local publisher storage index; absent on input/event ports.
+    pub publisher_index: Option<u32>,
 }
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -185,6 +187,9 @@ struct Recorded<'a> {
     active: Option<ExecutionRecord>,
 }
 impl Callback for Recorded<'_> {
+    fn set_replay_publisher_index(&mut self, ordinal: usize, index: u32) -> Result<(), LoanError> {
+        self.callback.set_replay_publisher_index(ordinal, index)
+    }
     fn enable_exact_replay(&mut self) -> Result<(), LoanError> {
         self.callback.enable_exact_replay()
     }
