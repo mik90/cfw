@@ -1,4 +1,6 @@
+pub mod automatic;
 pub mod capture;
+pub use automatic::{AutomaticCapturePlan, CaptureOptions};
 #[cfg(feature = "serde")]
 pub mod incompleteness;
 pub mod port_capture;

@@ -9,6 +9,7 @@ use std::{
     collections::BTreeMap,
     sync::Arc,
 };
+pub mod capture;
 
 #[derive(Debug)]
 pub struct BuildError(pub String);
@@ -260,6 +261,7 @@ struct Channel {
 #[derive(Default)]
 pub struct NamedPlan {
     channels: BTreeMap<String, Channel>,
+    captures: BTreeMap<String, Box<dyn capture::CaptureDeclaration>>,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, (crate::iox2::Iox2ChannelPlan<()>, usize)>,
     #[cfg(feature = "iceoryx2")]

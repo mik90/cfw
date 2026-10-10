@@ -30,58 +30,23 @@ impl<T> CapturePlan<T> {
         Ok(Capture::native(bindings.take_subscriber(&self.key)?))
     }
 }
-type Visitor<'a> = dyn FnMut(MessageHeader, &[u8]) -> Result<(), BoxedLogError> + 'a;
-trait Drain: Send {
-    fn drain(&mut self, visit: &mut Visitor<'_>) -> Result<(), BoxedLogError>;
-    #[cfg(feature = "serde")]
-    fn loss_counts(&self) -> (u64, u64, u64);
-}
-struct Native<'a, T> {
-    subscriber: Subscriber<'a, T>,
-    scratch: Vec<u8>,
-}
-impl<T: Loggable + Send + Sync> Drain for Native<'_, T> {
-    #[cfg(feature = "serde")]
-    fn loss_counts(&self) -> (u64, u64, u64) {
-        (
-            self.subscriber.writer_drops() as u64,
-            self.subscriber.reader_drops() as u64,
-            0,
-        )
-    }
-    fn drain(&mut self, visit: &mut Visitor<'_>) -> Result<(), BoxedLogError> {
-        self.subscriber.update();
-        let messages: Vec<_> = self.subscriber.input().drain().collect();
-        if self.subscriber.writer_drops() != 0 || self.subscriber.reader_drops() != 0 {
-            return Err(format!(
-                "capture '{}' overflowed (writer {}, reader {})",
-                self.subscriber.channel_name(),
-                self.subscriber.writer_drops(),
-                self.subscriber.reader_drops()
-            )
-            .into());
-        }
-        for message in messages {
-            self.scratch.clear();
-            message.message.serialize(&mut self.scratch)?;
-            visit(message.header, &self.scratch)?;
-        }
-        Ok(())
-    }
-}
 /// Type-erased capture retaining the storage lifetime, never requiring Clone or Any.
 pub struct Capture<'a> {
     channel: String,
-    drain: Box<dyn Drain + 'a>,
+    drain: Box<dyn task::automatic::capture::SerializedCapture + 'a>,
 }
 impl<'a> Capture<'a> {
     pub fn native<T: Loggable + Send + Sync + 'a>(subscriber: Subscriber<'a, T>) -> Self {
+        Self::from_serialized(Box::new(task::automatic::capture::NativeCapture::new(
+            subscriber,
+        )))
+    }
+    pub(crate) fn from_serialized(
+        drain: Box<dyn task::automatic::capture::SerializedCapture + 'a>,
+    ) -> Self {
         Self {
-            channel: subscriber.channel_name().into(),
-            drain: Box::new(Native {
-                subscriber,
-                scratch: Vec::new(),
-            }),
+            channel: drain.channel().into(),
+            drain,
         }
     }
     pub fn channel(&self) -> &str {
@@ -92,9 +57,9 @@ impl<'a> Capture<'a> {
         let (writer_drops, reader_drops, receive_errors) = self.drain.loss_counts();
         crate::incompleteness::CaptureLoss {
             channel: self.channel.clone(),
-            writer_drops,
-            reader_drops,
-            receive_errors,
+            writer_drops: writer_drops as u64,
+            reader_drops: reader_drops as u64,
+            receive_errors: receive_errors as u64,
         }
     }
     pub fn drain(
@@ -124,44 +89,7 @@ mod ipc {
         where
             T: Loggable + std::fmt::Debug + iceoryx2::prelude::ZeroCopySend + Send + Sync + 'static,
         {
-            struct Ipc<T: std::fmt::Debug + iceoryx2::prelude::ZeroCopySend + Send + Sync + 'static>(
-                Iox2Subscriber<T>,
-            );
-            impl<
-                T: Loggable
-                    + std::fmt::Debug
-                    + iceoryx2::prelude::ZeroCopySend
-                    + Send
-                    + Sync
-                    + 'static,
-            > Drain for Ipc<T>
-            {
-                #[cfg(feature = "serde")]
-                fn loss_counts(&self) -> (u64, u64, u64) {
-                    (0, 0, self.0.receive_errors() as u64)
-                }
-                fn drain(&mut self, visit: &mut Visitor<'_>) -> Result<(), BoxedLogError> {
-                    self.0.update();
-                    if self.0.receive_errors() != 0 {
-                        return Err("IPC capture receive error".into());
-                    }
-                    let mut result = Ok(());
-                    self.0.inspect_messages(|_, message| {
-                        if result.is_ok() {
-                            result = (|| {
-                                let mut body = Vec::new();
-                                message.message.serialize(&mut body)?;
-                                visit(message.header, &body)
-                            })();
-                        }
-                    });
-                    result
-                }
-            }
-            Self {
-                channel: subscriber.channel_name().into(),
-                drain: Box::new(Ipc(subscriber)),
-            }
+            Self::from_serialized(Box::new(task::automatic::capture::IpcCapture(subscriber)))
         }
     }
 }

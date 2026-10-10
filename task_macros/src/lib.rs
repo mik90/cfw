@@ -596,6 +596,7 @@ fn automatic_registration(
     let mut keys = Vec::new();
     let mut bindings = Vec::new();
     let mut schema = Vec::new();
+    let mut captures = Vec::new();
     for (index, port) in ports.iter().enumerate() {
         let Port {
             name,
@@ -655,6 +656,16 @@ fn automatic_registration(
         };
         keys.push(key);
         bindings.push(binding);
+        let capture_method = match port.kind {
+            PortKind::IoxEvent | PortKind::IoxNotifier => None,
+            PortKind::IoxInput | PortKind::IoxSpan | PortKind::IoxOutput => {
+                Some(quote!(register_ipc))
+            }
+            _ => Some(quote!(register_native)),
+        };
+        if let Some(method) = capture_method {
+            captures.push(quote!(::task::automatic::capture::CaptureProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
+        }
     }
     quote! {
         struct #factory { user: #task, declaration: #declaration<'static>, names: Vec<String> }
@@ -666,6 +677,8 @@ fn automatic_registration(
                 __cfw_overrides.validate(&[#(#schema),*])?;
                 let __cfw_names: Vec<String> = vec![#(#channel_names),*];
                 let declaration = #declaration::from_keys(#(#keys),*);
+                use ::task::automatic::capture::MaybeCapture as _;
+                #(#captures)*
                 Ok(Box::new(#factory { user: *self, declaration, names: __cfw_names }))
             }
         }
