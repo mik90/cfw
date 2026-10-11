@@ -427,6 +427,7 @@ impl<'storage, T> EndpointBindings<'storage, T> {
             .borrow_mut();
         Ok(configure(slot.as_mut().ok_or(EndpointError::AlreadyTaken)?))
     }
+
     pub fn take_publisher(
         &self,
         key: &PublisherKey<T>,

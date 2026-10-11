@@ -84,17 +84,17 @@ impl<T> PublisherStoragePlan<T> {
 
 /// A typed graph layout before storage allocation. Pairs compose recursively;
 /// multiple named channels may use the same payload type.
-pub struct GraphPlan<L> {
-    layout: L,
+pub struct GraphPlan<LayoutType> {
+    layout: LayoutType,
 }
 
-impl<L: StorageLayout> GraphPlan<L> {
-    pub fn new(layout: L) -> Self {
+impl<LayoutType: StorageLayout> GraphPlan<LayoutType> {
+    pub fn new(layout: LayoutType) -> Self {
         Self { layout }
     }
 
     /// Validate the entire layout, then consume it to allocate fixed storage.
-    pub fn allocate(self) -> Result<GraphStorage<L::Storage>, StorageError> {
+    pub fn allocate(self) -> Result<GraphStorage<LayoutType::Storage>, StorageError> {
         self.layout.validate()?;
         let mut names = HashSet::new();
         self.layout.validate_channel_names(&mut names)?;
@@ -149,30 +149,30 @@ impl<L: StorageLayout> GraphPlan<L> {
 /// drop(storage);
 /// assert_eq!(message.message, 42);
 /// ```
-pub struct GraphStorage<S> {
-    channels: S,
+pub struct GraphStorage<ChannelStorage> {
+    channels: ChannelStorage,
     channel_names: Arc<ChannelNameInterner>,
 }
 
-impl<S> GraphStorage<S> {
+impl<ChannelStorage> GraphStorage<ChannelStorage> {
     pub fn channel_names(&self) -> &Arc<ChannelNameInterner> {
         &self.channel_names
     }
-    pub fn channels(&self) -> &S {
+    pub fn channels(&self) -> &ChannelStorage {
         &self.channels
     }
 }
 
 /// Frozen per-publisher allocation. All builds share this publisher's fixed budget.
 /// A fresh build does not reset or reclaim messages retained from a prior build.
-pub struct PublisherStorage<T> {
-    arena: Arena<Message<T>>,
+pub struct PublisherStorage<MessageType> {
+    arena: Arena<Message<MessageType>>,
     loan_capacity: usize,
     subscribers: Vec<usize>,
 }
 
-impl<T> PublisherStorage<T> {
-    pub(crate) fn publisher(&self) -> Publisher<'_, T> {
+impl<MessageType> PublisherStorage<MessageType> {
+    pub(crate) fn publisher(&self) -> Publisher<'_, MessageType> {
         Publisher::new(self.arena.allocator(), self.loan_capacity)
     }
 
@@ -182,7 +182,7 @@ impl<T> PublisherStorage<T> {
 
     /// Create typed endpoints wired according to the finalized plan. The caller
     /// can move these endpoints into callbacks, graphs, or test fixture handles.
-    pub fn build(&self) -> ChannelEndpoints<'_, T> {
+    pub fn build(&self) -> ChannelEndpoints<'_, MessageType> {
         let subscribers: Vec<_> = self
             .subscribers
             .iter()

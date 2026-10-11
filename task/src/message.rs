@@ -17,6 +17,7 @@ pub struct MessageHeader {
     /// Declaration-order index within the channel's publisher storage.
     pub publisher_index: u32,
     /// Send-order index within this publisher's committed batch.
+    /// Only relevant for OutputSpans.
     pub batch_index: u32,
 }
 
