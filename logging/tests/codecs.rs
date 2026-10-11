@@ -50,7 +50,7 @@ fn custom_codec_and_nonclone_payload_work_without_serde() {
 #[test]
 fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log() {
     use task::{
-        ForwardedMessage,
+        Forwarded,
         loggable::{MessageLog, ReplayMessageLog},
     };
     #[derive(serde::Serialize, serde::Deserialize)]
@@ -66,7 +66,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     publisher.flush(FrameworkTime::from_nanoseconds(5));
     tap.update();
     let source = tap.input().pop().unwrap();
-    let forward = ForwardedMessage::new(true, source.clone());
+    let forward = Forwarded::new(true, source.clone());
     let mut encoded = Vec::new();
     forward.serialize(&mut encoded).unwrap();
     assert!(
@@ -86,7 +86,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
         let log = ReplayMessageLog::new(vec![source.clone()]);
         let mut replay = replay
             .bind_with_decoder(&bindings, move |bytes| {
-                ForwardedMessage::<bool, Source>::deserialize_with_ctx(bytes, &log)
+                Forwarded::<bool, task::ArenaReaderPtr<'_,task::message::Message<Source>>>::deserialize_with_ctx(bytes, &log)
             })
             .unwrap();
         replay
@@ -102,7 +102,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     );
     retained.update();
     let message = retained.input().pop().unwrap();
-    assert_eq!(message.message.forwarded.message.0, "not Clone");
+    assert_eq!(message.message.sources.message.0, "not Clone");
     assert!(message.message.message);
     let ambiguous = ReplayMessageLog::new(vec![source.clone(), source.clone()]);
     assert!(ambiguous.lookup(&source.header).is_none());

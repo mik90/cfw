@@ -3,15 +3,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use task::time::FrameworkTime;
 use task::{
-    ChannelEndpoints, ForwardedMessage, GraphPlan, GraphStorage, LoanError, PublisherStorage,
-    PublisherStoragePlan, StorageError,
+    ChannelEndpoints, GraphPlan, GraphStorage, LoanError, PublisherStorage, PublisherStoragePlan,
+    StorageError,
 };
 
 fn timestamp() -> FrameworkTime {
     FrameworkTime::from_nanoseconds(1)
 }
 
-type Forwarded<'storage> = ForwardedMessage<'storage, bool, u64>;
+type Forwarded<'storage> =
+    task::Forwarded<bool, task::ArenaReaderPtr<'storage, task::message::Message<u64>>>;
 type ForwardingStorage<'storage> =
     GraphStorage<(PublisherStorage<Forwarded<'storage>>, PublisherStorage<u64>)>;
 
@@ -35,7 +36,7 @@ impl<'storage> ForwardingGraph<'storage> {
         let message = self.source.subscribers[0].input().pop().unwrap();
         self.forwarding
             .publisher
-            .publish(ForwardedMessage::new(true, message))
+            .publish(task::Forwarded::new(true, message))
             .unwrap();
         self.forwarding.publisher.flush(timestamp());
         self.forwarding.subscribers[0].update();
@@ -54,15 +55,15 @@ fn source_and_forwarding_arenas_share_one_owner() {
     graph.publish(42);
     let retained = graph.forwarding.subscribers[0].input().pop().unwrap();
     drop(graph);
-    assert_eq!(retained.message.forwarded.message, 42);
+    assert_eq!(retained.message.sources.message, 42);
 
     // Rebuilding endpoints neither invalidates nor resets retained messages.
     let mut rebuilt = ForwardingGraph::build(&storage);
     rebuilt.publish(100);
     let next = rebuilt.forwarding.subscribers[0].input().pop().unwrap();
     drop(rebuilt);
-    assert_eq!(retained.message.forwarded.message, 42);
-    assert_eq!(next.message.forwarded.message, 100);
+    assert_eq!(retained.message.sources.message, 42);
+    assert_eq!(next.message.sources.message, 100);
     drop((retained, next));
 }
 
@@ -97,13 +98,13 @@ fn nested_forwarding_and_unrelated_channels_share_storage() {
     let input = source.subscribers[0].input().pop().unwrap();
     middle
         .publisher
-        .publish(ForwardedMessage::new(true, input))
+        .publish(task::Forwarded::new(true, input))
         .unwrap();
     middle.publisher.flush(timestamp());
     middle.subscribers[0].update();
     let input = middle.subscribers[0].input().pop().unwrap();
     last.publisher
-        .publish(ForwardedMessage::new(7_u32, input))
+        .publish(task::Forwarded::new(7_u32, input))
         .unwrap();
     last.publisher.flush(timestamp());
     last.subscribers[0].update();
@@ -120,8 +121,8 @@ fn nested_forwarding_and_unrelated_channels_share_storage() {
     );
     drop((source, middle, last, strings));
     assert_eq!(retained.message.message, 7);
-    assert!(retained.message.forwarded.message.message);
-    assert_eq!(retained.message.forwarded.message.forwarded.message, 42);
+    assert!(retained.message.sources.message.message);
+    assert_eq!(retained.message.sources.message.sources.message, 42);
 }
 
 #[test]

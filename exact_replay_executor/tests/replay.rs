@@ -790,18 +790,19 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
 }
 
 struct Forward;
+type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Value>>;
 #[task_callback]
 impl Forward {
     fn run<'storage>(
         &self,
         mut input: task::Input<'_, 'storage, Value, task::Forwardable>,
-        #[forwards(forwarded = input)] output: &mut Publisher<
+        #[forwards(source = input)] output: &mut Publisher<
             'storage,
-            task::ForwardedMessage<'storage, bool, Value>,
+            task::Forwarded<bool, SourcePtr<'storage>>,
         >,
     ) -> Result<(), LoanError> {
         if let Some(value) = input.pop() {
-            output.publish(task::ForwardedMessage::new(true, value))?;
+            output.publish(task::Forwarded::new(true, value))?;
         }
         Ok(())
     }
@@ -811,11 +812,11 @@ struct Consume;
 impl Consume {
     fn run(
         &self,
-        input: RequiredInput<task::ForwardedMessage<'_, bool, Value>>,
+        input: RequiredInput<task::Forwarded<bool, SourcePtr<'_>>>,
         output: &mut Publisher<Value>,
     ) -> Result<(), LoanError> {
         output.publish(Value(
-            input.forwarded.message.0 + if input.message { 10 } else { 100 },
+            input.sources.message.0 + if input.message { 10 } else { 100 },
         ))
     }
 }
@@ -907,7 +908,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                     0,
                     hydrate_c
                         .bind_with_decoder(&forward, move |bytes| {
-                            cache.decode_forwarded::<bool>(bytes)
+                            <task::Forwarded<bool,SourcePtr<'_>> as task::loggable::Loggable>::deserialize_with_ctx(bytes,&cache)
                         })
                         .unwrap(),
                 )

@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use task::time::FrameworkTime;
 use task::{
-    ChannelPlan, EndpointError, ForwardedMessage, GraphBuildError, GraphBuilder, GraphPlan,
-    LoanError, StorageError,
+    ChannelPlan, EndpointError, Forwarded, GraphBuildError, GraphBuilder, GraphPlan, LoanError,
+    StorageError,
 };
 
 fn timestamp() -> FrameworkTime {
@@ -163,7 +163,7 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
             Ok(move |timestamp| {
                 input.update();
                 for message in input.input().drain() {
-                    publisher.publish(ForwardedMessage::new(String::from("forwarded"), message))?;
+                    publisher.publish(Forwarded::new(String::from("forwarded"), message))?;
                 }
                 publisher.flush(timestamp);
                 Ok(())
@@ -177,7 +177,7 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
     let retained = fixture.input().pop().unwrap();
     drop((graph, fixture));
     assert_eq!(retained.message.message, "forwarded");
-    assert_eq!(retained.message.forwarded.message, 42);
+    assert_eq!(retained.message.sources.message, 42);
 }
 
 #[test]

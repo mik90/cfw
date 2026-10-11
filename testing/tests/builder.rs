@@ -167,18 +167,19 @@ impl Drop for BorrowedSource {
     }
 }
 struct BorrowingForward;
+type BorrowedSourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<BorrowedSource>>;
 #[task_callback]
 impl BorrowingForward {
     fn run<'storage>(
         &self,
         mut input: task::Input<'_, 'storage, BorrowedSource, task::Forwardable>,
-        #[forwards(forwarded = input)] output: &mut Publisher<
+        #[forwards(source = input)] output: &mut Publisher<
             'storage,
-            task::ForwardedMessage<'storage, bool, BorrowedSource>,
+            task::Forwarded<bool, BorrowedSourcePtr<'storage>>,
         >,
     ) -> Result<(), LoanError> {
         for source in input.drain() {
-            output.publish(task::ForwardedMessage::new(true, source))?;
+            output.publish(task::Forwarded::new(true, source))?;
         }
         Ok(())
     }
@@ -190,15 +191,11 @@ impl RetainForwarded {
         &self,
         #[capacity(32)]
         #[keep_across_runs(true)]
-        input: InputSpan<
-            '_,
-            'storage,
-            task::ForwardedMessage<'storage, bool, BorrowedSource>,
-        >,
+        input: InputSpan<'_, 'storage, task::Forwarded<bool, BorrowedSourcePtr<'storage>>>,
     ) {
         let sum = input
             .inputs()
-            .map(|message| message.message.forwarded.message.value)
+            .map(|message| message.message.sources.message.value)
             .sum();
         self.0.store(sum, Ordering::SeqCst);
     }

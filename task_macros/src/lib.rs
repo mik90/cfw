@@ -502,11 +502,11 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             ));
         }
         if !port.forwards.is_empty()
-            && !matches!(&port.payload,Type::Path(path) if path.path.segments.last().is_some_and(|s| s.ident == "Forwarded" || s.ident == "ForwardedMessage"))
+            && !matches!(&port.payload,Type::Path(path) if path.path.segments.last().is_some_and(|s| s.ident == "Forwarded"))
         {
             return Err(syn::Error::new_spanned(
                 &port.name,
-                "forwarding mappings require a Forwarded or ForwardedMessage output",
+                "forwarding mappings require a Forwarded output",
             ));
         }
         for (_, input) in &port.forwards {
@@ -799,12 +799,12 @@ fn automatic_registration(
     declaration: &syn::Ident,
     ports: &[Port],
 ) -> proc_macro2::TokenStream {
-    fn forwarded(payload: &Type) -> Option<(Type, Type, bool)> {
+    fn forwarded(payload: &Type) -> Option<(Type, Type)> {
         let Type::Path(path) = payload else {
             return None;
         };
         let segment = path.path.segments.last()?;
-        if segment.ident != "ForwardedMessage" && segment.ident != "Forwarded" {
+        if segment.ident != "Forwarded" {
             return None;
         }
         let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
@@ -823,7 +823,7 @@ fn automatic_registration(
             .collect();
         (types.len() == 2).then(|| {
             let source = canonical_type(&types[1]);
-            (types[0].clone(), source, segment.ident == "Forwarded")
+            (types[0].clone(), source)
         })
     }
     struct Borrowed(bool);
@@ -879,37 +879,19 @@ fn automatic_registration(
             ::core::convert::AsRef::<str>::as_ref(&value).to_owned()
         })?));
         let family = forwarded(payload);
-        let (key, binding) = if let Some((message, source, bundle)) = &family {
-            let (sub, pub_, bind) = if *bundle {
-                (
-                    quote!(bundle_subscriber),
-                    quote!(bundle_publisher),
-                    quote!(bundle),
-                )
-            } else {
-                (
-                    quote!(forwarded_subscriber),
-                    quote!(forwarded_publisher),
-                    quote!(forwarded),
-                )
-            };
+        let (key, binding) = if let Some((message, source)) = &family {
             if !matches!(port.kind, PortKind::Input | PortKind::Required) {
                 let fields = port.forwards.iter().map(|(field,input)| {
                     let (idx, input_port) = ports.iter().enumerate().find(|(_,p)| p.name == *input).unwrap();
                     let ty = canonical_type(&input_port.payload);
                     quote!((stringify!(#field),stringify!(#input),__cfw_names[#idx].as_str(),::std::any::TypeId::of::<#ty>()))
                 });
-                let sources = if *bundle {
-                    quote!(#source)
-                } else {
-                    quote!(::task::forwarded_message::SingleSource<#source>)
-                };
-                mappings.push(quote!(__cfw_plan.map_forwarding::<#sources>(stringify!(#name),&__cfw_names[#index],&[#(#fields),*])?;));
+                mappings.push(quote!(__cfw_plan.map_forwarding::<#source>(stringify!(#name),&__cfw_names[#index],&[#(#fields),*])?;));
             }
             match port.kind {
                 PortKind::Input | PortKind::Required => (
-                    quote!(__cfw_plan.#sub::<#message,#source>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
-                    quote!(__cfw_bindings.#bind::<#message,#source>(&self.names[#index])?),
+                    quote!(__cfw_plan.bundle_subscriber::<#message,#source>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
+                    quote!(__cfw_bindings.bundle::<#message,#source>(&self.names[#index])?),
                 ),
                 PortKind::IoxInput
                 | PortKind::IoxSpan
@@ -917,8 +899,8 @@ fn automatic_registration(
                 | PortKind::IoxEvent
                 | PortKind::IoxNotifier => return quote!(),
                 _ => (
-                    quote!(__cfw_plan.#pub_::<#message,#source>(&__cfw_names[#index], #capacity)),
-                    quote!(__cfw_bindings.#bind::<#message,#source>(&self.names[#index])?),
+                    quote!(__cfw_plan.bundle_publisher::<#message,#source>(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_bindings.bundle::<#message,#source>(&self.names[#index])?),
                 ),
             }
         } else {
@@ -949,18 +931,13 @@ fn automatic_registration(
                 ),
             }
         };
-        if let Some((message, source, bundle)) = &family {
+        if let Some((message, source)) = &family {
             let retype = if matches!(port.kind, PortKind::Input | PortKind::Required) {
                 quote!(subscriber_key)
             } else {
                 quote!(publisher_key)
             };
-            if *bundle {
-                rebuilt_keys.push(quote!(::task::automatic::bundle::#retype::<#message,#source>(self.declaration.#name)));
-            } else {
-                rebuilt_keys
-                    .push(quote!(::task::automatic::forwarding::#retype(self.declaration.#name)));
-            }
+            rebuilt_keys.push(quote!(::task::automatic::bundle::#retype::<#message,#source>(self.declaration.#name)));
         } else {
             rebuilt_keys.push(quote!(self.declaration.#name));
         }
@@ -979,13 +956,8 @@ fn automatic_registration(
             }
             _ => Some(quote!(register_native)),
         };
-        if let Some((message, source, bundle)) = family {
-            let module = if bundle {
-                quote!(bundle)
-            } else {
-                quote!(forwarding)
-            };
-            captures.push(quote!(::task::automatic::#module::CaptureProbe::<#message,#source>::default().register(__cfw_plan, &__cfw_names[#index])?;));
+        if let Some((message, source)) = family {
+            captures.push(quote!(::task::automatic::bundle::CaptureProbe::<#message,#source>::default().register(__cfw_plan, &__cfw_names[#index])?;));
         } else if let Some(method) = capture_method {
             captures.push(quote!(::task::automatic::capture::CaptureProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
             captures.push(quote!(::task::automatic::replay::DecodeProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
@@ -1003,7 +975,6 @@ fn automatic_registration(
                 let declaration = #declaration::from_keys(#(#keys),*);
                 use ::task::automatic::capture::MaybeCapture as _;
                 use ::task::automatic::replay::MaybeDecode as _;
-                use ::task::automatic::forwarding::MaybeCapture as _;
                 use ::task::automatic::bundle::MaybeCapture as _;
                 #(#captures)*
                 #(#mappings)*

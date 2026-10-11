@@ -1,4 +1,4 @@
-//! Named construction for owned payloads and the storage-borrowing ForwardedMessage family.
+//! Named construction for owned payloads and storage-borrowing Forwarded source bundles.
 //! Storage remains externally owned; only the construction metadata is erased.
 use crate::{
     Callback, ChannelPlan, ChannelStorage, EndpointBindings, GraphBuilder, StorageLayout,
@@ -12,7 +12,6 @@ use std::{
 pub mod bundle;
 pub mod capture;
 pub mod exact;
-pub mod forwarding;
 pub mod port_capture;
 pub mod replay;
 pub mod topology;

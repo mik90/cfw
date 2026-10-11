@@ -111,12 +111,6 @@ impl<'a, T> SourceCache<'a, T> {
         data.messages.push(message);
         Ok(())
     }
-    pub fn decode_forwarded<U: serde::Serialize + serde::de::DeserializeOwned>(
-        &self,
-        bytes: &[u8],
-    ) -> Result<task::ForwardedMessage<'a, U, T>, BoxedLogError> {
-        task::ForwardedMessage::deserialize_with_ctx(bytes, &*self.data.lock().unwrap())
-    }
 }
 
 /// Each input has its own hydration publisher, including multiple inputs of one
@@ -180,20 +174,6 @@ impl<M: Send + Sync + 'static, S: task::ForwardedSources> BundleReplayInputPlan<
     ) -> Result<ReplaySource<'a>, task::EndpointError> {
         ReplayInputPlan {
             publisher: task::automatic::bundle::publisher_key::<M, S>(self.plan.publisher),
-        }
-        .bind_with_decoder(bindings, decode)
-    }
-}
-impl<M: Send + Sync + 'static, S: Send + Sync + 'static>
-    ReplayInputPlan<task::ForwardedMessage<'static, M, S>>
-{
-    pub fn bind_forwarded_with_decoder<'a>(
-        self,
-        bindings: &EndpointBindings<'a, task::ForwardedMessage<'a, M, S>>,
-        decode: impl FnMut(&[u8]) -> Result<task::ForwardedMessage<'a, M, S>, BoxedLogError> + Send + 'a,
-    ) -> Result<ReplaySource<'a>, task::EndpointError> {
-        ReplayInputPlan {
-            publisher: task::automatic::forwarding::publisher_key(self.publisher),
         }
         .bind_with_decoder(bindings, decode)
     }

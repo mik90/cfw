@@ -6,11 +6,13 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
+use task::loggable::Loggable;
 use task::{
-    ChannelPlan, ForwardedMessage, GraphBuilder, GraphPlan, Input, InputSpan, LoanError,
-    OutputSpan, Publisher, time::FrameworkTime,
+    ChannelPlan, Forwarded, GraphBuilder, GraphPlan, Input, InputSpan, LoanError, OutputSpan,
+    Publisher, time::FrameworkTime,
 };
 use task_macros::task_callback;
+type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Value>>;
 
 #[derive(Clone, Default)]
 struct Bytes(Arc<Mutex<Vec<u8>>>);
@@ -44,12 +46,12 @@ impl Forward {
     fn run<'storage>(
         &self,
         #[capacity(8)] mut input: Input<'_, 'storage, Value, task::Forwardable>,
-        #[forwards(forwarded = input)]
+        #[forwards(source = input)]
         #[capacity(4)]
-        output: &mut Publisher<'storage, ForwardedMessage<'storage, bool, Value>>,
+        output: &mut Publisher<'storage, Forwarded<bool, SourcePtr<'storage>>>,
     ) -> Result<(), LoanError> {
         for value in input.drain() {
-            output.publish(ForwardedMessage::new(true, value))?;
+            output.publish(Forwarded::new(true, value))?;
         }
         Ok(())
     }
@@ -70,13 +72,13 @@ struct Consume;
 impl Consume {
     fn run(
         &self,
-        #[capacity(8)] input: InputSpan<ForwardedMessage<'_, bool, Value>>,
+        #[capacity(8)] input: InputSpan<Forwarded<bool, SourcePtr<'_>>>,
         output: &mut Publisher<Vec<u64>>,
     ) -> Result<(), LoanError> {
         output.publish(
             input
                 .inputs()
-                .map(|m| m.message.forwarded.message.0)
+                .map(|m| m.message.sources.message.0)
                 .collect(),
         )
     }
@@ -191,7 +193,9 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
             "consume",
             0,
             hydrate_c
-                .bind_with_decoder(&forward, move |bytes| cache.decode_forwarded::<bool>(bytes))
+                .bind_with_decoder(&forward, move |bytes| {
+                    Forwarded::<bool, SourcePtr<'_>>::deserialize_with_ctx(bytes, &cache)
+                })
                 .unwrap(),
         )
         .unwrap();

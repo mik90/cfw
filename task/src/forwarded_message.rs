@@ -2,6 +2,8 @@ use crate::message::Message;
 use base::arena::ArenaReaderPtr;
 
 /// An output value and named, owning references to its source publications.
+/// Sources may be one arena handle (mapped as `source`) or a struct deriving
+/// `ForwardedSources` with any number of named heterogeneous handles.
 pub struct Forwarded<M, S> {
     pub message: M,
     pub sources: S,
@@ -36,12 +38,34 @@ pub trait SourceCodec: Sized {
         Self: 'a;
 }
 
-pub struct SingleSource<S>(std::marker::PhantomData<S>);
 // SAFETY: The rebound type changes only the source handle's lifetime.
-unsafe impl<S: Send + Sync + 'static> ForwardedSources for SingleSource<S> {
+unsafe impl<S: Send + Sync + 'static> ForwardedSources for ArenaReaderPtr<'static, Message<S>> {
     type Bound<'a> = ArenaReaderPtr<'a, Message<S>>;
     fn fields() -> Vec<(&'static str, std::any::TypeId)> {
-        vec![("forwarded", std::any::TypeId::of::<S>())]
+        vec![("source", std::any::TypeId::of::<S>())]
+    }
+}
+impl<'storage, T> SourceCodec for ArenaReaderPtr<'storage, Message<T>> {
+    type Context<'a>
+        = &'a dyn crate::loggable::MessageLog<'storage, T>
+    where
+        Self: 'a;
+    fn headers(&self) -> Vec<(&'static str, crate::message::MessageHeader)> {
+        vec![("source", self.header)]
+    }
+    fn resolve<'a>(
+        headers: &[(String, crate::message::MessageHeader)],
+        context: Self::Context<'a>,
+    ) -> Result<Self, crate::loggable::DeserializeError>
+    where
+        Self: 'a,
+    {
+        if headers.len() != 1 || headers[0].0 != "source" {
+            return Err("expected one forwarded source field named 'source'".into());
+        }
+        context
+            .lookup(&headers[0].1)
+            .ok_or_else(|| "missing or ambiguous forwarded source publication".into())
     }
 }
 
@@ -71,17 +95,5 @@ where
         let (message, headers): (M, Vec<(String, crate::message::MessageHeader)>) =
             serde_json::from_slice(bytes)?;
         Ok(Self::new(message, S::resolve(&headers, context)?))
-    }
-}
-
-/// Keeps a source message alive for the common storage borrow.
-pub struct ForwardedMessage<'storage, T, F> {
-    pub message: T,
-    pub forwarded: ArenaReaderPtr<'storage, Message<F>>,
-}
-
-impl<'storage, T, F> ForwardedMessage<'storage, T, F> {
-    pub fn new(message: T, forwarded: ArenaReaderPtr<'storage, Message<F>>) -> Self {
-        Self { message, forwarded }
     }
 }

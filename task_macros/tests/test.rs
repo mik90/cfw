@@ -382,17 +382,18 @@ fn generated_uninitialized_output_publishes_on_success() {
 }
 
 struct Forward;
+type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<u64>>;
 #[task_callback]
 impl Forward {
     fn run<'storage>(
         &mut self,
         #[capacity(2)] mut input: Input<'_, 'storage, u64, task::Forwardable>,
-        #[forwards(forwarded = input)]
+        #[forwards(source = input)]
         #[capacity(2)]
-        output: &mut Publisher<'storage, task::ForwardedMessage<'storage, bool, u64>>,
+        output: &mut Publisher<'storage, task::Forwarded<bool, SourcePtr<'storage>>>,
     ) -> Result<(), LoanError> {
         for ptr in input.drain() {
-            output.publish(task::ForwardedMessage::new(true, ptr))?;
+            output.publish(task::Forwarded::new(true, ptr))?;
         }
         Ok(())
     }
@@ -426,7 +427,7 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
     capture.update();
     let retained = capture.input().pop().unwrap();
     drop((callback, fixture, capture, source, destination));
-    assert_eq!(retained.message.forwarded.message, 42);
+    assert_eq!(retained.message.sources.message, 42);
 }
 
 #[test]
@@ -441,18 +442,18 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     let forward = registration.register(&mut plan).unwrap();
     let injection = plan.native::<u64>("source").unwrap().publisher(1);
     let capture = plan
-        .forwarded::<bool, u64>("forwarded")
+        .bundle::<bool, SourcePtr<'static>>("forwarded")
         .unwrap()
         .subscriber(32);
     let fanout = plan
-        .forwarded::<bool, u64>("forwarded")
+        .bundle::<bool, SourcePtr<'static>>("forwarded")
         .unwrap()
         .subscriber(32);
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     assert!(
         bindings
-            .native::<task::ForwardedMessage<'static, bool, u64>>("forwarded")
+            .native::<task::Forwarded<bool, SourcePtr<'static>>>("forwarded")
             .is_err()
     );
     let mut source = bindings
@@ -461,14 +462,20 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
         .take_publisher(&injection)
         .unwrap();
     let capture = bindings
-        .forwarded::<bool, u64>("forwarded")
+        .bundle::<bool, SourcePtr<'static>>("forwarded")
         .unwrap()
-        .take_subscriber(&task::automatic::forwarding::subscriber_key(capture))
+        .take_subscriber(&task::automatic::bundle::subscriber_key::<
+            bool,
+            SourcePtr<'static>,
+        >(capture))
         .unwrap();
     let fanout = bindings
-        .forwarded::<bool, u64>("forwarded")
+        .bundle::<bool, SourcePtr<'static>>("forwarded")
         .unwrap()
-        .take_subscriber(&task::automatic::forwarding::subscriber_key(fanout))
+        .take_subscriber(&task::automatic::bundle::subscriber_key::<
+            bool,
+            SourcePtr<'static>,
+        >(fanout))
         .unwrap();
     let mut graph = storage.graph_builder();
     forward.add_to_graph(&mut graph, &bindings);
@@ -487,11 +494,15 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     let shared: Vec<_> = fanout.input().drain().collect();
     drop((graph, source, capture, fanout, bindings));
     let second = storage.bind().unwrap();
-    assert!(second.forwarded::<bool, u64>("forwarded").is_ok());
+    assert!(
+        second
+            .bundle::<bool, SourcePtr<'static>>("forwarded")
+            .is_ok()
+    );
     drop(second);
     for (index, message) in retained.iter().enumerate() {
-        assert_eq!(message.message.forwarded.message, index as u64);
-        assert_eq!(shared[index].message.forwarded.message, index as u64);
+        assert_eq!(message.message.sources.message, index as u64);
+        assert_eq!(shared[index].message.sources.message, index as u64);
     }
 }
 

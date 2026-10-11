@@ -4,12 +4,14 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
+use task::loggable::Loggable;
 use task::{
     CallbackSchedule, InputSpan, LoanError, OutputSpan, Publisher,
     automatic::{NamedPlan, TaskRegistration},
     time::FrameworkTime,
 };
 use task_macros::task_callback;
+type SourcePtr<'a, T> = task::ArenaReaderPtr<'a, task::message::Message<T>>;
 
 #[derive(Clone, Default)]
 struct Bytes(Arc<Mutex<Vec<u8>>>);
@@ -127,11 +129,10 @@ fn automatic_exact_bindings_restore_distinct_windows_and_reordered_publishers() 
             .unwrap();
         assert!(report.is_exact(), "{report:?}");
         assert_eq!(report.consumed_executions(), 6);
-        let forwarded: task::ForwardedMessage<'_, bool, Value> = cache.decode_forwarded(&serde_json::to_vec(&serde_json::json!({
-            "message": true,
-            "forwarded_message_header": { "published_at": { "nanoseconds": 0 }, "publisher_index": 0, "batch_index": 0 }
-        })).unwrap()).unwrap();
-        assert_eq!(forwarded.forwarded.message.0, 11);
+        let forwarded = task::Forwarded::<bool,SourcePtr<'_,Value>>::deserialize_with_ctx(&serde_json::to_vec(&serde_json::json!([
+            true, [["source", { "published_at": { "nanoseconds": 0 }, "publisher_index": 0, "batch_index": 0 }]]
+        ])).unwrap(), &cache).unwrap();
+        assert_eq!(forwarded.sources.message.0, 11);
     }
 }
 
@@ -403,13 +404,13 @@ impl ForwardTask {
     fn run<'storage>(
         &self,
         mut input: task::Input<'_, 'storage, u64, task::Forwardable>,
-        #[forwards(forwarded = input)] output: &mut Publisher<
+        #[forwards(source = input)] output: &mut Publisher<
             'storage,
-            task::ForwardedMessage<'storage, bool, u64>,
+            task::Forwarded<bool, SourcePtr<'storage, u64>>,
         >,
     ) -> Result<(), LoanError> {
         for source in input.drain() {
-            output.publish(task::ForwardedMessage::new(true, source))?;
+            output.publish(task::Forwarded::new(true, source))?;
         }
         Ok(())
     }
@@ -419,11 +420,11 @@ struct ForwardSink;
 impl ForwardSink {
     fn run<'storage>(
         &self,
-        mut input: task::Input<'_, 'storage, task::ForwardedMessage<'storage, bool, u64>>,
+        mut input: task::Input<'_, 'storage, task::Forwarded<bool, SourcePtr<'storage, u64>>>,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         for forwarded in input.drain() {
-            output.publish(forwarded.message.forwarded.message + 1)?;
+            output.publish(forwarded.message.sources.message + 1)?;
         }
         Ok(())
     }
@@ -451,7 +452,7 @@ fn forwarding_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task::automatic:
 }
 #[test]
 fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
-    use exact_replay_executor::{ExplicitReplayPort, ReplayInputPlan};
+    use exact_replay_executor::{BundleReplayInputPlan, ExplicitReplayPort};
     for logged in [false, true] {
         let bytes = Bytes::default();
         {
@@ -493,10 +494,15 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
         let tasks = forwarding_tasks(&mut plan, true);
         let cache = AutomaticExactReplayPlan::source_cache::<u64>(&mut plan, &log, "source-values")
             .unwrap();
-        let input = plan.forwarded_input_key::<bool, u64>("sink", 0).unwrap();
-        let manual =
-            ReplayInputPlan::declare(plan.forwarded::<bool, u64>("forwarded").unwrap(), &input)
-                .unwrap();
+        let input = plan
+            .bundle_input_key::<bool, SourcePtr<'static, u64>>("sink", 0)
+            .unwrap();
+        let manual = BundleReplayInputPlan::<bool, SourcePtr<'static, u64>>::declare(
+            plan.bundle::<bool, SourcePtr<'static, u64>>("forwarded")
+                .unwrap(),
+            &input,
+        )
+        .unwrap();
         let automatic = AutomaticExactReplayPlan::declare_with_explicit(
             &mut plan,
             &log,
@@ -512,9 +518,15 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
                 "sink",
                 0,
                 manual
-                    .bind_forwarded_with_decoder(
-                        bindings.forwarded::<bool, u64>("forwarded").unwrap(),
-                        move |bytes| cache.decode_forwarded::<bool>(bytes),
+                    .bind_with_decoder(
+                        bindings
+                            .bundle::<bool, SourcePtr<'static, u64>>("forwarded")
+                            .unwrap(),
+                        move |bytes| {
+                            task::Forwarded::<bool, SourcePtr<'_, u64>>::deserialize_with_ctx(
+                                bytes, &cache,
+                            )
+                        },
                     )
                     .unwrap(),
             )

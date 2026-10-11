@@ -32,7 +32,7 @@ pub use callback::{
     execute_callback_batch,
 };
 pub use context::Context;
-pub use forwarded_message::{Forwarded, ForwardedMessage, ForwardedSources};
+pub use forwarded_message::{Forwarded, ForwardedSources};
 pub use graph::{
     BuiltGraph, CallbackSchedule, FactoryError, GraphBuildError, GraphBuilder, GraphMetadata,
     GraphStepError, ScheduledCallback, TimingError,
