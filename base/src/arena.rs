@@ -19,7 +19,6 @@ impl<'arena, T> ArenaPtr<'arena, T> {
     fn slot(&self) -> &ArenaSlot<T> {
         self.ptr
     }
-    // TODO impl non-default try_new which allows you to forward args
 }
 
 #[cfg(test)]
