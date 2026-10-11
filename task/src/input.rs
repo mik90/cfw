@@ -2,15 +2,13 @@ pub use crate::subscriber::Input;
 use crate::{Subscriber, message::MessageHeader};
 use std::ops::Deref;
 
-/// Default callback input capability. Consumed handles cannot escape the input borrow.
+/// Default callback input capability. Readers can only read the input and can't extend its lifetime.
 /// ```compile_fail
 /// use task::{Input, ArenaReaderPtr, message::Message};
 /// fn extend<'input, 'storage>(mut input: Input<'input,'storage,u64>) -> ArenaReaderPtr<'storage,Message<u64>> {
 ///     input.pop().unwrap()
 /// }
 /// ```
-
-/// The 'normal' input, really just means that it cannot be forwarded.
 pub struct ReadOnly;
 /// Allows source handles to be transferred into storage-lived output loans.
 pub struct Forwardable;
