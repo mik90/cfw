@@ -334,14 +334,14 @@ impl<A: OutputPorts, B: OutputPorts> OutputPorts for (A, B) {
 
 /// Hand-written callback with typed IO bundles. The body decides how to handle
 /// empty inputs; macro-generated required inputs additionally gate execution.
-pub struct CallbackNode<I, O, F> {
-    inputs: I,
-    outputs: O,
-    body: F,
+pub struct CallbackNode<InputsType, OutputsType, BodyFunc> {
+    inputs: InputsType,
+    outputs: OutputsType,
+    body: BodyFunc,
 }
 
-impl<I, O, F> CallbackNode<I, O, F> {
-    pub fn new(inputs: I, outputs: O, body: F) -> Self {
+impl<InputsType, OutputsType, BodyFunc> CallbackNode<InputsType, OutputsType, BodyFunc> {
+    pub fn new(inputs: InputsType, outputs: OutputsType, body: BodyFunc) -> Self {
         Self {
             inputs,
             outputs,
@@ -350,11 +350,11 @@ impl<I, O, F> CallbackNode<I, O, F> {
     }
 }
 
-impl<I, O, F> Callback for CallbackNode<I, O, F>
+impl<InputsType, OutputsType, BodyFunc> Callback for CallbackNode<InputsType, OutputsType, BodyFunc>
 where
-    I: InputPorts + Send,
-    O: OutputPorts + Send,
-    F: FnMut(&I, &mut O, &Context) -> Result<(), LoanError> + Send,
+    InputsType: InputPorts + Send,
+    OutputsType: OutputPorts + Send,
+    BodyFunc: FnMut(&InputsType, &mut OutputsType, &Context) -> Result<(), LoanError> + Send,
 {
     fn finish_inputs(&mut self) {
         self.inputs.finish();
