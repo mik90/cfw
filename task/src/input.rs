@@ -1,5 +1,5 @@
-use crate::Subscriber;
 pub use crate::subscriber::Input;
+use crate::{Subscriber, message::MessageHeader};
 use std::ops::Deref;
 
 /// Default callback input capability. Consumed handles cannot escape the input borrow.
@@ -9,35 +9,48 @@ use std::ops::Deref;
 ///     input.pop().unwrap()
 /// }
 /// ```
+
+/// The 'normal' input, really just means that it cannot be forwarded.
 pub struct ReadOnly;
 /// Allows source handles to be transferred into storage-lived output loans.
 pub struct Forwardable;
-pub type OptionalInput<'input, 'storage, T, C = ReadOnly> = Input<'input, 'storage, T, C>;
-pub type InputSpan<'input, 'storage, T, C = ReadOnly> = Input<'input, 'storage, T, C>;
+pub type OptionalInput<'input, 'storage, MessageType, Modifiers = ReadOnly> =
+    Input<'input, 'storage, MessageType, Modifiers>;
+pub type InputSpan<'input, 'storage, MessageType, Modifiers = ReadOnly> =
+    Input<'input, 'storage, MessageType, Modifiers>;
 
 /// A read view constructed after the executor checks required-input readiness.
-pub struct RequiredInput<'input, 'storage, T, C = ReadOnly>(Input<'input, 'storage, T, C>);
+pub struct RequiredInput<'input, 'storage, MessageType, Modifiers = ReadOnly>(
+    Input<'input, 'storage, MessageType, Modifiers>,
+);
 
-impl<'input, 'storage, T> RequiredInput<'input, 'storage, T> {
-    pub fn new(subscriber: &'input Subscriber<'storage, T>) -> Self {
+impl<'input, 'storage, MessageType> RequiredInput<'input, 'storage, MessageType> {
+    pub fn new(subscriber: &'input Subscriber<'storage, MessageType>) -> Self {
+        // Readiness handling should've prevented this
         assert!(!subscriber.is_empty(), "required input is empty");
         Self(subscriber.read_input())
     }
 }
-impl<'input, 'storage, T> RequiredInput<'input, 'storage, T, Forwardable> {
-    pub fn new_forwardable(subscriber: &'input Subscriber<'storage, T>) -> Self {
+
+impl<'input, 'storage, MessageType> RequiredInput<'input, 'storage, MessageType, Forwardable> {
+    pub fn new_forwardable(subscriber: &'input Subscriber<'storage, MessageType>) -> Self {
+        // Readiness handling should've prevented this
         assert!(!subscriber.is_empty(), "required input is empty");
         Self(subscriber.forwardable_input())
     }
     pub fn forward(
         &mut self,
-    ) -> Option<base::arena::ArenaReaderPtr<'storage, crate::message::Message<T>>> {
+    ) -> Option<base::arena::ArenaReaderPtr<'storage, crate::message::Message<MessageType>>> {
         self.0.forward()
     }
 }
-impl<T, C> RequiredInput<'_, '_, T, C> {
-    pub fn value(&self) -> &T {
+impl<MessageType, Modifiers> RequiredInput<'_, '_, MessageType, Modifiers> {
+    pub fn value(&self) -> &MessageType {
         self.0.value().expect("required input is empty")
+    }
+
+    pub fn header(&self) -> &MessageHeader {
+        self.0.header().expect("required input is empty")
     }
 
     pub fn clear(&mut self) {
@@ -45,9 +58,9 @@ impl<T, C> RequiredInput<'_, '_, T, C> {
     }
 }
 
-impl<T, C> Deref for RequiredInput<'_, '_, T, C> {
-    type Target = T;
-    fn deref(&self) -> &T {
+impl<MessageType, Modifiers> Deref for RequiredInput<'_, '_, MessageType, Modifiers> {
+    type Target = MessageType;
+    fn deref(&self) -> &MessageType {
         self.value()
     }
 }

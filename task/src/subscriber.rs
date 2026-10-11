@@ -1,7 +1,7 @@
 use base::arena::ArenaReaderPtr;
 use base::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 
-use crate::message::Message;
+use crate::message::{Message, MessageHeader};
 use crate::wake::{WakeHandle, WakeRegistration};
 use std::sync::{Arc, OnceLock};
 
@@ -148,8 +148,16 @@ pub struct Input<'input, 'storage, T, C = crate::input::ReadOnly> {
 }
 
 impl<'storage, T, C> Input<'_, 'storage, T, C> {
+    pub fn full_message(&self) -> Option<&Message<T>> {
+        self.guard.front()
+    }
+
     pub fn value(&self) -> Option<&T> {
-        self.guard.front().map(|message| &message.message)
+        self.full_message().map(|message| &message.message)
+    }
+
+    pub fn header(&self) -> Option<&MessageHeader> {
+        self.full_message().map(|message| &message.header)
     }
 
     /// Inspect all prepared messages, including headers, without consuming them.
