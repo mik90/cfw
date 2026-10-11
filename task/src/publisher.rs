@@ -21,15 +21,16 @@ pub enum LoanError {
 
 /// A typed publisher borrowing storage allocated before connection/execution.
 /// Connection does not resize its arena: the graph plan owns capacity decisions.
-pub struct Publisher<'storage, T> {
-    allocator: ArenaAllocator<'storage, Message<T>>,
+pub struct Publisher<'storage, MessageType> {
+    allocator: ArenaAllocator<'storage, Message<MessageType>>,
     loan_capacity: usize,
-    pending: Vec<ArenaPtr<'storage, Message<T>>>,
-    subscribers: Vec<SubscriberWriter<'storage, T>>,
+    pending: Vec<ArenaPtr<'storage, Message<MessageType>>>,
+    subscribers: Vec<SubscriberWriter<'storage, MessageType>>,
     channel: String,
     publisher_index: u32,
-    observers: Vec<PublishObserver<'storage, T>>,
+    observers: Vec<PublishObserver<'storage, MessageType>>,
 }
+
 type PublishObserver<'a, T> = Box<dyn FnMut(&Message<T>) + Send + 'a>;
 
 impl<'storage, T> Publisher<'storage, T> {
@@ -52,12 +53,15 @@ impl<'storage, T> Publisher<'storage, T> {
     pub(crate) fn set_channel_name(&mut self, name: &str) {
         self.channel = name.into();
     }
+
     pub fn channel_name(&self) -> &str {
         &self.channel
     }
+
     pub fn publisher_index(&self) -> u32 {
         self.publisher_index
     }
+
     /// Configure the channel-local index of an unplanned publisher.
     /// Planned endpoints receive their index automatically during binding.
     pub fn set_publisher_index(&mut self, index: u32) {
@@ -67,13 +71,11 @@ impl<'storage, T> Publisher<'storage, T> {
     pub fn connect(&mut self, subscriber: &Subscriber<'storage, T>) {
         self.subscribers.push(subscriber.writer());
     }
+
     /// Observe this publisher's initialized, stamped outputs before fan-out.
     /// References are scoped to the observer call and cannot escape it.
     pub fn observe(&mut self, observer: impl FnMut(&Message<T>) + Send + 'storage) {
         self.observers.push(Box::new(observer));
-    }
-    pub fn suppress_delivery(&mut self) {
-        self.subscribers.clear();
     }
 
     pub fn loan_uninit(&mut self) -> Result<OutputUninit<'_, 'storage, T>, LoanError> {
@@ -124,6 +126,7 @@ impl<'storage, T> Publisher<'storage, T> {
     pub fn discard_pending(&mut self) {
         self.pending.clear();
     }
+
     pub fn visit_pending_headers(&self, mut visit: impl FnMut(MessageHeader)) {
         for (index, message) in self.pending.iter().enumerate() {
             // SAFETY: pending contains initialized loans; publication/mutation
@@ -194,13 +197,17 @@ fn allocate_output<'storage, T>(
 }
 
 /// Exclusive in-place output reservation. A normal drop releases the slot
-/// without dropping a potentially partially initialized payload.
+/// without dropping a potentially partially initialized payload. It is up
+/// to the user to handle initialization failure.
 pub struct OutputUninit<'output, 'storage, T> {
     publisher: &'output mut Publisher<'storage, T>,
     ptr: ArenaPtrUninit<'storage, Message<T>>,
 }
 
 impl<'output, 'storage, T> OutputUninit<'output, 'storage, T> {
+    /// The main use-case for OutputUninit, this allows users to initialize large
+    /// types in-place but they must handle safety on their own, including managing
+    /// partially initialized values.
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
         let message = self.ptr.payload_uninit().as_mut_ptr();
         // SAFETY: The loan exclusively owns Message<T>. MaybeUninit has T's
@@ -236,22 +243,30 @@ impl<T> Output<'_, '_, T> {
     pub fn send(self) {
         self.publisher.pending.push(self.ptr);
     }
+
+    pub fn value(&self) -> &T {
+        // SAFETY: Output contains a fully initialized, exclusively owned payload.
+        &unsafe { (*self.ptr.payload.get()).assume_init_ref() }.message
+    }
+
+    pub fn value_mut(&mut self) -> &mut T {
+        // SAFETY: No pointer clones are exposed until send followed by flush,
+        // both of which end access through this exclusive output handle.
+        &mut unsafe { (*self.ptr.payload.get()).assume_init_mut() }.message
+    }
 }
 
 impl<T> Deref for Output<'_, '_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: Output contains a fully initialized, exclusively owned payload.
-        &unsafe { (*self.ptr.payload.get()).assume_init_ref() }.message
+        self.value()
     }
 }
 
 impl<T> DerefMut for Output<'_, '_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: No pointer clones are exposed until send followed by flush,
-        // both of which end access through this exclusive output handle.
-        &mut unsafe { (*self.ptr.payload.get()).assume_init_mut() }.message
+        self.value_mut()
     }
 }
 

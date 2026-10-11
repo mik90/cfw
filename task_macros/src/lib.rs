@@ -579,9 +579,8 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             replay_resets.push(quote!(self.#name.clear();));
         } else if matches!(kind, PortKind::IoxOutput | PortKind::IoxNotifier) {
             replay_isolation.push(quote!(self.#name.suppress_transport();));
-        } else {
-            replay_isolation.push(quote!(self.#name.suppress_delivery();));
         }
+
         if matches!(kind, PortKind::IoxEvent) {
             replay_events.push(quote!(#ordinal => self.#name.stage_replay(event_id, count),));
         }
