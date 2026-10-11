@@ -10,7 +10,7 @@ use crate::message::{Message, MessageHeader};
 use crate::time::FrameworkTime;
 
 mod span;
-pub use span::{OutputSpan, SpanOutput, SpanOutputUninit};
+pub use span::{OutputSpan, OutputSpanEntry, SpanOutputUninit};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoanError {

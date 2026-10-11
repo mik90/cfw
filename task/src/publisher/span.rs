@@ -30,7 +30,7 @@ impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
     }
 
     pub fn loan_uninit(&self) -> Result<SpanOutputUninit<'_, 'output, 'storage, T>, LoanError> {
-        if self.outstanding.get() >= self.loan_capacity - self.pending_len.get() {
+        if self.outstanding.get() >= (self.loan_capacity - self.pending_len.get()) {
             return Err(LoanError::LoanCapacityReached);
         }
         let ptr = allocate_output(self.allocator)?;
@@ -41,13 +41,13 @@ impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
         })
     }
 
-    pub fn loan(&self, value: T) -> Result<SpanOutput<'_, 'output, 'storage, T>, LoanError> {
+    pub fn loan(&self, value: T) -> Result<OutputSpanEntry<'_, 'output, 'storage, T>, LoanError> {
         self.loan_uninit().map(|loan| loan.write(value))
     }
 
     fn enqueue(&self, ptr: ArenaPtr<'storage, Message<T>>) {
         // The publisher exclusively lends its queue for the span's lifetime.
-        // Reservations enforce pending + outstanding <= loan_capacity, and the
+        // Reservations enforce (pending + outstanding) <= loan_capacity, and the
         // queue is preallocated to that capacity. Pushing this reserved slot
         // cannot grow the allocation or invoke user code while the Cell is empty.
         let mut pending = self.pending.take();
@@ -60,6 +60,7 @@ impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
 struct Reservation<'span, 'output, 'storage, T> {
     span: &'span OutputSpan<'output, 'storage, T>,
 }
+
 impl<T> Drop for Reservation<'_, '_, '_, T> {
     fn drop(&mut self) {
         self.span.outstanding.set(self.span.outstanding.get() - 1);
@@ -72,6 +73,7 @@ pub struct SpanOutputUninit<'span, 'output, 'storage, T> {
     ptr: ArenaPtrUninit<'storage, Message<T>>,
     reservation: Reservation<'span, 'output, 'storage, T>,
 }
+
 impl<'span, 'output, 'storage, T> SpanOutputUninit<'span, 'output, 'storage, T> {
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
         let message = self.ptr.payload_uninit().as_mut_ptr();
@@ -80,7 +82,7 @@ impl<'span, 'output, 'storage, T> SpanOutputUninit<'span, 'output, 'storage, T> 
         unsafe { &mut *(&raw mut (*message).message).cast::<MaybeUninit<T>>() }
     }
 
-    pub fn write(mut self, value: T) -> SpanOutput<'span, 'output, 'storage, T> {
+    pub fn write(mut self, value: T) -> OutputSpanEntry<'span, 'output, 'storage, T> {
         self.payload_uninit().write(value);
         // SAFETY: write initialized the payload; Publisher initialized the header.
         unsafe { self.assume_init() }
@@ -88,8 +90,8 @@ impl<'span, 'output, 'storage, T> SpanOutputUninit<'span, 'output, 'storage, T> 
 
     /// # Safety
     /// The entire payload must be initialized.
-    pub unsafe fn assume_init(self) -> SpanOutput<'span, 'output, 'storage, T> {
-        SpanOutput {
+    pub unsafe fn assume_init(self) -> OutputSpanEntry<'span, 'output, 'storage, T> {
+        OutputSpanEntry {
             // SAFETY: The caller initialized T; Publisher initialized the header.
             ptr: unsafe { self.ptr.assume_init() },
             reservation: self.reservation,
@@ -99,25 +101,36 @@ impl<'span, 'output, 'storage, T> SpanOutputUninit<'span, 'output, 'storage, T> 
 
 /// Exclusive initialized reservation. Sending enqueues it in send order;
 /// dropping it without sending destroys the payload and returns its quota.
-pub struct SpanOutput<'span, 'output, 'storage, T> {
+pub struct OutputSpanEntry<'span, 'output, 'storage, T> {
     ptr: ArenaPtr<'storage, Message<T>>,
     reservation: Reservation<'span, 'output, 'storage, T>,
 }
-impl<T> SpanOutput<'_, '_, '_, T> {
+
+impl<T> OutputSpanEntry<'_, '_, '_, T> {
     pub fn send(self) {
         self.reservation.span.enqueue(self.ptr);
     }
-}
-impl<T> Deref for SpanOutput<'_, '_, '_, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        // SAFETY: Initialized slot, exclusively owned until send and flush.
-        &unsafe { self.ptr.assume_init_ref() }.message
+
+    pub fn value(&self) -> &T {
+        // SAFETY: Output contains a fully initialized, exclusively owned payload.
+        &unsafe { (*self.ptr.payload.get()).assume_init_ref() }.message
+    }
+
+    pub fn value_mut(&mut self) -> &mut T {
+        // SAFETY: No pointer clones are exposed until send followed by flush,
+        // both of which end access through this exclusive output handle.
+        &mut unsafe { (*self.ptr.payload.get()).assume_init_mut() }.message
     }
 }
-impl<T> DerefMut for SpanOutput<'_, '_, '_, T> {
+
+impl<T> Deref for OutputSpanEntry<'_, '_, '_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.value()
+    }
+}
+impl<T> DerefMut for OutputSpanEntry<'_, '_, '_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: Each reservation has a distinct slot, with no clones exposed.
-        &mut unsafe { (*self.ptr.payload.get()).assume_init_mut() }.message
+        self.value_mut()
     }
 }
