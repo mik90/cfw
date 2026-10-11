@@ -427,7 +427,7 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
     capture.update();
     let retained = capture.input().pop().unwrap();
     drop((callback, fixture, capture, source, destination));
-    assert_eq!(retained.message.sources.message, 42);
+    assert_eq!(retained.message.forwarded_messages.message, 42);
 }
 
 #[test]
@@ -501,8 +501,11 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     );
     drop(second);
     for (index, message) in retained.iter().enumerate() {
-        assert_eq!(message.message.sources.message, index as u64);
-        assert_eq!(shared[index].message.sources.message, index as u64);
+        assert_eq!(message.message.forwarded_messages.message, index as u64);
+        assert_eq!(
+            shared[index].message.forwarded_messages.message,
+            index as u64
+        );
     }
 }
 

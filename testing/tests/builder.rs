@@ -195,7 +195,7 @@ impl RetainForwarded {
     ) {
         let sum = input
             .inputs()
-            .map(|message| message.message.sources.message.value)
+            .map(|message| message.message.forwarded_messages.message.value)
             .sum();
         self.0.store(sum, Ordering::SeqCst);
     }

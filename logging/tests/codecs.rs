@@ -102,7 +102,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     );
     retained.update();
     let message = retained.input().pop().unwrap();
-    assert_eq!(message.message.sources.message.0, "not Clone");
+    assert_eq!(message.message.forwarded_messages.message.0, "not Clone");
     assert!(message.message.message);
     let ambiguous = ReplayMessageLog::new(vec![source.clone(), source.clone()]);
     assert!(ambiguous.lookup(&source.header).is_none());

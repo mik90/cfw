@@ -55,15 +55,15 @@ fn source_and_forwarding_arenas_share_one_owner() {
     graph.publish(42);
     let retained = graph.forwarding.subscribers[0].input().pop().unwrap();
     drop(graph);
-    assert_eq!(retained.message.sources.message, 42);
+    assert_eq!(retained.message.forwarded_messages.message, 42);
 
     // Rebuilding endpoints neither invalidates nor resets retained messages.
     let mut rebuilt = ForwardingGraph::build(&storage);
     rebuilt.publish(100);
     let next = rebuilt.forwarding.subscribers[0].input().pop().unwrap();
     drop(rebuilt);
-    assert_eq!(retained.message.sources.message, 42);
-    assert_eq!(next.message.sources.message, 100);
+    assert_eq!(retained.message.forwarded_messages.message, 42);
+    assert_eq!(next.message.forwarded_messages.message, 100);
     drop((retained, next));
 }
 
@@ -121,8 +121,16 @@ fn nested_forwarding_and_unrelated_channels_share_storage() {
     );
     drop((source, middle, last, strings));
     assert_eq!(retained.message.message, 7);
-    assert!(retained.message.sources.message.message);
-    assert_eq!(retained.message.sources.message.sources.message, 42);
+    assert!(retained.message.forwarded_messages.message.message);
+    assert_eq!(
+        retained
+            .message
+            .forwarded_messages
+            .message
+            .forwarded_messages
+            .message,
+        42
+    );
 }
 
 #[test]

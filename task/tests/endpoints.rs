@@ -320,7 +320,10 @@ fn forwarded_messages_retain_source_storage_through_destination() {
     destination_subscriber.update();
     let retained = destination_subscriber.input().pop().unwrap();
     drop(destination_subscriber);
-    assert_eq!(retained.message.sources.header.published_at, timestamp());
+    assert_eq!(
+        retained.message.forwarded_messages.header.published_at,
+        timestamp()
+    );
     assert!(source_arena.try_allocate_uninit().is_none());
     assert!(destination_arena.try_allocate_uninit().is_none());
     drop(retained);

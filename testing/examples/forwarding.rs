@@ -69,7 +69,7 @@ impl Retain {
         >,
     ) {
         for detection in detections.inputs() {
-            let sources = &detection.message.sources;
+            let sources = &detection.message.forwarded_messages;
             assert_eq!(
                 detection.message.message.score,
                 u32::from(sources.image.message.pixels[0]) * sources.calibration.message.scale

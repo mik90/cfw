@@ -4,13 +4,16 @@ use base::arena::ArenaReaderPtr;
 /// An output value and named, owning references to its source publications.
 /// Sources may be one arena handle (mapped as `source`) or a struct deriving
 /// `ForwardedSources` with any number of named heterogeneous handles.
-pub struct Forwarded<M, S> {
-    pub message: M,
-    pub sources: S,
+pub struct Forwarded<MessageType, ForwardedMessages> {
+    pub message: MessageType,
+    pub forwarded_messages: ForwardedMessages,
 }
 impl<M, S> Forwarded<M, S> {
-    pub fn new(message: M, sources: S) -> Self {
-        Self { message, sources }
+    pub fn new(message: M, forwarded_messages: S) -> Self {
+        Self {
+            message,
+            forwarded_messages,
+        }
     }
 }
 
@@ -70,20 +73,21 @@ impl<'storage, T> SourceCodec for ArenaReaderPtr<'storage, Message<T>> {
 }
 
 #[cfg(feature = "serde")]
-impl<M, S> crate::loggable::Loggable for Forwarded<M, S>
+impl<MessageType, CodecType> crate::loggable::Loggable for Forwarded<MessageType, CodecType>
 where
-    M: serde::Serialize + serde::de::DeserializeOwned,
-    S: SourceCodec,
+    MessageType: serde::Serialize + serde::de::DeserializeOwned,
+    CodecType: SourceCodec,
 {
     type Context<'a>
-        = S::Context<'a>
+        = CodecType::Context<'a>
     where
         Self: 'a;
     fn serialize(
         &self,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), crate::loggable::SerializeError> {
-        serde_json::to_writer(writer, &(&self.message, self.sources.headers())).map_err(Into::into)
+        serde_json::to_writer(writer, &(&self.message, self.forwarded_messages.headers()))
+            .map_err(Into::into)
     }
     fn deserialize_with_ctx<'a>(
         bytes: &[u8],
@@ -92,8 +96,8 @@ where
     where
         Self: 'a,
     {
-        let (message, headers): (M, Vec<(String, crate::message::MessageHeader)>) =
+        let (message, headers): (MessageType, Vec<(String, crate::message::MessageHeader)>) =
             serde_json::from_slice(bytes)?;
-        Ok(Self::new(message, S::resolve(&headers, context)?))
+        Ok(Self::new(message, CodecType::resolve(&headers, context)?))
     }
 }

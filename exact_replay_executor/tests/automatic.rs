@@ -132,7 +132,7 @@ fn automatic_exact_bindings_restore_distinct_windows_and_reordered_publishers() 
         let forwarded = task::Forwarded::<bool,SourcePtr<'_,Value>>::deserialize_with_ctx(&serde_json::to_vec(&serde_json::json!([
             true, [["source", { "published_at": { "nanoseconds": 0 }, "publisher_index": 0, "batch_index": 0 }]]
         ])).unwrap(), &cache).unwrap();
-        assert_eq!(forwarded.sources.message.0, 11);
+        assert_eq!(forwarded.forwarded_messages.message.0, 11);
     }
 }
 
@@ -275,7 +275,9 @@ impl PairSink {
         pair: task::RequiredInput<'_, 's, task::Forwarded<bool, PairSources<'s>>>,
         result: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
-        result.publish(pair.sources.left.message + u64::from(pair.sources.right.message))
+        result.publish(
+            pair.forwarded_messages.left.message + u64::from(pair.forwarded_messages.right.message),
+        )
     }
 }
 fn pair_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task::automatic::RegisteredTask> {
@@ -424,7 +426,7 @@ impl ForwardSink {
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         for forwarded in input.drain() {
-            output.publish(forwarded.message.sources.message + 1)?;
+            output.publish(forwarded.message.forwarded_messages.message + 1)?;
         }
         Ok(())
     }

@@ -177,7 +177,7 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
     let retained = fixture.input().pop().unwrap();
     drop((graph, fixture));
     assert_eq!(retained.message.message, "forwarded");
-    assert_eq!(retained.message.sources.message, 42);
+    assert_eq!(retained.message.forwarded_messages.message, 42);
 }
 
 #[test]

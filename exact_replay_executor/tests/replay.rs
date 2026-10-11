@@ -816,7 +816,7 @@ impl Consume {
         output: &mut Publisher<Value>,
     ) -> Result<(), LoanError> {
         output.publish(Value(
-            input.sources.message.0 + if input.message { 10 } else { 100 },
+            input.forwarded_messages.message.0 + if input.message { 10 } else { 100 },
         ))
     }
 }

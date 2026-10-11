@@ -78,7 +78,7 @@ impl Consume {
         output.publish(
             input
                 .inputs()
-                .map(|m| m.message.sources.message.0)
+                .map(|m| m.message.forwarded_messages.message.0)
                 .collect(),
         )
     }
