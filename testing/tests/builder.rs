@@ -171,8 +171,11 @@ struct BorrowingForward;
 impl BorrowingForward {
     fn run<'storage>(
         &self,
-        mut input: task::Input<'_, 'storage, BorrowedSource>,
-        output: &mut Publisher<'storage, task::ForwardedMessage<'storage, bool, BorrowedSource>>,
+        mut input: task::Input<'_, 'storage, BorrowedSource, task::Forwardable>,
+        #[forwards(forwarded = input)] output: &mut Publisher<
+            'storage,
+            task::ForwardedMessage<'storage, bool, BorrowedSource>,
+        >,
     ) -> Result<(), LoanError> {
         for source in input.drain() {
             output.publish(task::ForwardedMessage::new(true, source))?;

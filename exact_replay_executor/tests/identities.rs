@@ -43,8 +43,10 @@ struct Forward;
 impl Forward {
     fn run<'storage>(
         &self,
-        #[capacity(8)] mut input: Input<'_, 'storage, Value>,
-        #[capacity(4)] output: &mut Publisher<'storage, ForwardedMessage<'storage, bool, Value>>,
+        #[capacity(8)] mut input: Input<'_, 'storage, Value, task::Forwardable>,
+        #[forwards(forwarded = input)]
+        #[capacity(4)]
+        output: &mut Publisher<'storage, ForwardedMessage<'storage, bool, Value>>,
     ) -> Result<(), LoanError> {
         for value in input.drain() {
             output.publish(ForwardedMessage::new(true, value))?;

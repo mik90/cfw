@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone)]
 pub(super) struct PlannedPort {
+    pub forwardable: bool,
     pub name: Option<String>,
     pub channel: String,
     pub output: bool,
@@ -25,6 +26,7 @@ impl PlannedPort {
         capacity: usize,
     ) -> Self {
         Self {
+            forwardable: false,
             name: None,
             channel: channel.into(),
             output,

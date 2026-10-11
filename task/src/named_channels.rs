@@ -94,6 +94,7 @@ pub struct ChannelPlan<T> {
 impl<T> ChannelPlan<T> {
     pub fn topology(&self) -> crate::automatic::topology::ChannelTopology {
         crate::automatic::topology::ChannelTopology {
+            forwarding_retention_per_publisher: self.forwarding_retention,
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),
             transport: crate::recording::Transport::Native,
@@ -239,23 +240,33 @@ impl<T> ChannelPlan<T> {
             self.publishers
                 .get(publisher.0.index)
                 .ok_or(StorageError::InvalidPublisherIndex(publisher.0.index))?,
-        )
+        )?
         .capacity()
     }
 
-    fn publisher_plan(&self, publisher: &PublisherSpec) -> PublisherStoragePlan<T> {
-        let mut plan = PublisherStoragePlan::new(publisher.loan_capacity)
-            .with_retained_capacity(publisher.retained_capacity);
-        if self.forwarding_retention > 0 {
-            plan = plan.with_subscriber(self.forwarding_retention);
-        }
+    fn publisher_plan(
+        &self,
+        publisher: &PublisherSpec,
+    ) -> Result<PublisherStoragePlan<T>, StorageError> {
+        let mut plan = PublisherStoragePlan::new(publisher.loan_capacity).with_retained_capacity(
+            publisher
+                .retained_capacity
+                .checked_add(self.forwarding_retention)
+                .ok_or(StorageError::CapacityOverflow)?,
+        );
         for subscriber in &self.subscribers {
             plan = plan.with_subscriber(subscriber.capacity);
         }
-        plan
+        Ok(plan)
     }
     pub(crate) fn set_forwarding_retention(&mut self, capacity: usize) {
         self.forwarding_retention = capacity;
+    }
+    pub(crate) fn total_publisher_capacity(&self) -> Result<usize, StorageError> {
+        self.publishers.iter().try_fold(0usize, |sum, publisher| {
+            sum.checked_add(self.publisher_plan(publisher)?.capacity()?)
+                .ok_or(StorageError::CapacityOverflow)
+        })
     }
 }
 
@@ -271,7 +282,7 @@ impl<T> StorageLayout for ChannelPlan<T> {
             return Err(StorageError::ZeroSubscriberCapacity);
         }
         for publisher in &self.publishers {
-            self.publisher_plan(publisher).capacity()?;
+            self.publisher_plan(publisher)?.capacity()?;
         }
         Ok(())
     }
@@ -287,7 +298,7 @@ impl<T> StorageLayout for ChannelPlan<T> {
         let publishers = self
             .publishers
             .iter()
-            .map(|spec| self.publisher_plan(spec).allocate())
+            .map(|spec| self.publisher_plan(spec)?.allocate())
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ChannelStorage {
             name: self.name,

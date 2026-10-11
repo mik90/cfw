@@ -85,9 +85,22 @@ impl<'storage, T> Subscriber<'storage, T> {
         self.buffer.clear();
     }
 
-    pub fn input(&self) -> Input<'_, 'storage, T> {
+    pub fn read_input(&self) -> Input<'_, 'storage, T> {
         Input {
             guard: self.buffer.read_buffer(),
+            capability: std::marker::PhantomData,
+        }
+    }
+
+    /// Low-level ownership-bearing view; named callbacks select a capability explicitly.
+    pub fn input(&self) -> Input<'_, 'storage, T, crate::input::Forwardable> {
+        self.forwardable_input()
+    }
+
+    pub fn forwardable_input(&self) -> Input<'_, 'storage, T, crate::input::Forwardable> {
+        Input {
+            guard: self.buffer.read_buffer(),
+            capability: std::marker::PhantomData,
         }
     }
 
@@ -129,11 +142,12 @@ impl<'storage, T> SubscriberWriter<'storage, T> {
 }
 
 /// The buffer guard's borrow is independent of retained message lifetimes.
-pub struct Input<'input, 'storage, T> {
+pub struct Input<'input, 'storage, T, C = crate::input::ReadOnly> {
     guard: ReadBufferGuard<'input, 'storage, Message<T>>,
+    capability: std::marker::PhantomData<C>,
 }
 
-impl<'storage, T> Input<'_, 'storage, T> {
+impl<'storage, T, C> Input<'_, 'storage, T, C> {
     pub fn value(&self) -> Option<&T> {
         self.guard.front().map(|message| &message.message)
     }
@@ -155,12 +169,40 @@ impl<'storage, T> Input<'_, 'storage, T> {
     pub fn clear(&mut self) {
         self.guard.pop_front();
     }
+}
 
-    pub fn pop(&mut self) -> Option<ArenaReaderPtr<'storage, Message<T>>> {
+impl<'input, T> Input<'input, '_, T, crate::input::ReadOnly> {
+    /// Consumed handles are limited to the input borrow. Use Forwardable to
+    /// transfer ownership into a storage-lived output.
+    pub fn pop(&mut self) -> Option<ArenaReaderPtr<'input, Message<T>>> {
         self.guard.pop_front_ptr().map(ArenaReaderPtr::new)
     }
 
+    #[expect(
+        clippy::map_identity,
+        reason = "The return annotation shortens each handle to the input borrow"
+    )]
+    pub fn drain(&mut self) -> impl Iterator<Item = ArenaReaderPtr<'input, Message<T>>> + '_ {
+        self.guard
+            .drain_contiguous()
+            .map(|ptr| -> ArenaReaderPtr<'input, Message<T>> { ptr })
+    }
+}
+
+impl<'storage, T> Input<'_, 'storage, T, crate::input::Forwardable> {
+    pub fn pop(&mut self) -> Option<ArenaReaderPtr<'storage, Message<T>>> {
+        self.guard.pop_front_ptr().map(ArenaReaderPtr::new)
+    }
     pub fn drain(&mut self) -> impl Iterator<Item = ArenaReaderPtr<'storage, Message<T>>> + '_ {
         self.guard.drain_contiguous()
+    }
+    /// Consume a prepared message, retaining its source arena slot.
+    pub fn forward(&mut self) -> Option<ArenaReaderPtr<'storage, Message<T>>> {
+        self.pop()
+    }
+    pub fn forward_all(
+        &mut self,
+    ) -> impl Iterator<Item = ArenaReaderPtr<'storage, Message<T>>> + '_ {
+        self.drain()
     }
 }

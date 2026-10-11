@@ -9,6 +9,7 @@ use std::{
     collections::BTreeMap,
     sync::Arc,
 };
+pub mod bundle;
 pub mod capture;
 pub mod exact;
 pub mod forwarding;
@@ -223,10 +224,12 @@ impl RegisteredTask {
 }
 
 trait Plan {
-    fn source_budget(&self) -> Result<Option<(TypeId, usize)>, BuildError> {
-        Ok(None)
+    fn forwarding_slots(&self) -> Result<usize, BuildError> {
+        Err(BuildError("forwarding requires native storage".into()))
     }
-    fn set_source_budget(&mut self, _: &BTreeMap<TypeId, usize>) {}
+    fn reserve_forwarding(&mut self, _: usize) -> Result<(), BuildError> {
+        Err(BuildError("forwarding requires native storage".into()))
+    }
     fn topology(&self) -> topology::ChannelTopology;
     fn validate(&self) -> Result<(), BuildError>;
     fn payload_type(&self) -> &'static str;
@@ -259,8 +262,12 @@ trait Binding<'a> {
     }
 }
 impl<T: Send + Sync + 'static> Plan for ChannelPlan<T> {
-    fn set_source_budget(&mut self, budgets: &BTreeMap<TypeId, usize>) {
-        self.set_forwarding_retention(budgets.get(&TypeId::of::<T>()).copied().unwrap_or(0));
+    fn forwarding_slots(&self) -> Result<usize, BuildError> {
+        self.total_publisher_capacity().map_err(Into::into)
+    }
+    fn reserve_forwarding(&mut self, capacity: usize) -> Result<(), BuildError> {
+        self.set_forwarding_retention(capacity);
+        Ok(())
     }
     fn topology(&self) -> topology::ChannelTopology {
         self.topology()
@@ -301,6 +308,7 @@ struct Channel {
 }
 #[derive(Default)]
 pub struct NamedPlan {
+    forwarding_edges: Vec<bundle::ForwardingEdge>,
     active_task: Option<String>,
     channels: BTreeMap<String, Channel>,
     captures: BTreeMap<String, Box<dyn capture::CaptureDeclaration>>,
@@ -322,8 +330,14 @@ impl NamedPlan {
             port.name = Some(name.into());
         }
     }
+    pub fn mark_last_port_forwardable(&mut self, forwardable: bool) {
+        if let Some(port) = self.ports.last_mut() {
+            port.forwardable = forwardable;
+        }
+    }
     pub fn topology(&self) -> Topology {
         let mut snapshot = Topology {
+            forwarding: self.forwarding_edges.clone(),
             callbacks: self.tasks.keys().cloned().collect(),
             channels: self
                 .channels
@@ -347,6 +361,7 @@ impl NamedPlan {
                 let ordinal = ordinals[usize::from(port.output)];
                 ordinals[usize::from(port.output)] += 1;
                 snapshot.ports.push(topology::PortTopology {
+                    forwardable: port.forwardable,
                     callback: callback.clone(),
                     port: port.name.clone().unwrap_or_else(|| ordinal.to_string()),
                     ordinal,
@@ -488,18 +503,7 @@ impl NamedPlan {
     }
     /// Validate and finalize service budgets before any channel allocation.
     pub fn prepare(&mut self) -> Result<(), BuildError> {
-        let mut source_budgets = BTreeMap::<TypeId, usize>::new();
-        for channel in self.channels.values() {
-            if let Some((source, capacity)) = channel.plan.source_budget()? {
-                let total = source_budgets.entry(source).or_default();
-                *total = total
-                    .checked_add(capacity)
-                    .ok_or(crate::StorageError::CapacityOverflow)?;
-            }
-        }
-        for channel in self.channels.values_mut() {
-            channel.plan.set_source_budget(&source_budgets);
-        }
+        self.prepare_forwarding()?;
         #[cfg(feature = "iceoryx2")]
         for (name, config) in self.ipc_service_limits()? {
             if let Some(channel) = self.channels.get_mut(&name) {

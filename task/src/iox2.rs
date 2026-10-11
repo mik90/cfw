@@ -137,6 +137,7 @@ pub struct Iox2ChannelPlan<T> {
 impl<T> Iox2ChannelPlan<T> {
     pub fn topology(&self) -> crate::automatic::topology::ChannelTopology {
         crate::automatic::topology::ChannelTopology {
+            forwarding_retention_per_publisher: 0,
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),
             transport: crate::recording::Transport::Ipc,

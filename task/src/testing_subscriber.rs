@@ -50,7 +50,10 @@ impl<'storage, T> TestSubscriber<'storage, T> {
             writer: self.subscriber.writer_drops(),
             reader: self.subscriber.reader_drops(),
         };
-        (self.subscriber.input().drain().collect(), dropped)
+        (
+            self.subscriber.forwardable_input().drain().collect(),
+            dropped,
+        )
     }
 
     pub fn take_messages(&mut self) -> Vec<ArenaReaderPtr<'storage, Message<T>>> {

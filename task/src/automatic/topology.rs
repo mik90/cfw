@@ -3,6 +3,7 @@ use crate::recording::Transport;
 
 #[derive(Clone, Debug)]
 pub struct ChannelTopology {
+    pub forwarding_retention_per_publisher: usize,
     pub name: String,
     pub payload_type: &'static str,
     pub transport: Transport,
@@ -15,6 +16,7 @@ pub struct ChannelTopology {
 }
 #[derive(Clone, Debug)]
 pub struct PortTopology {
+    pub forwardable: bool,
     pub callback: String,
     pub port: String,
     pub ordinal: usize,
@@ -27,12 +29,25 @@ pub struct PortTopology {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Topology {
+    pub forwarding: Vec<super::bundle::ForwardingEdge>,
     pub callbacks: Vec<String>,
     pub channels: Vec<ChannelTopology>,
     pub ports: Vec<PortTopology>,
 }
 impl std::fmt::Display for Topology {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for edge in &self.forwarding {
+            writeln!(
+                f,
+                "forward {}.{} -> {}.{}: {} -> {}",
+                edge.callback,
+                edge.input,
+                edge.output,
+                edge.field,
+                edge.source_channel,
+                edge.output_channel
+            )?;
+        }
         for callback in &self.callbacks {
             writeln!(f, "callback {callback:?}")?;
         }
@@ -47,11 +62,16 @@ impl std::fmt::Display for Topology {
                 channel.subscribers,
                 channel.sources
             )?;
+            writeln!(
+                f,
+                "  forwarding retention per publisher: {}",
+                channel.forwarding_retention_per_publisher
+            )?;
         }
         for port in &self.ports {
             writeln!(
                 f,
-                "  {}.{} [{} {}] {} {:?}, capacity={}, endpoint={}",
+                "  {}.{} [{} {}] {} {:?}, capacity={}, endpoint={}, forwardable={}",
                 port.callback,
                 port.port,
                 if port.output { "output" } else { "input" },
@@ -59,7 +79,8 @@ impl std::fmt::Display for Topology {
                 if port.output { "->" } else { "<-" },
                 port.channel,
                 port.capacity,
-                port.endpoint_index
+                port.endpoint_index,
+                port.forwardable
             )?;
         }
         Ok(())
@@ -70,6 +91,16 @@ impl Topology {
     pub fn dot(&self) -> String {
         use std::fmt::Write;
         let mut text = String::from("digraph workload {\n");
+        for edge in &self.forwarding {
+            writeln!(
+                text,
+                "  {:?} -> {:?} [style=dashed,label={:?}];",
+                format!("channel:{}", edge.source_channel),
+                format!("channel:{}", edge.output_channel),
+                format!("{}.{}.{}", edge.callback, edge.output, edge.field)
+            )
+            .unwrap();
+        }
         for callback in &self.callbacks {
             writeln!(
                 text,
@@ -102,8 +133,8 @@ impl Topology {
                 text,
                 "  {from:?} -> {to:?} [label={:?}];",
                 format!(
-                    "{} [{}] capacity={}",
-                    port.port, port.ordinal, port.capacity
+                    "{} [{}] capacity={} forwardable={}",
+                    port.port, port.ordinal, port.capacity, port.forwardable
                 )
             )
             .unwrap();

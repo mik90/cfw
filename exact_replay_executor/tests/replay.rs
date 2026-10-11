@@ -794,8 +794,11 @@ struct Forward;
 impl Forward {
     fn run<'storage>(
         &self,
-        mut input: task::Input<'_, 'storage, Value>,
-        output: &mut Publisher<'storage, task::ForwardedMessage<'storage, bool, Value>>,
+        mut input: task::Input<'_, 'storage, Value, task::Forwardable>,
+        #[forwards(forwarded = input)] output: &mut Publisher<
+            'storage,
+            task::ForwardedMessage<'storage, bool, Value>,
+        >,
     ) -> Result<(), LoanError> {
         if let Some(value) = input.pop() {
             output.publish(task::ForwardedMessage::new(true, value))?;

@@ -7,7 +7,9 @@ pub use automatic::{AutomaticExactReplayPlan, AutomaticSourceCachePlan, Explicit
 mod replay;
 mod replay_log;
 pub mod report;
-pub use plan::{ReplayBindings, ReplayInputPlan, SourceCache, SourceCachePlan};
+pub use plan::{
+    BundleReplayInputPlan, ReplayBindings, ReplayInputPlan, SourceCache, SourceCachePlan,
+};
 pub use replay::{
     DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, ReplayError, ReplayStep, StopSignal,
 };

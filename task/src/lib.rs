@@ -26,17 +26,18 @@ pub mod time;
 pub mod wake;
 
 pub use automatic::{ChannelOverrides, PortDirection, RegisteredTask, TaskRegistration};
+pub use base::arena::ArenaReaderPtr;
 pub use callback::{
     BatchExecutionError, BatchFailure, Callback, CallbackNode, execute_callback,
     execute_callback_batch,
 };
 pub use context::Context;
-pub use forwarded_message::ForwardedMessage;
+pub use forwarded_message::{Forwarded, ForwardedMessage, ForwardedSources};
 pub use graph::{
     BuiltGraph, CallbackSchedule, FactoryError, GraphBuildError, GraphBuilder, GraphMetadata,
     GraphStepError, ScheduledCallback, TimingError,
 };
-pub use input::{Input, InputSpan, OptionalInput, RequiredInput};
+pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, RequiredInput};
 pub use named_channels::{
     ChannelPlan, ChannelStorage, DeclarationError, EndpointBindings, EndpointError, PublisherKey,
     SubscriberKey,

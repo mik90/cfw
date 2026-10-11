@@ -73,6 +73,14 @@ pub struct SourceCache<'a, T> {
     data: std::sync::Arc<std::sync::Mutex<CacheData<'a, T>>>,
     decode: Decoder<'a, T>,
 }
+impl<'a, T> task::loggable::MessageLog<'a, T> for SourceCache<'a, T> {
+    fn lookup(
+        &self,
+        header: &MessageHeader,
+    ) -> Option<base::arena::ArenaReaderPtr<'a, task::message::Message<T>>> {
+        task::loggable::MessageLog::lookup(&*self.data.lock().ok()?, header)
+    }
+}
 impl<T> Clone for SourceCache<'_, T> {
     fn clone(&self) -> Self {
         Self {
@@ -152,6 +160,30 @@ impl<T> ReplayInputPlan<T> {
     }
 }
 pub(crate) type Port = (String, usize);
+/// Isolated contextual hydration for a named heterogeneous source bundle.
+pub struct BundleReplayInputPlan<M, S: task::ForwardedSources> {
+    plan: ReplayInputPlan<task::Forwarded<M, S::Bound<'static>>>,
+}
+impl<M: Send + Sync + 'static, S: task::ForwardedSources> BundleReplayInputPlan<M, S> {
+    pub fn declare(
+        plan: &mut ChannelPlan<task::Forwarded<M, S::Bound<'static>>>,
+        subscriber: &SubscriberKey<task::Forwarded<M, S::Bound<'static>>>,
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
+            plan: ReplayInputPlan::declare(plan, subscriber)?,
+        })
+    }
+    pub fn bind_with_decoder<'a>(
+        self,
+        bindings: &EndpointBindings<'a, task::Forwarded<M, S::Bound<'a>>>,
+        decode: impl FnMut(&[u8]) -> Result<task::Forwarded<M, S::Bound<'a>>, BoxedLogError> + Send + 'a,
+    ) -> Result<ReplaySource<'a>, task::EndpointError> {
+        ReplayInputPlan {
+            publisher: task::automatic::bundle::publisher_key::<M, S>(self.plan.publisher),
+        }
+        .bind_with_decoder(bindings, decode)
+    }
+}
 impl<M: Send + Sync + 'static, S: Send + Sync + 'static>
     ReplayInputPlan<task::ForwardedMessage<'static, M, S>>
 {

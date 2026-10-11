@@ -33,14 +33,12 @@ impl<M: Send + Sync + 'static, S: Send + Sync + 'static> Plan for ForwardPlan<M,
     fn validate(&self) -> Result<(), BuildError> {
         StorageLayout::validate(&self.0).map_err(Into::into)
     }
-    fn source_budget(&self) -> Result<Option<(TypeId, usize)>, BuildError> {
-        let mut total = 0usize;
-        for index in 0..self.0.topology().publishers.len() {
-            total = total
-                .checked_add(self.0.publisher_capacity(&self.0.publisher_key(index))?)
-                .ok_or(crate::StorageError::CapacityOverflow)?;
-        }
-        Ok(Some((TypeId::of::<S>(), total)))
+    fn forwarding_slots(&self) -> Result<usize, BuildError> {
+        self.0.total_publisher_capacity().map_err(Into::into)
+    }
+    fn reserve_forwarding(&mut self, capacity: usize) -> Result<(), BuildError> {
+        self.0.set_forwarding_retention(capacity);
+        Ok(())
     }
     fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError> {
         self.validate()?;

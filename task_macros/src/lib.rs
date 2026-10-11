@@ -6,6 +6,141 @@ use syn::{
     parse_quote,
 };
 
+/// Derive a lifetime-indexed bundle of named ArenaReaderPtr<Message<T>> fields.
+/// There is no field-count limit. Every field uses the struct's single lifetime;
+/// nested forwarded payloads may use that lifetime as well.
+///
+/// Bound endpoints cannot promote source handles to static:
+/// ```compile_fail
+/// use task::{ArenaReaderPtr, Forwarded, Subscriber, SubscriberKey, message::Message, automatic::NamedBindings};
+/// use task_macros::ForwardedSources;
+/// #[derive(ForwardedSources)]
+/// struct Sources<'s> { source: ArenaReaderPtr<'s,Message<u64>> }
+/// fn extend<'a>(bindings: &NamedBindings<'a>, key: SubscriberKey<Forwarded<bool,Sources<'static>>>)
+///     -> Subscriber<'a,Forwarded<bool,Sources<'static>>> {
+///     bindings.bundle::<bool,Sources<'static>>("output").unwrap()
+///         .take_subscriber(&task::automatic::bundle::subscriber_key::<bool,Sources<'static>>(key)).unwrap()
+/// }
+/// ```
+#[proc_macro_derive(ForwardedSources)]
+pub fn forwarded_sources(item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as syn::DeriveInput);
+    derive_sources(item)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+fn derive_sources(item: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let name = &item.ident;
+    if item.generics.params.len() != 1
+        || item.generics.lifetimes().count() != 1
+        || item.generics.where_clause.is_some()
+    {
+        return Err(syn::Error::new_spanned(
+            &item,
+            "source bundles require exactly one lifetime parameter",
+        ));
+    }
+    let lifetime = &item.generics.lifetimes().next().unwrap().lifetime;
+    let syn::Data::Struct(data) = &item.data else {
+        return Err(syn::Error::new_spanned(
+            &item,
+            "expected a named source struct",
+        ));
+    };
+    let syn::Fields::Named(fields) = &data.fields else {
+        return Err(syn::Error::new_spanned(
+            &item,
+            "expected named source fields",
+        ));
+    };
+    if fields.named.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &item,
+            "source bundles cannot be empty",
+        ));
+    }
+    let mut names = Vec::new();
+    let mut types = Vec::new();
+    for field in &fields.named {
+        let Type::Path(path) = &field.ty else {
+            return Err(syn::Error::new_spanned(
+                field,
+                "expected ArenaReaderPtr<'storage, Message<T>>",
+            ));
+        };
+        let segment = path.path.segments.last().unwrap();
+        let PathArguments::AngleBracketed(args) = &segment.arguments else {
+            return Err(syn::Error::new_spanned(
+                field,
+                "expected ArenaReaderPtr<'storage, Message<T>>",
+            ));
+        };
+        if segment.ident != "ArenaReaderPtr"
+            || args.args.len() != 2
+            || !matches!(args.args.first(), Some(GenericArgument::Lifetime(l)) if l == lifetime)
+        {
+            return Err(syn::Error::new_spanned(
+                field,
+                "expected ArenaReaderPtr using the bundle lifetime",
+            ));
+        }
+        let Some(GenericArgument::Type(Type::Path(message))) = args.args.last() else {
+            return Err(syn::Error::new_spanned(field, "expected Message<T>"));
+        };
+        let message = message.path.segments.last().unwrap();
+        let PathArguments::AngleBracketed(args) = &message.arguments else {
+            return Err(syn::Error::new_spanned(field, "expected Message<T>"));
+        };
+        let Some(GenericArgument::Type(payload)) = args.args.first() else {
+            return Err(syn::Error::new_spanned(field, "expected Message<T>"));
+        };
+        if message.ident != "Message" || args.args.len() != 1 {
+            return Err(syn::Error::new_spanned(field, "expected Message<T>"));
+        }
+        names.push(field.ident.as_ref().unwrap());
+        types.push(payload);
+    }
+    let indices: Vec<_> = (0..names.len()).map(syn::Index::from).collect();
+    let static_types: Vec<_> = types.iter().map(|ty| canonical_type(ty)).collect();
+    let count = names.len();
+    Ok(quote! {
+        // SAFETY: This bundle consists exclusively of arena handles whose only
+        // rebound parameter is their common source-storage lifetime.
+        unsafe impl ::task::ForwardedSources for #name<'static> {
+            type Bound<'a> = #name<'a>;
+            fn fields() -> Vec<(&'static str, ::std::any::TypeId)> {
+                vec![#((stringify!(#names), ::std::any::TypeId::of::<#static_types>())),*]
+            }
+        }
+        impl<#lifetime> ::task::forwarded_message::SourceCodec for #name<#lifetime> {
+            type Context<'a> = (#(&'a dyn ::task::loggable::MessageLog<#lifetime, #types>,)*) where Self: 'a;
+            fn headers(&self) -> Vec<(&'static str, ::task::message::MessageHeader)> {
+                vec![#((stringify!(#names), self.#names.header)),*]
+            }
+            fn resolve<'a>(headers: &[(String, ::task::message::MessageHeader)], context: Self::Context<'a>) -> Result<Self, ::task::loggable::DeserializeError> where Self: 'a {
+                if headers.len() != #count { return Err("forwarded source field count mismatch".into()); }
+                Ok(Self { #(#names: {
+                    if headers[#indices].0 != stringify!(#names) { return Err("forwarded source field name mismatch".into()); }
+                    context.#indices.lookup(&headers[#indices].1).ok_or("forwarded source publication missing")?
+                }),* })
+            }
+        }
+    })
+}
+
+fn canonical_type(ty: &Type) -> Type {
+    struct Static;
+    impl VisitMut for Static {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            *lifetime = parse_quote!('static);
+        }
+    }
+    let mut ty = ty.clone();
+    Static.visit_type_mut(&mut ty);
+    ty
+}
+
 /// Generate typed endpoint declarations and storage-borrowing callback construction.
 /// `Task::declare(plans...)` creates keys before allocation; `task.bind(
 /// declaration, bindings...)` creates the callback afterward. Use `Declaration::from_keys`
@@ -37,6 +172,8 @@ enum PortKind {
 }
 
 struct Port {
+    forwardable: bool,
+    forwards: Vec<(syn::Ident, syn::Ident)>,
     name: syn::Ident,
     payload: Type,
     kind: PortKind,
@@ -169,6 +306,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
                 ));
             }
         };
+        let mut forwardable = false;
         let mut payload = if matches!(kind, PortKind::IoxEvent | PortKind::IoxNotifier) {
             if let PathArguments::AngleBracketed(args) = &segment.arguments
                 && args
@@ -197,7 +335,22 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
                     _ => None,
                 })
                 .collect();
-            if payloads.len() != 1 {
+            if payloads.len() == 2 && matches!(kind, PortKind::Input | PortKind::Required) {
+                match payloads[1] {
+                    Type::Path(path)
+                        if path.path.segments.last().unwrap().ident == "Forwardable" =>
+                    {
+                        forwardable = true
+                    }
+                    Type::Path(path) if path.path.segments.last().unwrap().ident == "ReadOnly" => {}
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            payloads[1],
+                            "expected Forwardable or ReadOnly input capability",
+                        ));
+                    }
+                }
+            } else if payloads.len() != 1 {
                 return Err(syn::Error::new_spanned(
                     &arg.ty,
                     "endpoint requires one payload type",
@@ -210,7 +363,33 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         let mut capacity = None;
         let mut trigger = None;
         let mut keep = None;
+        let mut forwards = Vec::new();
         for attr in &arg.attrs {
+            if attr.path().is_ident("forwards") {
+                let mappings = attr.parse_args_with(syn::punctuated::Punctuated::<syn::MetaNameValue,syn::Token![,]>::parse_terminated)?;
+                for mapping in mappings {
+                    let Some(field) = mapping.path.get_ident() else {
+                        return Err(syn::Error::new_spanned(
+                            mapping,
+                            "expected source field name",
+                        ));
+                    };
+                    let syn::Expr::Path(input) = &mapping.value else {
+                        return Err(syn::Error::new_spanned(
+                            mapping,
+                            "expected input argument name",
+                        ));
+                    };
+                    let Some(input) = input.path.get_ident() else {
+                        return Err(syn::Error::new_spanned(
+                            mapping,
+                            "expected input argument name",
+                        ));
+                    };
+                    forwards.push((field.clone(), input.clone()));
+                }
+                continue;
+            }
             let destination = if attr.path().is_ident("channel") {
                 &mut channel
             } else if attr.path().is_ident("capacity") {
@@ -239,9 +418,15 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             ));
         }
         arg.attrs.retain(|a| {
-            !["channel", "capacity", "trigger", "keep_across_runs"]
-                .iter()
-                .any(|name| a.path().is_ident(name))
+            ![
+                "channel",
+                "capacity",
+                "trigger",
+                "keep_across_runs",
+                "forwards",
+            ]
+            .iter()
+            .any(|name| a.path().is_ident(name))
         });
         let capacity = capacity.unwrap_or_else(|| {
             if segment.ident == "InputSpan"
@@ -254,7 +439,11 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         });
         arguments.push(match kind {
-            PortKind::Input => quote!(self.#name.input()),
+            PortKind::Input if forwardable => quote!(self.#name.forwardable_input()),
+            PortKind::Input => quote!(self.#name.read_input()),
+            PortKind::Required if forwardable => {
+                quote!(::task::RequiredInput::new_forwardable(&self.#name))
+            }
             PortKind::Required => quote!(::task::RequiredInput::new(&self.#name)),
             PortKind::Output => quote!(self.#name.loan(::core::default::Default::default())?),
             PortKind::OutputSpan => quote!(self.#name.span()),
@@ -267,6 +456,8 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             PortKind::IoxNotifier => quote!(::task::iox2::Iox2NotifyOutput::new(&mut self.#name)),
         });
         ports.push(Port {
+            forwardable,
+            forwards,
             name,
             payload,
             kind,
@@ -298,6 +489,35 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
+    for port in &ports {
+        if !port.forwards.is_empty()
+            && !matches!(
+                port.kind,
+                PortKind::Output | PortKind::Uninit | PortKind::Publisher | PortKind::OutputSpan
+            )
+        {
+            return Err(syn::Error::new_spanned(
+                &port.name,
+                "forwarding mappings belong to native outputs",
+            ));
+        }
+        if !port.forwards.is_empty()
+            && !matches!(&port.payload,Type::Path(path) if path.path.segments.last().is_some_and(|s| s.ident == "Forwarded" || s.ident == "ForwardedMessage"))
+        {
+            return Err(syn::Error::new_spanned(
+                &port.name,
+                "forwarding mappings require a Forwarded or ForwardedMessage output",
+            ));
+        }
+        for (_, input) in &port.forwards {
+            if !ports.iter().any(|p| p.name == *input && p.forwardable) {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "forwarding source must name a Forwardable input",
+                ));
+            }
+        }
+    }
     let automatic = automatic_registration(&task_name, &declaration, &ports);
     let mut key_fields = Vec::new();
     let mut key_params = Vec::new();
@@ -338,6 +558,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             capacity,
             trigger,
             keep,
+            ..
         } = port;
         let input = matches!(kind, PortKind::Input | PortKind::Required);
         let receiving = input
@@ -578,12 +799,12 @@ fn automatic_registration(
     declaration: &syn::Ident,
     ports: &[Port],
 ) -> proc_macro2::TokenStream {
-    fn forwarded(payload: &Type) -> Option<(Type, Type)> {
+    fn forwarded(payload: &Type) -> Option<(Type, Type, bool)> {
         let Type::Path(path) = payload else {
             return None;
         };
         let segment = path.path.segments.last()?;
-        if segment.ident != "ForwardedMessage" {
+        if segment.ident != "ForwardedMessage" && segment.ident != "Forwarded" {
             return None;
         }
         let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
@@ -600,7 +821,10 @@ fn automatic_registration(
                 }
             })
             .collect();
-        (types.len() == 2).then(|| (types[0].clone(), types[1].clone()))
+        (types.len() == 2).then(|| {
+            let source = canonical_type(&types[1]);
+            (types[0].clone(), source, segment.ident == "Forwarded")
+        })
     }
     struct Borrowed(bool);
     impl VisitMut for Borrowed {
@@ -608,14 +832,12 @@ fn automatic_registration(
             self.0 |= lifetime.ident != "static";
         }
     }
-    let mut borrowed = Borrowed(false);
     for port in ports {
         let mut port_borrowed = Borrowed(false);
         port_borrowed.visit_type_mut(&mut port.payload.clone());
         if port_borrowed.0 && forwarded(&port.payload).is_none() {
             return quote!();
         }
-        borrowed.0 |= port_borrowed.0;
     }
     let factory = format_ident!("{}AutomaticFactory", task);
     let mut channel_names = Vec::new();
@@ -624,6 +846,7 @@ fn automatic_registration(
     let mut schema = Vec::new();
     let mut captures = Vec::new();
     let mut rebuilt_keys = Vec::new();
+    let mut mappings = Vec::new();
     for (index, port) in ports.iter().enumerate() {
         let Port {
             name,
@@ -655,12 +878,38 @@ fn automatic_registration(
             let value = #channel;
             ::core::convert::AsRef::<str>::as_ref(&value).to_owned()
         })?));
-        let family = forwarded(payload).filter(|_| borrowed.0);
-        let (key, binding) = if let Some((message, source)) = &family {
+        let family = forwarded(payload);
+        let (key, binding) = if let Some((message, source, bundle)) = &family {
+            let (sub, pub_, bind) = if *bundle {
+                (
+                    quote!(bundle_subscriber),
+                    quote!(bundle_publisher),
+                    quote!(bundle),
+                )
+            } else {
+                (
+                    quote!(forwarded_subscriber),
+                    quote!(forwarded_publisher),
+                    quote!(forwarded),
+                )
+            };
+            if !matches!(port.kind, PortKind::Input | PortKind::Required) {
+                let fields = port.forwards.iter().map(|(field,input)| {
+                    let (idx, input_port) = ports.iter().enumerate().find(|(_,p)| p.name == *input).unwrap();
+                    let ty = canonical_type(&input_port.payload);
+                    quote!((stringify!(#field),stringify!(#input),__cfw_names[#idx].as_str(),::std::any::TypeId::of::<#ty>()))
+                });
+                let sources = if *bundle {
+                    quote!(#source)
+                } else {
+                    quote!(::task::forwarded_message::SingleSource<#source>)
+                };
+                mappings.push(quote!(__cfw_plan.map_forwarding::<#sources>(stringify!(#name),&__cfw_names[#index],&[#(#fields),*])?;));
+            }
             match port.kind {
                 PortKind::Input | PortKind::Required => (
-                    quote!(__cfw_plan.forwarded_subscriber::<#message,#source>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
-                    quote!(__cfw_bindings.forwarded::<#message,#source>(&self.names[#index])?),
+                    quote!(__cfw_plan.#sub::<#message,#source>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
+                    quote!(__cfw_bindings.#bind::<#message,#source>(&self.names[#index])?),
                 ),
                 PortKind::IoxInput
                 | PortKind::IoxSpan
@@ -668,8 +917,8 @@ fn automatic_registration(
                 | PortKind::IoxEvent
                 | PortKind::IoxNotifier => return quote!(),
                 _ => (
-                    quote!(__cfw_plan.forwarded_publisher::<#message,#source>(&__cfw_names[#index], #capacity)),
-                    quote!(__cfw_bindings.forwarded::<#message,#source>(&self.names[#index])?),
+                    quote!(__cfw_plan.#pub_::<#message,#source>(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_bindings.#bind::<#message,#source>(&self.names[#index])?),
                 ),
             }
         } else {
@@ -700,20 +949,26 @@ fn automatic_registration(
                 ),
             }
         };
-        if family.is_some() {
+        if let Some((message, source, bundle)) = &family {
             let retype = if matches!(port.kind, PortKind::Input | PortKind::Required) {
                 quote!(subscriber_key)
             } else {
                 quote!(publisher_key)
             };
-            rebuilt_keys
-                .push(quote!(::task::automatic::forwarding::#retype(self.declaration.#name)));
+            if *bundle {
+                rebuilt_keys.push(quote!(::task::automatic::bundle::#retype::<#message,#source>(self.declaration.#name)));
+            } else {
+                rebuilt_keys
+                    .push(quote!(::task::automatic::forwarding::#retype(self.declaration.#name)));
+            }
         } else {
             rebuilt_keys.push(quote!(self.declaration.#name));
         }
+        let forwardable = port.forwardable;
         keys.push(quote!({
             let key = #key.map_err(|error| ::task::automatic::BuildError(format!("port '{}': {}", stringify!(#name), error)))?;
             __cfw_plan.name_last_port(stringify!(#name));
+            __cfw_plan.mark_last_port_forwardable(#forwardable);
             key
         }));
         bindings.push(binding);
@@ -724,8 +979,13 @@ fn automatic_registration(
             }
             _ => Some(quote!(register_native)),
         };
-        if let Some((message, source)) = family {
-            captures.push(quote!(::task::automatic::forwarding::CaptureProbe::<#message,#source>::default().register(__cfw_plan, &__cfw_names[#index])?;));
+        if let Some((message, source, bundle)) = family {
+            let module = if bundle {
+                quote!(bundle)
+            } else {
+                quote!(forwarding)
+            };
+            captures.push(quote!(::task::automatic::#module::CaptureProbe::<#message,#source>::default().register(__cfw_plan, &__cfw_names[#index])?;));
         } else if let Some(method) = capture_method {
             captures.push(quote!(::task::automatic::capture::CaptureProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
             captures.push(quote!(::task::automatic::replay::DecodeProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
@@ -744,7 +1004,9 @@ fn automatic_registration(
                 use ::task::automatic::capture::MaybeCapture as _;
                 use ::task::automatic::replay::MaybeDecode as _;
                 use ::task::automatic::forwarding::MaybeCapture as _;
+                use ::task::automatic::bundle::MaybeCapture as _;
                 #(#captures)*
+                #(#mappings)*
                 Ok(Box::new(#factory { user: *self, declaration, names: __cfw_names }))
             }
         }
@@ -769,8 +1031,28 @@ mod tests {
             "impl Task { fn run(&mut self, input: Input<u64, u32>) {} }",
             "impl Task { fn run(&mut self, #[trigger(false)] output: Output<u64>) {} }",
             "impl Task { fn run(&mut self, #[keep_across_runs(false)] context: &Context) {} }",
+            "impl Task { fn run(&self, input: Input<u64>, #[forwards(source = input)] output: Output<u64>) {} }",
+            "impl Task { fn run(&self, input: Input<u64,Forwardable>, #[forwards(source = missing)] output: Output<u64>) {} }",
+            "impl Task { fn run(&self, input: Input<u64,Forwardable>, #[forwards(source = input)] output: Output<u64>) {} }",
         ] {
             assert!(expand(syn::parse_str(source).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_source_bundles() {
+        for source in [
+            "struct Sources<'a> {}",
+            "struct Sources<'a>(ArenaReaderPtr<'a,Message<u64>>);",
+            "struct Sources<'a> { raw: &'a u64 }",
+            "struct Sources<'a> { wrong: ArenaReaderPtr<'static,Message<u64>> }",
+            "struct Sources<'a> { wrong: ArenaReaderPtr<'a,u64> }",
+            "struct Sources<'a,T> { generic: ArenaReaderPtr<'a,Message<T>> }",
+        ] {
+            assert!(
+                derive_sources(syn::parse_str(source).unwrap()).is_err(),
+                "{source}"
+            );
         }
     }
 }
