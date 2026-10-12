@@ -7,7 +7,13 @@ rust_library(
     name = "testing",
     testonly = True,
     srcs = glob(["src/**/*.rs"]),
+    compile_data = [":readme"],
     deps = all_crate_deps(normal = True),
+)
+
+filegroup(
+    name = "readme",
+    srcs = ["README.md"],
 )
 
 rust_test(
