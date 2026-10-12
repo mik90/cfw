@@ -8,8 +8,8 @@ pub struct Forwarded<MessageType, ForwardedMessages> {
     pub message: MessageType,
     pub forwarded_messages: ForwardedMessages,
 }
-impl<M, S> Forwarded<M, S> {
-    pub fn new(message: M, forwarded_messages: S) -> Self {
+impl<MessageType, ForwardedMessages> Forwarded<MessageType, ForwardedMessages> {
+    pub fn new(message: MessageType, forwarded_messages: ForwardedMessages) -> Self {
         Self {
             message,
             forwarded_messages,
@@ -28,11 +28,13 @@ pub unsafe trait ForwardedSources: Send + Sync + 'static {
     fn fields() -> Vec<(&'static str, std::any::TypeId)>;
 }
 
-pub trait SourceCodec: Sized {
+pub trait SerializableForward: Sized {
     type Context<'a>
     where
         Self: 'a;
     fn headers(&self) -> Vec<(&'static str, crate::message::MessageHeader)>;
+
+    /// Given a header, find the deserialized payload
     fn resolve<'a>(
         headers: &[(String, crate::message::MessageHeader)],
         context: Self::Context<'a>,
@@ -48,7 +50,7 @@ unsafe impl<S: Send + Sync + 'static> ForwardedSources for ArenaReaderPtr<'stati
         vec![("source", std::any::TypeId::of::<S>())]
     }
 }
-impl<'storage, T> SourceCodec for ArenaReaderPtr<'storage, Message<T>> {
+impl<'storage, T> SerializableForward for ArenaReaderPtr<'storage, Message<T>> {
     type Context<'a>
         = &'a dyn crate::loggable::MessageLog<'storage, T>
     where
@@ -56,6 +58,7 @@ impl<'storage, T> SourceCodec for ArenaReaderPtr<'storage, Message<T>> {
     fn headers(&self) -> Vec<(&'static str, crate::message::MessageHeader)> {
         vec![("source", self.header)]
     }
+
     fn resolve<'a>(
         headers: &[(String, crate::message::MessageHeader)],
         context: Self::Context<'a>,
@@ -73,13 +76,14 @@ impl<'storage, T> SourceCodec for ArenaReaderPtr<'storage, Message<T>> {
 }
 
 #[cfg(feature = "serde")]
-impl<MessageType, CodecType> crate::loggable::Loggable for Forwarded<MessageType, CodecType>
+impl<MessageType, SerializableType> crate::loggable::Loggable
+    for Forwarded<MessageType, SerializableType>
 where
     MessageType: serde::Serialize + serde::de::DeserializeOwned,
-    CodecType: SourceCodec,
+    SerializableType: SerializableForward,
 {
     type Context<'a>
-        = CodecType::Context<'a>
+        = SerializableType::Context<'a>
     where
         Self: 'a;
     fn serialize(
@@ -98,6 +102,9 @@ where
     {
         let (message, headers): (MessageType, Vec<(String, crate::message::MessageHeader)>) =
             serde_json::from_slice(bytes)?;
-        Ok(Self::new(message, CodecType::resolve(&headers, context)?))
+        Ok(Self::new(
+            message,
+            SerializableType::resolve(&headers, context)?,
+        ))
     }
 }

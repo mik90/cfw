@@ -210,7 +210,7 @@ fn derive_has_no_eight_field_limit_and_validates_all_mappings() {
         plan.map_forwarding::<Nine<'static>>("out", "out", &bad)
             .is_err()
     );
-    use task::forwarded_message::SourceCodec;
+    use task::forwarded_message::SerializableForward;
     let mut a = task::ChannelPlan::<u64>::new("a");
     let pa = a.publisher(1);
     let sa = a.subscriber(1);
