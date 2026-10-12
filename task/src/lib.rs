@@ -11,6 +11,7 @@ pub mod named_channels;
 pub mod output;
 pub mod publisher;
 pub mod recording;
+pub mod replay_publisher;
 pub mod storage;
 pub mod string_interner;
 pub mod subscriber;
@@ -33,7 +34,8 @@ pub use named_channels::{
     SubscriberKey,
 };
 pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};
-pub use publisher::{LoanError, Publisher, PublisherOps, ReplayError, ReplayPublisher};
+pub use publisher::{LoanError, Publisher};
+pub use replay_publisher::{PublisherOps, ReplayError, ReplayPublisher};
 pub use storage::{
     ChannelEndpoints, GraphPlan, GraphStorage, PublisherStorage, PublisherStoragePlan,
     StorageError, StorageLayout,
