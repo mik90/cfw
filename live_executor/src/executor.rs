@@ -1,7 +1,8 @@
+use crate::clock::WallClock;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use task::executor::{TimeSource, WallClock};
+use task::executor::TimeSource;
 use task::{BuiltGraph, GraphMetadata, ScheduledCallback, execute_callback};
 
 use crate::pool_state::{PoolState, Scheduler};
