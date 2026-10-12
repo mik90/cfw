@@ -118,12 +118,12 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
     second.update();
     fanout.update();
     assert_eq!(
-        first.input().drain().map(|p| p.message).collect::<Vec<_>>(),
+        first.input_forwardable().drain().map(|p| p.message).collect::<Vec<_>>(),
         [1, 3]
     );
-    assert_eq!(second.input().pop().unwrap().message, 2);
+    assert_eq!(second.input_forwardable().pop().unwrap().message, 2);
     assert_eq!(fanout.writer_drops(), 1);
-    let retained = fanout.input().pop().unwrap();
+    let retained = fanout.input_forwardable().pop().unwrap();
     drop((first, second, fanout));
     assert_eq!(retained.message, 3);
     assert_eq!(retained.header.published_at, timestamp());
@@ -162,7 +162,7 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
             let mut publisher = forward_bindings.take_publisher(&forward_key)?;
             Ok(move |timestamp| {
                 input.update();
-                for message in input.input().drain() {
+                for message in input.input_forwardable().drain() {
                     publisher.publish(Forwarded::new(String::from("forwarded"), message))?;
                 }
                 publisher.flush(timestamp);
@@ -174,7 +174,7 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
     };
     graph.step(timestamp()).unwrap();
     fixture.update();
-    let retained = fixture.input().pop().unwrap();
+    let retained = fixture.input_forwardable().pop().unwrap();
     drop((graph, fixture));
     assert_eq!(retained.message.message, "forwarded");
     assert_eq!(retained.message.forwarded_messages.message, 42);
@@ -333,5 +333,5 @@ fn step_error_preserves_published_messages_and_skips_later_callbacks() {
     assert_eq!(later_calls.load(Ordering::Relaxed), 0);
     drop((graph, bindings));
     fixture.update();
-    assert_eq!(fixture.input().pop().unwrap().message, 7);
+    assert_eq!(fixture.input_forwardable().pop().unwrap().message, 7);
 }

@@ -90,19 +90,14 @@ impl<'storage, MessageType> Subscriber<'storage, MessageType> {
         self.buffer.clear();
     }
 
-    pub fn read_input(&self) -> Input<'_, 'storage, MessageType> {
+    pub fn input_readonly(&self) -> Input<'_, 'storage, MessageType, crate::input::ReadOnly> {
         Input {
             guard: self.buffer.read_buffer(),
             capability: std::marker::PhantomData,
         }
     }
 
-    /// Low-level ownership-bearing view; named callbacks select a capability explicitly.
-    pub fn input(&self) -> Input<'_, 'storage, MessageType, crate::input::Forwardable> {
-        self.forwardable_input()
-    }
-
-    pub fn forwardable_input(&self) -> Input<'_, 'storage, MessageType, crate::input::Forwardable> {
+    pub fn input_forwardable(&self) -> Input<'_, 'storage, MessageType, crate::input::Forwardable> {
         Input {
             guard: self.buffer.read_buffer(),
             capability: std::marker::PhantomData,

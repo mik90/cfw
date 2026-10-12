@@ -77,7 +77,7 @@ fn body_error_panic_and_post_execution_timing_failure_cancel_the_whole_batch() {
         assert!(matches!(simulation.step(), Err(StepError::Poisoned)));
         assert_eq!(drops.load(Ordering::SeqCst), 2);
         capture.update();
-        assert!(capture.input().pop().is_none());
+        assert!(capture.input_forwardable().pop().is_none());
         drop(simulation);
         assert_eq!(drops.load(Ordering::SeqCst), 2);
     }
@@ -139,7 +139,7 @@ fn panic_during_commit_preserves_already_published_messages_and_cancels_remainin
     drop(simulation);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     capture.update();
-    let retained = capture.input().pop().unwrap();
+    let retained = capture.input_forwardable().pop().unwrap();
     drop(capture);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     drop(retained);

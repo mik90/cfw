@@ -46,7 +46,7 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
     let time = FrameworkTime::from_nanoseconds(10);
     graph.step(time).unwrap(); // Required input is empty; no output is loaned.
     capture.update();
-    assert!(capture.input().pop().is_none());
+    assert!(capture.input_forwardable().pop().is_none());
     source.publish(32).unwrap();
     source.flush(time);
     std::thread::scope(|scope| {
@@ -56,7 +56,7 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
             .unwrap();
     });
     capture.update();
-    let retained = capture.input().pop().unwrap();
+    let retained = capture.input_forwardable().pop().unwrap();
     drop((source, capture));
     assert_eq!(retained.message, 42);
     assert_eq!(retained.header.published_at, time);
@@ -130,7 +130,7 @@ fn arrival_after_input_snapshot_does_not_make_an_empty_required_view_ready() {
     assert!(!task::Callback::required_inputs_ready(&callback));
     assert!(task::execute_callback(&mut callback, &context).unwrap());
     capture.update();
-    assert_eq!(capture.input().pop().unwrap().message, 42);
+    assert_eq!(capture.input_forwardable().pop().unwrap().message, 42);
 }
 
 #[derive(Default)]
@@ -190,7 +190,7 @@ fn generated_pending_outputs_are_discarded_on_error_and_panic() {
         }
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         capture.update();
-        assert!(capture.input().pop().is_none());
+        assert!(capture.input_forwardable().pop().is_none());
         // A second invocation also reaches user code; the pending loan was released.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             task::execute_callback(
@@ -279,12 +279,12 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
         source.publish(SpanValue(value)).unwrap();
         source.flush(FrameworkTime::from_nanoseconds(100 + index as i64));
     }
-    assert!(capture.input().is_empty());
+    assert!(capture.input_forwardable().is_empty());
     for time in [200, 201] {
         graph.step(FrameworkTime::from_nanoseconds(time)).unwrap();
         capture.update();
         let values: Vec<_> = capture
-            .input()
+            .input_forwardable()
             .drain()
             .map(|m| (m.message.0, m.header.published_at.to_nanoseconds()))
             .collect();
@@ -292,7 +292,7 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
     }
     graph.step(FrameworkTime::from_nanoseconds(202)).unwrap();
     capture.update();
-    assert!(capture.input().is_empty());
+    assert!(capture.input_forwardable().is_empty());
 }
 
 struct SpanFailure {
@@ -345,7 +345,7 @@ fn generated_span_outputs_cancel_sent_and_unsent_loans_on_failure() {
             }
             assert_eq!(drops.load(Ordering::Relaxed), invocation as usize * 2);
             capture.update();
-            assert!(capture.input().is_empty());
+            assert!(capture.input_forwardable().is_empty());
         }
     }
 }
@@ -378,7 +378,7 @@ fn generated_uninitialized_output_publishes_on_success() {
     )
     .unwrap();
     capture.update();
-    assert_eq!(capture.input().pop().unwrap().message, "initialized");
+    assert_eq!(capture.input_forwardable().pop().unwrap().message, "initialized");
 }
 
 struct Forward;
@@ -425,7 +425,7 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
     )
     .unwrap();
     capture.update();
-    let retained = capture.input().pop().unwrap();
+    let retained = capture.input_forwardable().pop().unwrap();
     drop((callback, fixture, capture, source, destination));
     assert_eq!(retained.message.forwarded_messages.message, 42);
 }
@@ -489,9 +489,9 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
         capture.update();
         fanout.update();
     }
-    let retained: Vec<_> = capture.input().drain().collect();
+    let retained: Vec<_> = capture.input_forwardable().drain().collect();
     assert_eq!(retained.len(), 32);
-    let shared: Vec<_> = fanout.input().drain().collect();
+    let shared: Vec<_> = fanout.input_forwardable().drain().collect();
     drop((graph, source, capture, fanout, bindings));
     let second = storage.bind().unwrap();
     assert!(
@@ -545,7 +545,7 @@ fn explicit_keys_allow_input_and_output_on_the_same_channel() {
     capture.update();
     assert_eq!(
         capture
-            .input()
+            .input_forwardable()
             .drain()
             .map(|m| m.message)
             .collect::<Vec<_>>(),

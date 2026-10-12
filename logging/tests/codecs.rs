@@ -65,7 +65,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     publisher.publish(Source("not Clone".into())).unwrap();
     publisher.flush(FrameworkTime::from_nanoseconds(5));
     tap.update();
-    let source = tap.input().pop().unwrap();
+    let source = tap.input_forwardable().pop().unwrap();
     let forward = Forwarded::new(true, source.clone());
     let mut encoded = Vec::new();
     forward.serialize(&mut encoded).unwrap();
@@ -101,7 +101,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
         encoded
     );
     retained.update();
-    let message = retained.input().pop().unwrap();
+    let message = retained.input_forwardable().pop().unwrap();
     assert_eq!(message.message.forwarded_messages.message.0, "not Clone");
     assert!(message.message.message);
     let ambiguous = ReplayMessageLog::new(vec![source.clone(), source.clone()]);

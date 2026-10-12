@@ -514,6 +514,6 @@ mod tests {
         publisher.publish(42).unwrap();
         publisher.flush(crate::time::FrameworkTime::from_nanoseconds(0));
         subscriber.update();
-        assert_eq!(subscriber.input().value(), Some(&42));
+        assert_eq!(subscriber.input_forwardable().value(), Some(&42));
     }
 }

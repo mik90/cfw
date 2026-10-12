@@ -105,7 +105,7 @@ impl<'a, T> SourceCache<'a, T> {
         data.subscriber.update();
         let message = data
             .subscriber
-            .input()
+            .input_forwardable()
             .pop()
             .ok_or("source cache did not receive its message")?;
         data.messages.push(message);

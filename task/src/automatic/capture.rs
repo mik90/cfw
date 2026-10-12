@@ -72,7 +72,7 @@ impl<T: Loggable + Send + Sync> SerializedCapture for NativeCapture<'_, T> {
     }
     fn drain(&mut self, visit: &mut CaptureVisitor<'_>) -> Result<(), CaptureError> {
         self.subscriber.update();
-        let messages: Vec<_> = self.subscriber.input().drain().collect();
+        let messages: Vec<_> = self.subscriber.input_forwardable().drain().collect();
         let (writer, reader, _) = self.loss_counts();
         if writer != 0 || reader != 0 {
             return Err(failure(

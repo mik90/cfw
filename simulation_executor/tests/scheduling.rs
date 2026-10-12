@@ -113,7 +113,7 @@ fn parallel_bodies_commit_in_scheduling_order_and_retained_messages_outlive_simu
     assert!(step.idle);
     assert_eq!(*order.lock().unwrap(), [2, 1]);
     capture.update();
-    let retained: Vec<_> = capture.input().drain().collect();
+    let retained: Vec<_> = capture.input_forwardable().drain().collect();
     drop((simulation, capture));
     assert_eq!(
         retained.iter().map(|m| m.message).collect::<Vec<_>>(),

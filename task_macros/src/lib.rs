@@ -439,8 +439,8 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         });
         arguments.push(match kind {
-            PortKind::Input if forwardable => quote!(self.#name.forwardable_input()),
-            PortKind::Input => quote!(self.#name.read_input()),
+            PortKind::Input if forwardable => quote!(self.#name.input_forwardable()),
+            PortKind::Input => quote!(self.#name.input_readonly()),
             PortKind::Required if forwardable => {
                 quote!(::task::RequiredInput::new_forwardable(&self.#name))
             }

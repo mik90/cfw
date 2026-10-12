@@ -1,7 +1,9 @@
+use simulation_executor::callback_execution::{
+    BatchExecutionError, BatchFailure, execute_callback_batch,
+};
 use task::time::FrameworkTime;
 use task::{
-    BatchExecutionError, BatchFailure, Callback, CallbackNode, ChannelPlan, Context, GraphPlan,
-    LoanError, Publisher, execute_callback, execute_callback_batch,
+    Callback, CallbackNode, ChannelPlan, Context, GraphPlan, LoanError, Publisher, execute_callback,
 };
 
 #[test]
@@ -27,7 +29,7 @@ fn rejected_batch_commit_cancels_outputs_before_single_callback_reuse() {
         |executed| {
             assert_eq!(executed, [17]);
             capture.update();
-            assert!(capture.input().pop().is_none());
+            assert!(capture.input_forwardable().pop().is_none());
             Err::<(), _>("timing rejected")
         },
     );
@@ -36,10 +38,10 @@ fn rejected_batch_commit_cancels_outputs_before_single_callback_reuse() {
         Err(BatchExecutionError::BeforeCommit("timing rejected"))
     ));
     capture.update();
-    assert!(capture.input().pop().is_none());
+    assert!(capture.input_forwardable().pop().is_none());
     assert!(execute_callback(&mut callback, &context).unwrap());
     capture.update();
-    let retained = capture.input().pop().unwrap();
+    let retained = capture.input_forwardable().pop().unwrap();
     drop(callback);
     assert_eq!(retained.message, 42);
     assert_eq!(retained.header.published_at, context.now());

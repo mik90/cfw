@@ -136,9 +136,9 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
         .step(task::time::FrameworkTime::from_nanoseconds(1))
         .unwrap();
     capture.update();
-    assert_eq!(capture.input().value(), Some(&42));
+    assert_eq!(capture.input_forwardable().value(), Some(&42));
     extra.update();
-    assert_eq!(extra.input().value(), Some(&42));
+    assert_eq!(extra.input_forwardable().value(), Some(&42));
     assert_eq!(recorder.drain()[0].inputs[0].ordinal, 0);
 }
 

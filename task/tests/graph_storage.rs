@@ -33,7 +33,7 @@ impl<'storage> ForwardingGraph<'storage> {
         self.source.publisher.publish(value).unwrap();
         self.source.publisher.flush(timestamp());
         self.source.subscribers[0].update();
-        let message = self.source.subscribers[0].input().pop().unwrap();
+        let message = self.source.subscribers[0].input_forwardable().pop().unwrap();
         self.forwarding
             .publisher
             .publish(task::Forwarded::new(true, message))
@@ -53,14 +53,14 @@ fn source_and_forwarding_arenas_share_one_owner() {
     let storage = GraphPlan::new((forwarding, source)).allocate().unwrap();
     let mut graph = ForwardingGraph::build(&storage);
     graph.publish(42);
-    let retained = graph.forwarding.subscribers[0].input().pop().unwrap();
+    let retained = graph.forwarding.subscribers[0].input_forwardable().pop().unwrap();
     drop(graph);
     assert_eq!(retained.message.forwarded_messages.message, 42);
 
     // Rebuilding endpoints neither invalidates nor resets retained messages.
     let mut rebuilt = ForwardingGraph::build(&storage);
     rebuilt.publish(100);
-    let next = rebuilt.forwarding.subscribers[0].input().pop().unwrap();
+    let next = rebuilt.forwarding.subscribers[0].input_forwardable().pop().unwrap();
     drop(rebuilt);
     assert_eq!(retained.message.forwarded_messages.message, 42);
     assert_eq!(next.message.forwarded_messages.message, 100);
@@ -95,20 +95,20 @@ fn nested_forwarding_and_unrelated_channels_share_storage() {
     source.publisher.publish(42_u64).unwrap();
     source.publisher.flush(timestamp());
     source.subscribers[0].update();
-    let input = source.subscribers[0].input().pop().unwrap();
+    let input = source.subscribers[0].input_forwardable().pop().unwrap();
     middle
         .publisher
         .publish(task::Forwarded::new(true, input))
         .unwrap();
     middle.publisher.flush(timestamp());
     middle.subscribers[0].update();
-    let input = middle.subscribers[0].input().pop().unwrap();
+    let input = middle.subscribers[0].input_forwardable().pop().unwrap();
     last.publisher
         .publish(task::Forwarded::new(7_u32, input))
         .unwrap();
     last.publisher.flush(timestamp());
     last.subscribers[0].update();
-    let retained = last.subscribers[0].input().pop().unwrap();
+    let retained = last.subscribers[0].input_forwardable().pop().unwrap();
     strings
         .publisher
         .publish(String::from("independent"))
@@ -116,7 +116,7 @@ fn nested_forwarding_and_unrelated_channels_share_storage() {
     strings.publisher.flush(timestamp());
     strings.subscribers[0].update();
     assert_eq!(
-        strings.subscribers[0].input().pop().unwrap().message,
+        strings.subscribers[0].input_forwardable().pop().unwrap().message,
         "independent"
     );
     drop((source, middle, last, strings));
@@ -154,14 +154,14 @@ fn planned_capacity_covers_pending_and_both_subscriber_buffers() {
         graph.publisher.publish(value).unwrap();
     }
     let old: Vec<_> = graph.subscribers[0]
-        .input()
+        .input_forwardable()
         .drain()
         .map(|p| p.message)
         .collect();
     assert_eq!(old, [1, 2]);
     graph.subscribers[0].update();
     let written: Vec<_> = graph.subscribers[0]
-        .input()
+        .input_forwardable()
         .drain()
         .map(|p| p.message)
         .collect();
@@ -169,7 +169,7 @@ fn planned_capacity_covers_pending_and_both_subscriber_buffers() {
     graph.publisher.flush(timestamp());
     graph.subscribers[0].update();
     let pending: Vec<_> = graph.subscribers[0]
-        .input()
+        .input_forwardable()
         .drain()
         .map(|p| p.message)
         .collect();
@@ -191,7 +191,7 @@ fn retained_messages_exhaust_budget_without_becoming_invalid() {
         graph.publisher.publish(value as u64).unwrap();
         graph.publisher.flush(timestamp());
         graph.subscribers[0].update();
-        retained.push(graph.subscribers[0].input().pop().unwrap());
+        retained.push(graph.subscribers[0].input_forwardable().pop().unwrap());
     }
     drop(graph);
     let mut graph = storage.channels().build();
@@ -206,7 +206,7 @@ fn retained_messages_exhaust_budget_without_becoming_invalid() {
     graph.publisher.publish(100).unwrap();
     graph.publisher.flush(timestamp());
     graph.subscribers[0].update();
-    assert_eq!(graph.subscribers[0].input().pop().unwrap().message, 100);
+    assert_eq!(graph.subscribers[0].input_forwardable().pop().unwrap().message, 100);
 }
 
 #[test]

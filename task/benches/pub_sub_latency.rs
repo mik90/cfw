@@ -18,7 +18,7 @@ fn bench_publish_to_receive(c: &mut Criterion) {
             publisher.loan(value).unwrap().send();
             publisher.flush(FrameworkTime::from_nanoseconds(value as i64));
             subscriber.update();
-            black_box(subscriber.input().pop().unwrap().message)
+            black_box(subscriber.input_forwardable().pop().unwrap().message)
         })
     });
 }

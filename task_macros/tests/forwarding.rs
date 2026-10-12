@@ -156,7 +156,7 @@ fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
             graph.step(now).unwrap();
             capture.update();
         }
-        let retained: Vec<_> = capture.input().drain().collect();
+        let retained: Vec<_> = capture.input_forwardable().drain().collect();
         assert_eq!(retained.len(), 32);
         drop((graph, a, b, c, capture, bindings));
         assert_eq!(drops.load(Ordering::SeqCst), 0);
@@ -230,8 +230,8 @@ fn derive_has_no_eight_field_limit_and_validates_all_mappings() {
     pb.publish(7).unwrap();
     pb.flush(FrameworkTime::from_nanoseconds(0));
     sb.update();
-    let a = sa.input().pop().unwrap();
-    let b = sb.input().pop().unwrap();
+    let a = sa.input_forwardable().pop().unwrap();
+    let b = sb.input_forwardable().pop().unwrap();
     let nine = Nine {
         a: a.clone(),
         b: b.clone(),

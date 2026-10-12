@@ -36,10 +36,10 @@ fn header_injection_preserves_identity_without_flushing_an_existing_batch() {
     publisher.publish(10).unwrap();
     assert!(publisher.publish_with_header(header, 99).is_err());
     subscriber.update();
-    assert!(subscriber.input().is_empty());
+    assert!(subscriber.input_forwardable().is_empty());
     publisher.flush(timestamp());
     subscriber.update();
-    let ordinary = subscriber.input().pop().unwrap();
+    let ordinary = subscriber.input_forwardable().pop().unwrap();
     assert_eq!(ordinary.message, 10);
     assert_eq!(
         ordinary.header,
@@ -51,7 +51,7 @@ fn header_injection_preserves_identity_without_flushing_an_existing_batch() {
     );
     publisher.publish_with_header(header, 42).unwrap();
     subscriber.update();
-    let injected = subscriber.input().pop().unwrap();
+    let injected = subscriber.input_forwardable().pop().unwrap();
     assert_eq!(injected.message, 42);
     assert_eq!(injected.header, header);
     // Cancelling a pending batch leaves the next ordinary batch starting at zero.
@@ -60,7 +60,7 @@ fn header_injection_preserves_identity_without_flushing_an_existing_batch() {
     publisher.publish(11).unwrap();
     publisher.flush(FrameworkTime::from_nanoseconds(124));
     subscriber.update();
-    assert_eq!(subscriber.input().pop().unwrap().header.batch_index, 0);
+    assert_eq!(subscriber.input_forwardable().pop().unwrap().header.batch_index, 0);
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn span_inspection_retains_headers_and_payloads_until_consumed_or_evicted() {
         publisher.flush(timestamp());
         subscriber.update();
         for _ in 0..2 {
-            let input = subscriber.input();
+            let input = subscriber.input_forwardable();
             assert_eq!(input.len(), 2);
             assert!(!input.is_empty());
             assert_eq!(
@@ -104,7 +104,7 @@ fn span_inspection_retains_headers_and_payloads_until_consumed_or_evicted() {
         subscriber.update();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert_eq!(subscriber.reader_drops(), 1);
-        let mut input = subscriber.input();
+        let mut input = subscriber.input_forwardable();
         assert_eq!(
             input.inputs().map(|m| m.message.0).collect::<Vec<_>>(),
             [1, 2]
@@ -136,13 +136,13 @@ fn retained_fanout_messages_outlive_endpoints() {
     publisher.connect(&first);
     publisher.connect(&second);
     publisher.publish(Counted(drops.clone())).unwrap();
-    assert!(first.input().pop().is_none());
+    assert!(first.input_forwardable().pop().is_none());
     publisher.flush(timestamp());
     drop(publisher);
 
     first.update();
     second.update();
-    let message = first.input().pop().unwrap();
+    let message = first.input_forwardable().pop().unwrap();
     assert_eq!(message.header.published_at, timestamp());
     drop(first);
     drop(second);
@@ -205,12 +205,12 @@ fn span_loans_share_quota_and_publish_in_send_order() {
             Err(LoanError::LoanCapacityReached)
         ));
     }
-    assert!(subscriber.input().is_empty());
+    assert!(subscriber.input_forwardable().is_empty());
     publisher.flush(timestamp());
     subscriber.update();
     assert_eq!(
         subscriber
-            .input()
+            .input_forwardable()
             .inputs()
             .map(|m| m.message)
             .collect::<Vec<_>>(),
@@ -218,13 +218,13 @@ fn span_loans_share_quota_and_publish_in_send_order() {
     );
     assert!(
         subscriber
-            .input()
+            .input_forwardable()
             .inputs()
             .all(|m| m.header.published_at == timestamp())
     );
     assert_eq!(
         subscriber
-            .input()
+            .input_forwardable()
             .inputs()
             .map(|m| (m.header.publisher_index, m.header.batch_index))
             .collect::<Vec<_>>(),
@@ -284,7 +284,7 @@ fn initialization_panic_releases_reservation_and_publisher_borrow() {
     output.send();
     publisher.flush(timestamp());
     subscriber.update();
-    assert_eq!(subscriber.input().pop().unwrap().message, 42);
+    assert_eq!(subscriber.input_forwardable().pop().unwrap().message, 42);
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn forwarded_messages_retain_source_storage_through_destination() {
     source.publish(Counted(source_drops.clone())).unwrap();
     source.flush(timestamp());
     source_subscriber.update();
-    let forwarded = source_subscriber.input().pop().unwrap();
+    let forwarded = source_subscriber.input_forwardable().pop().unwrap();
     destination
         .publish(Forwarded::new(
             Counted(destination_drops.clone()),
@@ -318,7 +318,7 @@ fn forwarded_messages_retain_source_storage_through_destination() {
     drop(destination);
     drop(source_subscriber);
     destination_subscriber.update();
-    let retained = destination_subscriber.input().pop().unwrap();
+    let retained = destination_subscriber.input_forwardable().pop().unwrap();
     drop(destination_subscriber);
     assert_eq!(
         retained.message.forwarded_messages.header.published_at,
@@ -353,8 +353,8 @@ fn erased_publishers_keep_storage_borrows_and_replay_checks_only_payloads() {
     drop(publishers);
     number_sub.update();
     string_sub.update();
-    assert_eq!(number_sub.input().pop().unwrap().message, 42);
-    assert_eq!(string_sub.input().pop().unwrap().message, "hello");
+    assert_eq!(number_sub.input_forwardable().pop().unwrap().message, 42);
+    assert_eq!(string_sub.input_forwardable().pop().unwrap().message, "hello");
 
     let mut publisher = Publisher::<u64>::new(numbers.allocator(), 1);
     publisher.connect(&number_sub);
@@ -383,11 +383,11 @@ fn erased_publishers_keep_storage_borrows_and_replay_checks_only_payloads() {
         _ => panic!("expected subscriber-retained storage to remain occupied"),
     };
     number_sub.update();
-    assert_eq!(number_sub.input().pop().unwrap().message, 10);
+    assert_eq!(number_sub.input_forwardable().pop().unwrap().message, 10);
     assert!(replay.publish_boxed(retry).is_ok());
     replay.flush(timestamp());
     number_sub.update();
-    assert_eq!(number_sub.input().pop().unwrap().message, 20);
+    assert_eq!(number_sub.input_forwardable().pop().unwrap().message, 20);
 }
 
 #[test]
@@ -412,7 +412,7 @@ fn worker_allocates_while_main_thread_consumes_and_requests_stop() {
             control.send(true).unwrap();
             publications.recv().unwrap();
             subscriber.update();
-            let message = subscriber.input().pop().unwrap();
+            let message = subscriber.input_forwardable().pop().unwrap();
             assert_eq!(message.message, expected);
             // Allocation on the main thread can coexist with worker allocation.
             let spare = arena.allocate_uninit();
@@ -448,7 +448,7 @@ fn worker_panic_leaves_published_messages_valid_and_releases_pending_loans() {
     });
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     subscriber.update();
-    let retained = subscriber.input().pop().unwrap();
+    let retained = subscriber.input_forwardable().pop().unwrap();
     assert_eq!(retained.header.published_at, timestamp());
     drop(subscriber);
     drop(retained);

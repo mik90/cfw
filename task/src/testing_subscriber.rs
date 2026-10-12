@@ -51,7 +51,7 @@ impl<'storage, T> TestSubscriber<'storage, T> {
             reader: self.subscriber.reader_drops(),
         };
         (
-            self.subscriber.forwardable_input().drain().collect(),
+            self.subscriber.input_forwardable().drain().collect(),
             dropped,
         )
     }

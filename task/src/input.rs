@@ -26,7 +26,7 @@ impl<'input, 'storage, MessageType> RequiredInput<'input, 'storage, MessageType>
     pub fn new(subscriber: &'input Subscriber<'storage, MessageType>) -> Self {
         // Readiness handling should've prevented this
         assert!(!subscriber.is_empty(), "required input is empty");
-        Self(subscriber.read_input())
+        Self(subscriber.input_readonly())
     }
 }
 
@@ -34,7 +34,7 @@ impl<'input, 'storage, MessageType> RequiredInput<'input, 'storage, MessageType,
     pub fn new_forwardable(subscriber: &'input Subscriber<'storage, MessageType>) -> Self {
         // Readiness handling should've prevented this
         assert!(!subscriber.is_empty(), "required input is empty");
-        Self(subscriber.forwardable_input())
+        Self(subscriber.input_forwardable())
     }
     pub fn forward(
         &mut self,

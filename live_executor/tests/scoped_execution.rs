@@ -89,7 +89,7 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
     assert_eq!(result, 17);
     assert!(stop.is_stopped());
     capture.update();
-    let messages: Vec<_> = capture.input().drain().collect();
+    let messages: Vec<_> = capture.input_forwardable().drain().collect();
     drop((capture, source));
     assert_eq!(
         messages.iter().map(|m| m.message).collect::<Vec<_>>(),
@@ -244,7 +244,7 @@ fn callback_errors_and_panics_wake_control_and_leave_captured_messages_valid() {
         }
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         capture.update();
-        let retained = capture.input().pop().unwrap();
+        let retained = capture.input_forwardable().pop().unwrap();
         drop(capture);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         drop(retained);

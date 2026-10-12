@@ -20,7 +20,7 @@ fn executor_updates_inputs_and_flushes_hand_written_callback_outputs() {
             source.take_subscriber(&source_sub)?,
             output.take_publisher(&output_pub)?,
             |input: &Subscriber<'_, u32>, output: &mut Publisher<'_, u32>, _ctx: &Context| {
-                if let Some(value) = input.input().pop() {
+                if let Some(value) = input.input_forwardable().pop() {
                     output.publish(value.message + 1)?;
                 }
                 Ok(())
@@ -32,7 +32,7 @@ fn executor_updates_inputs_and_flushes_hand_written_callback_outputs() {
     fixture.flush(FrameworkTime::from_nanoseconds(1));
     graph.step(FrameworkTime::from_nanoseconds(2)).unwrap();
     capture.update();
-    let retained = capture.input().pop().unwrap();
+    let retained = capture.input_forwardable().pop().unwrap();
     drop((graph, source, output, fixture, capture));
     assert_eq!(retained.message, 42);
     assert_eq!(
