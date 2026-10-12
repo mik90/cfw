@@ -1,13 +1,13 @@
-use crate::{FrameworkTime, SimulationConfig};
+use crate::{
+    FrameworkTime, SimulationConfig,
+    callback_execution::{BatchExecutionError, BatchFailure, execute_callback_batch},
+};
 use std::collections::BTreeMap;
 use std::num::Saturating;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use task::wake::Wake;
-use task::{
-    BatchExecutionError, BatchFailure, BuiltGraph, Callback, CallbackSchedule, GraphMetadata,
-    TimingError, execute_callback_batch,
-};
+use task::{BuiltGraph, Callback, CallbackSchedule, GraphMetadata, TimingError};
 
 const TRIGGER: u8 = 1;
 const READINESS: u8 = 2;

@@ -27,10 +27,7 @@ pub mod wake;
 
 pub use automatic::{ChannelOverrides, PortDirection, RegisteredTask, TaskRegistration};
 pub use base::arena::ArenaReaderPtr;
-pub use callback::{
-    BatchExecutionError, BatchFailure, Callback, CallbackNode, execute_callback,
-    execute_callback_batch,
-};
+pub use callback::{Callback, CallbackNode, execute_callback};
 pub use context::Context;
 pub use forwarded_message::{Forwarded, ForwardedSources};
 pub use graph::{

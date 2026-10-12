@@ -9,6 +9,7 @@
 //!
 //! Real worker batches are scoped to individual steps. A single real worker runs
 //! inline, independently of how many virtual threads the simulation models.
+pub mod callback_execution;
 pub mod executor;
 #[cfg(feature = "log_simulation")]
 pub mod log_simulation;
