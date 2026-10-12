@@ -118,7 +118,11 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
     second.update();
     fanout.update();
     assert_eq!(
-        first.input_forwardable().drain().map(|p| p.message).collect::<Vec<_>>(),
+        first
+            .input_forwardable()
+            .drain()
+            .map(|p| p.message)
+            .collect::<Vec<_>>(),
         [1, 3]
     );
     assert_eq!(second.input_forwardable().pop().unwrap().message, 2);

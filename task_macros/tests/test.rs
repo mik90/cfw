@@ -378,7 +378,10 @@ fn generated_uninitialized_output_publishes_on_success() {
     )
     .unwrap();
     capture.update();
-    assert_eq!(capture.input_forwardable().pop().unwrap().message, "initialized");
+    assert_eq!(
+        capture.input_forwardable().pop().unwrap().message,
+        "initialized"
+    );
 }
 
 struct Forward;

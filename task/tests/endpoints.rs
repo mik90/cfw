@@ -60,7 +60,15 @@ fn header_injection_preserves_identity_without_flushing_an_existing_batch() {
     publisher.publish(11).unwrap();
     publisher.flush(FrameworkTime::from_nanoseconds(124));
     subscriber.update();
-    assert_eq!(subscriber.input_forwardable().pop().unwrap().header.batch_index, 0);
+    assert_eq!(
+        subscriber
+            .input_forwardable()
+            .pop()
+            .unwrap()
+            .header
+            .batch_index,
+        0
+    );
 }
 
 #[test]
@@ -354,7 +362,10 @@ fn erased_publishers_keep_storage_borrows_and_replay_checks_only_payloads() {
     number_sub.update();
     string_sub.update();
     assert_eq!(number_sub.input_forwardable().pop().unwrap().message, 42);
-    assert_eq!(string_sub.input_forwardable().pop().unwrap().message, "hello");
+    assert_eq!(
+        string_sub.input_forwardable().pop().unwrap().message,
+        "hello"
+    );
 
     let mut publisher = Publisher::<u64>::new(numbers.allocator(), 1);
     publisher.connect(&number_sub);

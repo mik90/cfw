@@ -33,7 +33,10 @@ impl<'storage> ForwardingGraph<'storage> {
         self.source.publisher.publish(value).unwrap();
         self.source.publisher.flush(timestamp());
         self.source.subscribers[0].update();
-        let message = self.source.subscribers[0].input_forwardable().pop().unwrap();
+        let message = self.source.subscribers[0]
+            .input_forwardable()
+            .pop()
+            .unwrap();
         self.forwarding
             .publisher
             .publish(task::Forwarded::new(true, message))
@@ -53,14 +56,20 @@ fn source_and_forwarding_arenas_share_one_owner() {
     let storage = GraphPlan::new((forwarding, source)).allocate().unwrap();
     let mut graph = ForwardingGraph::build(&storage);
     graph.publish(42);
-    let retained = graph.forwarding.subscribers[0].input_forwardable().pop().unwrap();
+    let retained = graph.forwarding.subscribers[0]
+        .input_forwardable()
+        .pop()
+        .unwrap();
     drop(graph);
     assert_eq!(retained.message.forwarded_messages.message, 42);
 
     // Rebuilding endpoints neither invalidates nor resets retained messages.
     let mut rebuilt = ForwardingGraph::build(&storage);
     rebuilt.publish(100);
-    let next = rebuilt.forwarding.subscribers[0].input_forwardable().pop().unwrap();
+    let next = rebuilt.forwarding.subscribers[0]
+        .input_forwardable()
+        .pop()
+        .unwrap();
     drop(rebuilt);
     assert_eq!(retained.message.forwarded_messages.message, 42);
     assert_eq!(next.message.forwarded_messages.message, 100);
@@ -116,7 +125,11 @@ fn nested_forwarding_and_unrelated_channels_share_storage() {
     strings.publisher.flush(timestamp());
     strings.subscribers[0].update();
     assert_eq!(
-        strings.subscribers[0].input_forwardable().pop().unwrap().message,
+        strings.subscribers[0]
+            .input_forwardable()
+            .pop()
+            .unwrap()
+            .message,
         "independent"
     );
     drop((source, middle, last, strings));
@@ -206,7 +219,14 @@ fn retained_messages_exhaust_budget_without_becoming_invalid() {
     graph.publisher.publish(100).unwrap();
     graph.publisher.flush(timestamp());
     graph.subscribers[0].update();
-    assert_eq!(graph.subscribers[0].input_forwardable().pop().unwrap().message, 100);
+    assert_eq!(
+        graph.subscribers[0]
+            .input_forwardable()
+            .pop()
+            .unwrap()
+            .message,
+        100
+    );
 }
 
 #[test]
