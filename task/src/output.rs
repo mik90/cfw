@@ -110,13 +110,13 @@ impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
         }
     }
 
-    pub fn loan_uninit(&self) -> Result<SpanOutputUninit<'_, 'output, 'storage, T>, LoanError> {
+    pub fn loan_uninit(&self) -> Result<OutputUninitSpan<'_, 'output, 'storage, T>, LoanError> {
         if self.outstanding.get() >= (self.loan_capacity - self.pending_len.get()) {
             return Err(LoanError::LoanCapacityReached);
         }
         let ptr = crate::publisher::allocate_output(self.allocator)?;
         self.outstanding.set(self.outstanding.get() + 1);
-        Ok(SpanOutputUninit {
+        Ok(OutputUninitSpan {
             ptr,
             reservation: Reservation { span: self },
         })
@@ -150,12 +150,12 @@ impl<T> Drop for Reservation<'_, '_, '_, T> {
 
 /// Exclusive span reservation whose payload may be initialized in place.
 /// Dropping it releases the slot without dropping a partially initialized T.
-pub struct SpanOutputUninit<'span, 'output, 'storage, T> {
+pub struct OutputUninitSpan<'span, 'output, 'storage, T> {
     ptr: ArenaPtrUninit<'storage, Message<T>>,
     reservation: Reservation<'span, 'output, 'storage, T>,
 }
 
-impl<'span, 'output, 'storage, T> SpanOutputUninit<'span, 'output, 'storage, T> {
+impl<'span, 'output, 'storage, T> OutputUninitSpan<'span, 'output, 'storage, T> {
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
         let message = self.ptr.payload_uninit().as_mut_ptr();
         // SAFETY: This reservation exclusively owns its slot. MaybeUninit<T>

@@ -42,7 +42,7 @@ pub use named_channels::{
     ChannelPlan, ChannelStorage, DeclarationError, EndpointBindings, EndpointError, PublisherKey,
     SubscriberKey,
 };
-pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, SpanOutputUninit};
+pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};
 pub use publisher::{LoanError, Publisher, PublisherOps, ReplayError, ReplayPublisher};
 pub use storage::{
     ChannelEndpoints, GraphPlan, GraphStorage, PublisherStorage, PublisherStoragePlan,
