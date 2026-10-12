@@ -1,7 +1,8 @@
 use logging::{CapturePlan, ExecutionRecord, ExecutionRecorder, InMemoryWriter, LogSession};
 use simulation_executor::{SimulationConfig, SimulationState};
 use std::time::Duration;
-use task::{CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, Output};
+use task::{ChannelPlan, GraphPlan, Output};
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 struct Counter(u64);
@@ -33,7 +34,7 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
                 || Ok(Counter(0).bind(declaration, &values)?),
             );
             let recorder = ExecutionRecorder::new(8);
-            let graph = recorder.attach(builder.build().unwrap()).unwrap();
+            let graph = builder.build().unwrap().with_recording(&recorder).unwrap();
             let captures = capture
                 .map(|c| c.bind(&values).unwrap())
                 .into_iter()

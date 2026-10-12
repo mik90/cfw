@@ -5,10 +5,8 @@ use std::sync::{
 };
 use std::time::Duration;
 use task::time::FrameworkTime;
-use task::{
-    CallbackSchedule, ChannelPlan, Context, GraphBuilder, GraphPlan, Input, LoanError, Publisher,
-    RequiredInput,
-};
+use task::{ChannelPlan, Context, GraphPlan, Input, LoanError, Publisher, RequiredInput};
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 type Trace<T> = Arc<Mutex<Vec<T>>>;
@@ -25,7 +23,7 @@ fn simulation_requires_an_explicit_execution_duration() {
     let mut graph = GraphBuilder::new();
     graph.add_callback("unspecified", || Ok(|_| Ok(())));
     assert!(matches!(SimulationState::new(graph.build().unwrap()),
-        Err(StepError::Timing { callback, source: task::TimingError::MissingDuration }) if callback == "unspecified"));
+        Err(StepError::Timing { callback, source: task_graph::TimingError::MissingDuration }) if callback == "unspecified"));
 
     let mut graph = GraphBuilder::new();
     graph.add_scheduled_callback(

@@ -9,7 +9,7 @@ pub struct LiveExecutorStartError {
 pub enum ThreadFailure {
     Timing {
         callback: String,
-        source: task::TimingError,
+        source: task_graph::TimingError,
     },
     Readiness {
         reason: String,

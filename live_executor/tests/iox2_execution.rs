@@ -3,10 +3,11 @@ use crossbeam::channel::Sender;
 use live_executor::LiveExecutor;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use task::GraphPlan;
 use task::iox2::{Iox2ChannelConfig, Iox2NotifyOutput};
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Runtime};
 use task::time::FrameworkTime;
-use task::{GraphBuilder, GraphPlan};
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 
 fn name() -> String {
@@ -149,7 +150,7 @@ fn standalone_notifier_dispatches_configured_event_id() {
     let bindings = storage.channels().build().unwrap();
     let (sent, received) = crossbeam::channel::bounded(1);
     let mut builder = GraphBuilder::new();
-    builder.add_scheduled_callback("notify", task::CallbackSchedule::on_start(), || {
+    builder.add_scheduled_callback("notify", task_graph::CallbackSchedule::on_start(), || {
         Ok(Notify.bind(notifier, &bindings)?)
     });
     builder.add_callback("events", || Ok(Events { sent }.bind(events, &bindings)?));

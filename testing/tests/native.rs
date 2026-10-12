@@ -4,10 +4,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use task::{
-    CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, LoanError, Publisher, RequiredInput,
-    time::FrameworkTime,
-};
+use task::{ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 use testing::{BoundUnitTestExecutorBuilder as UnitTestExecutorBuilder, UnitTestExecutorConfig};
 

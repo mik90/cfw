@@ -46,7 +46,7 @@ pub struct ReplaySource<'a> {
     inject: Inject<'a>,
 }
 impl<'a> ReplaySource<'a> {
-    pub fn from_serialized(mut source: task::automatic::replay::SerializedSource<'a>) -> Self {
+    pub fn from_serialized(mut source: task_graph::replay::SerializedSource<'a>) -> Self {
         Self {
             channel: source.channel().into(),
             payload_type: source.payload_type(),

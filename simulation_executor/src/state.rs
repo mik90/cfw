@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use std::num::Saturating;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use task::Callback;
 use task::wake::Wake;
-use task::{BuiltGraph, Callback, CallbackSchedule, GraphMetadata, TimingError};
+use task_graph::{BuiltGraph, CallbackSchedule, GraphMetadata, TimingError};
 
 const TRIGGER: u8 = 1;
 const READINESS: u8 = 2;

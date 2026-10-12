@@ -33,16 +33,16 @@ impl<T> CapturePlan<T> {
 /// Type-erased capture retaining the storage lifetime, never requiring Clone or Any.
 pub struct Capture<'a> {
     channel: String,
-    drain: Box<dyn task::automatic::capture::SerializedCapture + 'a>,
+    drain: Box<dyn task_graph::capture::SerializedCapture + 'a>,
 }
 impl<'a> Capture<'a> {
     pub fn native<T: Loggable + Send + Sync + 'a>(subscriber: Subscriber<'a, T>) -> Self {
-        Self::from_serialized(Box::new(task::automatic::capture::NativeCapture::new(
+        Self::from_serialized(Box::new(task_graph::capture::NativeCapture::new(
             subscriber,
         )))
     }
     pub(crate) fn from_serialized(
-        drain: Box<dyn task::automatic::capture::SerializedCapture + 'a>,
+        drain: Box<dyn task_graph::capture::SerializedCapture + 'a>,
     ) -> Self {
         Self {
             channel: drain.channel().into(),
@@ -89,7 +89,7 @@ mod ipc {
         where
             T: Loggable + std::fmt::Debug + iceoryx2::prelude::ZeroCopySend + Send + Sync + 'static,
         {
-            Self::from_serialized(Box::new(task::automatic::capture::IpcCapture(subscriber)))
+            Self::from_serialized(Box::new(task_graph::capture::IpcCapture(subscriber)))
         }
     }
 }

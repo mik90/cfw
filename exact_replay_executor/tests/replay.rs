@@ -8,9 +8,8 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
-use task::{
-    ChannelPlan, GraphBuilder, GraphPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime,
-};
+use task::{ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 
 fn at(n: i64) -> FrameworkTime {
@@ -125,7 +124,7 @@ fn recorded(log_source: bool) -> ReplayLog {
             Ok(Transform { factor: 2 }.bind(b, &source, &output)?)
         });
         let recorder = ExecutionRecorder::new(8);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let mut captures = vec![output_capture.bind(&output).unwrap()];
         if let Some(capture) = source_capture {
             captures.push(capture.bind(&source).unwrap());
@@ -634,7 +633,7 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
             Ok(TwoInputs.bind(declaration, &shared, &shared, &result)?)
         });
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let log = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             vec![capture.bind(&shared).unwrap(), out.bind(&result).unwrap()],
@@ -729,7 +728,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
             Ok(TwoOutputs { swapped: false }.bind(declaration, &bindings, &bindings)?)
         });
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let log = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             vec![capture.bind(&bindings).unwrap()],
@@ -849,7 +848,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 graph.add_callback("forward", || Ok(Forward.bind(b, &source, &forward)?));
                 graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
                 let recorder = ExecutionRecorder::new(8);
-                let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+                let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
                 let mut captures = vec![result_log.bind(&result).unwrap()];
                 if let Some(capture) = source_log {
                     captures.push(capture.bind(&source).unwrap());

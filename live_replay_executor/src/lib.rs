@@ -11,7 +11,8 @@ use std::{
     },
     time::Duration,
 };
-use task::{BuiltGraph, executor::TimeSource, time::FrameworkTime};
+use task::{executor::TimeSource, time::FrameworkTime};
+use task_graph::BuiltGraph;
 
 pub struct LiveReplayConfig {
     pub speed: f64,

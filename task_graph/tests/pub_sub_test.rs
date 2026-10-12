@@ -1,5 +1,6 @@
 use task::time::FrameworkTime;
-use task::{CallbackNode, ChannelPlan, Context, GraphBuilder, GraphPlan, Publisher, Subscriber};
+use task::{CallbackNode, ChannelPlan, Context, GraphPlan, Publisher, Subscriber};
+use task_graph::GraphBuilder;
 
 #[test]
 fn executor_updates_inputs_and_flushes_hand_written_callback_outputs() {

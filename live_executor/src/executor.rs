@@ -2,8 +2,9 @@ use crate::clock::WallClock;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use task::execute_callback;
 use task::executor::TimeSource;
-use task::{BuiltGraph, GraphMetadata, ScheduledCallback, execute_callback};
+use task_graph::{BuiltGraph, GraphMetadata, ScheduledCallback};
 
 use crate::pool_state::{PoolState, Scheduler};
 use crate::{LiveExecutorError, LiveExecutorStartError, StopSignal, ThreadFailure};
@@ -356,7 +357,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
-    use task::{CallbackSchedule, GraphBuilder};
+    use task_graph::{CallbackSchedule, GraphBuilder};
 
     struct Clock;
     impl TimeSource for Clock {

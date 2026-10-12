@@ -4,7 +4,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use task::{CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, LoanError, Publisher};
+use task::{ChannelPlan, GraphPlan, LoanError, Publisher};
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 struct Counted(Arc<AtomicUsize>);

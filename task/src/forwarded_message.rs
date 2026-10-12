@@ -1,6 +1,20 @@
 use crate::message::Message;
 use base::arena::ArenaReaderPtr;
 
+/// Bind a forwarded publisher key to the lifetime of its source storage.
+pub fn publisher_key<'a, M, S: ForwardedSources>(
+    key: crate::PublisherKey<Forwarded<M, S::Bound<'static>>>,
+) -> crate::PublisherKey<Forwarded<M, S::Bound<'a>>> {
+    key.retype()
+}
+
+/// Bind a forwarded subscriber key to the lifetime of its source storage.
+pub fn subscriber_key<'a, M, S: ForwardedSources>(
+    key: crate::SubscriberKey<Forwarded<M, S::Bound<'static>>>,
+) -> crate::SubscriberKey<Forwarded<M, S::Bound<'a>>> {
+    key.retype()
+}
+
 /// An output value and named, owning references to its source publications.
 /// Sources may be one arena handle (mapped as `source`) or a struct deriving
 /// `ForwardedSources` with any number of named heterogeneous handles.

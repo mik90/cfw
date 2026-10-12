@@ -1,7 +1,7 @@
 //! Named, heterogeneous forwarding families and explicit retention dependencies.
 use super::*;
-use crate::{Forwarded, ForwardedSources, PublisherKey, SubscriberKey};
 use std::marker::PhantomData;
+use task::{Forwarded, ForwardedSources, PublisherKey, SubscriberKey};
 
 type Value<'a, M, S> = Forwarded<M, <S as ForwardedSources>::Bound<'a>>;
 struct Family<M, S>(PhantomData<fn() -> (M, S)>);
@@ -12,12 +12,12 @@ struct BundleBinding<'a, M, S: ForwardedSources>(EndpointBindings<'a, Value<'a, 
 pub fn publisher_key<'a, M, S: ForwardedSources>(
     key: PublisherKey<Value<'static, M, S>>,
 ) -> PublisherKey<Value<'a, M, S>> {
-    key.retype()
+    task::forwarded_message::publisher_key::<M, S>(key)
 }
 pub fn subscriber_key<'a, M, S: ForwardedSources>(
     key: SubscriberKey<Value<'static, M, S>>,
 ) -> SubscriberKey<Value<'a, M, S>> {
-    key.retype()
+    task::forwarded_message::subscriber_key::<M, S>(key)
 }
 
 impl<M: Send + Sync + 'static, S: ForwardedSources> Plan for BundlePlan<M, S> {
@@ -221,7 +221,7 @@ impl NamedPlan {
             for output in outputs {
                 extra = extra
                     .checked_add(budget(&output, plan, visiting, done)?)
-                    .ok_or(crate::StorageError::CapacityOverflow)?;
+                    .ok_or(task::StorageError::CapacityOverflow)?;
             }
             let channel = plan
                 .channels
@@ -284,7 +284,7 @@ pub trait MaybeCapture {
 impl<M, S> MaybeCapture for CaptureProbe<M, S> {}
 impl<M: Send + Sync + 'static, S: ForwardedSources> CaptureProbe<M, S>
 where
-    for<'a> Value<'a, M, S>: crate::loggable::Loggable,
+    for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
     pub fn register(&self, plan: &mut NamedPlan, channel: &str) -> Result<(), BuildError> {
         plan.captures
@@ -305,7 +305,7 @@ struct OutputFactory<M, S: ForwardedSources> {
 }
 impl<M: Send + Sync + 'static, S: ForwardedSources> capture::CaptureDeclaration for Capture<M, S>
 where
-    for<'a> Value<'a, M, S>: crate::loggable::Loggable,
+    for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
     fn declare(
         &self,
@@ -340,7 +340,7 @@ where
 }
 impl<M: Send + Sync + 'static, S: ForwardedSources> capture::CaptureFactory for CaptureFactory<M, S>
 where
-    for<'a> Value<'a, M, S>: crate::loggable::Loggable,
+    for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
     fn bind<'a>(
         self: Box<Self>,
@@ -355,7 +355,7 @@ where
 }
 impl<M: Send + Sync + 'static, S: ForwardedSources> exact::ExactFactory for OutputFactory<M, S>
 where
-    for<'a> Value<'a, M, S>: crate::loggable::Loggable,
+    for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
     fn bind<'a>(
         self: Box<Self>,

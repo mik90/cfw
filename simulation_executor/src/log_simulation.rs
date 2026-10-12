@@ -7,7 +7,8 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use task::{BuiltGraph, time::FrameworkTime};
+use task::time::FrameworkTime;
+use task_graph::BuiltGraph;
 
 #[derive(Default)]
 pub struct LogSimulationOptions {

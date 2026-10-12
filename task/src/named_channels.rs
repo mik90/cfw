@@ -35,7 +35,8 @@ impl<T> PublisherKey<T> {
             payload: PhantomData,
         })
     }
-    pub(crate) fn index(&self) -> usize {
+    /// Index within the channel's publisher declarations.
+    pub fn index(&self) -> usize {
         self.0.index
     }
 }
@@ -47,7 +48,8 @@ impl<T> SubscriberKey<T> {
             payload: PhantomData,
         })
     }
-    pub(crate) fn index(&self) -> usize {
+    /// Index within the channel's subscriber declarations.
+    pub fn index(&self) -> usize {
         self.0.index
     }
 }
@@ -75,6 +77,21 @@ struct SubscriberSpec {
     sources: Option<Vec<usize>>,
 }
 
+/// Owned metadata for one channel's endpoint declarations.
+#[derive(Clone, Debug)]
+pub struct ChannelTopology {
+    pub forwarding_retention_per_publisher: usize,
+    pub name: String,
+    pub payload_type: &'static str,
+    pub transport: crate::recording::Transport,
+    /// Per-publisher loan capacities, in declaration order.
+    pub publishers: Vec<usize>,
+    /// Per-subscriber retained window capacities, in declaration order.
+    pub subscribers: Vec<usize>,
+    /// Allowed publisher indices for each subscriber; None accepts every source.
+    pub sources: Vec<Option<Vec<usize>>>,
+}
+
 /// Runtime endpoint declarations for one named channel.
 ///
 /// Endpoints may belong to different tasks. Every publisher connects to every
@@ -92,8 +109,8 @@ pub struct ChannelPlan<T> {
 }
 
 impl<T> ChannelPlan<T> {
-    pub fn topology(&self) -> crate::automatic::topology::ChannelTopology {
-        crate::automatic::topology::ChannelTopology {
+    pub fn topology(&self) -> ChannelTopology {
+        ChannelTopology {
             forwarding_retention_per_publisher: self.forwarding_retention,
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),
@@ -111,7 +128,8 @@ impl<T> ChannelPlan<T> {
                 .collect(),
         }
     }
-    pub(crate) fn publisher_key(&self, index: usize) -> PublisherKey<T> {
+    /// Look up an existing publisher declaration. Panics for an invalid index.
+    pub fn publisher_key(&self, index: usize) -> PublisherKey<T> {
         assert!(index < self.publishers.len());
         PublisherKey(Key {
             channel: self.name.clone(),
@@ -119,7 +137,8 @@ impl<T> ChannelPlan<T> {
             payload: PhantomData,
         })
     }
-    pub(crate) fn subscriber_key(&self, index: usize) -> SubscriberKey<T> {
+    /// Look up an existing subscriber declaration. Panics for an invalid index.
+    pub fn subscriber_key(&self, index: usize) -> SubscriberKey<T> {
         assert!(index < self.subscribers.len());
         SubscriberKey(Key {
             channel: self.name.clone(),
@@ -259,10 +278,12 @@ impl<T> ChannelPlan<T> {
         }
         Ok(plan)
     }
-    pub(crate) fn set_forwarding_retention(&mut self, capacity: usize) {
+    /// Set the additional retained slots reserved per publisher for forwarding.
+    pub fn set_forwarding_retention(&mut self, capacity: usize) {
         self.forwarding_retention = capacity;
     }
-    pub(crate) fn total_publisher_capacity(&self) -> Result<usize, StorageError> {
+    /// Sum fully budgeted publisher storage capacities, reporting arithmetic overflow.
+    pub fn total_publisher_capacity(&self) -> Result<usize, StorageError> {
         self.publishers.iter().try_fold(0usize, |sum, publisher| {
             sum.checked_add(self.publisher_plan(publisher)?.capacity()?)
                 .ok_or(StorageError::CapacityOverflow)

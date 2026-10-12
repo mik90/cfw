@@ -39,7 +39,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use task::loggable::Loggable;
-use task::{CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, Output};
+use task::{ChannelPlan, GraphPlan, Output};
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 // ───────────────────────────── CLI ────────────────────────────────────────
@@ -173,7 +174,10 @@ fn run_live(
         || Ok(MyTask {}.bind(declaration, &bindings)?),
     );
     let recorder = ExecutionRecorder::new(32);
-    let graph = recorder.attach(builder.build().map_err(|e| format!("{e:?}"))?)?;
+    let graph = builder
+        .build()
+        .map_err(|e| format!("{e:?}"))?
+        .with_recording(&recorder)?;
     let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(
         std::fs::File::create(log_path)?,
     ));

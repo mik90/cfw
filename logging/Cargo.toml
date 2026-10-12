@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task", default-features = false }
+task_graph = { path = "../task_graph", default-features = false }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 iceoryx2 = { workspace = true, optional = true }
@@ -12,7 +13,7 @@ iceoryx2 = { workspace = true, optional = true }
 [features]
 default = ["serde", "iceoryx2"]
 serde = ["dep:serde", "dep:serde_json", "task/serde"]
-iceoryx2 = ["task/iceoryx2", "dep:iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "task_graph/iceoryx2", "dep:iceoryx2"]
 # Test-only utilities (e.g. `InMemoryWriter`) for external test crates like
 # `logging_test`. Kept behind a feature so they stay out of the public API
 # for normal consumers.

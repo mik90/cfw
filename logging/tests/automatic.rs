@@ -1,11 +1,11 @@
 use logging::{AutomaticCapturePlan, CaptureOptions};
 use logging::{AutomaticReplayPlan, ReplayOptions};
 use task::{
-    CallbackSchedule, InputSpan, LoanError, OutputSpan, Publisher,
-    automatic::{NamedPlan, TaskRegistration},
+    InputSpan, LoanError, OutputSpan, Publisher,
     loggable::{DeserializeError, Loggable, SerializeError},
     time::FrameworkTime,
 };
+use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
 use task_macros::task_callback;
 
 struct Value(u64);
@@ -419,7 +419,7 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
         let mut builder = storage.graph_builder();
         source.add_to_graph(&mut builder, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = recorder.attach(builder.build().unwrap()).unwrap();
+        let mut graph = builder.build().unwrap().with_recording(&recorder).unwrap();
         let bytes = Bytes::default();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),

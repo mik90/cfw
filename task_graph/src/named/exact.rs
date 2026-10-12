@@ -2,8 +2,8 @@
 use super::{
     BuildError, NamedBindings, NamedPlan, port_capture::PortCapture, replay::SerializedSource,
 };
-use crate::recording::{Direction, ExecutionDescriptor, Transport};
 use std::collections::BTreeMap;
+use task::recording::{Direction, ExecutionDescriptor, Transport};
 
 #[derive(Clone)]
 pub(super) struct PlannedPort {
@@ -115,7 +115,7 @@ impl NamedPlan {
         &mut self,
         callback: &str,
         ordinal: usize,
-    ) -> Result<crate::SubscriberKey<T>, BuildError> {
+    ) -> Result<task::SubscriberKey<T>, BuildError> {
         let port = self.port(callback, ordinal, false)?;
         if port.transport != Transport::Native {
             return Err(BuildError("expected native data input".into()));
@@ -126,7 +126,7 @@ impl NamedPlan {
         &mut self,
         callback: &str,
         ordinal: usize,
-    ) -> Result<crate::PublisherKey<T>, BuildError> {
+    ) -> Result<task::PublisherKey<T>, BuildError> {
         let port = self.port(callback, ordinal, true)?;
         if port.transport != Transport::Native {
             return Err(BuildError("expected native data output".into()));
@@ -140,7 +140,7 @@ impl NamedPlan {
         &mut self,
         callback: &str,
         ordinal: usize,
-    ) -> Result<crate::iox2::Iox2SubscriberKey<T>, BuildError> {
+    ) -> Result<task::iox2::Iox2SubscriberKey<T>, BuildError> {
         let port = self.port(callback, ordinal, false)?;
         if port.transport != Transport::Ipc {
             return Err(BuildError("expected IPC data input".into()));
@@ -154,7 +154,7 @@ impl NamedPlan {
         &mut self,
         callback: &str,
         ordinal: usize,
-    ) -> Result<crate::iox2::Iox2PublisherKey<T>, BuildError> {
+    ) -> Result<task::iox2::Iox2PublisherKey<T>, BuildError> {
         let port = self.port(callback, ordinal, true)?;
         if port.transport != Transport::Ipc {
             return Err(BuildError("expected IPC data output".into()));

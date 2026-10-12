@@ -173,7 +173,7 @@ impl<M: Send + Sync + 'static, S: task::ForwardedSources> BundleReplayInputPlan<
         decode: impl FnMut(&[u8]) -> Result<task::Forwarded<M, S::Bound<'a>>, BoxedLogError> + Send + 'a,
     ) -> Result<ReplaySource<'a>, task::EndpointError> {
         ReplayInputPlan {
-            publisher: task::automatic::bundle::publisher_key::<M, S>(self.plan.publisher),
+            publisher: task_graph::bundle::publisher_key::<M, S>(self.plan.publisher),
         }
         .bind_with_decoder(bindings, decode)
     }

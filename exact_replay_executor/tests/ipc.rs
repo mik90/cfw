@@ -10,7 +10,8 @@ use task::iox2::{
     Iox2ChannelConfig, Iox2ChannelPlan, Iox2Event, Iox2NotifyOutput, Iox2OptionalInput, Iox2Output,
     Iox2Runtime, Iox2SpanInput,
 };
-use task::{Callback, GraphBuilder, GraphPlan, message::MessageHeader, time::FrameworkTime};
+use task::{Callback, GraphPlan, message::MessageHeader, time::FrameworkTime};
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 
 #[derive(Clone, Default)]
@@ -110,7 +111,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         let mut graph = GraphBuilder::with_storage(&storage);
         graph.add_callback("observe", || Ok(callback));
         let recorder = ExecutionRecorder::new(2);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(bytes.clone());
         writer
             .store_message(&input_name, &input_header(3, 0), b"7")

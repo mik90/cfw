@@ -1,8 +1,8 @@
 use crossbeam::channel::{self, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use task::CallbackSchedule;
 use task::wake::{Wake, WakeHandle};
+use task_graph::CallbackSchedule;
 
 const IDLE: u8 = 0;
 const QUEUED: u8 = 1;

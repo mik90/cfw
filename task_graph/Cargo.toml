@@ -1,0 +1,16 @@
+[package]
+name = "task_graph"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "dep:iceoryx2"]
+serde = ["task/serde"]
+
+[dependencies]
+task = { path = "../task", default-features = false }
+iceoryx2 = { workspace = true, optional = true }
+
+[lints]
+workspace = true

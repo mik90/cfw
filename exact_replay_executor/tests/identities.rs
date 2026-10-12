@@ -8,9 +8,10 @@ use std::{
 };
 use task::loggable::Loggable;
 use task::{
-    ChannelPlan, Forwarded, GraphBuilder, GraphPlan, Input, InputSpan, LoanError, OutputSpan,
-    Publisher, time::FrameworkTime,
+    ChannelPlan, Forwarded, GraphPlan, Input, InputSpan, LoanError, OutputSpan, Publisher,
+    time::FrameworkTime,
 };
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Value>>;
 
@@ -117,7 +118,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         graph.add_callback("observe", || Ok(Observe.bind(o, &source, &observed)?));
         graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
         let recorder = ExecutionRecorder::new(10);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let mut captures = vec![
             observed_log.bind(&observed).unwrap(),
             result_log.bind(&result).unwrap(),

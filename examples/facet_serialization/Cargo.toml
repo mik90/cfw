@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 facet-json = "0.46.1"
 task = { path = "../../task" }
+task_graph = { path = "../../task_graph" }
 task_macros = { path = "../../task_macros" }
 live_executor = { path = "../../live_executor" }
 logging = { path = "../../logging" }

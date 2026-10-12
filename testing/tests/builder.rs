@@ -6,9 +6,8 @@ use std::{
     },
     time::Duration,
 };
-use task::{
-    CallbackSchedule, Context, InputSpan, LoanError, Publisher, RequiredInput, time::FrameworkTime,
-};
+use task::{Context, InputSpan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task_graph::CallbackSchedule;
 use task_macros::task_callback;
 use testing::{ExecutionDuration, UnitTestExecutorBuilder, UnitTestExecutorConfig};
 
@@ -587,21 +586,21 @@ struct BadBinding {
     drops: Arc<AtomicUsize>,
     key: task::PublisherKey<Counted>,
 }
-impl task::automatic::Task for BadFactory {
+impl task_graph::Task for BadFactory {
     fn register(
         self: Box<Self>,
-        plan: &mut task::automatic::NamedPlan,
-    ) -> Result<Box<dyn task::automatic::TaskFactory>, testing::TestBuildError> {
+        plan: &mut task_graph::NamedPlan,
+    ) -> Result<Box<dyn task_graph::TaskFactory>, testing::TestBuildError> {
         Ok(Box::new(BadBinding {
             drops: self.0,
             key: plan.publisher("failed_output", 1)?,
         }))
     }
 }
-impl task::automatic::TaskFactory for BadBinding {
+impl task_graph::TaskFactory for BadBinding {
     fn build<'a>(
         self: Box<Self>,
-        bindings: &task::automatic::NamedBindings<'a>,
+        bindings: &task_graph::NamedBindings<'a>,
     ) -> Result<Box<dyn task::Callback + 'a>, testing::TestBuildError> {
         let mut publisher = bindings
             .native::<Counted>("failed_output")?
@@ -612,9 +611,7 @@ impl task::automatic::TaskFactory for BadBinding {
                 drops: self.drops,
             })
             .unwrap();
-        Err(task::automatic::BuildError(
-            "deliberate binding failure".into(),
-        ))
+        Err(task_graph::BuildError("deliberate binding failure".into()))
     }
 }
 #[test]

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../../task" }
+task_graph = { path = "../../task_graph" }
 test_tasks = { path = "../../test_tasks" }
 live_executor = { path = "../../live_executor" }
 live_replay_executor = { path = "../../live_replay_executor" }

@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 use task::{
-    CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, LoanError, Publisher, RequiredInput,
+    ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput,
     message::MessageHeader,
     recording::{
         EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionDescriptor,
@@ -19,6 +19,7 @@ use task::{
     },
     time::FrameworkTime,
 };
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 fn at(n: i64) -> FrameworkTime {
@@ -36,11 +37,11 @@ fn recording_modes_preserve_execution_and_select_metadata() {
         RecordingMode::DurationOnly,
         RecordingMode::Full,
     ] {
-        let mut plan = task::automatic::NamedPlan::default();
+        let mut plan = task_graph::NamedPlan::default();
         let tasks: Vec<_> = ["default", "off", "duration", "full"]
             .into_iter()
             .map(|name| {
-                task::automatic::TaskRegistration::new(
+                task_graph::TaskRegistration::new(
                     name,
                     Source { fail: 0 },
                     CallbackSchedule::default(),
@@ -60,8 +61,10 @@ fn recording_modes_preserve_execution_and_select_metadata() {
             .with_callback("off", RecordingMode::Off)
             .with_callback("duration", RecordingMode::DurationOnly)
             .with_callback("full", RecordingMode::Full);
-        let mut graph = recorder
-            .attach_with_options(graph.build().unwrap(), options)
+        let mut graph = graph
+            .build()
+            .unwrap()
+            .with_recording_options(&recorder, options)
             .unwrap();
         graph.step(at(7)).unwrap();
         let records = recorder.drain();
@@ -102,8 +105,10 @@ fn reduced_recording_does_not_visit_payloads_and_retains_failure_outcomes() {
         let mut graph = GraphBuilder::new();
         graph.add_callback("bare", || Ok(Bare));
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = recorder
-            .attach_with_options(graph.build().unwrap(), RecordingOptions::new(mode))
+        let mut graph = graph
+            .build()
+            .unwrap()
+            .with_recording_options(&recorder, RecordingOptions::new(mode))
             .unwrap();
         assert!(graph.step(at(1)).is_err());
         let records = recorder.drain();
@@ -204,7 +209,7 @@ fn planned_capture_replay_and_execution_records_round_trip_through_json() {
             CallbackSchedule::default().with_execution_duration(Duration::from_nanos(3)),
             || Ok(Double.bind(task, &input, &output)?),
         );
-        let graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let log = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             vec![
@@ -261,7 +266,7 @@ fn planned_capture_replay_and_execution_records_round_trip_through_json() {
 
 #[test]
 fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop() {
-    use task::automatic::{NamedPlan, TaskRegistration};
+    use task_graph::{NamedPlan, TaskRegistration};
     let bytes = Bytes::default();
     let status;
     {
@@ -283,7 +288,7 @@ fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop(
             task.add_to_graph(&mut graph, &bindings);
         }
         let recorder = ExecutionRecorder::new(8);
-        let graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let logger = logging::LoggingScope::new(
             RecoveringWriter {
                 inner: logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
@@ -410,7 +415,7 @@ fn failed_batches_and_timing_rejection_do_not_record_successful_publications() {
             || Ok(Source { fail }.bind(b, &bindings)?),
         );
         let recorder = ExecutionRecorder::new(4);
-        let graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let mut sim = simulation_executor::SimulationState::with_config(
             graph,
             simulation_executor::SimulationConfig {
@@ -467,7 +472,7 @@ fn commit_panic_is_marked_indeterminate_and_payload_capture_retains_prefix() {
     let mut graph = GraphBuilder::new();
     graph.add_callback("broken", || Ok(Broken(bindings.take_publisher(&key)?)));
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graph.step(at(0)))).is_err());
     assert_eq!(recorder.drain()[0].outcome, Outcome::CommitPanicked);
     assert_eq!(
@@ -488,7 +493,7 @@ fn bounded_recording_and_capture_overflow_are_observable() {
         Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
     });
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
     graph.step(at(0)).unwrap();
     graph.step(at(1)).unwrap();
     assert_eq!(recorder.dropped(), 1);
@@ -524,7 +529,7 @@ fn incompleteness_persists_all_overflows_and_is_sticky_across_flushes() {
             Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
         });
         let recorder = ExecutionRecorder::new(recorder_capacity);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let bytes = Bytes::default();
         let mut session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
@@ -674,7 +679,7 @@ fn failed_descriptor_write_attempts_a_marker_during_cleanup() {
         Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
     });
     let recorder = ExecutionRecorder::new(1);
-    let _graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let _graph = graph.build().unwrap().with_recording(&recorder).unwrap();
     let bytes = Bytes::default();
     let session = LogSession::new(
         RecoveringWriter {
@@ -763,7 +768,7 @@ fn metadata_panic_before_commit_cannot_leave_outputs_on_a_cancelled_record() {
     let mut graph = GraphBuilder::new();
     graph.add_callback("metadata_failure", || Ok(MetadataFailure));
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graph.step(at(0)))).is_err());
     let records = recorder.drain();
     assert_eq!(records[0].outcome, Outcome::Cancelled);
@@ -858,7 +863,7 @@ fn scoped_live_execution_uses_the_same_recording_lifecycle() {
         Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
     });
     let recorder = ExecutionRecorder::new(4);
-    let graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
     let executor = live_executor::LiveExecutor::new(1, graph).unwrap();
     executor
         .run_with(|stop| {

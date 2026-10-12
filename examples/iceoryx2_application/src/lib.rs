@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use task::input::{InputSpan, OptionalInput, RequiredInput};
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
 use task::output::Output;
-use task::{BuiltGraph, CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan};
+use task::{ChannelPlan, GraphPlan};
+use task_graph::{BuiltGraph, CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 const RESULT_CHANNEL: &str = "fizz_buzz_result";

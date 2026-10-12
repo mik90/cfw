@@ -17,6 +17,7 @@ test_suite(
         "//logging_test:recording_test_miri",
         "//simulation_executor:simulation_executor_miri",
         "//task:task_miri",
+        "//task_graph:task_graph_miri",
         "//task_macros:task_macros_test_miri",
         "//testing:testing_miri",
     ],

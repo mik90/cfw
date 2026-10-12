@@ -4,7 +4,8 @@ use iceoryx2::prelude::EventId;
 use simulation_executor::StepError;
 use std::sync::{Arc, Mutex};
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
-use task::{ChannelPlan, Context, GraphBuilder, GraphPlan, RequiredInput};
+use task::{ChannelPlan, Context, GraphPlan, RequiredInput};
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 use testing::BoundUnitTestExecutorBuilder as UnitTestExecutorBuilder;
 
@@ -61,7 +62,7 @@ fn counted_events_survive_native_gating_and_capture_outlives_executor() {
     let mut graph = GraphBuilder::with_storage(&storage);
     graph.add_scheduled_callback(
         "observe",
-        task::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
+        task_graph::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
         || {
             Ok(Observe {
                 observations: observations.clone(),

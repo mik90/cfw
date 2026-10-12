@@ -3,7 +3,8 @@ use simulation_executor::SimulationState;
 use std::sync::{Arc, Mutex};
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Runtime};
 use task::time::FrameworkTime;
-use task::{Context, GraphBuilder, GraphPlan};
+use task::{Context, GraphPlan};
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 
 type Observation = (i64, u64, i64, u64);
@@ -37,7 +38,7 @@ fn timestamped_data_and_counted_events_are_injected_without_duplicate_notificati
     let mut builder = GraphBuilder::with_storage(&storage);
     builder.add_scheduled_callback(
         "observe",
-        task::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
+        task_graph::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
         || {
             Ok(Observe {
                 samples: samples.clone(),

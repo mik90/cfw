@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use task::{CallbackSchedule, Output, RequiredInput};
+use task::{Output, RequiredInput};
+use task_graph::CallbackSchedule;
 use task_macros::task_callback;
 
 pub const INTEGER_CHANNEL: &str = "integer";

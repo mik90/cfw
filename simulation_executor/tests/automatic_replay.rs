@@ -1,11 +1,7 @@
 #![cfg(feature = "log_simulation")]
 use logging::{AutomaticCapturePlan, AutomaticReplayPlan, CaptureOptions, ReplayOptions};
-use task::{
-    CallbackSchedule, InputSpan, LoanError, Publisher,
-    automatic::{NamedPlan, TaskRegistration},
-    message::MessageHeader,
-    time::FrameworkTime,
-};
+use task::{InputSpan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime};
+use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
 use task_macros::task_callback;
 struct Sum;
 #[task_callback]

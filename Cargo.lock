@@ -455,6 +455,7 @@ dependencies = [
  "serde",
  "serde_json",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -604,6 +605,7 @@ dependencies = [
  "logging",
  "signal-hook",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -625,6 +627,7 @@ dependencies = [
  "signal-hook",
  "simulation_executor",
  "task",
+ "task_graph",
  "test_tasks",
 ]
 
@@ -1007,6 +1010,7 @@ dependencies = [
  "clap",
  "live_executor",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -1033,6 +1037,7 @@ name = "in_place_init"
 version = "0.1.0"
 dependencies = [
  "task",
+ "task_graph",
  "task_macros",
  "testing",
 ]
@@ -1105,6 +1110,7 @@ dependencies = [
  "crossbeam",
  "iceoryx2",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -1116,6 +1122,7 @@ dependencies = [
  "logging",
  "serde_json",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -1135,6 +1142,7 @@ dependencies = [
  "serde_json",
  "simulation_executor",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -1146,6 +1154,7 @@ dependencies = [
  "serde_json",
  "simulation_executor",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -1296,6 +1305,7 @@ dependencies = [
  "live_executor",
  "signal-hook",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -1497,6 +1507,7 @@ dependencies = [
  "logging",
  "serde_json",
  "task",
+ "task_graph",
  "task_macros",
 ]
 
@@ -1553,6 +1564,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "task_graph"
+version = "0.1.0"
+dependencies = [
+ "iceoryx2",
+ "task",
+]
+
+[[package]]
 name = "task_macros"
 version = "0.1.0"
 dependencies = [
@@ -1560,6 +1579,7 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "task",
+ "task_graph",
 ]
 
 [[package]]
@@ -1567,6 +1587,7 @@ name = "test_tasks"
 version = "0.1.0"
 dependencies = [
  "task",
+ "task_graph",
  "task_macros",
  "testing",
 ]
@@ -1578,6 +1599,7 @@ dependencies = [
  "iceoryx2",
  "simulation_executor",
  "task",
+ "task_graph",
  "task_macros",
 ]
 

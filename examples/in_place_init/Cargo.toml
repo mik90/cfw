@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 #pin-init = "0.2.0"
 task = { path = "../../task", default-features = false }
+task_graph = { path = "../../task_graph", default-features = false }
 task_macros = { path = "../../task_macros" }
 
 [dev-dependencies]

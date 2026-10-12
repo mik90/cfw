@@ -9,7 +9,8 @@ use live_executor::LiveExecutor;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use task::input::RequiredInput;
 use task::output::Output;
-use task::{CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan};
+use task::{ChannelPlan, GraphPlan};
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 const FIZZ_BUZZ_STRING_CHANNEL: &str = "fizz_buzz_string";

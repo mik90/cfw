@@ -1,10 +1,10 @@
-use crate::string_interner::{CallbackNameInterner, ChannelNameInterner};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+use task::string_interner::{CallbackNameInterner, ChannelNameInterner};
 
-use super::{Callback, Context, LoanError, execute_callback};
-use crate::time::FrameworkTime;
+use task::time::FrameworkTime;
+use task::{Callback, Context, LoanError, execute_callback};
 
 pub type FactoryError = Box<dyn std::error::Error + Send + Sync>;
 type StoredCallback<'storage> = Box<dyn Callback + 'storage>;
@@ -69,7 +69,7 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
     }
 
     /// Retain the finalized channel interner, including fixture-only channels.
-    pub fn with_storage<S>(storage: &crate::GraphStorage<S>) -> Self {
+    pub fn with_storage<S>(storage: &task::GraphStorage<S>) -> Self {
         Self {
             factories: Vec::new(),
             channel_names: storage.channel_names().clone(),
@@ -153,6 +153,55 @@ pub struct BuiltGraph<'storage> {
 }
 
 impl<'storage> BuiltGraph<'storage> {
+    /// Attach full execution recording to this graph.
+    pub fn with_recording(
+        self,
+        recorder: &task::recording::ExecutionRecorder,
+    ) -> Result<Self, String> {
+        self.with_recording_options(recorder, task::recording::RecordingOptions::default())
+    }
+
+    /// Attach recording with per-callback overrides. Unknown names are rejected.
+    pub fn with_recording_options(
+        self,
+        recorder: &task::recording::ExecutionRecorder,
+        options: task::recording::RecordingOptions,
+    ) -> Result<Self, String> {
+        use task::recording::{CallbackDescriptor, RecordingMode};
+
+        for name in options.callbacks.keys() {
+            if self.metadata.callback_names.lookup_by_value(name).is_none() {
+                return Err(format!("unknown recording callback '{name}'"));
+            }
+        }
+        let mut attachment = recorder.begin_attachment(self.metadata.intern_tables())?;
+        let graph = self.try_map_callbacks(|_, name, callback| {
+            let mode = options
+                .callbacks
+                .get(name)
+                .copied()
+                .unwrap_or(options.default_mode);
+            let endpoints = match (mode, callback.recording_endpoints()) {
+                (RecordingMode::Full, None) => {
+                    return Err(format!(
+                        "callback '{name}' does not implement recording metadata"
+                    ));
+                }
+                (_, endpoints) => endpoints.unwrap_or_default(),
+            };
+            attachment.wrap_callback(
+                CallbackDescriptor {
+                    name: name.into(),
+                    recording_mode: mode,
+                    endpoints,
+                },
+                callback,
+            )
+        })?;
+        attachment.finish();
+        Ok(graph)
+    }
+
     /// Append infrastructure callbacks without changing existing callback indices.
     pub fn append_callbacks(
         mut self,
@@ -354,6 +403,14 @@ pub struct GraphMetadata {
 }
 
 impl GraphMetadata {
+    /// Clone the frozen ID space for recording and logging metadata.
+    pub fn intern_tables(&self) -> task::recording::InternTables {
+        task::recording::InternTables {
+            channels: (*self.channel_names).clone(),
+            callbacks: (*self.callback_names).clone(),
+        }
+    }
+
     pub fn context(&self, now: FrameworkTime) -> Context<'_> {
         Context::new(now, &self.channel_names, &self.callback_names)
     }

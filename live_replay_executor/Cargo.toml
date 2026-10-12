@@ -5,12 +5,13 @@ edition = "2024"
 
 [dependencies]
 task = { path = "../task", default-features = false }
+task_graph = { path = "../task_graph", default-features = false }
 logging = { path = "../logging", default-features = false, features = ["serde"] }
 live_executor = { path = "../live_executor", default-features = false }
 
 [features]
 default = ["iceoryx2"]
-iceoryx2 = ["task/iceoryx2", "logging/iceoryx2", "live_executor/iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "task_graph/iceoryx2", "logging/iceoryx2", "live_executor/iceoryx2"]
 
 [dev-dependencies]
 task_macros = { path = "../task_macros" }

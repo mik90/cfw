@@ -3,12 +3,12 @@ use iceoryx2::prelude::ZeroCopySend;
 use logging::{AutomaticCapturePlan, CaptureOptions};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use task::{
-    CallbackSchedule, LoanError,
-    automatic::{NamedPlan, TaskRegistration},
+    LoanError,
     iox2::{Iox2NotifyOutput, Iox2Output},
     loggable::{DeserializeError, Loggable, SerializeError},
     time::FrameworkTime,
 };
+use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
 use task_macros::task_callback;
 
 #[test]

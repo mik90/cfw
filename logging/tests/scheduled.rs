@@ -4,9 +4,9 @@ use std::{
     time::Duration,
 };
 use task::{
-    CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, LoanError, Publisher,
-    message::MessageHeader, time::FrameworkTime,
+    ChannelPlan, GraphPlan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime,
 };
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 #[derive(Default)]
@@ -314,7 +314,7 @@ fn shards_share_a_writer_and_record_only_workload_callbacks_once() {
     builder.add_scheduled_callback("a", schedule.clone(), || Ok(Source.bind(a_source, &a)?));
     builder.add_scheduled_callback("b", schedule, || Ok(Source.bind(b_source, &b)?));
     let recorder = logging::ExecutionRecorder::new(8);
-    let graph = recorder.attach(builder.build().unwrap()).unwrap();
+    let graph = builder.build().unwrap().with_recording(&recorder).unwrap();
     let writer = Writer::default();
     let logger = LoggingScope::new(
         writer.clone(),

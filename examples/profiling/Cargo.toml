@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 task = { path = "../../task" }
+task_graph = { path = "../../task_graph" }
 task_macros = { path = "../../task_macros" }
 live_executor = { path = "../../live_executor" }
 signal-hook = "0.3"

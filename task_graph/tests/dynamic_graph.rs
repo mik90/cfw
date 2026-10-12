@@ -2,10 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use task::time::FrameworkTime;
-use task::{
-    ChannelPlan, EndpointError, Forwarded, GraphBuildError, GraphBuilder, GraphPlan, LoanError,
-    StorageError,
-};
+use task::{ChannelPlan, EndpointError, Forwarded, GraphPlan, LoanError, StorageError};
+use task_graph::{GraphBuildError, GraphBuilder};
 
 fn timestamp() -> FrameworkTime {
     FrameworkTime::from_nanoseconds(100)
@@ -33,10 +31,10 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
         .lookup_by_value("workload")
         .unwrap();
     let mut graph = graph
-        .append_callbacks([task::ScheduledCallback {
+        .append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
             callback: Box::new(Infrastructure),
-            schedule: task::CallbackSchedule::default(),
+            schedule: task_graph::CallbackSchedule::default(),
         }])
         .unwrap();
     assert_eq!(
@@ -49,10 +47,10 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
     );
     graph.step(timestamp()).unwrap();
     assert!(matches!(
-        graph.append_callbacks([task::ScheduledCallback {
+        graph.append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
             callback: Box::new(Infrastructure),
-            schedule: task::CallbackSchedule::default(),
+            schedule: task_graph::CallbackSchedule::default(),
         }]),
         Err(GraphBuildError::DuplicateCallback(_))
     ));
@@ -60,10 +58,10 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
         GraphBuilder::new()
             .build()
             .unwrap()
-            .append_callbacks([task::ScheduledCallback {
+            .append_callbacks([task_graph::ScheduledCallback {
                 name: "logger".into(),
                 callback: Box::new(Infrastructure),
-                schedule: task::CallbackSchedule::periodic(std::time::Duration::ZERO),
+                schedule: task_graph::CallbackSchedule::periodic(std::time::Duration::ZERO),
             }]),
         Err(GraphBuildError::ZeroPeriod(_))
     ));

@@ -15,12 +15,10 @@ use std::{
     time::Duration,
 };
 use task::{
-    CallbackSchedule, LoanError, Publisher, PublisherKey, SubscriberKey, SubscriberPolicy,
-    automatic::{BuildError, NamedBindings, NamedPlan, NamedStorage, Task},
-    message::Message,
-    testing_time::TimeSource,
-    time::FrameworkTime,
+    LoanError, Publisher, PublisherKey, SubscriberKey, SubscriberPolicy, message::Message,
+    testing_time::TimeSource, time::FrameworkTime,
 };
+use task_graph::{BuildError, CallbackSchedule, NamedBindings, NamedPlan, NamedStorage, Task};
 
 #[cfg(feature = "iceoryx2")]
 mod ipc;
@@ -284,9 +282,9 @@ impl<T: 'static> FixtureFactory for OutputFactory<T> {
 }
 
 /// Plans named task ports and fixtures before allocating any native arenas.
-/// Generated tasks supply their declarations through `task::automatic::Task`.
+/// Generated tasks supply their declarations through `task_graph::Task`.
 pub struct UnitTestExecutorBuilder {
-    tasks: Vec<task::automatic::TaskRegistration>,
+    tasks: Vec<task_graph::TaskRegistration>,
     fixtures: Vec<Box<dyn FixturePlan>>,
     captures: usize,
     config: UnitTestExecutorConfig,
@@ -335,7 +333,7 @@ impl UnitTestExecutorBuilder {
         name: impl Into<String>,
         task: impl Task + 'static,
         duration: impl Into<ExecutionDuration>,
-    ) -> &mut task::automatic::TaskRegistration {
+    ) -> &mut task_graph::TaskRegistration {
         self.add_scheduled_task(name, task, duration, CallbackSchedule::default())
     }
     /// Register timing/pool policies. The required duration argument determines
@@ -346,8 +344,8 @@ impl UnitTestExecutorBuilder {
         task: impl Task + 'static,
         duration: impl Into<ExecutionDuration>,
         schedule: CallbackSchedule,
-    ) -> &mut task::automatic::TaskRegistration {
-        self.tasks.push(task::automatic::TaskRegistration::new(
+    ) -> &mut task_graph::TaskRegistration {
+        self.tasks.push(task_graph::TaskRegistration::new(
             name,
             task,
             duration.into().apply(schedule),
@@ -455,7 +453,7 @@ impl UnitTestExecutorBuilder {
     }
 }
 struct Definition {
-    factories: Vec<task::automatic::RegisteredTask>,
+    factories: Vec<task_graph::RegisteredTask>,
     fixtures: Vec<Box<dyn FixtureFactory>>,
     config: UnitTestExecutorConfig,
 }
@@ -468,7 +466,7 @@ pub struct UnitTestSetup {
     session: SessionGuard,
 }
 impl UnitTestSetup {
-    pub fn topology(&self) -> &task::automatic::Topology {
+    pub fn topology(&self) -> &task_graph::Topology {
         self.storage.topology()
     }
     pub fn build(&self) -> UnitTestExecutor<'_> {

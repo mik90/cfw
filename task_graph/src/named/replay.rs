@@ -1,7 +1,7 @@
 //! Context-free decoding capabilities and preallocated named replay publishers.
 use super::{BuildError, NamedBindings, NamedPlan};
-use crate::{PublisherKey, loggable::Loggable, message::MessageHeader};
 use std::{collections::BTreeSet, marker::PhantomData};
+use task::{PublisherKey, loggable::Loggable, message::MessageHeader};
 
 pub type ReplayError = Box<dyn std::error::Error + Send + Sync>;
 type Inject<'a> = Box<dyn FnMut(MessageHeader, &[u8]) -> Result<(), ReplayError> + Send + 'a>;
@@ -169,8 +169,8 @@ impl NamedPlan {
             ));
         }
         for channel in channels {
-            if channel == crate::recording::EXECUTION_LOG_CHANNEL
-                || channel == crate::recording::EXECUTION_EVENT_CHANNEL
+            if channel == task::recording::EXECUTION_LOG_CHANNEL
+                || channel == task::recording::EXECUTION_EVENT_CHANNEL
             {
                 return Err(BuildError(format!(
                     "reserved replay source channel '{channel}'"
@@ -227,9 +227,9 @@ where
 #[cfg(feature = "iceoryx2")]
 mod ipc {
     use super::*;
-    use crate::iox2::{Iox2Notification, Iox2PublisherKey};
     use iceoryx2::prelude::ZeroCopySend;
     use std::fmt::Debug;
+    use task::iox2::{Iox2Notification, Iox2PublisherKey};
     struct IpcDeclaration<T>(PhantomData<fn() -> T>);
     struct IpcFactory<T> {
         channel: String,
@@ -267,7 +267,7 @@ mod ipc {
     }
     struct IpcExactFactory<T> {
         channel: String,
-        subscriber: crate::iox2::Iox2SubscriberKey<T>,
+        subscriber: task::iox2::Iox2SubscriberKey<T>,
     }
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> super::super::exact::ExactFactory
         for IpcExactFactory<T>

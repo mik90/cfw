@@ -6,11 +6,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 use task::{
-    CallbackSchedule,
-    automatic::{NamedPlan, TaskRegistration},
     iox2::{Iox2Event, Iox2Output, Iox2SpanInput},
     time::FrameworkTime,
 };
+use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
 use task_macros::task_callback;
 #[derive(Clone, Default)]
 struct Bytes(Arc<Mutex<Vec<u8>>>);
@@ -40,17 +39,12 @@ impl Sink {
         output.send();
     }
 }
-fn source(plan: &mut NamedPlan, data: &str) -> task::automatic::RegisteredTask {
+fn source(plan: &mut NamedPlan, data: &str) -> task_graph::RegisteredTask {
     let mut task = TaskRegistration::new("source", Source, CallbackSchedule::default());
     task.output_channel("output", data);
     task.register(plan).unwrap()
 }
-fn sink(
-    plan: &mut NamedPlan,
-    data: &str,
-    output: &str,
-    event: &str,
-) -> task::automatic::RegisteredTask {
+fn sink(plan: &mut NamedPlan, data: &str, output: &str, event: &str) -> task_graph::RegisteredTask {
     let mut task = TaskRegistration::new("sink", Sink, CallbackSchedule::default());
     task.input_channel("event", event)
         .input_channel("input", data)
@@ -76,7 +70,7 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
         source.add_to_graph(&mut graph, &bindings);
         sink.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(4);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),

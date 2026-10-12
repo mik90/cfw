@@ -6,12 +6,10 @@ use std::{
     },
 };
 use task::{
-    ArenaReaderPtr, CallbackSchedule, Forwardable, Forwarded, ForwardedSources as _, OutputUninit,
-    RequiredInput,
-    automatic::{NamedPlan, TaskRegistration},
-    message::Message,
-    time::FrameworkTime,
+    ArenaReaderPtr, Forwardable, Forwarded, ForwardedSources as _, OutputUninit, RequiredInput,
+    message::Message, time::FrameworkTime,
 };
+use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
 use task_macros::{ForwardedSources, task_callback};
 
 struct Tracked {
@@ -127,10 +125,7 @@ fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
         let capture = bindings
             .bundle::<u64, Sources<'static>>("output")
             .unwrap()
-            .take_subscriber(&task::automatic::bundle::subscriber_key::<
-                u64,
-                Sources<'static>,
-            >(capture))
+            .take_subscriber(&task_graph::bundle::subscriber_key::<u64, Sources<'static>>(capture))
             .unwrap();
         let mut graph = storage.graph_builder();
         task.add_to_graph(&mut graph, &bindings);

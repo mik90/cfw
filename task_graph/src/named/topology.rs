@@ -1,19 +1,7 @@
 //! Owned, deterministic graph inspection before or after storage allocation.
-use crate::recording::Transport;
+use task::recording::Transport;
 
-#[derive(Clone, Debug)]
-pub struct ChannelTopology {
-    pub forwarding_retention_per_publisher: usize,
-    pub name: String,
-    pub payload_type: &'static str,
-    pub transport: Transport,
-    /// Per-publisher loan capacities, in declaration order.
-    pub publishers: Vec<usize>,
-    /// Per-subscriber retained window capacities, in declaration order.
-    pub subscribers: Vec<usize>,
-    /// Allowed publisher indices for each subscriber; None accepts every source.
-    pub sources: Vec<Option<Vec<usize>>>,
-}
+pub use task::named_channels::ChannelTopology;
 #[derive(Clone, Debug)]
 pub struct PortTopology {
     pub forwardable: bool,

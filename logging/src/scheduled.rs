@@ -17,9 +17,10 @@ use std::{
     time::Duration,
 };
 use task::{
-    BuiltGraph, Callback, CallbackSchedule, ChannelPlan, Context, EndpointBindings, LoanError,
-    ScheduledCallback, Subscriber, SubscriberKey, SubscriberPolicy,
+    Callback, ChannelPlan, Context, EndpointBindings, LoanError, Subscriber, SubscriberKey,
+    SubscriberPolicy,
 };
+use task_graph::{BuiltGraph, CallbackSchedule, ScheduledCallback};
 
 #[derive(Clone)]
 pub struct LoggingStatus {
@@ -153,7 +154,7 @@ impl<'a> FlushTrigger<'a> {
 ///
 /// ```compile_fail
 /// use logging::{LogFileWriter, LoggingScope};
-/// use task::GraphBuilder;
+/// use task_graph::GraphBuilder;
 /// use std::time::Duration;
 /// fn finish_too_early(writer: impl LogFileWriter + 'static) {
 ///     let logger = LoggingScope::new(writer, vec![], 1);
@@ -317,8 +318,7 @@ impl<'storage> LoggingScope<'storage> {
             .append_callbacks(callbacks)
             .map_err(|error| -> BoxedLogError { format!("logging attachment: {error:?}").into() })
             .and_then(|graph| {
-                self.registry
-                    .configure(crate::InternTables::from_metadata(graph.metadata()))?;
+                self.registry.configure(graph.metadata().intern_tables())?;
                 self.sessions[0]
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())

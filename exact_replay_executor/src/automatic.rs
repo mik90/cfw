@@ -2,7 +2,7 @@
 //!
 //! ```no_run
 //! use exact_replay_executor::{AutomaticExactReplayPlan, ExactReplayExecutor, ReplayLog};
-//! use task::automatic::{NamedPlan, TaskRegistration};
+//! use task_graph::{NamedPlan, TaskRegistration};
 //! fn replay(tasks: Vec<TaskRegistration>, log: ReplayLog) -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut plan = NamedPlan::default();
 //!     let tasks = tasks.into_iter().map(|task| task.register(&mut plan))
@@ -20,8 +20,8 @@
 //! }
 //! ```
 use crate::{ReplayBindings, ReplayError, ReplayLog, SourceCache, SourceCachePlan};
-pub use task::automatic::exact::ExplicitReplayPort;
-use task::automatic::{
+pub use task_graph::exact::ExplicitReplayPort;
+use task_graph::{
     NamedBindings, NamedPlan,
     exact::{ExactPort, NamedExactPlan},
 };

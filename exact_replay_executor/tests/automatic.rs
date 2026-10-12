@@ -5,11 +5,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 use task::loggable::Loggable;
-use task::{
-    CallbackSchedule, InputSpan, LoanError, OutputSpan, Publisher,
-    automatic::{NamedPlan, TaskRegistration},
-    time::FrameworkTime,
-};
+use task::{InputSpan, LoanError, OutputSpan, Publisher, time::FrameworkTime};
+use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
 use task_macros::task_callback;
 type SourcePtr<'a, T> = task::ArenaReaderPtr<'a, task::message::Message<T>>;
 
@@ -53,12 +50,12 @@ impl Sum {
         )
     }
 }
-fn source(plan: &mut NamedPlan, name: &str, value: u64) -> task::automatic::RegisteredTask {
+fn source(plan: &mut NamedPlan, name: &str, value: u64) -> task_graph::RegisteredTask {
     let mut registration = TaskRegistration::new(name, Source(value), CallbackSchedule::default());
     registration.output_channel("output", "shared");
     registration.register(plan).unwrap()
 }
-fn sum(plan: &mut NamedPlan) -> task::automatic::RegisteredTask {
+fn sum(plan: &mut NamedPlan) -> task_graph::RegisteredTask {
     let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
     registration
         .input_channel("first", "shared")
@@ -85,7 +82,7 @@ fn recorded(logged: bool) -> ReplayLog {
         b.add_to_graph(&mut graph, &bindings);
         sum.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(6);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),
@@ -280,7 +277,7 @@ impl PairSink {
         )
     }
 }
-fn pair_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task::automatic::RegisteredTask> {
+fn pair_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task_graph::RegisteredTask> {
     let mut tasks = vec![
         TaskRegistration::new("producer", PairProducer, CallbackSchedule::default()),
         TaskRegistration::new("forward", PairForward, CallbackSchedule::default()),
@@ -316,7 +313,7 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
                 t.add_to_graph(&mut graph, &bindings);
             }
             let recorder = ExecutionRecorder::new(12);
-            let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+            let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
             let session = LogSession::new(
                 logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
                 capture.bind(&bindings).unwrap(),
@@ -431,7 +428,7 @@ impl ForwardSink {
         Ok(())
     }
 }
-fn forwarding_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task::automatic::RegisteredTask> {
+fn forwarding_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task_graph::RegisteredTask> {
     let mut source =
         TaskRegistration::new("source", ForwardSource(10), CallbackSchedule::default());
     source.output_channel("output", "source-values");
@@ -473,7 +470,7 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
                 task.add_to_graph(&mut graph, &bindings);
             }
             let recorder = ExecutionRecorder::new(9);
-            let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+            let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
             let log = LogSession::new(
                 logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
                 capture.bind(&bindings).unwrap(),
@@ -584,7 +581,7 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
         let mut graph = storage.graph_builder();
         source.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),

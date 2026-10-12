@@ -12,14 +12,15 @@ use syn::{
 ///
 /// Bound endpoints cannot promote source handles to static:
 /// ```compile_fail
-/// use task::{ArenaReaderPtr, Forwarded, Subscriber, SubscriberKey, message::Message, automatic::NamedBindings};
+/// use task::{ArenaReaderPtr, Forwarded, Subscriber, SubscriberKey, message::Message};
+/// use task_graph::NamedBindings;
 /// use task_macros::ForwardedSources;
 /// #[derive(ForwardedSources)]
 /// struct Sources<'s> { source: ArenaReaderPtr<'s,Message<u64>> }
 /// fn extend<'a>(bindings: &NamedBindings<'a>, key: SubscriberKey<Forwarded<bool,Sources<'static>>>)
 ///     -> Subscriber<'a,Forwarded<bool,Sources<'static>>> {
 ///     bindings.bundle::<bool,Sources<'static>>("output").unwrap()
-///         .take_subscriber(&task::automatic::bundle::subscriber_key::<bool,Sources<'static>>(key)).unwrap()
+///         .take_subscriber(&task_graph::bundle::subscriber_key::<bool,Sources<'static>>(key)).unwrap()
 /// }
 /// ```
 #[proc_macro_derive(ForwardedSources)]
@@ -113,7 +114,7 @@ fn derive_sources(item: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStrea
                 vec![#((stringify!(#names), ::std::any::TypeId::of::<#static_types>())),*]
             }
         }
-        impl<#lifetime> ::task::forwarded_message::SourceCodec for #name<#lifetime> {
+        impl<#lifetime> ::task::forwarded_message::SerializableForward for #name<#lifetime> {
             type Context<'a> = (#(&'a dyn ::task::loggable::MessageLog<#lifetime, #types>,)*) where Self: 'a;
             fn headers(&self) -> Vec<(&'static str, ::task::message::MessageHeader)> {
                 vec![#((stringify!(#names), self.#names.header)),*]
@@ -148,6 +149,7 @@ fn canonical_type(ty: &Type) -> Type {
 /// Automatic construction through `TaskRegistration` supports per-instance port
 /// overrides. Explicit `declare` validates annotations; `from_keys` selects ports
 /// directly for manually configured layouts.
+/// Generated registration requires direct dependencies on `task` and `task_graph`.
 #[proc_macro_attribute]
 pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as ItemImpl);
@@ -872,8 +874,8 @@ fn automatic_registration(
         } else {
             quote!(Output)
         };
-        schema.push(quote!((stringify!(#name), ::task::automatic::PortDirection::#direction)));
-        channel_names.push(quote!(__cfw_overrides.resolve(stringify!(#name), ::task::automatic::PortDirection::#direction, || {
+        schema.push(quote!((stringify!(#name), ::task_graph::PortDirection::#direction)));
+        channel_names.push(quote!(__cfw_overrides.resolve(stringify!(#name), ::task_graph::PortDirection::#direction, || {
             let value = #channel;
             ::core::convert::AsRef::<str>::as_ref(&value).to_owned()
         })?));
@@ -936,13 +938,15 @@ fn automatic_registration(
             } else {
                 quote!(publisher_key)
             };
-            rebuilt_keys.push(quote!(::task::automatic::bundle::#retype::<#message,#source>(self.declaration.#name)));
+            rebuilt_keys.push(
+                quote!(::task_graph::bundle::#retype::<#message,#source>(self.declaration.#name)),
+            );
         } else {
             rebuilt_keys.push(quote!(self.declaration.#name));
         }
         let forwardable = port.forwardable;
         keys.push(quote!({
-            let key = #key.map_err(|error| ::task::automatic::BuildError(format!("port '{}': {}", stringify!(#name), error)))?;
+            let key = #key.map_err(|error| ::task_graph::BuildError(format!("port '{}': {}", stringify!(#name), error)))?;
             __cfw_plan.name_last_port(stringify!(#name));
             __cfw_plan.mark_last_port_forwardable(#forwardable);
             key
@@ -956,32 +960,32 @@ fn automatic_registration(
             _ => Some(quote!(register_native)),
         };
         if let Some((message, source)) = family {
-            captures.push(quote!(::task::automatic::bundle::CaptureProbe::<#message,#source>::default().register(__cfw_plan, &__cfw_names[#index])?;));
+            captures.push(quote!(::task_graph::bundle::CaptureProbe::<#message,#source>::default().register(__cfw_plan, &__cfw_names[#index])?;));
         } else if let Some(method) = capture_method {
-            captures.push(quote!(::task::automatic::capture::CaptureProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
-            captures.push(quote!(::task::automatic::replay::DecodeProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
+            captures.push(quote!(::task_graph::capture::CaptureProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
+            captures.push(quote!(::task_graph::replay::DecodeProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
         }
     }
     quote! {
         struct #factory { user: #task, declaration: #declaration<'static>, names: Vec<String> }
-        impl ::task::automatic::Task for #task {
-            fn register(self: Box<Self>, __cfw_plan: &mut ::task::automatic::NamedPlan) -> Result<Box<dyn ::task::automatic::TaskFactory>, ::task::automatic::BuildError> {
-                <Self as ::task::automatic::Task>::register_with(self, __cfw_plan, &::task::automatic::ChannelOverrides::default())
+        impl ::task_graph::Task for #task {
+            fn register(self: Box<Self>, __cfw_plan: &mut ::task_graph::NamedPlan) -> Result<Box<dyn ::task_graph::TaskFactory>, ::task_graph::BuildError> {
+                <Self as ::task_graph::Task>::register_with(self, __cfw_plan, &::task_graph::ChannelOverrides::default())
             }
-            fn register_with(self: Box<Self>, __cfw_plan: &mut ::task::automatic::NamedPlan, __cfw_overrides: &::task::automatic::ChannelOverrides) -> Result<Box<dyn ::task::automatic::TaskFactory>, ::task::automatic::BuildError> {
+            fn register_with(self: Box<Self>, __cfw_plan: &mut ::task_graph::NamedPlan, __cfw_overrides: &::task_graph::ChannelOverrides) -> Result<Box<dyn ::task_graph::TaskFactory>, ::task_graph::BuildError> {
                 __cfw_overrides.validate(&[#(#schema),*])?;
                 let __cfw_names: Vec<String> = vec![#(#channel_names),*];
                 let declaration = #declaration::from_keys(#(#keys),*);
-                use ::task::automatic::capture::MaybeCapture as _;
-                use ::task::automatic::replay::MaybeDecode as _;
-                use ::task::automatic::bundle::MaybeCapture as _;
+                use ::task_graph::capture::MaybeCapture as _;
+                use ::task_graph::replay::MaybeDecode as _;
+                use ::task_graph::bundle::MaybeCapture as _;
                 #(#captures)*
                 #(#mappings)*
                 Ok(Box::new(#factory { user: *self, declaration, names: __cfw_names }))
             }
         }
-        impl ::task::automatic::TaskFactory for #factory {
-            fn build<'storage>(self: Box<Self>, __cfw_bindings: &::task::automatic::NamedBindings<'storage>) -> Result<Box<dyn ::task::Callback + 'storage>, ::task::automatic::BuildError> {
+        impl ::task_graph::TaskFactory for #factory {
+            fn build<'storage>(self: Box<Self>, __cfw_bindings: &::task_graph::NamedBindings<'storage>) -> Result<Box<dyn ::task::Callback + 'storage>, ::task_graph::BuildError> {
                 let declaration = #declaration::from_keys(#(#rebuilt_keys),*);
                 Ok(Box::new(self.user.bind(declaration, #(#bindings),*)?))
             }

@@ -2,9 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use task::time::FrameworkTime;
 use task::{
-    ChannelPlan, Context, GraphBuilder, GraphPlan, Input, InputSpan, LoanError, Output, OutputSpan,
-    OutputUninit, Publisher, RequiredInput,
+    ChannelPlan, Context, GraphPlan, Input, InputSpan, LoanError, Output, OutputSpan, OutputUninit,
+    Publisher, RequiredInput,
 };
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 
 struct Increment;
@@ -435,10 +436,10 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
 
 #[test]
 fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
-    use task::automatic::{NamedPlan, TaskRegistration};
+    use task_graph::{NamedPlan, TaskRegistration};
     let mut plan = NamedPlan::default();
     let mut registration =
-        TaskRegistration::new("forward", Forward, task::CallbackSchedule::default());
+        TaskRegistration::new("forward", Forward, task_graph::CallbackSchedule::default());
     registration
         .input_channel("input", "source")
         .output_channel("output", "forwarded");
@@ -467,7 +468,7 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     let capture = bindings
         .bundle::<bool, SourcePtr<'static>>("forwarded")
         .unwrap()
-        .take_subscriber(&task::automatic::bundle::subscriber_key::<
+        .take_subscriber(&task_graph::bundle::subscriber_key::<
             bool,
             SourcePtr<'static>,
         >(capture))
@@ -475,7 +476,7 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     let fanout = bindings
         .bundle::<bool, SourcePtr<'static>>("forwarded")
         .unwrap()
-        .take_subscriber(&task::automatic::bundle::subscriber_key::<
+        .take_subscriber(&task_graph::bundle::subscriber_key::<
             bool,
             SourcePtr<'static>,
         >(fanout))

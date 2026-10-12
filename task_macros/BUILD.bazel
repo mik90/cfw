@@ -25,5 +25,6 @@ miri_test(
     deps = [
         ":task_macros",
         "//task",
+        "//task_graph",
     ],
 )

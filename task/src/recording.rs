@@ -17,14 +17,6 @@ pub struct InternTables {
     pub channels: crate::string_interner::ChannelNameInterner,
     pub callbacks: crate::string_interner::CallbackNameInterner,
 }
-impl InternTables {
-    pub fn from_metadata(metadata: &crate::GraphMetadata) -> Self {
-        Self {
-            channels: (*metadata.channel_names).clone(),
-            callbacks: (*metadata.callback_names).clone(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -199,77 +191,68 @@ impl ExecutionRecorder {
             state.records.push_back(record);
         }
     }
-    pub fn attach<'a>(
-        &self,
-        graph: crate::BuiltGraph<'a>,
-    ) -> Result<crate::BuiltGraph<'a>, String> {
-        self.attach_with_options(graph, RecordingOptions::default())
+    /// Begin the recorder's single attachment using the execution's name tables.
+    /// Finish the attachment before executing any instrumented callbacks.
+    pub fn begin_attachment(&self, tables: InternTables) -> Result<RecordingAttachment, String> {
+        let mut state = self.0.lock().unwrap();
+        if state.attached {
+            return Err("recorder already attached".into());
+        }
+        state.attached = true;
+        state.intern_tables = Some(tables);
+        Ok(RecordingAttachment {
+            recorder: self.clone(),
+            callbacks: Vec::new(),
+        })
     }
-    /// Per-name overrides take precedence over the global mode. Payload capture
-    /// is configured independently. Unknown callback names are rejected.
-    pub fn attach_with_options<'a>(
-        &self,
-        graph: crate::BuiltGraph<'a>,
-        options: RecordingOptions,
-    ) -> Result<crate::BuiltGraph<'a>, String> {
-        for name in options.callbacks.keys() {
-            if graph
-                .metadata()
-                .callback_names
-                .lookup_by_value(name)
-                .is_none()
-            {
-                return Err(format!("unknown recording callback '{name}'"));
-            }
+}
+
+/// Collects callback instrumentation and publishes its completed descriptor.
+pub struct RecordingAttachment {
+    recorder: ExecutionRecorder,
+    callbacks: Vec<CallbackDescriptor>,
+}
+
+impl RecordingAttachment {
+    /// Register a callback's metadata and instrument it for the selected mode.
+    pub fn wrap_callback<'a>(
+        &mut self,
+        descriptor: CallbackDescriptor,
+        callback: Box<dyn Callback + 'a>,
+    ) -> Result<Box<dyn Callback + 'a>, String> {
+        let callback_id = self
+            .recorder
+            .0
+            .lock()
+            .unwrap()
+            .intern_tables
+            .as_ref()
+            .expect("attachment has name tables")
+            .callbacks
+            .lookup_by_value(&descriptor.name)
+            .ok_or_else(|| format!("unknown recording callback '{}'", descriptor.name))?;
+        let index = self.callbacks.len();
+        let mode = descriptor.recording_mode;
+        self.callbacks.push(descriptor);
+        if mode == RecordingMode::Off {
+            return Ok(callback);
         }
-        {
-            let mut state = self.0.lock().unwrap();
-            if state.attached {
-                return Err("recorder already attached".into());
-            }
-            state.attached = true;
-            state.intern_tables = Some(InternTables::from_metadata(graph.metadata()));
-        }
-        let mut descriptors = Vec::new();
-        let callback_names = graph.metadata().callback_names.clone();
-        let graph = graph.try_map_callbacks(|index, name, callback| {
-            let mode = options
-                .callbacks
-                .get(name)
-                .copied()
-                .unwrap_or(options.default_mode);
-            let endpoints = match (mode, callback.recording_endpoints()) {
-                (RecordingMode::Full, None) => {
-                    return Err(format!(
-                        "callback '{name}' does not implement recording metadata"
-                    ));
-                }
-                (_, endpoints) => endpoints.unwrap_or_default(),
-            };
-            descriptors.push(CallbackDescriptor {
-                name: name.into(),
-                recording_mode: mode,
-                endpoints,
-            });
-            if mode == RecordingMode::Off {
-                return Ok(callback);
-            }
-            Ok::<_, String>(Box::new(Recorded {
-                callback,
-                recorder: self.clone(),
-                index,
-                callback_id: callback_names
-                    .lookup_by_value(name)
-                    .expect("callback must be interned"),
-                active: None,
-                mode,
-            }) as Box<dyn Callback + 'a>)
-        })?;
-        self.0.lock().unwrap().descriptor = Some(ExecutionDescriptor {
-            callbacks: descriptors,
+        Ok(Box::new(Recorded {
+            callback,
+            recorder: self.recorder.clone(),
+            index,
+            callback_id,
+            active: None,
+            mode,
+        }))
+    }
+
+    /// Publish metadata after every callback has been registered.
+    pub fn finish(self) {
+        self.recorder.0.lock().unwrap().descriptor = Some(ExecutionDescriptor {
+            callbacks: self.callbacks,
             logged_channels: Vec::new(),
         });
-        Ok(graph)
     }
 }
 struct Recorded<'a> {

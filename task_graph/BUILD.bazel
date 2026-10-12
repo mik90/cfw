@@ -1,0 +1,44 @@
+load("//bazel:rust.bzl", "miri_test", "rust_library", "rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "task_graph",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = [
+        "iceoryx2",
+        "serde",
+    ],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "task_graph_unit_tests",
+    crate = ":task_graph",
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_test(
+    name = "dynamic_graph_test",
+    srcs = ["tests/dynamic_graph.rs"],
+    deps = [":task_graph"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "pub_sub_test",
+    srcs = ["tests/pub_sub_test.rs"],
+    deps = [":task_graph"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "recording_test",
+    srcs = ["tests/recording.rs"],
+    deps = [":task_graph"] + all_crate_deps(normal = True),
+)
+
+miri_test(
+    name = "task_graph_miri",
+    srcs = glob(["src/**/*.rs"]),
+    deps = all_crate_deps(normal = True),
+)

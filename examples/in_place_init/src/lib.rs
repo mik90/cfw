@@ -42,7 +42,7 @@ mod tests {
                 "in_place",
                 MyTask {},
                 std::time::Duration::from_millis(1),
-                task::CallbackSchedule::on_start(),
+                task_graph::CallbackSchedule::on_start(),
             )
             .output_channel("output_uninit", large_message_channel);
 

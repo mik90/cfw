@@ -11,9 +11,10 @@ use std::{
     time::Duration,
 };
 use task::{
-    ChannelPlan, GraphBuilder, GraphPlan, LoanError, Publisher, RequiredInput,
-    executor::TimeSource, time::FrameworkTime,
+    ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, executor::TimeSource,
+    time::FrameworkTime,
 };
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 fn at(n: i64) -> FrameworkTime {
     FrameworkTime::from_nanoseconds(n)
@@ -233,7 +234,7 @@ fn configured_tail_allows_periodic_consumers_before_quiescing_timers() {
     let mut graph = GraphBuilder::new();
     graph.add_scheduled_callback(
         "poll",
-        task::CallbackSchedule::periodic(Duration::from_millis(1)),
+        task_graph::CallbackSchedule::periodic(Duration::from_millis(1)),
         || Ok(Poll.bind(declaration, &input, &output)?),
     );
     let reader = SortedLogStreamReader::from_entries(vec![row(0, b"7")], HashMap::new()).unwrap();
@@ -282,7 +283,7 @@ fn drain_timeout_and_worker_failure_are_not_successful_completion() {
     let storage = GraphPlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::new();
-    graph.add_scheduled_callback("feedback", task::CallbackSchedule::on_start(), || {
+    graph.add_scheduled_callback("feedback", task_graph::CallbackSchedule::on_start(), || {
         Ok(Feedback.bind(declaration, &bindings, &bindings)?)
     });
     let reader = SortedLogStreamReader::from_entries(vec![], HashMap::new()).unwrap();

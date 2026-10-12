@@ -8,9 +8,10 @@ use std::{
 };
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
 use task::{
-    ChannelPlan, GraphBuilder, GraphPlan, LoanError, Publisher, RequiredInput,
-    message::MessageHeader, recording::*, time::FrameworkTime,
+    ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, message::MessageHeader,
+    recording::*, time::FrameworkTime,
 };
+use task_graph::GraphBuilder;
 use task_macros::task_callback;
 
 struct Producer;

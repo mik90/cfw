@@ -5,11 +5,12 @@ edition = "2024"
 
 [features]
 default = ["iceoryx2"]
-iceoryx2 = ["task/iceoryx2", "logging/iceoryx2", "dep:iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "task_graph/iceoryx2", "logging/iceoryx2", "dep:iceoryx2"]
 
 [dependencies]
 base = { path = "../base" }
 task = { path = "../task", default-features = false, features = ["serde"] }
+task_graph = { path = "../task_graph", default-features = false }
 logging = { path = "../logging", default-features = false, features = ["serde"] }
 iceoryx2 = { workspace = true, optional = true }
 serde_json = { workspace = true }

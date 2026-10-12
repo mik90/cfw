@@ -6,9 +6,10 @@ use std::{
     time::Duration,
 };
 use task::{
-    CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, InputSpan, LoanError, Publisher,
-    message::MessageHeader, time::FrameworkTime,
+    ChannelPlan, GraphPlan, InputSpan, LoanError, Publisher, message::MessageHeader,
+    time::FrameworkTime,
 };
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 fn at(n: i64) -> FrameworkTime {
@@ -253,8 +254,8 @@ fn eof_drain_finishes_inflight_work_and_bounds_feedback_cycles() {
     assert_eq!(completion.reason, CompletionReason::TailDrained);
     assert_eq!(completion.at, at(25));
 
-    let mut plan = task::automatic::NamedPlan::default();
-    let mut task = task::automatic::TaskRegistration::new(
+    let mut plan = task_graph::NamedPlan::default();
+    let mut task = task_graph::TaskRegistration::new(
         "feedback",
         Double,
         CallbackSchedule::default().with_execution_duration(Duration::from_nanos(1)),
@@ -293,7 +294,7 @@ fn stream_action_errors_and_nonadvancing_deadlines_poison_the_session() {
 
 fn with_graph<R>(
     run: impl for<'a> FnOnce(
-        task::BuiltGraph<'a>,
+        task_graph::BuiltGraph<'a>,
         logging::ReplaySource<'a>,
         logging::Capture<'a>,
         logging::Capture<'a>,
@@ -343,7 +344,7 @@ fn record_sort_and_simulate_current_format_end_to_end() {
     let bytes = Bytes::default();
     with_graph(|graph, source, input_capture, output_capture| {
         let recorder = logging::ExecutionRecorder::new(8);
-        let graph = recorder.attach(graph).unwrap();
+        let graph = graph.with_recording(&recorder).unwrap();
         let log = logging::LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             vec![input_capture, output_capture],

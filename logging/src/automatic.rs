@@ -2,7 +2,7 @@
 //!
 //! ```
 //! use logging::{AutomaticCapturePlan, CaptureOptions};
-//! use task::automatic::NamedPlan;
+//! use task_graph::NamedPlan;
 //!
 //! let mut plan = NamedPlan::default();
 //! // Register tasks and their channel overrides here.
@@ -13,11 +13,11 @@
 //! let bindings = storage.bind()?;
 //! let captures = captures.bind(&bindings)?;
 //! // Pass captures to LogSession; retain storage until execution and logging end.
-//! # Ok::<(), task::automatic::BuildError>(())
+//! # Ok::<(), task_graph::BuildError>(())
 //! ```
 use crate::Capture;
 use std::collections::BTreeSet;
-use task::automatic::{BuildError, NamedBindings, NamedPlan, capture::NamedCapturePlan};
+use task_graph::{BuildError, NamedBindings, NamedPlan, capture::NamedCapturePlan};
 
 #[derive(Clone, Debug)]
 pub struct CaptureOptions {
@@ -84,7 +84,8 @@ impl ReplayOptions {
 ///
 /// ```
 /// use logging::{AutomaticReplayPlan, ReplayOptions};
-/// use task::{automatic::NamedPlan, SubscriberPolicy};
+/// use task::SubscriberPolicy;
+/// use task_graph::NamedPlan;
 /// let mut plan = NamedPlan::default();
 /// // Task macros discover codecs automatically. Manual declarations opt in:
 /// let input = plan.subscriber::<u64>("input", 4, SubscriberPolicy::default())?;
@@ -98,10 +99,10 @@ impl ReplayOptions {
 /// let sources = replay.bind(&bindings)?;
 /// // Pass sources to the ordinary replay executor. For log-driven selection,
 /// // use from_log before allocation; bind_feed also carries exclusions forward.
-/// # Ok::<(), task::automatic::BuildError>(())
+/// # Ok::<(), task_graph::BuildError>(())
 /// ```
 pub struct AutomaticReplayPlan {
-    plan: task::automatic::replay::NamedReplayPlan,
+    plan: task_graph::replay::NamedReplayPlan,
     excluded: BTreeSet<String>,
 }
 impl AutomaticReplayPlan {

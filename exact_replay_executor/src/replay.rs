@@ -11,11 +11,12 @@ use std::{
     },
 };
 use task::{
-    BuiltGraph, Callback, Context, GraphMetadata, LoanError,
+    Callback, Context, LoanError,
     recording::{
         Direction, EndpointDescriptor, ExecutionRecord, LoggedEvent, LoggedMessage, Transport,
     },
 };
+use task_graph::{BuiltGraph, GraphMetadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DivergencePolicy {

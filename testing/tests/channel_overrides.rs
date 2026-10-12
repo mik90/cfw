@@ -1,9 +1,9 @@
 use std::time::Duration;
 use task::{
-    CallbackSchedule, LoanError, Publisher, RequiredInput, TaskRegistration,
-    automatic::{NamedPlan, Task},
+    LoanError, Publisher, RequiredInput,
     recording::{Direction, ExecutionRecorder},
 };
+use task_graph::{CallbackSchedule, NamedPlan, Task, TaskRegistration};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
@@ -96,7 +96,7 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     let mut graph = storage.graph_builder();
     task.add_to_graph(&mut graph, &bindings);
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
     let descriptor = recorder.descriptor().unwrap();
     let ports = &descriptor.callbacks[0].endpoints;
     assert_eq!(
@@ -145,7 +145,7 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
 #[test]
 fn invalid_port_overrides_fail_before_defaults_or_registration() {
     for (port, output) in [("typo", false), ("input", true), ("output", false)] {
-        let mut overrides = task::ChannelOverrides::default();
+        let mut overrides = task_graph::ChannelOverrides::default();
         if output {
             overrides.output_channel(port, "chosen");
         } else {

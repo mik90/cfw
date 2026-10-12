@@ -1,11 +1,11 @@
 //! Publisher-local serialized capture for exact output attribution.
 use super::replay::ReplayError as BoxedLogError;
-use crate::{
+use std::sync::{Arc, Mutex};
+use task::{
     Publisher,
     loggable::Loggable,
     message::{Message, MessageHeader},
 };
-use std::sync::{Arc, Mutex};
 
 struct State {
     messages: Vec<(MessageHeader, Vec<u8>)>,
@@ -40,7 +40,7 @@ impl PortCapture {
         capture
     }
     #[cfg(feature = "iceoryx2")]
-    pub fn ipc<T>(publisher: &mut crate::iox2::Iox2Publisher<T>, capacity: usize) -> Self
+    pub fn ipc<T>(publisher: &mut task::iox2::Iox2Publisher<T>, capacity: usize) -> Self
     where
         T: Loggable + std::fmt::Debug + iceoryx2::prelude::ZeroCopySend + Send + Sync + 'static,
     {

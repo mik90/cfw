@@ -6,7 +6,8 @@ pub use task::testing_publisher::TestPublisher;
 pub use task::testing_subscriber::{
     DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages, TestSubscriber,
 };
-use task::{BuiltGraph, Publisher, Subscriber, testing_time::TimeSource, time::FrameworkTime};
+use task::{Publisher, Subscriber, testing_time::TimeSource, time::FrameworkTime};
+use task_graph::BuiltGraph;
 
 #[cfg(feature = "iceoryx2")]
 mod iox2;

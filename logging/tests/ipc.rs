@@ -6,11 +6,12 @@ use task::iox2::{
     Iox2ChannelPlan, Iox2Event, Iox2NotifyOutput, Iox2OptionalInput, Iox2Output, Iox2Runtime,
 };
 use task::{
-    CallbackSchedule, ChannelPlan, GraphBuilder, GraphPlan, RequiredInput,
+    ChannelPlan, GraphPlan, RequiredInput,
     message::MessageHeader,
     recording::{Outcome, Transport},
     time::FrameworkTime,
 };
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 #[repr(C)]
@@ -74,7 +75,7 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
         || Ok(Observe.bind(declaration, &input, &input, &gate, &output, &events)?),
     );
     let recorder = ExecutionRecorder::new(2);
-    let graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
     let mut simulation = simulation_executor::SimulationState::with_config(
         graph,
         simulation_executor::SimulationConfig {
@@ -248,7 +249,7 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
         Ok(Observe.bind(declaration, &input, &input, &gate, &output, &events)?)
     });
     let recorder = ExecutionRecorder::new(4);
-    let graph = recorder.attach(graph.build().unwrap()).unwrap();
+    let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
     ReplaySource::ipc(input.take_publisher(&data_key).unwrap())
         .inject(
             MessageHeader::new(FrameworkTime::from_nanoseconds(7)),

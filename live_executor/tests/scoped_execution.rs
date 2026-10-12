@@ -5,10 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use task::executor::TimeSource;
 use task::time::FrameworkTime;
-use task::{
-    CallbackSchedule, ChannelPlan, Context, GraphBuilder, GraphPlan, LoanError, Output, Publisher,
-    RequiredInput,
-};
+use task::{ChannelPlan, Context, GraphPlan, LoanError, Output, Publisher, RequiredInput};
+use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 struct Clock;

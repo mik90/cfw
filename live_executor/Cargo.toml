@@ -7,10 +7,11 @@ edition = "2024"
 
 [features]
 default = ["iceoryx2"]
-iceoryx2 = ["task/iceoryx2", "dep:iceoryx2"]
+iceoryx2 = ["task/iceoryx2", "task_graph/iceoryx2", "dep:iceoryx2"]
 
 [dependencies]
 task = { path = "../task", default-features = false }
+task_graph = { path = "../task_graph", default-features = false }
 crossbeam = "0.8"
 iceoryx2 = { workspace = true, optional = true }
 

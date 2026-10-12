@@ -1,13 +1,13 @@
 //! Named construction for owned payloads and storage-borrowing Forwarded source bundles.
 //! Storage remains externally owned; only the construction metadata is erased.
-use crate::{
-    Callback, ChannelPlan, ChannelStorage, EndpointBindings, GraphBuilder, StorageLayout,
-    SubscriberPolicy,
-};
+use crate::GraphBuilder;
 use std::{
     any::{Any, TypeId},
     collections::BTreeMap,
     sync::Arc,
+};
+use task::{
+    Callback, ChannelPlan, ChannelStorage, EndpointBindings, StorageLayout, SubscriberPolicy,
 };
 pub mod bundle;
 pub mod capture;
@@ -25,13 +25,13 @@ impl std::fmt::Display for BuildError {
     }
 }
 impl std::error::Error for BuildError {}
-impl From<crate::EndpointError> for BuildError {
-    fn from(e: crate::EndpointError) -> Self {
+impl From<task::EndpointError> for BuildError {
+    fn from(e: task::EndpointError) -> Self {
         Self(e.to_string())
     }
 }
-impl From<crate::StorageError> for BuildError {
-    fn from(e: crate::StorageError) -> Self {
+impl From<task::StorageError> for BuildError {
+    fn from(e: task::StorageError) -> Self {
         Self(format!("{e:?}"))
     }
 }
@@ -239,11 +239,11 @@ trait Plan {
         false
     }
     #[cfg(feature = "iceoryx2")]
-    fn ipc_requirements(&self) -> Result<Option<crate::iox2::Iox2ChannelConfig>, BuildError> {
+    fn ipc_requirements(&self) -> Result<Option<task::iox2::Iox2ChannelConfig>, BuildError> {
         Ok(None)
     }
     #[cfg(feature = "iceoryx2")]
-    fn set_ipc_config(&mut self, _: crate::iox2::Iox2ChannelConfig) {}
+    fn set_ipc_config(&mut self, _: task::iox2::Iox2ChannelConfig) {}
 }
 trait Stored {
     fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError>;
@@ -316,11 +316,11 @@ pub struct NamedPlan {
     tasks: BTreeMap<String, Vec<exact::PlannedPort>>,
     exact_planned: bool,
     #[cfg(feature = "iceoryx2")]
-    events: BTreeMap<String, (crate::iox2::Iox2ChannelPlan<()>, usize)>,
+    events: BTreeMap<String, (task::iox2::Iox2ChannelPlan<()>, usize)>,
     #[cfg(feature = "iceoryx2")]
-    runtime: Option<Arc<crate::iox2::Iox2Runtime>>,
+    runtime: Option<Arc<task::iox2::Iox2Runtime>>,
     #[cfg(feature = "iceoryx2")]
-    ipc_limits: BTreeMap<String, crate::iox2::Iox2ChannelConfig>,
+    ipc_limits: BTreeMap<String, task::iox2::Iox2ChannelConfig>,
 }
 impl NamedPlan {
     /// Generated registration annotates each endpoint after its checked declaration.
@@ -349,7 +349,7 @@ impl NamedPlan {
         for (name, (plan, _)) in &self.events {
             if !self.channels.contains_key(name) {
                 let mut channel = plan.topology();
-                channel.transport = crate::recording::Transport::Event;
+                channel.transport = task::recording::Transport::Event;
                 snapshot.channels.push(channel);
             }
         }
@@ -378,14 +378,14 @@ impl NamedPlan {
     pub fn native_workload_publishers<T: Send + Sync + 'static>(
         &mut self,
         name: &str,
-    ) -> Result<Vec<crate::PublisherKey<T>>, BuildError> {
+    ) -> Result<Vec<task::PublisherKey<T>>, BuildError> {
         let indices: Vec<_> = self
             .ports
             .iter()
             .filter(|port| {
                 port.channel == name
                     && port.output
-                    && port.transport == crate::recording::Transport::Native
+                    && port.transport == task::recording::Transport::Native
             })
             .map(|port| port.index)
             .collect();
@@ -424,7 +424,7 @@ impl NamedPlan {
         &mut self,
         name: &str,
         capacity: usize,
-    ) -> Result<crate::PublisherKey<T>, BuildError> {
+    ) -> Result<task::PublisherKey<T>, BuildError> {
         let key = self.native::<T>(name)?.publisher(capacity);
         self.ports.push(exact::PlannedPort::new::<T>(
             name,
@@ -442,7 +442,7 @@ impl NamedPlan {
         name: &str,
         capacity: usize,
         policy: SubscriberPolicy,
-    ) -> Result<crate::SubscriberKey<T>, BuildError> {
+    ) -> Result<task::SubscriberKey<T>, BuildError> {
         let key = self
             .native::<T>(name)?
             .subscriber_with_policy(capacity, policy);
@@ -477,7 +477,7 @@ impl NamedPlan {
     pub fn allocate(mut self) -> Result<NamedStorage, BuildError> {
         self.prepare()?;
         let topology = self.topology();
-        let mut names = crate::string_interner::ChannelNameInterner::new();
+        let mut names = task::string_interner::ChannelNameInterner::new();
         let mut channels = BTreeMap::new();
         for (name, channel) in self.channels {
             names.intern(&name);
@@ -525,7 +525,7 @@ impl NamedPlan {
 pub struct NamedStorage {
     topology: Topology,
     channels: BTreeMap<String, Box<dyn Stored>>,
-    names: Arc<crate::string_interner::ChannelNameInterner>,
+    names: Arc<task::string_interner::ChannelNameInterner>,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, Box<dyn Stored>>,
 }
@@ -580,9 +580,9 @@ impl<'a> NamedBindings<'a> {
 #[cfg(feature = "iceoryx2")]
 mod ipc {
     use super::*;
-    use crate::iox2::*;
     use iceoryx2::prelude::ZeroCopySend;
     use std::fmt::Debug;
+    use task::iox2::*;
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Plan for Iox2ChannelPlan<T> {
         fn topology(&self) -> topology::ChannelTopology {
             self.topology()
@@ -634,7 +634,7 @@ mod ipc {
                 .filter(|port| {
                     port.channel == name
                         && port.output
-                        && port.transport == crate::recording::Transport::Ipc
+                        && port.transport == task::recording::Transport::Ipc
                 })
                 .map(|port| port.index)
                 .collect();
@@ -672,11 +672,11 @@ mod ipc {
                 config.max_listeners = config
                     .max_listeners
                     .checked_add(events.max_listeners)
-                    .ok_or(crate::StorageError::CapacityOverflow)?;
+                    .ok_or(task::StorageError::CapacityOverflow)?;
                 config.max_notifiers = config
                     .max_notifiers
                     .checked_add(events.max_notifiers)
-                    .ok_or(crate::StorageError::CapacityOverflow)?;
+                    .ok_or(task::StorageError::CapacityOverflow)?;
                 config.event_id_max_value =
                     config.event_id_max_value.max(events.event_id_max_value);
             }
@@ -696,7 +696,7 @@ mod ipc {
                 if limits.max_listeners == 0 || limits.max_notifiers == 0 { insufficient.push("max_listeners and max_notifiers must be positive service limits".into()); }
                 macro_rules! check { ($($field:ident),*) => { $(if limits.$field < needed.$field { insufficient.push(format!("{} requires {}, configured {}", stringify!($field), needed.$field, limits.$field)); })* }; }
                 check!(buffer_capacity, max_borrowed_samples, max_publishers, max_subscribers, max_nodes, max_listeners, max_notifiers, event_id_max_value);
-                if limits.max_borrowed_samples < limits.buffer_capacity.checked_mul(2).ok_or(crate::StorageError::CapacityOverflow)? { insufficient.push("max_borrowed_samples must cover twice buffer_capacity".into()); }
+                if limits.max_borrowed_samples < limits.buffer_capacity.checked_mul(2).ok_or(task::StorageError::CapacityOverflow)? { insufficient.push("max_borrowed_samples must cover twice buffer_capacity".into()); }
                 if !insufficient.is_empty() { return Err(BuildError(format!("IPC service '{name}': {}", insufficient.join(", ")))); }
                 Ok((name, limits))
             }).collect()

@@ -156,10 +156,8 @@ fn ipc_fixture_mismatches_fail_during_allocation() {
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
-    use task::{
-        automatic::NamedPlan,
-        iox2::{Iox2ChannelConfig, Iox2Notification},
-    };
+    use task::iox2::{Iox2ChannelConfig, Iox2Notification};
+    use task_graph::NamedPlan;
     let name = format!("named_limits_{}", std::process::id());
     let mut plan = NamedPlan::default();
     let publisher = plan
@@ -256,7 +254,7 @@ fn ipc_fixture_captures_distinguish_injection_from_feedback() {
             "feedback",
             Feedback,
             Duration::from_nanos(1),
-            task::CallbackSchedule::periodic(Duration::from_nanos(1)),
+            task_graph::CallbackSchedule::periodic(Duration::from_nanos(1)),
         )
         .input_channel("input", &name)
         .output_channel("output", &name);
@@ -321,7 +319,7 @@ fn overrides_bind_ipc_data_events_notifiers_and_native_gates() {
             "signal",
             Signal,
             Duration::from_nanos(1),
-            task::CallbackSchedule::on_start(),
+            task_graph::CallbackSchedule::on_start(),
         )
         .output_channel("notify", &event_channel);
     let mut input = builder.add_iox2_test_publisher::<u64>(&data_channel);

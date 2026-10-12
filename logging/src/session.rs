@@ -125,7 +125,7 @@ impl<'a> LogSession<'a> {
             if let Err(error) =
                 capture.drain(|header, body| self.writer.store_message(&channel, &header, body))
             {
-                use task::automatic::capture::{CaptureFailure, CaptureFailureKind};
+                use task_graph::capture::{CaptureFailure, CaptureFailureKind};
                 let (kind, header) = error
                     .downcast_ref::<CaptureFailure>()
                     .map(|e| {

@@ -88,12 +88,14 @@ struct Key {
 pub struct Iox2PublisherKey<T>(Key, PhantomData<fn(T) -> T>);
 pub struct Iox2SubscriberKey<T>(Key, PhantomData<fn(T) -> T>);
 impl<T> Iox2PublisherKey<T> {
-    pub(crate) fn index(&self) -> usize {
+    /// Index within the channel's publisher declarations.
+    pub fn index(&self) -> usize {
         self.0.index
     }
 }
 impl<T> Iox2SubscriberKey<T> {
-    pub(crate) fn index(&self) -> usize {
+    /// Index within the channel's subscriber declarations.
+    pub fn index(&self) -> usize {
         self.0.index
     }
 }
@@ -135,8 +137,8 @@ pub struct Iox2ChannelPlan<T> {
     payload: PhantomData<fn(T) -> T>,
 }
 impl<T> Iox2ChannelPlan<T> {
-    pub fn topology(&self) -> crate::automatic::topology::ChannelTopology {
-        crate::automatic::topology::ChannelTopology {
+    pub fn topology(&self) -> crate::named_channels::ChannelTopology {
+        crate::named_channels::ChannelTopology {
             forwarding_retention_per_publisher: 0,
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),
@@ -189,7 +191,8 @@ impl<T> Iox2ChannelPlan<T> {
                 .unwrap_or(0),
         })
     }
-    pub(crate) fn publisher_key(&self, index: usize) -> Iox2PublisherKey<T> {
+    /// Look up an existing publisher declaration. Panics for an invalid index.
+    pub fn publisher_key(&self, index: usize) -> Iox2PublisherKey<T> {
         assert!(index < self.publishers.len());
         Iox2PublisherKey(
             Key {
@@ -199,7 +202,8 @@ impl<T> Iox2ChannelPlan<T> {
             PhantomData,
         )
     }
-    pub(crate) fn subscriber_key(&self, index: usize) -> Iox2SubscriberKey<T> {
+    /// Look up an existing subscriber declaration. Panics for an invalid index.
+    pub fn subscriber_key(&self, index: usize) -> Iox2SubscriberKey<T> {
         assert!(index < self.subscribers.len());
         Iox2SubscriberKey(
             Key {

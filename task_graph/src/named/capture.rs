@@ -1,9 +1,9 @@
 //! Lifetime-preserving serialization capabilities for planned named captures.
 use super::{BuildError, NamedBindings, NamedPlan};
-use crate::{
+use std::{collections::BTreeSet, marker::PhantomData};
+use task::{
     Subscriber, SubscriberKey, SubscriberPolicy, loggable::Loggable, message::MessageHeader,
 };
-use std::{collections::BTreeSet, marker::PhantomData};
 
 pub type CaptureError = Box<dyn std::error::Error + Send + Sync>;
 pub type CaptureVisitor<'a> = dyn FnMut(MessageHeader, &[u8]) -> Result<(), CaptureError> + 'a;
@@ -154,7 +154,7 @@ impl<T: Loggable + Send + Sync + 'static> CaptureDeclaration for NativeDeclarati
 }
 struct NativeOutputFactory<T> {
     channel: String,
-    publisher: crate::PublisherKey<T>,
+    publisher: task::PublisherKey<T>,
     capacity: usize,
 }
 impl<T: Loggable + Send + Sync + 'static> super::exact::ExactFactory for NativeOutputFactory<T> {
@@ -277,9 +277,9 @@ impl<T: Loggable + Send + Sync + 'static> CaptureProbe<T> {
 #[cfg(feature = "iceoryx2")]
 mod ipc {
     use super::*;
-    use crate::iox2::{Iox2Subscriber, Iox2SubscriberKey};
     use iceoryx2::prelude::ZeroCopySend;
     use std::fmt::Debug;
+    use task::iox2::{Iox2Subscriber, Iox2SubscriberKey};
     pub struct IpcCapture<T: Debug + ZeroCopySend + Send + Sync + 'static>(pub Iox2Subscriber<T>);
     impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static> SerializedCapture
         for IpcCapture<T>
@@ -350,7 +350,7 @@ mod ipc {
     }
     struct IpcOutputFactory<T> {
         channel: String,
-        publisher: crate::iox2::Iox2PublisherKey<T>,
+        publisher: task::iox2::Iox2PublisherKey<T>,
         capacity: usize,
     }
     impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>

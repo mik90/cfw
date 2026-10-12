@@ -6,7 +6,8 @@ use exact_replay_executor::{
 use logging::{
     CapturePlan, ExecutionRecorder, LogSession, PortCapture, ReplaySource, ReplaySourcePlan,
 };
-use task::{BuiltGraph, ChannelPlan, GraphBuilder, GraphPlan};
+use task::{ChannelPlan, GraphPlan};
+use task_graph::{BuiltGraph, GraphBuilder};
 use test_tasks::{
     FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, IncrementingIntegerPublisher,
     StringCollector,
@@ -59,7 +60,10 @@ pub fn with_recording<R>(
         Ok(collected.clone().bind(collector, &strings)?)
     });
     let recorder = ExecutionRecorder::new(CAPACITY * 3);
-    let graph = recorder.attach(graph.build().map_err(|e| format!("{e:?}"))?)?;
+    let graph = graph
+        .build()
+        .map_err(|e| format!("{e:?}"))?
+        .with_recording(&recorder)?;
     let mut captures = vec![string_capture.bind(&strings)?];
     if let Some(capture) = integer_capture {
         captures.push(capture.bind(&integers)?);

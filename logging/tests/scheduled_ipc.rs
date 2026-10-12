@@ -8,7 +8,8 @@ use std::{
     time::Duration,
 };
 use task::iox2::{Iox2ChannelPlan, Iox2EventBindings, Iox2NotifyOutput, Iox2Runtime};
-use task::{ChannelPlan, GraphBuilder, GraphPlan, message::MessageHeader, time::FrameworkTime};
+use task::{ChannelPlan, GraphPlan, message::MessageHeader, time::FrameworkTime};
+use task_graph::GraphBuilder;
 
 struct Writer(Arc<AtomicUsize>);
 impl LogFileWriter for Writer {
