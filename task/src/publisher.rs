@@ -1,16 +1,12 @@
 use std::any::Any;
-use std::mem::MaybeUninit;
-use std::ops::{Deref, DerefMut};
 
+use crate::output::{Output, OutputSpan, OutputUninit};
 use crate::subscriber::SubscriberWriter;
 use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
 
 use super::Subscriber;
 use crate::message::{Message, MessageHeader};
 use crate::time::FrameworkTime;
-
-mod span;
-pub use span::{OutputSpan, OutputSpanEntry, SpanOutputUninit};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoanError {
@@ -22,9 +18,13 @@ pub enum LoanError {
 /// A typed publisher borrowing storage allocated before connection/execution.
 /// Connection does not resize its arena: the graph plan owns capacity decisions.
 pub struct Publisher<'storage, MessageType> {
-    allocator: ArenaAllocator<'storage, Message<MessageType>>,
+    /// pub(crate) so that Output can borrow the minimm amount needed
+    pub(crate) allocator: ArenaAllocator<'storage, Message<MessageType>>,
+    /// Amount of loans that this publisher is allowed to give
     loan_capacity: usize,
-    pending: Vec<ArenaPtr<'storage, Message<MessageType>>>,
+    /// pub(crate) so that Output can borrow the minimm amount needed
+    pub(crate) pending: Vec<ArenaPtr<'storage, Message<MessageType>>>,
+    /// Subscribers to send data to
     subscribers: Vec<SubscriberWriter<'storage, MessageType>>,
     channel: String,
     publisher_index: u32,
@@ -52,6 +52,10 @@ impl<'storage, T> Publisher<'storage, T> {
 
     pub(crate) fn set_channel_name(&mut self, name: &str) {
         self.channel = name.into();
+    }
+
+    pub fn loan_capacity(&self) -> usize {
+        self.loan_capacity
     }
 
     pub fn channel_name(&self) -> &str {
@@ -83,10 +87,7 @@ impl<'storage, T> Publisher<'storage, T> {
             return Err(LoanError::LoanCapacityReached);
         }
         let ptr = allocate_output(&self.allocator)?;
-        Ok(OutputUninit {
-            publisher: self,
-            ptr,
-        })
+        Ok(OutputUninit::new(self, ptr))
     }
 
     pub fn loan(&mut self, value: T) -> Result<Output<'_, 'storage, T>, LoanError> {
@@ -183,7 +184,7 @@ impl<'storage, T> Publisher<'storage, T> {
     }
 }
 
-fn allocate_output<'storage, T>(
+pub(crate) fn allocate_output<'storage, T>(
     allocator: &ArenaAllocator<'storage, Message<T>>,
 ) -> Result<ArenaPtrUninit<'storage, Message<T>>, LoanError> {
     let mut ptr = allocator
@@ -194,80 +195,6 @@ fn allocate_output<'storage, T>(
     // initialize the header without creating a reference to uninitialized T.
     unsafe { (&raw mut (*message).header).write(MessageHeader::default()) };
     Ok(ptr)
-}
-
-/// Exclusive in-place output reservation. A normal drop releases the slot
-/// without dropping a potentially partially initialized payload. It is up
-/// to the user to handle initialization failure.
-pub struct OutputUninit<'output, 'storage, T> {
-    publisher: &'output mut Publisher<'storage, T>,
-    ptr: ArenaPtrUninit<'storage, Message<T>>,
-}
-
-impl<'output, 'storage, T> OutputUninit<'output, 'storage, T> {
-    /// The main use-case for OutputUninit, this allows users to initialize large
-    /// types in-place but they must handle safety on their own, including managing
-    /// partially initialized values.
-    pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
-        let message = self.ptr.payload_uninit().as_mut_ptr();
-        // SAFETY: The loan exclusively owns Message<T>. MaybeUninit has T's
-        // layout and does not require the payload field to be initialized.
-        unsafe { &mut *(&raw mut (*message).message).cast::<MaybeUninit<T>>() }
-    }
-
-    pub fn write(mut self, value: T) -> Output<'output, 'storage, T> {
-        self.payload_uninit().write(value);
-        // SAFETY: write initialized T and loan_uninit initialized the header.
-        unsafe { self.assume_init() }
-    }
-
-    /// # Safety
-    /// The payload must be fully initialized.
-    pub unsafe fn assume_init(self) -> Output<'output, 'storage, T> {
-        Output {
-            publisher: self.publisher,
-            // SAFETY: The caller initialized T; loan_uninit initialized the header.
-            ptr: unsafe { self.ptr.assume_init() },
-        }
-    }
-}
-
-/// Exclusive initialized output. Sending transfers it into the pending batch;
-/// dropping without sending destroys the payload and releases its slot.
-pub struct Output<'output, 'storage, T> {
-    publisher: &'output mut Publisher<'storage, T>,
-    ptr: ArenaPtr<'storage, Message<T>>,
-}
-
-impl<T> Output<'_, '_, T> {
-    pub fn send(self) {
-        self.publisher.pending.push(self.ptr);
-    }
-
-    pub fn value(&self) -> &T {
-        // SAFETY: Output contains a fully initialized, exclusively owned payload.
-        &unsafe { (*self.ptr.payload.get()).assume_init_ref() }.message
-    }
-
-    pub fn value_mut(&mut self) -> &mut T {
-        // SAFETY: No pointer clones are exposed until send followed by flush,
-        // both of which end access through this exclusive output handle.
-        &mut unsafe { (*self.ptr.payload.get()).assume_init_mut() }.message
-    }
-}
-
-impl<T> Deref for Output<'_, '_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        self.value()
-    }
-}
-
-impl<T> DerefMut for Output<'_, '_, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        self.value_mut()
-    }
 }
 
 /// Executor operations erase the message type without requiring Any on endpoints.
