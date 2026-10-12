@@ -1,6 +1,8 @@
 /target
 /tmp
 
+.idea
+
 # Bazel outputs
 /bazel-*
 
