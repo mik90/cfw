@@ -9,16 +9,7 @@ struct BundlePlan<M, S: ForwardedSources>(ChannelPlan<Value<'static, M, S>>);
 struct BundleStorage<M, S: ForwardedSources>(ChannelStorage<Value<'static, M, S>>);
 struct BundleBinding<'a, M, S: ForwardedSources>(EndpointBindings<'a, Value<'a, M, S>>);
 
-pub fn publisher_key<'a, M, S: ForwardedSources>(
-    key: PublisherKey<Value<'static, M, S>>,
-) -> PublisherKey<Value<'a, M, S>> {
-    task::forwarded_message::publisher_key::<M, S>(key)
-}
-pub fn subscriber_key<'a, M, S: ForwardedSources>(
-    key: SubscriberKey<Value<'static, M, S>>,
-) -> SubscriberKey<Value<'a, M, S>> {
-    task::forwarded_message::subscriber_key::<M, S>(key)
-}
+pub use task::forwarded_message::{publisher_key, subscriber_key};
 
 impl<M: Send + Sync + 'static, S: ForwardedSources> Plan for BundlePlan<M, S> {
     fn payload_type(&self) -> &'static str {

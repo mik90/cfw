@@ -5,15 +5,12 @@
 //! use task_graph::{NamedPlan, TaskRegistration};
 //! fn replay(tasks: Vec<TaskRegistration>, log: ReplayLog) -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut plan = NamedPlan::default();
-//!     let tasks = tasks.into_iter().map(|task| task.register(&mut plan))
-//!         .collect::<Result<Vec<_>, _>>()?;
+//!     for task in tasks { task.register(&mut plan)?; }
 //!     let replay = AutomaticExactReplayPlan::declare(&mut plan, &log)?;
 //!     let storage = plan.allocate()?;
 //!     let bindings = storage.bind()?;
 //!     let replay = replay.bind(&bindings)?;
-//!     let mut graph = storage.graph_builder();
-//!     for task in tasks { task.add_to_graph(&mut graph, &bindings); }
-//!     let graph = graph.build().map_err(|error| format!("{error:?}"))?;
+//!     let graph = storage.build_with(&bindings)?;
 //!     let report = ExactReplayExecutor::new(graph, log, replay)?.run()?;
 //!     assert!(report.is_exact());
 //!     Ok(())

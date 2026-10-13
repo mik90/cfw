@@ -98,7 +98,7 @@ impl NamedPlan {
         self.tasks
             .get(callback)
             .and_then(|ports| {
-                ports
+                self.ports[ports.clone()]
                     .iter()
                     .filter(|port| port.output == output)
                     .nth(ordinal)
@@ -192,6 +192,7 @@ impl NamedPlan {
             let ports = self.tasks.get(&callback.name).ok_or_else(|| {
                 BuildError(format!("missing registered callback '{}'", callback.name))
             })?;
+            let ports = &self.ports[ports.clone()];
             let mut ordinals = [0, 0];
             let mut mapped = BTreeMap::new();
             for port in ports {

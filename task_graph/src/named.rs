@@ -1,9 +1,11 @@
 //! Named construction for owned payloads and storage-borrowing Forwarded source bundles.
 //! Storage remains externally owned; only the construction metadata is erased.
-use crate::GraphBuilder;
+use crate::{BuiltGraph, ScheduledCallback};
 use std::{
     any::{Any, TypeId},
+    cell::RefCell,
     collections::BTreeMap,
+    ops::Range,
     sync::Arc,
 };
 use task::{
@@ -40,24 +42,15 @@ pub trait Task {
     fn register(
         self: Box<Self>,
         channels: &mut NamedPlan,
-    ) -> Result<Box<dyn TaskFactory>, BuildError>;
-    fn register_with(
-        self: Box<Self>,
-        channels: &mut NamedPlan,
         overrides: &ChannelOverrides,
-    ) -> Result<Box<dyn TaskFactory>, BuildError> {
-        if !overrides.is_empty() {
-            return Err(BuildError("task does not support channel overrides".into()));
-        }
-        self.register(channels)
-    }
+    ) -> Result<TaskBinding, BuildError>;
 }
-pub trait TaskFactory {
-    fn build<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-    ) -> Result<Box<dyn Callback + 'a>, BuildError>;
-}
+/// A single-use binding operation valid for any borrow of the allocated storage.
+pub type TaskBinding = Box<
+    dyn for<'storage> FnOnce(
+        &NamedBindings<'storage>,
+    ) -> Result<Box<dyn Callback + 'storage>, BuildError>,
+>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortDirection {
@@ -97,9 +90,6 @@ impl ChannelOverrides {
         self.channels
             .insert((PortDirection::Output, port.into()), channel.into());
         self
-    }
-    pub fn is_empty(&self) -> bool {
-        self.channels.is_empty()
     }
     pub fn validate(&self, ports: &[(&str, PortDirection)]) -> Result<(), BuildError> {
         for ((direction, name), channel) in &self.channels {
@@ -163,9 +153,6 @@ impl TaskRegistration {
             channels: ChannelOverrides::default(),
         }
     }
-    pub fn name(&self) -> &str {
-        &self.name
-    }
     pub fn input_channel(
         &mut self,
         port: impl Into<String>,
@@ -182,45 +169,26 @@ impl TaskRegistration {
         self.channels.output_channel(port, channel);
         self
     }
-    pub fn register(self, plan: &mut NamedPlan) -> Result<RegisteredTask, BuildError> {
+    pub fn register(self, plan: &mut NamedPlan) -> Result<(), BuildError> {
         if plan.tasks.contains_key(&self.name) {
             return Err(BuildError(format!("duplicate task '{}'", self.name)));
         }
         let start = plan.ports.len();
         plan.active_task = Some(self.name.clone());
-        let factory = self
+        let binding = self
             .task
-            .register_with(plan, &self.channels)
+            .register(plan, &self.channels)
             .map_err(|e| BuildError(format!("task '{}': {e}", self.name)));
         plan.active_task = None;
-        let factory = factory?;
+        let binding = binding?;
         plan.tasks
-            .insert(self.name.clone(), plan.ports[start..].to_vec());
-        Ok(RegisteredTask {
-            name: self.name,
-            schedule: self.schedule,
-            factory,
-        })
+            .insert(self.name.clone(), start..plan.ports.len());
+        plan.callbacks.push((self.name, self.schedule, binding));
+        Ok(())
     }
 }
-pub struct RegisteredTask {
-    pub name: String,
-    pub schedule: crate::CallbackSchedule,
-    pub factory: Box<dyn TaskFactory>,
-}
-impl RegisteredTask {
-    pub fn add_to_graph<'build, 'storage>(
-        self,
-        graph: &mut GraphBuilder<'build, 'storage>,
-        bindings: &'build NamedBindings<'storage>,
-    ) {
-        graph.add_boxed_callback(self.name, self.schedule, move || {
-            self.factory
-                .build(bindings)
-                .map_err(|e| Box::new(e) as crate::FactoryError)
-        });
-    }
-}
+
+type TaskDefinition = (String, crate::CallbackSchedule, TaskBinding);
 
 trait Plan {
     fn forwarding_slots(&self) -> Result<usize, BuildError> {
@@ -313,7 +281,8 @@ pub struct NamedPlan {
     captures: BTreeMap<String, Box<dyn capture::CaptureDeclaration>>,
     replay_sources: BTreeMap<String, Box<dyn replay::SourceDeclaration>>,
     ports: Vec<exact::PlannedPort>,
-    tasks: BTreeMap<String, Vec<exact::PlannedPort>>,
+    tasks: BTreeMap<String, Range<usize>>,
+    callbacks: Vec<TaskDefinition>,
     exact_planned: bool,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, (task::iox2::Iox2ChannelPlan<()>, usize)>,
@@ -324,15 +293,14 @@ pub struct NamedPlan {
 }
 impl NamedPlan {
     /// Generated registration annotates each endpoint after its checked declaration.
-    pub fn name_last_port(&mut self, name: &str) {
-        if let Some(port) = self.ports.last_mut() {
-            port.name = Some(name.into());
-        }
-    }
-    pub fn mark_last_port_forwardable(&mut self, forwardable: bool) {
-        if let Some(port) = self.ports.last_mut() {
-            port.forwardable = forwardable;
-        }
+    #[doc(hidden)]
+    pub fn annotate_last_port(&mut self, name: &str, forwardable: bool) {
+        let port = self
+            .ports
+            .last_mut()
+            .expect("port must be declared before annotation");
+        port.name = Some(name.into());
+        port.forwardable = forwardable;
     }
     pub fn topology(&self) -> Topology {
         let mut snapshot = Topology {
@@ -356,7 +324,7 @@ impl NamedPlan {
         snapshot.channels.sort_by(|a, b| a.name.cmp(&b.name));
         for (callback, ports) in &self.tasks {
             let mut ordinals = [0, 0];
-            for port in ports {
+            for port in &self.ports[ports.clone()] {
                 let ordinal = ordinals[usize::from(port.output)];
                 ordinals[usize::from(port.output)] += 1;
                 snapshot.ports.push(topology::PortTopology {
@@ -493,6 +461,7 @@ impl NamedPlan {
             })
             .collect::<Result<_, BuildError>>()?;
         Ok(NamedStorage {
+            callbacks: RefCell::new(Some(self.callbacks)),
             topology,
             channels,
             names: Arc::new(names),
@@ -502,6 +471,12 @@ impl NamedPlan {
     }
     /// Validate and finalize service budgets before any channel allocation.
     pub fn prepare(&mut self) -> Result<(), BuildError> {
+        crate::graph::validate_callbacks(
+            self.callbacks
+                .iter()
+                .map(|(name, schedule, _)| (name.as_str(), schedule)),
+        )
+        .map_err(|error| BuildError(format!("{error:?}")))?;
         self.prepare_forwarding()?;
         #[cfg(feature = "iceoryx2")]
         for (name, config) in self.ipc_service_limits()? {
@@ -522,7 +497,19 @@ impl NamedPlan {
         Ok(())
     }
 }
+/// Owns channel storage and the single-use task definitions. Graphs, endpoints,
+/// and retained messages borrow this owner; endpoint bindings can be rebuilt.
+///
+/// ```compile_fail,E0597
+/// use task_graph::ApplicationBuilder;
+/// let graph = {
+///     let storage = ApplicationBuilder::new().allocate().unwrap();
+///     storage.build().unwrap()
+/// };
+/// drop(graph);
+/// ```
 pub struct NamedStorage {
+    callbacks: RefCell<Option<Vec<TaskDefinition>>>,
     topology: Topology,
     channels: BTreeMap<String, Box<dyn Stored>>,
     names: Arc<task::string_interner::ChannelNameInterner>,
@@ -548,8 +535,37 @@ impl NamedStorage {
                 .collect::<Result<_, BuildError>>()?,
         })
     }
-    pub fn graph_builder<'build, 'storage>(&self) -> GraphBuilder<'build, 'storage> {
-        GraphBuilder::with_channel_names(self.names.clone())
+    pub fn build(&self) -> Result<BuiltGraph<'_>, BuildError> {
+        Ok(self.build_with_bindings()?.0)
+    }
+    pub fn build_with_bindings(&self) -> Result<(BuiltGraph<'_>, NamedBindings<'_>), BuildError> {
+        let bindings = self.bind()?;
+        let graph = self.build_with(&bindings)?;
+        Ok((graph, bindings))
+    }
+    /// Construct tasks in registration order, after configuring any replay hooks.
+    pub fn build_with<'a>(
+        &'a self,
+        bindings: &NamedBindings<'a>,
+    ) -> Result<BuiltGraph<'a>, BuildError> {
+        let tasks = self
+            .callbacks
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| BuildError("graph has already been built".into()))?;
+        let callbacks = tasks
+            .into_iter()
+            .map(|(name, schedule, bind)| {
+                let callback =
+                    bind(bindings).map_err(|e| BuildError(format!("task '{name}': {e}")))?;
+                Ok(ScheduledCallback {
+                    name,
+                    schedule,
+                    callback,
+                })
+            })
+            .collect::<Result<_, BuildError>>()?;
+        Ok(BuiltGraph::from_callbacks(callbacks, self.names.clone()))
     }
 }
 pub struct NamedBindings<'a> {

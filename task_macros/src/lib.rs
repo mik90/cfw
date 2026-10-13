@@ -142,13 +142,11 @@ fn canonical_type(ty: &Type) -> Type {
     ty
 }
 
-/// Generate typed endpoint declarations and storage-borrowing callback construction.
-/// `Task::declare(plans...)` creates keys before allocation; `task.bind(
-/// declaration, bindings...)` creates the callback afterward. Use `Declaration::from_keys`
-/// when several ports share a channel plan. The executor manages update/flush.
-/// Automatic construction through `TaskRegistration` supports per-instance port
-/// overrides. Explicit `declare` validates annotations; `from_keys` selects ports
-/// directly for manually configured layouts.
+/// Generate declaration-driven registration and a storage-borrowing callback.
+/// Register tasks through `ApplicationBuilder` or `TaskRegistration`; channel
+/// annotations supply default wiring and registrations support per-instance overrides.
+/// Typed binding details stay within the declaring crate. Tests additionally get
+/// `declare` and key accessors for checking low-level endpoint behavior.
 /// Generated registration requires direct dependencies on `task` and `task_graph`.
 #[proc_macro_attribute]
 pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -651,7 +649,8 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         };
         key_fields.push(quote!(#name: #key));
         let accessor = format_ident!("{}_key", name);
-        key_accessors.push(quote!(pub fn #accessor(&self) -> &#key { &self.#name }));
+        key_accessors
+            .push(quote!(#[cfg(test)] pub(crate) fn #accessor(&self) -> &#key { &self.#name }));
         key_params.push(quote!(#name: #key));
         plan_params.push(quote!(#name: #plan));
         binding_params.push(quote!(#name: #bindings));
@@ -668,7 +667,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         }
         if matches!(kind, PortKind::IoxEvent) {
             registration.push(quote!(#name: #name.events(#capacity)));
-            construction.push(quote!(#name: #name.take_event(&self.#name)?));
+            construction.push(quote!(#name: #name.take_event(&__cfw_declaration.#name)?));
             endpoint_fields.push(quote!(#name: ::task::iox2::Iox2EventSubscriber));
             updates.push(quote!(self.#name.update();));
             wake.push(quote!(self.#name.set_waker(wake.clone());));
@@ -676,24 +675,24 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             events.push(quote!(if let Some(event) = self.#name.take_registration() { registrations.push(event); }));
         } else if matches!(kind, PortKind::IoxNotifier) {
             registration.push(quote!(#name: #name.notifier()));
-            construction.push(quote!(#name: #name.take_notifier(&self.#name)?));
+            construction.push(quote!(#name: #name.take_notifier(&__cfw_declaration.#name)?));
             endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Notifier));
             flush.push(quote!(self.#name.flush(timestamp);));
             discard.push(quote!(self.#name.discard_pending();));
         } else if matches!(kind, PortKind::IoxInput | PortKind::IoxSpan) {
             registration.push(quote!(#name: #name.subscriber(#capacity)));
-            construction.push(quote!(#name: #name.take_subscriber(&self.#name)?));
+            construction.push(quote!(#name: #name.take_subscriber(&__cfw_declaration.#name)?));
             endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Subscriber<#payload>));
             updates.push(quote!(self.#name.update();));
         } else if matches!(kind, PortKind::IoxOutput) {
             registration.push(quote!(#name: #name.publisher(#capacity)));
-            construction.push(quote!(#name: #name.take_publisher(&self.#name)?));
+            construction.push(quote!(#name: #name.take_publisher(&__cfw_declaration.#name)?));
             endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Publisher<#payload>));
             flush.push(quote!(self.#name.flush(timestamp);));
             discard.push(quote!(self.#name.discard_pending();));
         } else if input {
             registration.push(quote!(#name: #name.subscriber_with_policy(#capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })));
-            construction.push(quote!(#name: #name.take_subscriber(&self.#name)?));
+            construction.push(quote!(#name: #name.take_subscriber(&__cfw_declaration.#name)?));
             endpoint_fields.push(quote!(#name: ::task::Subscriber<'storage, #payload>));
             updates.push(quote!(self.#name.update();));
             finish_inputs.push(quote!(self.#name.finish_iteration();));
@@ -705,7 +704,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         } else {
             registration.push(quote!(#name: #name.publisher(#capacity)));
-            construction.push(quote!(#name: #name.take_publisher(&self.#name)?));
+            construction.push(quote!(#name: #name.take_publisher(&__cfw_declaration.#name)?));
             endpoint_fields.push(quote!(#name: ::task::Publisher<'storage, #payload>));
             flush.push(quote!(self.#name.flush(timestamp);));
             discard.push(quote!(self.#name.discard_pending();));
@@ -738,35 +737,34 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         #item
         #automatic
 
-        pub struct #declaration<'storage> {
+        pub(crate) struct #declaration<'storage> {
             #(#key_fields,)*
             __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
         }
-        pub struct #callback<'storage> {
+        pub(crate) struct #callback<'storage> {
             __cfw_user: #task_name,
             #(#endpoint_fields,)*
             __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
         }
         impl #task_name {
+            #[cfg(test)]
+            #[allow(dead_code)]
             #declaration_arity
-            pub fn declare<'storage>(#(#plan_params),*) -> Result<#declaration<'storage>, ::task::DeclarationError> {
+            pub(crate) fn declare<'storage>(#(#plan_params),*) -> Result<#declaration<'storage>, ::task::DeclarationError> {
                 #(#validation)*
                 Ok(#declaration { #(#registration,)* __cfw_lifetime: ::core::marker::PhantomData })
             }
             #binding_arity
-            pub fn bind<'storage>(self, __cfw_declaration: #declaration<'storage>, #(#binding_params),*) -> Result<#callback<'storage>, ::task::EndpointError> {
-                __cfw_declaration.build(self, #(#names),*)
+            pub(crate) fn bind<'storage>(self, __cfw_declaration: #declaration<'storage>, #(#binding_params),*) -> Result<#callback<'storage>, ::task::EndpointError> {
+                Ok(#callback { __cfw_user: self, #(#construction,)* __cfw_lifetime: ::core::marker::PhantomData })
             }
         }
+        #[allow(dead_code)]
         impl<'storage> #declaration<'storage> {
             #(#key_accessors)*
             #declaration_arity
-            pub fn from_keys(#(#key_params),*) -> Self {
+            pub(crate) fn from_keys(#(#key_params),*) -> Self {
                 Self { #(#names,)* __cfw_lifetime: ::core::marker::PhantomData }
-            }
-            #binding_arity
-            fn build(self, __cfw_user: #task_name, #(#binding_params),*) -> Result<#callback<'storage>, ::task::EndpointError> {
-                Ok(#callback { __cfw_user, #(#construction,)* __cfw_lifetime: ::core::marker::PhantomData })
             }
         }
         impl<'storage> ::task::Callback for #callback<'storage> {
@@ -840,7 +838,6 @@ fn automatic_registration(
             return quote!();
         }
     }
-    let factory = format_ident!("{}AutomaticFactory", task);
     let mut channel_names = Vec::new();
     let mut keys = Vec::new();
     let mut bindings = Vec::new();
@@ -892,7 +889,7 @@ fn automatic_registration(
             match port.kind {
                 PortKind::Input | PortKind::Required => (
                     quote!(__cfw_plan.bundle_subscriber::<#message,#source>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
-                    quote!(__cfw_bindings.bundle::<#message,#source>(&self.names[#index])?),
+                    quote!(__cfw_bindings.bundle::<#message,#source>(&__cfw_names[#index])?),
                 ),
                 PortKind::IoxInput
                 | PortKind::IoxSpan
@@ -901,34 +898,34 @@ fn automatic_registration(
                 | PortKind::IoxNotifier => return quote!(),
                 _ => (
                     quote!(__cfw_plan.bundle_publisher::<#message,#source>(&__cfw_names[#index], #capacity)),
-                    quote!(__cfw_bindings.bundle::<#message,#source>(&self.names[#index])?),
+                    quote!(__cfw_bindings.bundle::<#message,#source>(&__cfw_names[#index])?),
                 ),
             }
         } else {
             match port.kind {
                 PortKind::IoxInput | PortKind::IoxSpan => (
                     quote!(__cfw_plan.ipc_subscriber::<#payload>(&__cfw_names[#index], #capacity)),
-                    quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
+                    quote!(__cfw_bindings.ipc::<#payload>(&__cfw_names[#index])?),
                 ),
                 PortKind::IoxOutput => (
                     quote!(__cfw_plan.ipc_publisher::<#payload>(&__cfw_names[#index], #capacity)),
-                    quote!(__cfw_bindings.ipc::<#payload>(&self.names[#index])?),
+                    quote!(__cfw_bindings.ipc::<#payload>(&__cfw_names[#index])?),
                 ),
                 PortKind::IoxEvent => (
                     quote!(__cfw_plan.event(&__cfw_names[#index], #capacity)),
-                    quote!(__cfw_bindings.events(&self.names[#index])?),
+                    quote!(__cfw_bindings.events(&__cfw_names[#index])?),
                 ),
                 PortKind::IoxNotifier => (
                     quote!(__cfw_plan.notifier(&__cfw_names[#index])),
-                    quote!(__cfw_bindings.events(&self.names[#index])?),
+                    quote!(__cfw_bindings.events(&__cfw_names[#index])?),
                 ),
                 PortKind::Input | PortKind::Required => (
                     quote!(__cfw_plan.subscriber::<#payload>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
-                    quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
+                    quote!(__cfw_bindings.native::<#payload>(&__cfw_names[#index])?),
                 ),
                 _ => (
                     quote!(__cfw_plan.publisher::<#payload>(&__cfw_names[#index], #capacity)),
-                    quote!(__cfw_bindings.native::<#payload>(&self.names[#index])?),
+                    quote!(__cfw_bindings.native::<#payload>(&__cfw_names[#index])?),
                 ),
             }
         };
@@ -939,16 +936,15 @@ fn automatic_registration(
                 quote!(publisher_key)
             };
             rebuilt_keys.push(
-                quote!(::task_graph::bundle::#retype::<#message,#source>(self.declaration.#name)),
+                quote!(::task_graph::bundle::#retype::<#message,#source>(__cfw_declaration.#name)),
             );
         } else {
-            rebuilt_keys.push(quote!(self.declaration.#name));
+            rebuilt_keys.push(quote!(__cfw_declaration.#name));
         }
         let forwardable = port.forwardable;
         keys.push(quote!({
             let key = #key.map_err(|error| ::task_graph::BuildError(format!("port '{}': {}", stringify!(#name), error)))?;
-            __cfw_plan.name_last_port(stringify!(#name));
-            __cfw_plan.mark_last_port_forwardable(#forwardable);
+            __cfw_plan.annotate_last_port(stringify!(#name), #forwardable);
             key
         }));
         bindings.push(binding);
@@ -967,27 +963,20 @@ fn automatic_registration(
         }
     }
     quote! {
-        struct #factory { user: #task, declaration: #declaration<'static>, names: Vec<String> }
         impl ::task_graph::Task for #task {
-            fn register(self: Box<Self>, __cfw_plan: &mut ::task_graph::NamedPlan) -> Result<Box<dyn ::task_graph::TaskFactory>, ::task_graph::BuildError> {
-                <Self as ::task_graph::Task>::register_with(self, __cfw_plan, &::task_graph::ChannelOverrides::default())
-            }
-            fn register_with(self: Box<Self>, __cfw_plan: &mut ::task_graph::NamedPlan, __cfw_overrides: &::task_graph::ChannelOverrides) -> Result<Box<dyn ::task_graph::TaskFactory>, ::task_graph::BuildError> {
+            fn register(self: Box<Self>, __cfw_plan: &mut ::task_graph::NamedPlan, __cfw_overrides: &::task_graph::ChannelOverrides) -> Result<::task_graph::TaskBinding, ::task_graph::BuildError> {
                 __cfw_overrides.validate(&[#(#schema),*])?;
                 let __cfw_names: Vec<String> = vec![#(#channel_names),*];
-                let declaration = #declaration::from_keys(#(#keys),*);
+                let __cfw_declaration = #declaration::from_keys(#(#keys),*);
                 use ::task_graph::capture::MaybeCapture as _;
                 use ::task_graph::replay::MaybeDecode as _;
                 use ::task_graph::bundle::MaybeCapture as _;
                 #(#captures)*
                 #(#mappings)*
-                Ok(Box::new(#factory { user: *self, declaration, names: __cfw_names }))
-            }
-        }
-        impl ::task_graph::TaskFactory for #factory {
-            fn build<'storage>(self: Box<Self>, __cfw_bindings: &::task_graph::NamedBindings<'storage>) -> Result<Box<dyn ::task::Callback + 'storage>, ::task_graph::BuildError> {
-                let declaration = #declaration::from_keys(#(#rebuilt_keys),*);
-                Ok(Box::new(self.user.bind(declaration, #(#bindings),*)?))
+                Ok(Box::new(move |__cfw_bindings| {
+                    let declaration = #declaration::from_keys(#(#rebuilt_keys),*);
+                    Ok(Box::new((*self).bind(declaration, #(#bindings),*)?))
+                }))
             }
         }
     }

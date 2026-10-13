@@ -39,12 +39,12 @@ impl Sink {
         output.send();
     }
 }
-fn source(plan: &mut NamedPlan, data: &str) -> task_graph::RegisteredTask {
+fn source(plan: &mut NamedPlan, data: &str) {
     let mut task = TaskRegistration::new("source", Source, CallbackSchedule::default());
     task.output_channel("output", data);
     task.register(plan).unwrap()
 }
-fn sink(plan: &mut NamedPlan, data: &str, output: &str, event: &str) -> task_graph::RegisteredTask {
+fn sink(plan: &mut NamedPlan, data: &str, output: &str, event: &str) {
     let mut task = TaskRegistration::new("sink", Sink, CallbackSchedule::default());
     task.input_channel("event", event)
         .input_channel("input", data)
@@ -61,16 +61,17 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
     let bytes = Bytes::default();
     {
         let mut plan = NamedPlan::default();
-        let source = source(&mut plan, &data);
-        let sink = sink(&mut plan, &data, &output, &event);
+        source(&mut plan, &data);
+        sink(&mut plan, &data, &output, &event);
         let capture = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(4)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let mut graph = storage.graph_builder();
-        source.add_to_graph(&mut graph, &bindings);
-        sink.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(4);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = storage
+            .build_with(&bindings)
+            .unwrap()
+            .with_recording(&recorder)
+            .unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule = task_graph::CallbackSchedule {
                 run_on_start: true,
@@ -96,17 +97,14 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
     )
     .unwrap();
     let mut plan = NamedPlan::default();
-    let sink = sink(&mut plan, &data, &output, &event);
-    let source = source(&mut plan, &data);
+    sink(&mut plan, &data, &output, &event);
+    source(&mut plan, &data);
     let replay = AutomaticExactReplayPlan::declare(&mut plan, &log).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let replay = replay.bind(&bindings).unwrap();
-    let mut graph = storage.graph_builder();
-    sink.add_to_graph(&mut graph, &bindings);
-    source.add_to_graph(&mut graph, &bindings);
     assert!(
-        ExactReplayExecutor::new(graph.build().unwrap(), log, replay)
+        ExactReplayExecutor::new(storage.build_with(&bindings).unwrap(), log, replay)
             .unwrap()
             .run()
             .unwrap()

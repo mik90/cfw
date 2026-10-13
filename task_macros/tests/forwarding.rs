@@ -61,7 +61,7 @@ fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
         if shared {
             task.input_channel("b", "a");
         }
-        let task = task.register(&mut plan).unwrap();
+        task.register(&mut plan).unwrap();
         let a = plan.native::<Tracked>("a").unwrap().publisher(1);
         let b = if shared {
             None
@@ -127,9 +127,7 @@ fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
             .unwrap()
             .take_subscriber(&task_graph::bundle::subscriber_key::<u64, Sources<'static>>(capture))
             .unwrap();
-        let mut graph = storage.graph_builder();
-        task.add_to_graph(&mut graph, &bindings);
-        let mut graph = graph.build().unwrap();
+        let mut graph = storage.build_with(&bindings).unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule = CallbackSchedule::default()
                 .with_execution_duration(std::time::Duration::from_nanos(1));
@@ -297,10 +295,10 @@ impl Relay {
 #[test]
 fn nested_named_bundle_retention_propagates_to_original_sources() {
     let mut plan = NamedPlan::default();
-    let merge = TaskRegistration::new("merge", Merge, CallbackSchedule::default())
+    TaskRegistration::new("merge", Merge, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
-    let relay = TaskRegistration::new("relay", Relay, CallbackSchedule::default())
+    TaskRegistration::new("relay", Relay, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
     let a = plan.native::<Tracked>("a").unwrap().publisher(1);
@@ -342,10 +340,7 @@ fn nested_named_bundle_retention_propagates_to_original_sources() {
         .unwrap()
         .take_publisher(&c)
         .unwrap();
-    let mut graph = storage.graph_builder();
-    merge.add_to_graph(&mut graph, &bindings);
-    relay.add_to_graph(&mut graph, &bindings);
-    let mut graph = graph.build().unwrap();
+    let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
         *schedule = CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO);
     });

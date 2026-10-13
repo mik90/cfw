@@ -74,38 +74,7 @@ enum Action<'storage> {
 }
 
 #[cfg(feature = "iceoryx2")]
-#[derive(Clone)]
-pub(crate) struct EventTarget {
-    pub(crate) channel: String,
-    inject: Arc<dyn Fn(FrameworkTime, iceoryx2::prelude::EventId, u64) + Send + Sync>,
-}
-#[cfg(feature = "iceoryx2")]
-impl EventTarget {
-    fn new(registration: &task::iox2::Iox2EventRegistration) -> Self {
-        let queue = registration.staging.clone();
-        let wake = registration.wake.clone();
-        let observer = registration.observer.clone();
-        Self {
-            channel: registration.channel.clone(),
-            inject: Arc::new(move |at, id, count| {
-                if count != 0 {
-                    let record = task::iox2::EventRecord {
-                        event_id: id,
-                        count,
-                    };
-                    if let Some(observer) = &observer {
-                        observer(at, record);
-                    }
-                    queue.push(record);
-                    wake.wake();
-                }
-            }),
-        }
-    }
-    pub(crate) fn inject(&self, at: FrameworkTime, id: iceoryx2::prelude::EventId, count: u64) {
-        (self.inject)(at, id, count);
-    }
-}
+pub(crate) use task::iox2::Iox2EventTarget as EventTarget;
 
 /// Borrowed, discrete-event simulation with deterministic batch commits.
 /// A failed step poisons the session: callback state and consumed inputs cannot
@@ -192,41 +161,16 @@ impl<'storage> SimulationState<'storage> {
             #[cfg(feature = "iceoryx2")]
             {
                 let registrations = node.callback.take_iox2_events();
-                if let Some(endpoints) = node.callback.recording_endpoints() {
-                    let ports: Vec<_> = endpoints
+                let targets =
+                    task::iox2::event_targets(&registrations, node.callback.recording_endpoints())
+                        .map_err(|error| {
+                            StepError::InvalidConfig(format!("callback '{}': {error}", node.name))
+                        })?;
+                state.event_targets.extend(
+                    targets
                         .into_iter()
-                        .filter(|port| {
-                            port.direction == task::recording::Direction::Received
-                                && port.transport == task::recording::Transport::Event
-                        })
-                        .collect();
-                    if ports.len() != registrations.len()
-                        || ports
-                            .iter()
-                            .zip(&registrations)
-                            .any(|(port, registration)| port.channel != registration.channel)
-                    {
-                        return Err(StepError::InvalidConfig(format!(
-                            "callback '{}' event registrations do not match endpoint metadata",
-                            node.name
-                        )));
-                    }
-                    for (port, registration) in ports.into_iter().zip(&registrations) {
-                        if state
-                            .event_targets
-                            .insert(
-                                (node.name.clone(), port.ordinal),
-                                EventTarget::new(registration),
-                            )
-                            .is_some()
-                        {
-                            return Err(StepError::InvalidConfig(format!(
-                                "callback '{}' has duplicate event ordinal {}",
-                                node.name, port.ordinal
-                            )));
-                        }
-                    }
-                }
+                        .map(|(ordinal, target)| ((node.name.clone(), ordinal), target)),
+                );
                 state.events.extend(registrations);
             }
             let input_requested = node.callback.has_pending_inputs();
@@ -357,30 +301,14 @@ impl<'storage> SimulationState<'storage> {
             .events
             .iter()
             .filter(|event| event.channel == channel)
-            .map(|event| {
-                (
-                    event.staging.clone(),
-                    event.wake.clone(),
-                    event.observer.clone(),
-                )
-            })
+            .map(task::iox2::Iox2EventRegistration::target)
             .collect();
         if recipients.is_empty() {
             return Err(StepError::UnknownEventChannel(channel.into()));
         }
         self.schedule_at(at, move |observed_at| {
-            if count != 0 {
-                for (queue, wake, observer) in recipients {
-                    let record = task::iox2::EventRecord {
-                        event_id: id,
-                        count,
-                    };
-                    if let Some(observer) = observer {
-                        observer(observed_at, record);
-                    }
-                    queue.push(record);
-                    wake.wake();
-                }
+            for target in recipients {
+                target.inject(observed_at, id, count);
             }
             Ok(())
         })
@@ -398,10 +326,11 @@ impl<'storage> SimulationState<'storage> {
         value: T,
     ) -> Result<(), StepError> {
         self.schedule_at(at, move |time| {
+            let publisher = publisher.lock().map_err(|e| e.to_string())?;
+            let mut header = task::message::MessageHeader::new(time);
+            header.publisher_index = publisher.publisher_index();
             publisher
-                .lock()
-                .map_err(|e| e.to_string())?
-                .publish_with_header(task::message::MessageHeader::new(time), value)
+                .publish_with_header(header, value)
                 .map_err(|e| format!("{e:?}"))
         })
     }

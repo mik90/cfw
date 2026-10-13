@@ -5,13 +5,13 @@ mod named;
 
 pub use named::{bundle, capture, exact, port_capture, replay, topology};
 
-pub use application::{ApplicationBuilder, ApplicationPlan, ApplicationStorage};
+pub use application::ApplicationBuilder;
 pub use graph::{
     BuiltGraph, CallbackSchedule, FactoryError, GraphBuildError, GraphBuilder, GraphMetadata,
     ScheduledCallback, TimingError,
 };
 pub use named::{
-    BuildError, ChannelOverrides, NamedBindings, NamedPlan, NamedStorage, PortDirection,
-    RegisteredTask, Task, TaskFactory, TaskRegistration,
+    BuildError, ChannelOverrides, NamedBindings, NamedPlan, NamedStorage, PortDirection, Task,
+    TaskBinding, TaskRegistration,
 };
 pub use topology::Topology;

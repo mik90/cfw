@@ -659,36 +659,26 @@ fn failed_step_cancels_outputs_and_closes_injection_handles() {
 }
 
 struct BadFactory(Arc<AtomicUsize>);
-struct BadBinding {
-    drops: Arc<AtomicUsize>,
-    key: task::PublisherKey<Counted>,
-}
 impl task_graph::Task for BadFactory {
     fn register(
         self: Box<Self>,
         plan: &mut task_graph::NamedPlan,
-    ) -> Result<Box<dyn task_graph::TaskFactory>, testing::TestBuildError> {
-        Ok(Box::new(BadBinding {
-            drops: self.0,
-            key: plan.publisher("failed_output", 1)?,
+        overrides: &task_graph::ChannelOverrides,
+    ) -> Result<task_graph::TaskBinding, testing::TestBuildError> {
+        overrides.validate(&[])?;
+        let key = plan.publisher("failed_output", 1)?;
+        Ok(Box::new(move |bindings| {
+            let mut publisher = bindings
+                .native::<Counted>("failed_output")?
+                .take_publisher(&key)?;
+            publisher
+                .publish(Counted {
+                    value: 1,
+                    drops: self.0,
+                })
+                .unwrap();
+            Err(task_graph::BuildError("deliberate binding failure".into()))
         }))
-    }
-}
-impl task_graph::TaskFactory for BadBinding {
-    fn build<'a>(
-        self: Box<Self>,
-        bindings: &task_graph::NamedBindings<'a>,
-    ) -> Result<Box<dyn task::Callback + 'a>, testing::TestBuildError> {
-        let mut publisher = bindings
-            .native::<Counted>("failed_output")?
-            .take_publisher(&self.key)?;
-        publisher
-            .publish(Counted {
-                value: 1,
-                drops: self.drops,
-            })
-            .unwrap();
-        Err(task_graph::BuildError("deliberate binding failure".into()))
     }
 }
 #[test]

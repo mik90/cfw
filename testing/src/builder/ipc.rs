@@ -39,15 +39,7 @@ impl<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> InputPump<'a> for IpcP
     ) -> Result<(), simulation_executor::StepError> {
         let batch = std::mem::take(&mut *self.queue.lock().unwrap());
         for (at, value) in batch {
-            let publisher = self.publisher.clone();
-            simulation.schedule_at(at, move |at| {
-                let publisher = publisher.lock().unwrap();
-                let mut header = task::message::MessageHeader::new(at);
-                header.publisher_index = publisher.publisher_index();
-                publisher
-                    .publish_with_header(header, value)
-                    .map_err(|e| format!("{e:?}"))
-            })?;
+            simulation.schedule_iox2_input(at, self.publisher.clone(), value)?;
         }
         Ok(())
     }

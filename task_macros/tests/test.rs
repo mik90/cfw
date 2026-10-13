@@ -469,7 +469,7 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     registration
         .input_channel("input", "source")
         .output_channel("output", "forwarded");
-    let forward = registration.register(&mut plan).unwrap();
+    registration.register(&mut plan).unwrap();
     let injection = plan.native::<u64>("source").unwrap().publisher(1);
     let capture = plan
         .bundle::<bool, SourcePtr<'static>>("forwarded")
@@ -507,9 +507,7 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
             SourcePtr<'static>,
         >(fanout))
         .unwrap();
-    let mut graph = storage.graph_builder();
-    forward.add_to_graph(&mut graph, &bindings);
-    let mut graph = graph.build().unwrap();
+    let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
         *schedule = task_graph::CallbackSchedule::default()
             .with_execution_duration(std::time::Duration::from_nanos(1));

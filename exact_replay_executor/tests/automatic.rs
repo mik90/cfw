@@ -50,12 +50,12 @@ impl Sum {
         )
     }
 }
-fn source(plan: &mut NamedPlan, name: &str, value: u64) -> task_graph::RegisteredTask {
+fn source(plan: &mut NamedPlan, name: &str, value: u64) {
     let mut registration = TaskRegistration::new(name, Source(value), CallbackSchedule::default());
     registration.output_channel("output", "shared");
     registration.register(plan).unwrap()
 }
-fn sum(plan: &mut NamedPlan) -> task_graph::RegisteredTask {
+fn sum(plan: &mut NamedPlan) {
     let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
     registration
         .input_channel("first", "shared")
@@ -66,9 +66,9 @@ fn recorded(logged: bool) -> ReplayLog {
     let bytes = Bytes::default();
     {
         let mut plan = NamedPlan::default();
-        let a = source(&mut plan, "a", 10);
-        let b = source(&mut plan, "b", 20);
-        let sum = sum(&mut plan);
+        source(&mut plan, "a", 10);
+        source(&mut plan, "b", 20);
+        sum(&mut plan);
         let options = if logged {
             CaptureOptions::new(8)
         } else {
@@ -77,12 +77,12 @@ fn recorded(logged: bool) -> ReplayLog {
         let capture = AutomaticCapturePlan::declare(&mut plan, &options).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let mut graph = storage.graph_builder();
-        a.add_to_graph(&mut graph, &bindings);
-        b.add_to_graph(&mut graph, &bindings);
-        sum.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(6);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = storage
+            .build_with(&bindings)
+            .unwrap()
+            .with_recording(&recorder)
+            .unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule = CallbackSchedule {
                 run_on_start: true,
@@ -114,9 +114,9 @@ fn automatic_exact_bindings_restore_distinct_windows_and_reordered_publishers() 
     for logged in [false, true] {
         let log = recorded(logged);
         let mut plan = NamedPlan::default();
-        let b = source(&mut plan, "b", 20);
-        let sum = sum(&mut plan);
-        let a = source(&mut plan, "a", 10);
+        sum(&mut plan);
+        source(&mut plan, "b", 20);
+        source(&mut plan, "a", 10);
         let cache =
             AutomaticExactReplayPlan::source_cache::<Value>(&mut plan, &log, "shared").unwrap();
         let replay = AutomaticExactReplayPlan::declare(&mut plan, &log).unwrap();
@@ -125,11 +125,7 @@ fn automatic_exact_bindings_restore_distinct_windows_and_reordered_publishers() 
         let bindings = storage.bind().unwrap();
         let mut replay = replay.bind(&bindings).unwrap();
         let cache = cache.bind(&bindings, &mut replay).unwrap();
-        let mut graph = storage.graph_builder();
-        sum.add_to_graph(&mut graph, &bindings);
-        b.add_to_graph(&mut graph, &bindings);
-        a.add_to_graph(&mut graph, &bindings);
-        let report = ExactReplayExecutor::new(graph.build().unwrap(), log, replay)
+        let report = ExactReplayExecutor::new(storage.build_with(&bindings).unwrap(), log, replay)
             .unwrap()
             .run()
             .unwrap();
@@ -146,13 +142,13 @@ fn automatic_exact_bindings_restore_distinct_windows_and_reordered_publishers() 
 fn mismatched_layout_is_rejected_before_hydration_publishers_are_declared() {
     let log = recorded(true);
     let mut plan = NamedPlan::default();
-    let _a = source(&mut plan, "a", 10);
-    let _b = source(&mut plan, "b", 20);
+    source(&mut plan, "a", 10);
+    source(&mut plan, "b", 20);
     let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
     registration
         .input_channel("first", "shared")
         .input_channel("second", "wrong");
-    let _sum = registration.register(&mut plan).unwrap();
+    registration.register(&mut plan).unwrap();
     assert!(AutomaticExactReplayPlan::declare(&mut plan, &log).is_err());
     let key = plan.native::<Value>("shared").unwrap().publisher(1);
     let storage = plan.allocate().unwrap();
@@ -173,9 +169,9 @@ fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
     use exact_replay_executor::{ExplicitReplayPort, ReplayInputPlan};
     let log = recorded(true);
     let mut plan = NamedPlan::default();
-    let a = source(&mut plan, "a", 10);
-    let b = source(&mut plan, "b", 20);
-    let sum = sum(&mut plan);
+    source(&mut plan, "a", 10);
+    source(&mut plan, "b", 20);
+    sum(&mut plan);
     assert!(plan.native_input_key::<u64>("sum", 1).is_err());
     let input_key = plan.native_input_key::<Value>("sum", 1).unwrap();
     let output_key = plan.native_output_key::<Value>("a", 0).unwrap();
@@ -222,12 +218,8 @@ fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
                 .unwrap(),
         )
         .unwrap();
-    let mut graph = storage.graph_builder();
-    a.add_to_graph(&mut graph, &bindings);
-    b.add_to_graph(&mut graph, &bindings);
-    sum.add_to_graph(&mut graph, &bindings);
     assert!(
-        ExactReplayExecutor::new(graph.build().unwrap(), log, replay)
+        ExactReplayExecutor::new(storage.build_with(&bindings).unwrap(), log, replay)
             .unwrap()
             .run()
             .unwrap()
@@ -286,7 +278,7 @@ impl PairSink {
         )
     }
 }
-fn pair_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task_graph::RegisteredTask> {
+fn pair_tasks(plan: &mut NamedPlan, reverse: bool) {
     let mut tasks = vec![
         TaskRegistration::new("producer", PairProducer, CallbackSchedule::default()),
         TaskRegistration::new("forward", PairForward, CallbackSchedule::default()),
@@ -295,10 +287,9 @@ fn pair_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task_graph::Registered
     if reverse {
         tasks.reverse();
     }
-    tasks
-        .into_iter()
-        .map(|t| t.register(plan).unwrap())
-        .collect()
+    for task in tasks {
+        task.register(plan).unwrap();
+    }
 }
 #[test]
 fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
@@ -308,7 +299,7 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
         let bytes = Bytes::default();
         {
             let mut plan = NamedPlan::default();
-            let tasks = pair_tasks(&mut plan, false);
+            pair_tasks(&mut plan, false);
             let options = if logged {
                 CaptureOptions::new(16)
             } else {
@@ -317,12 +308,12 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
             let capture = AutomaticCapturePlan::declare(&mut plan, &options).unwrap();
             let storage = plan.allocate().unwrap();
             let bindings = storage.bind().unwrap();
-            let mut graph = storage.graph_builder();
-            for t in tasks {
-                t.add_to_graph(&mut graph, &bindings);
-            }
             let recorder = ExecutionRecorder::new(12);
-            let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+            let mut graph = storage
+                .build_with(&bindings)
+                .unwrap()
+                .with_recording(&recorder)
+                .unwrap();
             graph.configure_schedules(|_, schedule| {
                 *schedule = CallbackSchedule {
                     run_on_start: true,
@@ -350,7 +341,7 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
         )
         .unwrap();
         let mut plan = NamedPlan::default();
-        let tasks = pair_tasks(&mut plan, true);
+        pair_tasks(&mut plan, true);
         let left = AutomaticExactReplayPlan::source_cache::<u64>(&mut plan, &log, "left").unwrap();
         let right =
             AutomaticExactReplayPlan::source_cache::<u32>(&mut plan, &log, "right").unwrap();
@@ -392,12 +383,8 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
                     .unwrap(),
             )
             .unwrap();
-        let mut graph = storage.graph_builder();
-        for t in tasks {
-            t.add_to_graph(&mut graph, &bindings);
-        }
         assert!(
-            ExactReplayExecutor::new(graph.build().unwrap(), log, replay)
+            ExactReplayExecutor::new(storage.build_with(&bindings).unwrap(), log, replay)
                 .unwrap()
                 .run()
                 .unwrap()
@@ -445,7 +432,7 @@ impl ForwardSink {
         Ok(())
     }
 }
-fn forwarding_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task_graph::RegisteredTask> {
+fn forwarding_tasks(plan: &mut NamedPlan, reverse: bool) {
     let mut source =
         TaskRegistration::new("source", ForwardSource(10), CallbackSchedule::default());
     source.output_channel("output", "source-values");
@@ -461,10 +448,9 @@ fn forwarding_tasks(plan: &mut NamedPlan, reverse: bool) -> Vec<task_graph::Regi
     } else {
         vec![source, forward, sink]
     };
-    tasks
-        .into_iter()
-        .map(|task| task.register(plan).unwrap())
-        .collect()
+    for task in tasks {
+        task.register(plan).unwrap();
+    }
 }
 #[test]
 fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
@@ -473,7 +459,7 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
         let bytes = Bytes::default();
         {
             let mut plan = NamedPlan::default();
-            let tasks = forwarding_tasks(&mut plan, false);
+            forwarding_tasks(&mut plan, false);
             let options = if logged {
                 CaptureOptions::new(8)
             } else {
@@ -482,12 +468,12 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
             let capture = AutomaticCapturePlan::declare(&mut plan, &options).unwrap();
             let storage = plan.allocate().unwrap();
             let bindings = storage.bind().unwrap();
-            let mut graph = storage.graph_builder();
-            for task in tasks {
-                task.add_to_graph(&mut graph, &bindings);
-            }
             let recorder = ExecutionRecorder::new(9);
-            let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+            let mut graph = storage
+                .build_with(&bindings)
+                .unwrap()
+                .with_recording(&recorder)
+                .unwrap();
             graph.configure_schedules(|_, schedule| {
                 *schedule = CallbackSchedule {
                     run_on_start: true,
@@ -515,7 +501,7 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
         )
         .unwrap();
         let mut plan = NamedPlan::default();
-        let tasks = forwarding_tasks(&mut plan, true);
+        forwarding_tasks(&mut plan, true);
         let cache = AutomaticExactReplayPlan::source_cache::<u64>(&mut plan, &log, "source-values")
             .unwrap();
         let input = plan
@@ -555,12 +541,8 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
                     .unwrap(),
             )
             .unwrap();
-        let mut graph = storage.graph_builder();
-        for task in tasks {
-            task.add_to_graph(&mut graph, &bindings);
-        }
         assert!(
-            ExactReplayExecutor::new(graph.build().unwrap(), log, replay)
+            ExactReplayExecutor::new(storage.build_with(&bindings).unwrap(), log, replay)
                 .unwrap()
                 .run()
                 .unwrap()
@@ -596,17 +578,19 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
     let bytes = Bytes::default();
     {
         let mut plan = NamedPlan::default();
-        let source = TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
+        TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
             .register(&mut plan)
             .unwrap();
         assert!(plan.replayable_channels().next().is_none());
         let capture = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let mut graph = storage.graph_builder();
-        source.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = storage
+            .build_with(&bindings)
+            .unwrap()
+            .with_recording(&recorder)
+            .unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule =
                 CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
@@ -627,17 +611,15 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
     )
     .unwrap();
     let mut plan = NamedPlan::default();
-    let source = TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
+    TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
     let replay = AutomaticExactReplayPlan::declare(&mut plan, &log).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let replay = replay.bind(&bindings).unwrap();
-    let mut graph = storage.graph_builder();
-    source.add_to_graph(&mut graph, &bindings);
     assert!(
-        ExactReplayExecutor::new(graph.build().unwrap(), log, replay)
+        ExactReplayExecutor::new(storage.build_with(&bindings).unwrap(), log, replay)
             .unwrap()
             .run()
             .unwrap()

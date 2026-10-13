@@ -69,14 +69,14 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
     let mut plan = NamedPlan::default();
     let mut a = TaskRegistration::new("a", Source(10), CallbackSchedule::default());
     a.output_channel("output", "wire");
-    let a = a.register(&mut plan).unwrap();
+    a.register(&mut plan).unwrap();
     let mut b = TaskRegistration::new("b", Source(20), CallbackSchedule::default());
     b.output_channel("output", "wire");
-    let b = b.register(&mut plan).unwrap();
+    b.register(&mut plan).unwrap();
     let mut sum = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
     sum.input_channel("input", "wire")
         .output_channel("summary", "totals");
-    let sum = sum.register(&mut plan).unwrap();
+    sum.register(&mut plan).unwrap();
     assert_eq!(
         plan.loggable_channels().collect::<Vec<_>>(),
         ["totals", "wire"]
@@ -96,11 +96,7 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let mut captures = captures.bind(&bindings).unwrap();
-    let mut builder = storage.graph_builder();
-    a.add_to_graph(&mut builder, &bindings);
-    b.add_to_graph(&mut builder, &bindings);
-    sum.add_to_graph(&mut builder, &bindings);
-    let mut graph = builder.build().unwrap();
+    let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
         *schedule = CallbackSchedule::on_start()
             .with_execution_duration(std::time::Duration::from_nanos(1));
@@ -176,7 +172,7 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
         }
     }
     let mut plan = NamedPlan::default();
-    let task = TaskRegistration::new("hidden", Task, CallbackSchedule::default())
+    TaskRegistration::new("hidden", Task, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
     let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
@@ -184,9 +180,7 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     assert!(captures.bind(&bindings).unwrap().is_empty());
-    let mut graph = storage.graph_builder();
-    task.add_to_graph(&mut graph, &bindings);
-    let mut graph = graph.build().unwrap();
+    let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
         *schedule = CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
     });
@@ -198,12 +192,11 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
 #[test]
 fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
     let mut plan = NamedPlan::default();
-    let mut tasks = Vec::new();
     for name in ["first", "second"] {
         let mut task = TaskRegistration::new(name, Sum, CallbackSchedule::default());
         task.input_channel("input", "wire")
             .output_channel("summary", format!("{name}_result"));
-        tasks.push(task.register(&mut plan).unwrap());
+        task.register(&mut plan).unwrap();
     }
     let replay = AutomaticReplayPlan::declare(
         &mut plan,
@@ -218,11 +211,7 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
     let bindings = storage.bind().unwrap();
     let mut sources = replay.bind(&bindings).unwrap();
     let mut captures = captures.bind(&bindings).unwrap();
-    let mut graph = storage.graph_builder();
-    for task in tasks {
-        task.add_to_graph(&mut graph, &bindings);
-    }
-    let mut graph = graph.build().unwrap();
+    let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
         *schedule = CallbackSchedule::on_start()
             .with_execution_duration(std::time::Duration::from_nanos(1));
@@ -279,7 +268,7 @@ fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publ
         }
     }
     let mut plan = NamedPlan::default();
-    let _task = TaskRegistration::new("consumer", Consumer, CallbackSchedule::default())
+    TaskRegistration::new("consumer", Consumer, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
     assert_eq!(plan.replayable_channels().collect::<Vec<_>>(), ["input"]);
@@ -319,7 +308,7 @@ fn log_driven_source_selection_carries_exclusions_into_replay_feed() {
     use logging::{OwnedLogEntry, SortedLogStreamReader};
     use std::collections::HashMap;
     let mut plan = NamedPlan::default();
-    let _task = TaskRegistration::new("sum", Sum, CallbackSchedule::default())
+    TaskRegistration::new("sum", Sum, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
     let header = task::message::MessageHeader {
@@ -396,7 +385,7 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
         }
     }
     let mut plan = NamedPlan::default();
-    let source = TaskRegistration::new("serde", SerdeSource, CallbackSchedule::default())
+    TaskRegistration::new("serde", SerdeSource, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
     let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
@@ -404,9 +393,7 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let mut captures = captures.bind(&bindings).unwrap();
-    let mut graph = storage.graph_builder();
-    source.add_to_graph(&mut graph, &bindings);
-    let mut graph = graph.build().unwrap();
+    let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
         *schedule = CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
     });
@@ -437,17 +424,19 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
     }
     for capacity in [1, 2] {
         let mut plan = NamedPlan::default();
-        let source = TaskRegistration::new("source", Source(5), CallbackSchedule::default())
+        TaskRegistration::new("source", Source(5), CallbackSchedule::default())
             .register(&mut plan)
             .unwrap();
         let captures =
             AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(capacity)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let mut builder = storage.graph_builder();
-        source.add_to_graph(&mut builder, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = builder.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = storage
+            .build_with(&bindings)
+            .unwrap()
+            .with_recording(&recorder)
+            .unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule =
                 CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);

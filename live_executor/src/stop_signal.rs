@@ -1,11 +1,6 @@
 use crate::pool_state::Scheduler;
 use crossbeam::channel::Receiver;
 use std::sync::Arc;
-#[cfg(feature = "iceoryx2")]
-pub(crate) struct EventTarget {
-    pub channel: String,
-    pub inject: Box<dyn Fn(task::time::FrameworkTime, usize, u64) + Send + Sync>,
-}
 
 /// May outlive the execution scope: it references scheduling metadata only.
 #[derive(Clone)]
@@ -73,7 +68,7 @@ impl StopSignal {
                 target.channel
             ));
         }
-        (target.inject)(at, id, count);
+        target.inject(at, iceoryx2::prelude::EventId::new(id), count);
         Ok(())
     }
     pub fn request_stop(&self) {

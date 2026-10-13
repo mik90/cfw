@@ -19,8 +19,7 @@ use task::{
     testing_time::TimeSource, time::FrameworkTime,
 };
 use task_graph::{
-    ApplicationBuilder, ApplicationStorage, BuildError, CallbackSchedule, NamedBindings, NamedPlan,
-    Task,
+    ApplicationBuilder, BuildError, CallbackSchedule, NamedBindings, NamedPlan, NamedStorage, Task,
 };
 
 #[cfg(feature = "iceoryx2")]
@@ -440,7 +439,7 @@ impl UnitTestExecutorBuilder {
         let fixtures = self
             .fixtures
             .into_iter()
-            .map(|f| f.declare(plan.channels_mut()))
+            .map(|f| f.declare(&mut plan))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(UnitTestStorage {
             storage: plan.allocate()?,
@@ -479,7 +478,7 @@ struct Definition {
 /// Ordinary scope cleanup suffices; retained low-level messages must not outlive
 /// the storage owner.
 pub struct UnitTestStorage {
-    storage: ApplicationStorage,
+    storage: NamedStorage,
     definition: RefCell<Option<Definition>>,
     session: SessionGuard,
 }

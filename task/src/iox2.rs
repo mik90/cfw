@@ -1043,6 +1043,68 @@ pub struct Iox2EventRegistration {
 }
 pub type EventObserver = Arc<dyn Fn(FrameworkTime, EventRecord) + Send + Sync>;
 
+/// Owned event staging state, independent of callback and arena borrows.
+#[derive(Clone)]
+pub struct Iox2EventTarget {
+    pub channel: String,
+    staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    wake: WakeHandle,
+    observer: Option<EventObserver>,
+}
+impl Iox2EventTarget {
+    pub fn inject(&self, at: FrameworkTime, event_id: EventId, count: u64) {
+        if count != 0 {
+            let record = EventRecord { event_id, count };
+            if let Some(observer) = &self.observer {
+                observer(at, record);
+            }
+            self.staging.push(record);
+            self.wake.wake();
+        }
+    }
+}
+impl Iox2EventRegistration {
+    pub fn target(&self) -> Iox2EventTarget {
+        Iox2EventTarget {
+            channel: self.channel.clone(),
+            staging: self.staging.clone(),
+            wake: self.wake.clone(),
+            observer: self.observer.clone(),
+        }
+    }
+}
+
+/// Match received event ports to registrations before executor-specific dispatch.
+pub fn event_targets(
+    events: &[Iox2EventRegistration],
+    endpoints: Option<Vec<crate::recording::EndpointDescriptor>>,
+) -> Result<std::collections::BTreeMap<usize, Iox2EventTarget>, String> {
+    use crate::recording::{Direction, Transport};
+    let mut targets = std::collections::BTreeMap::new();
+    if let Some(endpoints) = endpoints {
+        let ports: Vec<_> = endpoints
+            .into_iter()
+            .filter(|port| {
+                port.direction == Direction::Received && port.transport == Transport::Event
+            })
+            .collect();
+        if ports.len() != events.len()
+            || ports
+                .iter()
+                .zip(events)
+                .any(|(port, event)| port.channel != event.channel)
+        {
+            return Err("event registrations do not match endpoint metadata".into());
+        }
+        for (port, event) in ports.into_iter().zip(events) {
+            if targets.insert(port.ordinal, event.target()).is_some() {
+                return Err("duplicate event ordinal".into());
+            }
+        }
+    }
+    Ok(targets)
+}
+
 pub struct Iox2Notifier {
     channel: String,
     port: Notifier<ipc_threadsafe::Service>,

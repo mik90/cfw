@@ -66,7 +66,7 @@ pub fn with_recording<R>(
     if !log_integer {
         options = options.exclude(INTEGER_CHANNEL);
     }
-    let captures = AutomaticCapturePlan::declare(plan.channels_mut(), &options)?;
+    let captures = AutomaticCapturePlan::declare(&mut plan, &options)?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.build_with_bindings()?;
     let recorder = ExecutionRecorder::new(CAPACITY * 3);
@@ -112,7 +112,7 @@ pub fn with_exact_replay_log<R>(
 ) -> Result<R, BuildError> {
     let collected = StringCollector::default();
     let mut plan = application(true, true, &collected).plan()?;
-    let replay = AutomaticExactReplayPlan::declare(plan.channels_mut(), &log)?;
+    let replay = AutomaticExactReplayPlan::declare(&mut plan, &log)?;
     let storage = plan.allocate()?;
     let endpoints = storage.bind()?;
     let bindings = replay.bind(&endpoints)?;
@@ -139,11 +139,7 @@ pub fn with_replay_graph<R>(
     } else {
         INTEGER_CHANNEL
     };
-    let replay = AutomaticReplayPlan::declare(
-        plan.channels_mut(),
-        [channel],
-        &ReplayOptions::new(CAPACITY),
-    )?;
+    let replay = AutomaticReplayPlan::declare(&mut plan, [channel], &ReplayOptions::new(CAPACITY))?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.build_with_bindings()?;
     run(graph, replay.bind(&bindings)?, collected)

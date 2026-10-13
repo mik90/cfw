@@ -19,7 +19,7 @@ fn automatic_sources_drive_log_simulation_through_overridden_input_names() {
         CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
     );
     registration.input_channel("input", "wire");
-    let task = registration.register(&mut plan).unwrap();
+    registration.register(&mut plan).unwrap();
     let header = MessageHeader {
         published_at: FrameworkTime::from_nanoseconds(13),
         publisher_index: 7,
@@ -41,10 +41,12 @@ fn automatic_sources_drive_log_simulation_through_overridden_input_names() {
     let bindings = storage.bind().unwrap();
     let sources = replay.bind(&bindings).unwrap();
     let mut captures = captures.bind(&bindings).unwrap();
-    let mut graph = storage.graph_builder();
-    task.add_to_graph(&mut graph, &bindings);
-    let mut simulation =
-        simulation_executor::LogSimulation::new(graph.build().unwrap(), reader, sources).unwrap();
+    let mut simulation = simulation_executor::LogSimulation::new(
+        storage.build_with(&bindings).unwrap(),
+        reader,
+        sources,
+    )
+    .unwrap();
     simulation.run_until_idle(8).unwrap();
     assert!(simulation.input_exhausted());
     let messages = captures[0].drain_to_vec().unwrap();

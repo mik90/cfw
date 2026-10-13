@@ -262,14 +262,12 @@ fn eof_drain_finishes_inflight_work_and_bounds_feedback_cycles() {
     );
     task.input_channel("input", "loop")
         .output_channel("output", "loop");
-    let task = task.register(&mut plan).unwrap();
+    task.register(&mut plan).unwrap();
     let source = ReplaySourcePlan::declare(plan.native::<u64>("loop").unwrap(), 1);
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
-    let mut graph = storage.graph_builder();
-    task.add_to_graph(&mut graph, &bindings);
     let mut replay = LogSimulation::new(
-        graph.build().unwrap(),
+        storage.build_with(&bindings).unwrap(),
         reader(vec![entry(0, "loop", b"1")]),
         [source
             .bind(bindings.native::<u64>("loop").unwrap())

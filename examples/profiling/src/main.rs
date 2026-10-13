@@ -9,8 +9,7 @@ use live_executor::LiveExecutor;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use task::input::RequiredInput;
 use task::output::Output;
-use task::{ChannelPlan, GraphPlan};
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{ApplicationBuilder, CallbackSchedule};
 use task_macros::task_callback;
 
 const FIZZ_BUZZ_STRING_CHANNEL: &str = "fizz_buzz_string";
@@ -34,7 +33,11 @@ struct FizzBuzzCalculator;
 
 #[task_callback]
 impl FizzBuzzCalculator {
-    fn run(&mut self, integer: RequiredInput<u64>, mut fizz_buzz_string: Output<FizzBuzzString>) {
+    fn run(
+        &mut self,
+        integer: RequiredInput<u64>,
+        #[channel(FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<FizzBuzzString>,
+    ) {
         let n = *integer;
         let is_fizz = n.is_multiple_of(3);
         let is_buzz = n.is_multiple_of(5);
@@ -76,7 +79,7 @@ struct StringCollector {
 
 #[task_callback]
 impl StringCollector {
-    fn run(&self, string: RequiredInput<FizzBuzzString>) {
+    fn run(&self, #[channel(FIZZ_BUZZ_STRING_CHANNEL)] string: RequiredInput<FizzBuzzString>) {
         self.counter
             .fetch_add(string.len() as u64, Ordering::Relaxed);
     }
@@ -117,50 +120,31 @@ fn main() {
     let counter = Arc::new(AtomicU64::new(0));
     let period = Duration::from_micros(args.period_us);
 
-    let mut strings = ChannelPlan::new(FIZZ_BUZZ_STRING_CHANNEL);
-    let mut declarations = Vec::new();
-    let mut storage = Vec::new();
+    let mut app = ApplicationBuilder::new();
     for set in 0..args.sets {
         let integer_channel = format!("integer_{set}");
-        let mut integers = ChannelPlan::new(integer_channel);
-        let producer =
-            IncrementingIntegerPublisher::declare(&mut integers).expect("declare producer");
-        let calculator =
-            FizzBuzzCalculator::declare(&mut integers, &mut strings).expect("declare calculator");
-        declarations.push((producer, calculator));
-        storage.push(
-            GraphPlan::new(integers)
-                .allocate()
-                .expect("allocate integer storage"),
-        );
-    }
-    let collector = StringCollector::declare(&mut strings).expect("declare collector");
-    let string_storage = GraphPlan::new(strings)
-        .allocate()
-        .expect("allocate strings");
-    let strings = string_storage.channels().build();
-    let integers: Vec<_> = storage.iter().map(|s| s.channels().build()).collect();
-    let mut builder = GraphBuilder::new();
-    for (set, ((producer, calculator), integers)) in
-        declarations.into_iter().zip(&integers).enumerate()
-    {
-        builder.add_scheduled_callback(
+        app.add_task(
             format!("producer_{set}"),
+            IncrementingIntegerPublisher { value: 0 },
             CallbackSchedule::periodic(period),
-            move || Ok(IncrementingIntegerPublisher { value: 0 }.bind(producer, integers)?),
-        );
-        let strings = &strings;
-        builder.add_callback(format!("calculator_{set}"), move || {
-            Ok(FizzBuzzCalculator.bind(calculator, integers, strings)?)
-        });
+        )
+        .output_channel("output", &integer_channel);
+        app.add_task(
+            format!("calculator_{set}"),
+            FizzBuzzCalculator,
+            CallbackSchedule::default(),
+        )
+        .input_channel("integer", integer_channel);
     }
-    builder.add_callback("collector", || {
-        Ok(StringCollector {
+    app.add_task(
+        "collector",
+        StringCollector {
             counter: counter.clone(),
-        }
-        .bind(collector, &strings)?)
-    });
-    let graph = builder.build().expect("build profiling graph");
+        },
+        CallbackSchedule::default(),
+    );
+    let storage = app.allocate().expect("allocate profiling graph");
+    let graph = storage.build().expect("build profiling graph");
 
     if args.print {
         for node in graph.into_parts().0 {

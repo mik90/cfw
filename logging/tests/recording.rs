@@ -38,31 +38,24 @@ fn recording_modes_preserve_execution_and_select_metadata() {
         RecordingMode::Full,
     ] {
         let mut plan = task_graph::NamedPlan::default();
-        let tasks: Vec<_> = ["default", "off", "duration", "full"]
-            .into_iter()
-            .map(|name| {
-                task_graph::TaskRegistration::new(
-                    name,
-                    Source { fail: 0 },
-                    CallbackSchedule::default(),
-                )
-                .register(&mut plan)
-                .unwrap()
-            })
-            .collect();
+        for name in ["default", "off", "duration", "full"] {
+            task_graph::TaskRegistration::new(
+                name,
+                Source { fail: 0 },
+                CallbackSchedule::default(),
+            )
+            .register(&mut plan)
+            .unwrap();
+        }
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let mut graph = storage.graph_builder();
-        for task in tasks {
-            task.add_to_graph(&mut graph, &bindings);
-        }
         let recorder = ExecutionRecorder::new(4);
         let options = RecordingOptions::new(default)
             .with_callback("off", RecordingMode::Off)
             .with_callback("duration", RecordingMode::DurationOnly)
             .with_callback("full", RecordingMode::Full);
-        let mut graph = graph
-            .build()
+        let mut graph = storage
+            .build_with(&bindings)
             .unwrap()
             .with_recording_options(&recorder, options)
             .unwrap();
@@ -297,24 +290,23 @@ fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop(
     let status;
     {
         let mut plan = NamedPlan::default();
-        let mut tasks = Vec::new();
         for name in ["z", "a"] {
             let mut task =
                 TaskRegistration::new(name, Source { fail: 0 }, CallbackSchedule::default());
             task.output_channel("output", format!("{name}-output"));
-            tasks.push(task.register(&mut plan).unwrap());
+            task.register(&mut plan).unwrap();
         }
         let capture =
             logging::AutomaticCapturePlan::declare(&mut plan, &logging::CaptureOptions::new(4))
                 .unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let mut graph = storage.graph_builder();
-        for task in tasks {
-            task.add_to_graph(&mut graph, &bindings);
-        }
         let recorder = ExecutionRecorder::new(8);
-        let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let graph = storage
+            .build_with(&bindings)
+            .unwrap()
+            .with_recording(&recorder)
+            .unwrap();
         let logger = logging::LoggingScope::new(
             RecoveringWriter {
                 inner: logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),

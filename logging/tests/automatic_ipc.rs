@@ -26,7 +26,7 @@ fn automatic_ipc_replay_injects_full_headers_without_notifications() {
     registration
         .output_channel("output", &data)
         .output_channel("notify", &event);
-    let _source = registration.register(&mut plan).unwrap();
+    registration.register(&mut plan).unwrap();
     assert_eq!(
         plan.replayable_channels().collect::<Vec<_>>(),
         [data.as_str()]
@@ -108,7 +108,7 @@ fn named_ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() 
     registration
         .output_channel("output", &data)
         .output_channel("notify", &event);
-    let source = registration.register(&mut plan).unwrap();
+    registration.register(&mut plan).unwrap();
     assert_eq!(
         plan.loggable_channels().collect::<Vec<_>>(),
         [data.as_str()]
@@ -118,9 +118,7 @@ fn named_ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() 
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let mut captures = captures.bind(&bindings).unwrap();
-    let mut graph = storage.graph_builder();
-    source.add_to_graph(&mut graph, &bindings);
-    let mut graph = graph.build().unwrap();
+    let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
         *schedule = CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
     });

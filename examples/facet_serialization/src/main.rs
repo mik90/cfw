@@ -33,14 +33,14 @@
 use clap::{Parser, Subcommand};
 use facet::Facet;
 use live_executor::LiveExecutor;
-use logging::{CapturePlan, ExecutionRecorder, LogSession};
+use logging::{AutomaticCapturePlan, CaptureOptions, ExecutionRecorder, LogSession};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use task::Output;
 use task::loggable::Loggable;
-use task::{ChannelPlan, GraphPlan, Output};
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{ApplicationBuilder, CallbackSchedule};
 use task_macros::task_callback;
 
 // ───────────────────────────── CLI ────────────────────────────────────────
@@ -159,30 +159,24 @@ fn run_live(
         println!("CustomTask -> custom_data (100ms period)");
         return Ok(());
     }
-    let mut channel = ChannelPlan::new("custom_data");
-    let declaration = MyTask::declare(&mut channel)?;
-    let capture = CapturePlan::declare(&mut channel, 32);
-    let storage = GraphPlan::new(channel)
-        .allocate()
-        .map_err(|e| format!("{e:?}"))?;
-    let bindings = storage.channels().build();
-    let mut builder = GraphBuilder::with_storage(&storage);
-    builder.add_scheduled_callback(
+    let mut app = ApplicationBuilder::new();
+    app.add_task(
         "CustomTask",
+        MyTask {},
         CallbackSchedule::periodic(Duration::from_millis(100))
             .with_execution_duration(Duration::from_micros(100)),
-        || Ok(MyTask {}.bind(declaration, &bindings)?),
     );
+    let mut plan = app.plan()?;
+    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(32))?;
+    let storage = plan.allocate()?;
+    let (graph, bindings) = storage.build_with_bindings()?;
     let recorder = ExecutionRecorder::new(32);
-    let graph = builder
-        .build()
-        .map_err(|e| format!("{e:?}"))?
-        .with_recording(&recorder)?;
+    let graph = graph.with_recording(&recorder)?;
     let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(
         std::fs::File::create(log_path)?,
     ));
     let mut session =
-        LogSession::new(writer, vec![capture.bind(&bindings)?]).with_recording(recorder)?;
+        LogSession::new(writer, captures.bind(&bindings)?).with_recording(recorder)?;
     LiveExecutor::new(1, graph)?.run_with(|stop| -> Result<(), logging::BoxedLogError> {
         while !term.load(Ordering::Relaxed) && !stop.is_stopped() {
             session.flush()?;

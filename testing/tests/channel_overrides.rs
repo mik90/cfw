@@ -88,18 +88,10 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
         .input_channel("input", "chosen")
         .output_channel("output", "answer");
     let mut plan = app.plan_with(plan).unwrap();
-    assert!(plan.channels_mut().require("unused", false).is_err());
-    assert!(plan.channels_mut().require("output", true).is_err());
-    let sender = plan
-        .channels_mut()
-        .native::<u64>("chosen")
-        .unwrap()
-        .publisher(1);
-    let capture = plan
-        .channels_mut()
-        .native::<u64>("answer")
-        .unwrap()
-        .subscriber(1);
+    assert!(plan.require("unused", false).is_err());
+    assert!(plan.require("output", true).is_err());
+    let sender = plan.native::<u64>("chosen").unwrap().publisher(1);
+    let capture = plan.native::<u64>("answer").unwrap().subscriber(1);
     let storage = plan.allocate().unwrap();
     let (graph, bindings) = storage.build_with_bindings().unwrap();
     assert!(storage.build().is_err());
@@ -162,7 +154,7 @@ fn invalid_port_overrides_fail_before_defaults_or_registration() {
         }
         let mut plan = NamedPlan::default();
         let error = Box::new(Lazy)
-            .register_with(&mut plan, &overrides)
+            .register(&mut plan, &overrides)
             .err()
             .unwrap()
             .to_string();

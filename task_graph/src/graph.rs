@@ -43,25 +43,6 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
         }
     }
 
-    pub(crate) fn with_channel_names(channel_names: Arc<ChannelNameInterner>) -> Self {
-        Self {
-            factories: Vec::new(),
-            channel_names,
-        }
-    }
-
-    pub fn add_boxed_callback<F>(
-        &mut self,
-        name: impl Into<String>,
-        schedule: CallbackSchedule,
-        factory: F,
-    ) where
-        F: FnOnce() -> Result<Box<dyn Callback + 'storage>, FactoryError> + 'build,
-    {
-        self.factories
-            .push((name.into(), schedule, Box::new(factory)));
-    }
-
     /// Retain the finalized channel interner, including fixture-only channels.
     pub fn with_storage<S>(storage: &task::GraphStorage<S>) -> Self {
         Self {
@@ -98,55 +79,85 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
 
     /// Validate names before running factories. Failure drops all successfully
     /// constructed callbacks and the unexecuted factories by normal destruction.
-    pub fn build(mut self) -> Result<BuiltGraph<'storage>, GraphBuildError> {
-        let mut names = HashSet::new();
-        for (name, schedule, _) in &self.factories {
-            if schedule.period.is_some_and(|period| period.is_zero()) {
-                return Err(GraphBuildError::ZeroPeriod(name.clone()));
-            }
-            if !names.insert(name) {
-                return Err(GraphBuildError::DuplicateCallback(name.clone()));
-            }
-        }
+    pub fn build(self) -> Result<BuiltGraph<'storage>, GraphBuildError> {
+        validate_callbacks(
+            self.factories
+                .iter()
+                .map(|(name, schedule, _)| (name.as_str(), schedule)),
+        )?;
         let mut callbacks = Vec::with_capacity(self.factories.len());
-        let mut callback_names = CallbackNameInterner::new();
         for (name, schedule, factory) in self.factories {
             let callback = factory().map_err(|source| GraphBuildError::Factory {
                 callback: name.clone(),
                 source,
             })?;
-            callback_names.intern(&name);
-            callback.visit_channel_names(&mut |channel| {
-                if !channel.is_empty() && self.channel_names.lookup_by_value(channel).is_none() {
-                    Arc::make_mut(&mut self.channel_names).intern(channel);
-                }
-            });
             callbacks.push(ScheduledCallback {
                 name,
                 callback,
                 schedule,
             });
         }
-        callback_names.shrink_to_fit();
-        Ok(BuiltGraph {
-            callbacks,
-            metadata: GraphMetadata {
-                channel_names: self.channel_names,
-                callback_names: Arc::new(callback_names),
-            },
-        })
+        Ok(BuiltGraph::from_callbacks(callbacks, self.channel_names))
     }
 }
 
-/// Borrowed callback graph with an explicit insertion-order stepping operation.
-/// This is a construction/lifecycle harness, not the readiness or timing scheduler.
-/// Callbacks own typed endpoints; the executor invocation manages their IO lifecycle.
+pub(crate) fn validate_callbacks<'a>(
+    callbacks: impl IntoIterator<Item = (&'a str, &'a CallbackSchedule)>,
+) -> Result<(), GraphBuildError> {
+    let mut names = HashSet::new();
+    for (name, schedule) in callbacks {
+        if schedule.period.is_some_and(|period| period.is_zero()) {
+            return Err(GraphBuildError::ZeroPeriod(name.into()));
+        }
+        if !names.insert(name) {
+            return Err(GraphBuildError::DuplicateCallback(name.into()));
+        }
+    }
+    Ok(())
+}
+
+/// Callbacks and their metadata, ready to hand to an executor. Typed endpoints
+/// retain their storage borrows independently of temporary construction bindings.
 pub struct BuiltGraph<'storage> {
     callbacks: Vec<ScheduledCallback<'storage>>,
     metadata: GraphMetadata,
 }
 
 impl<'storage> BuiltGraph<'storage> {
+    /// Names and schedules must be validated before constructing callbacks.
+    pub(crate) fn from_callbacks(
+        callbacks: Vec<ScheduledCallback<'storage>>,
+        channel_names: Arc<ChannelNameInterner>,
+    ) -> Self {
+        let mut graph = Self {
+            callbacks: Vec::new(),
+            metadata: GraphMetadata {
+                channel_names,
+                callback_names: Arc::new(CallbackNameInterner::new()),
+            },
+        };
+        graph.extend(callbacks);
+        Arc::make_mut(&mut graph.metadata.callback_names).shrink_to_fit();
+        graph
+    }
+
+    fn extend(&mut self, callbacks: Vec<ScheduledCallback<'storage>>) {
+        for node in &callbacks {
+            Arc::make_mut(&mut self.metadata.callback_names).intern(&node.name);
+            node.callback.visit_channel_names(&mut |channel| {
+                if !channel.is_empty()
+                    && self
+                        .metadata
+                        .channel_names
+                        .lookup_by_value(channel)
+                        .is_none()
+                {
+                    Arc::make_mut(&mut self.metadata.channel_names).intern(channel);
+                }
+            });
+        }
+        self.callbacks.extend(callbacks);
+    }
     /// Attach full execution recording to this graph.
     pub fn with_recording(
         self,
@@ -202,28 +213,13 @@ impl<'storage> BuiltGraph<'storage> {
         callbacks: impl IntoIterator<Item = ScheduledCallback<'storage>>,
     ) -> Result<Self, GraphBuildError> {
         let callbacks: Vec<_> = callbacks.into_iter().collect();
-        let mut names: HashSet<_> = self
-            .callbacks
-            .iter()
-            .map(|node| node.name.clone())
-            .collect();
-        for node in &callbacks {
-            if node.schedule.period.is_some_and(|period| period.is_zero()) {
-                return Err(GraphBuildError::ZeroPeriod(node.name.clone()));
-            }
-            if !names.insert(node.name.clone()) {
-                return Err(GraphBuildError::DuplicateCallback(node.name.clone()));
-            }
-        }
-        for node in &callbacks {
-            Arc::make_mut(&mut self.metadata.callback_names).intern(&node.name);
-            node.callback.visit_channel_names(&mut |channel| {
-                if !channel.is_empty() {
-                    Arc::make_mut(&mut self.metadata.channel_names).intern(channel);
-                }
-            });
-        }
-        self.callbacks.extend(callbacks);
+        validate_callbacks(
+            self.callbacks
+                .iter()
+                .chain(&callbacks)
+                .map(|node| (node.name.as_str(), &node.schedule)),
+        )?;
+        self.extend(callbacks);
         Ok(self)
     }
     pub fn try_map_callbacks<E>(
