@@ -1,6 +1,6 @@
 //! Named construction for owned payloads and storage-borrowing Forwarded source bundles.
 //! Storage remains externally owned; only the construction metadata is erased.
-use crate::{BuiltGraph, ScheduledCallback};
+use crate::{BuiltGraph, ScheduledCallback, bundle, capture, ports, replay, topology};
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
@@ -11,13 +11,7 @@ use std::{
 use task::{
     Callback, ChannelPlan, ChannelStorage, EndpointBindings, StorageLayout, SubscriberPolicy,
 };
-pub mod bundle;
-pub mod capture;
-pub mod port_capture;
-pub mod ports;
-pub mod replay;
-pub mod topology;
-pub use topology::Topology;
+use topology::Topology;
 
 #[derive(Debug)]
 pub struct BuildError(pub String);
@@ -190,7 +184,7 @@ impl TaskRegistration {
 
 type TaskDefinition = (String, crate::CallbackSchedule, TaskBinding);
 
-trait Plan {
+pub(crate) trait Plan {
     fn forwarding_slots(&self) -> Result<usize, BuildError> {
         Err(BuildError("forwarding requires native storage".into()))
     }
@@ -213,12 +207,12 @@ trait Plan {
     #[cfg(feature = "iceoryx2")]
     fn set_ipc_config(&mut self, _: task::iox2::Iox2ChannelConfig) {}
 }
-trait Stored {
+pub(crate) trait Stored {
     fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError>;
 }
 // This private, closed family provides lifetime-preserving type erasure. Any is
 // used for payload identity, never for borrowed endpoints or lifetime extension.
-trait Binding<'a> {
+pub(crate) trait Binding<'a> {
     fn payload(&self) -> TypeId;
     fn pointer(&self) -> Option<*const ()> {
         None
@@ -267,24 +261,24 @@ impl<'a, T: 'static> Binding<'a> for EndpointBindings<'a, T> {
     }
 }
 
-struct Channel {
-    capture: Option<capture::CaptureDeclaration>,
-    replay: Option<replay::SourceDeclaration>,
-    origin: Option<String>,
-    plan: Box<dyn Plan>,
-    publishers: usize,
-    subscribers: usize,
+pub(crate) struct Channel {
+    pub(crate) capture: Option<capture::CaptureDeclaration>,
+    pub(crate) replay: Option<replay::SourceDeclaration>,
+    pub(crate) origin: Option<String>,
+    pub(crate) plan: Box<dyn Plan>,
+    pub(crate) publishers: usize,
+    pub(crate) subscribers: usize,
 }
 #[derive(Default)]
 pub struct GraphPlan {
-    forwarding_edges: Vec<bundle::ForwardingEdge>,
-    active_task: Option<String>,
-    channels: BTreeMap<String, Channel>,
-    ports: Vec<ports::PlannedPort>,
-    tasks: BTreeMap<String, Range<usize>>,
+    pub(crate) forwarding_edges: Vec<bundle::ForwardingEdge>,
+    pub(crate) active_task: Option<String>,
+    pub(crate) channels: BTreeMap<String, Channel>,
+    pub(crate) ports: Vec<ports::PlannedPort>,
+    pub(crate) tasks: BTreeMap<String, Range<usize>>,
     callbacks: Vec<TaskDefinition>,
     #[cfg(feature = "iceoryx2")]
-    events: BTreeMap<String, (task::iox2::Iox2ChannelPlan<()>, usize)>,
+    pub(crate) events: BTreeMap<String, (task::iox2::Iox2ChannelPlan<()>, usize)>,
     #[cfg(feature = "iceoryx2")]
     runtime: Option<Arc<task::iox2::Iox2Runtime>>,
     #[cfg(feature = "iceoryx2")]
@@ -570,7 +564,7 @@ impl GraphStorage {
     }
 }
 pub struct GraphBindings<'a> {
-    channels: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
+    pub(crate) channels: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
 }

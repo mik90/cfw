@@ -1,6 +1,12 @@
 //! Named, heterogeneous forwarding families and explicit retention dependencies.
-use super::*;
+use crate::plan::{Binding, Channel, Plan, Stored};
+use crate::{BuildError, GraphBindings, GraphPlan, capture, port_capture, ports, topology};
 use std::marker::PhantomData;
+use std::{
+    any::{Any, TypeId},
+    collections::BTreeMap,
+};
+use task::{ChannelPlan, ChannelStorage, EndpointBindings, StorageLayout, SubscriberPolicy};
 use task::{Forwarded, ForwardedSources, PublisherKey, SubscriberKey};
 
 type Value<'a, M, S> = Forwarded<M, <S as ForwardedSources>::Bound<'a>>;
@@ -193,7 +199,7 @@ impl GraphPlan {
         }
         Ok(())
     }
-    pub(super) fn prepare_forwarding(&mut self) -> Result<(), BuildError> {
+    pub(crate) fn prepare_forwarding(&mut self) -> Result<(), BuildError> {
         fn budget(
             name: &str,
             plan: &mut GraphPlan,

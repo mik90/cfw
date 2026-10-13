@@ -1,5 +1,5 @@
 //! Publisher-local serialized observation, independent of channel subscribers.
-use super::replay::ReplayError as BoxedLogError;
+use crate::replay::ReplayError as BoxedLogError;
 use std::sync::{Arc, Mutex};
 use task::{
     Publisher,

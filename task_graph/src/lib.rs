@@ -1,18 +1,22 @@
 //! Named task registration, graph construction, and capture/replay planning.
 mod application;
+pub mod bundle;
+pub mod capture;
 pub mod graph;
+mod plan;
+pub mod port_capture;
+pub mod ports;
+pub mod replay;
 pub mod storage;
+pub mod topology;
 pub use storage::{Storage, StoragePlan};
-mod named;
-
-pub use named::{bundle, capture, port_capture, ports, replay, topology};
 
 pub use application::ApplicationBuilder;
 pub use graph::{
     BuiltGraph, CallbackSchedule, FactoryError, GraphBuildError, GraphBuilder, GraphMetadata,
     ScheduledCallback, TimingError,
 };
-pub use named::{
+pub use plan::{
     BuildError, ChannelOverrides, GraphBindings, GraphPlan, GraphStorage, PortDirection, Task,
     TaskBinding, TaskRegistration,
 };

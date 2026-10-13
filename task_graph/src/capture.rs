@@ -1,5 +1,5 @@
 //! Lifetime-preserving serialization capabilities for planned named captures.
-use super::{BuildError, GraphBindings, GraphPlan};
+use crate::{BuildError, GraphBindings, GraphPlan};
 use std::{collections::BTreeSet, marker::PhantomData};
 use task::{Subscriber, SubscriberPolicy, loggable::Loggable, message::MessageHeader};
 
@@ -95,7 +95,7 @@ impl<T: Loggable + Send + Sync> SerializedCapture for NativeCapture<'_, T> {
     }
 }
 
-pub(super) type CaptureBinding = Box<
+pub(crate) type CaptureBinding = Box<
     dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<Box<dyn SerializedCapture + 'a>, BuildError>,
 >;
 
@@ -105,7 +105,7 @@ pub type OutputBinding = Box<
 >;
 
 #[derive(Clone, Copy)]
-pub(super) struct CaptureDeclaration {
+pub(crate) struct CaptureDeclaration {
     pub declare_output:
         fn(&mut GraphPlan, &super::ports::PlannedPort) -> Result<OutputBinding, BuildError>,
     pub declare: fn(&mut GraphPlan, &str, usize) -> Result<CaptureBinding, BuildError>,

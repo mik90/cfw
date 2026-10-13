@@ -17,7 +17,7 @@ pub struct PortTopology {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Topology {
-    pub forwarding: Vec<super::bundle::ForwardingEdge>,
+    pub forwarding: Vec<crate::bundle::ForwardingEdge>,
     pub callbacks: Vec<String>,
     pub channels: Vec<ChannelTopology>,
     pub ports: Vec<PortTopology>,

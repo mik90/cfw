@@ -1,5 +1,5 @@
 //! Replay decoding capabilities and preallocated injection endpoints.
-use super::{BuildError, GraphBindings, GraphPlan, ports::PlannedPort};
+use crate::{BuildError, GraphBindings, GraphPlan, ports::PlannedPort};
 use std::{collections::BTreeSet, marker::PhantomData};
 use task::{Publisher, loggable::Loggable, message::MessageHeader};
 
@@ -82,7 +82,7 @@ pub type SourceBinding =
     Box<dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<ReplaySource<'a>, BuildError>>;
 
 #[derive(Clone, Copy)]
-pub(super) struct SourceDeclaration {
+pub(crate) struct SourceDeclaration {
     pub declare: fn(&mut GraphPlan, &str, usize) -> Result<SourceBinding, BuildError>,
     pub inject_input: fn(&mut GraphPlan, &PlannedPort, usize) -> Result<SourceBinding, BuildError>,
 }

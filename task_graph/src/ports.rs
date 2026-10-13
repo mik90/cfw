@@ -1,5 +1,5 @@
 //! Registered port metadata and endpoint wiring.
-use super::{BuildError, GraphPlan};
+use crate::{BuildError, GraphPlan};
 use task::recording::Transport;
 
 #[derive(Clone)]
