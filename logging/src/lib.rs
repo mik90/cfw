@@ -1,6 +1,8 @@
-pub mod automatic;
 pub mod capture;
-pub use automatic::{AutomaticCapturePlan, AutomaticReplayPlan, CaptureOptions, ReplayOptions};
+pub mod capture_plan;
+pub mod replay_plan;
+pub use capture_plan::{CaptureOptions, GraphCapturePlan};
+pub use replay_plan::{GraphReplayPlan, ReplayOptions};
 #[cfg(feature = "serde")]
 pub mod incompleteness;
 pub mod port_capture;

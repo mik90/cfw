@@ -1,5 +1,5 @@
 #![cfg(feature = "log_simulation")]
-use logging::{AutomaticCapturePlan, AutomaticReplayPlan, CaptureOptions, ReplayOptions};
+use logging::{CaptureOptions, GraphCapturePlan, GraphReplayPlan, ReplayOptions};
 use task::{InputSpan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
@@ -34,9 +34,9 @@ fn automatic_sources_drive_log_simulation_through_overridden_input_names() {
         Default::default(),
     )
     .unwrap();
-    let replay = AutomaticReplayPlan::from_log(&mut plan, &reader, &ReplayOptions::new(1)).unwrap();
+    let replay = GraphReplayPlan::from_log(&mut plan, &reader, &ReplayOptions::new(1)).unwrap();
     let captures =
-        AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1).exclude("wire")).unwrap();
+        GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1).exclude("wire")).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let sources = replay.bind(&bindings).unwrap();

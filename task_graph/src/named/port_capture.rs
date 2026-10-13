@@ -1,4 +1,4 @@
-//! Publisher-local serialized capture for exact output attribution.
+//! Publisher-local serialized observation, independent of channel subscribers.
 use super::replay::ReplayError as BoxedLogError;
 use std::sync::{Arc, Mutex};
 use task::{

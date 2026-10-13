@@ -33,7 +33,7 @@
 use clap::{Parser, Subcommand};
 use facet::Facet;
 use live_executor::LiveExecutor;
-use logging::{AutomaticCapturePlan, CaptureOptions, ExecutionRecorder, LogSession};
+use logging::{CaptureOptions, ExecutionRecorder, GraphCapturePlan, LogSession};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -167,7 +167,7 @@ fn run_live(
             .with_execution_duration(Duration::from_micros(100)),
     );
     let mut plan = app.plan()?;
-    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(32))?;
+    let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(32))?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.build_with_bindings()?;
     let recorder = ExecutionRecorder::new(32);

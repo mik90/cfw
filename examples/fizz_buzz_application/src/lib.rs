@@ -1,10 +1,8 @@
 use std::path::Path;
 
-use exact_replay_executor::{
-    AutomaticExactReplayPlan, ExactReplayConfig, ExactReplayExecutor, ReplayLog,
-};
+use exact_replay_executor::{ExactReplayConfig, ExactReplayExecutor, ExactReplayPlan, ReplayLog};
 use logging::{
-    AutomaticCapturePlan, AutomaticReplayPlan, CaptureOptions, ExecutionRecorder, LogSession,
+    CaptureOptions, ExecutionRecorder, GraphCapturePlan, GraphReplayPlan, LogSession,
     ReplayOptions, ReplaySource,
 };
 use task_graph::{ApplicationBuilder, BuiltGraph};
@@ -66,7 +64,7 @@ pub fn with_recording<R>(
     if !log_integer {
         options = options.exclude(INTEGER_CHANNEL);
     }
-    let captures = AutomaticCapturePlan::declare(&mut plan, &options)?;
+    let captures = GraphCapturePlan::declare(&mut plan, &options)?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.build_with_bindings()?;
     let recorder = ExecutionRecorder::new(CAPACITY * 3);
@@ -112,7 +110,7 @@ pub fn with_exact_replay_log<R>(
 ) -> Result<R, BuildError> {
     let collected = StringCollector::default();
     let mut plan = application(true, true, &collected).plan()?;
-    let replay = AutomaticExactReplayPlan::declare(&mut plan, &log)?;
+    let replay = ExactReplayPlan::declare(&mut plan, &log)?;
     let storage = plan.allocate()?;
     let endpoints = storage.bind()?;
     let bindings = replay.bind(&endpoints)?;
@@ -139,7 +137,7 @@ pub fn with_replay_graph<R>(
     } else {
         INTEGER_CHANNEL
     };
-    let replay = AutomaticReplayPlan::declare(&mut plan, [channel], &ReplayOptions::new(CAPACITY))?;
+    let replay = GraphReplayPlan::declare(&mut plan, [channel], &ReplayOptions::new(CAPACITY))?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.build_with_bindings()?;
     run(graph, replay.bind(&bindings)?, collected)

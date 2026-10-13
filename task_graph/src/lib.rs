@@ -5,7 +5,7 @@ pub mod storage;
 pub use storage::{Storage, StoragePlan};
 mod named;
 
-pub use named::{bundle, capture, exact, port_capture, replay, topology};
+pub use named::{bundle, capture, port_capture, ports, replay, topology};
 
 pub use application::ApplicationBuilder;
 pub use graph::{

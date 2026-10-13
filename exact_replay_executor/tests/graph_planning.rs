@@ -1,5 +1,5 @@
-use exact_replay_executor::{AutomaticExactReplayPlan, ExactReplayExecutor, ReplayLog};
-use logging::{AutomaticCapturePlan, CaptureOptions, ExecutionRecorder, LogSession};
+use exact_replay_executor::{ExactReplayExecutor, ExactReplayPlan, ReplayLog};
+use logging::{CaptureOptions, ExecutionRecorder, GraphCapturePlan, LogSession};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -74,7 +74,7 @@ fn recorded(logged: bool) -> ReplayLog {
         } else {
             CaptureOptions::new(8).exclude("shared")
         };
-        let capture = AutomaticCapturePlan::declare(&mut plan, &options).unwrap();
+        let capture = GraphCapturePlan::declare(&mut plan, &options).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let recorder = ExecutionRecorder::new(6);
@@ -117,10 +117,9 @@ fn automatic_exact_bindings_restore_distinct_windows_and_reordered_publishers() 
         sum(&mut plan);
         source(&mut plan, "b", 20);
         source(&mut plan, "a", 10);
-        let cache =
-            AutomaticExactReplayPlan::source_cache::<Value>(&mut plan, &log, "shared").unwrap();
-        let replay = AutomaticExactReplayPlan::declare(&mut plan, &log).unwrap();
-        assert!(AutomaticExactReplayPlan::declare(&mut plan, &log).is_err());
+        let cache = ExactReplayPlan::source_cache::<Value>(&mut plan, &log, "shared").unwrap();
+        let replay = ExactReplayPlan::declare(&mut plan, &log).unwrap();
+        assert!(ExactReplayPlan::declare(&mut plan, &log).is_err());
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let mut replay = replay.bind(&bindings).unwrap();
@@ -149,7 +148,7 @@ fn mismatched_layout_is_rejected_before_hydration_publishers_are_declared() {
         .input_channel("first", "shared")
         .input_channel("second", "wrong");
     registration.register(&mut plan).unwrap();
-    assert!(AutomaticExactReplayPlan::declare(&mut plan, &log).is_err());
+    assert!(ExactReplayPlan::declare(&mut plan, &log).is_err());
     let key = plan.native::<Value>("shared").unwrap().publisher(1);
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
@@ -176,7 +175,7 @@ fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
     let input_key = plan.native_input_key::<Value>("sum", 1).unwrap();
     let output_key = plan.native_output_key::<Value>("a", 0).unwrap();
     assert!(
-        AutomaticExactReplayPlan::declare_with_explicit(
+        ExactReplayPlan::declare_with_explicit(
             &mut plan,
             &log,
             &std::collections::BTreeSet::from([ExplicitReplayPort::input("missing", 0)])
@@ -189,8 +188,7 @@ fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
     ]);
     let manual =
         ReplayInputPlan::declare(plan.native::<Value>("shared").unwrap(), &input_key).unwrap();
-    let automatic =
-        AutomaticExactReplayPlan::declare_with_explicit(&mut plan, &log, &explicit).unwrap();
+    let automatic = ExactReplayPlan::declare_with_explicit(&mut plan, &log, &explicit).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let mut replay = automatic.bind(&bindings).unwrap();
@@ -305,7 +303,7 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
             } else {
                 CaptureOptions::new(16).exclude("left").exclude("right")
             };
-            let capture = AutomaticCapturePlan::declare(&mut plan, &options).unwrap();
+            let capture = GraphCapturePlan::declare(&mut plan, &options).unwrap();
             let storage = plan.allocate().unwrap();
             let bindings = storage.bind().unwrap();
             let recorder = ExecutionRecorder::new(12);
@@ -342,9 +340,8 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
         .unwrap();
         let mut plan = GraphPlan::default();
         pair_tasks(&mut plan, true);
-        let left = AutomaticExactReplayPlan::source_cache::<u64>(&mut plan, &log, "left").unwrap();
-        let right =
-            AutomaticExactReplayPlan::source_cache::<u32>(&mut plan, &log, "right").unwrap();
+        let left = ExactReplayPlan::source_cache::<u64>(&mut plan, &log, "left").unwrap();
+        let right = ExactReplayPlan::source_cache::<u32>(&mut plan, &log, "right").unwrap();
         let key = plan
             .bundle_input_key::<bool, PairSources<'static>>("sink", 0)
             .unwrap();
@@ -353,7 +350,7 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
             &key,
         )
         .unwrap();
-        let automatic = AutomaticExactReplayPlan::declare_with_explicit(
+        let automatic = ExactReplayPlan::declare_with_explicit(
             &mut plan,
             &log,
             &std::collections::BTreeSet::from([ExplicitReplayPort::input("sink", 0)]),
@@ -465,7 +462,7 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
             } else {
                 CaptureOptions::new(8).exclude("source-values")
             };
-            let capture = AutomaticCapturePlan::declare(&mut plan, &options).unwrap();
+            let capture = GraphCapturePlan::declare(&mut plan, &options).unwrap();
             let storage = plan.allocate().unwrap();
             let bindings = storage.bind().unwrap();
             let recorder = ExecutionRecorder::new(9);
@@ -502,8 +499,7 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
         .unwrap();
         let mut plan = GraphPlan::default();
         forwarding_tasks(&mut plan, true);
-        let cache = AutomaticExactReplayPlan::source_cache::<u64>(&mut plan, &log, "source-values")
-            .unwrap();
+        let cache = ExactReplayPlan::source_cache::<u64>(&mut plan, &log, "source-values").unwrap();
         let input = plan
             .bundle_input_key::<bool, SourcePtr<'static, u64>>("sink", 0)
             .unwrap();
@@ -513,7 +509,7 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
             &input,
         )
         .unwrap();
-        let automatic = AutomaticExactReplayPlan::declare_with_explicit(
+        let automatic = ExactReplayPlan::declare_with_explicit(
             &mut plan,
             &log,
             &std::collections::BTreeSet::from([ExplicitReplayPort::input("sink", 0)]),
@@ -582,7 +578,7 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
             .register(&mut plan)
             .unwrap();
         assert!(plan.replayable_channels().next().is_none());
-        let capture = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
+        let capture = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let recorder = ExecutionRecorder::new(1);
@@ -614,7 +610,7 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
     TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
-    let replay = AutomaticExactReplayPlan::declare(&mut plan, &log).unwrap();
+    let replay = ExactReplayPlan::declare(&mut plan, &log).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let replay = replay.bind(&bindings).unwrap();

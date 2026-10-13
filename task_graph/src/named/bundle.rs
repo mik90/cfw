@@ -123,7 +123,7 @@ impl GraphPlan {
     ) -> Result<PublisherKey<Value<'static, M, S>>, BuildError> {
         let key = self.bundle::<M, S>(name)?.publisher(capacity);
         self.ports
-            .push(exact::PlannedPort::new::<Value<'static, M, S>>(
+            .push(ports::PlannedPort::new::<Value<'static, M, S>>(
                 name,
                 true,
                 false,
@@ -144,7 +144,7 @@ impl GraphPlan {
             .bundle::<M, S>(name)?
             .subscriber_with_policy(capacity, policy);
         self.ports
-            .push(exact::PlannedPort::new::<Value<'static, M, S>>(
+            .push(ports::PlannedPort::new::<Value<'static, M, S>>(
                 name,
                 false,
                 false,
@@ -322,8 +322,8 @@ where
 }
 fn declare_output<M: Send + Sync + 'static, S: ForwardedSources>(
     plan: &mut GraphPlan,
-    port: &exact::PlannedPort,
-) -> Result<exact::ExactBinding, BuildError>
+    port: &ports::PlannedPort,
+) -> Result<capture::OutputBinding, BuildError>
 where
     for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
@@ -333,12 +333,10 @@ where
     let channel = port.channel.clone();
     let capacity = port.capacity;
     Ok(Box::new(move |bindings| {
-        Ok(exact::ExactPort::Output(
-            bindings
-                .bundle::<M, S>(&channel)?
-                .configure_publisher(&publisher_key::<M, S>(key), |publisher| {
-                    port_capture::PortCapture::native(publisher, capacity)
-                })?,
-        ))
+        Ok(bindings
+            .bundle::<M, S>(&channel)?
+            .configure_publisher(&publisher_key::<M, S>(key), |publisher| {
+                port_capture::PortCapture::native(publisher, capacity)
+            })?)
     }))
 }

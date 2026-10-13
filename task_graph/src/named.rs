@@ -13,8 +13,8 @@ use task::{
 };
 pub mod bundle;
 pub mod capture;
-pub mod exact;
 pub mod port_capture;
+pub mod ports;
 pub mod replay;
 pub mod topology;
 pub use topology::Topology;
@@ -280,10 +280,9 @@ pub struct GraphPlan {
     forwarding_edges: Vec<bundle::ForwardingEdge>,
     active_task: Option<String>,
     channels: BTreeMap<String, Channel>,
-    ports: Vec<exact::PlannedPort>,
+    ports: Vec<ports::PlannedPort>,
     tasks: BTreeMap<String, Range<usize>>,
     callbacks: Vec<TaskDefinition>,
-    exact_planned: bool,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, (task::iox2::Iox2ChannelPlan<()>, usize)>,
     #[cfg(feature = "iceoryx2")]
@@ -396,7 +395,7 @@ impl GraphPlan {
         capacity: usize,
     ) -> Result<task::PublisherKey<T>, BuildError> {
         let key = self.native::<T>(name)?.publisher(capacity);
-        self.ports.push(exact::PlannedPort::new::<T>(
+        self.ports.push(ports::PlannedPort::new::<T>(
             name,
             true,
             false,
@@ -417,7 +416,7 @@ impl GraphPlan {
             .native::<T>(name)?
             .subscriber_with_policy(capacity, policy);
         self.channels.get_mut(name).unwrap().subscribers += 1;
-        self.ports.push(exact::PlannedPort::new::<T>(
+        self.ports.push(ports::PlannedPort::new::<T>(
             name,
             false,
             false,
@@ -758,7 +757,7 @@ mod ipc {
             capacity: usize,
         ) -> Result<Iox2PublisherKey<T>, BuildError> {
             let key = self.ipc::<T>(name)?.publisher(capacity);
-            self.ports.push(exact::PlannedPort::new::<T>(
+            self.ports.push(ports::PlannedPort::new::<T>(
                 name,
                 true,
                 true,
@@ -775,7 +774,7 @@ mod ipc {
             capacity: usize,
         ) -> Result<Iox2SubscriberKey<T>, BuildError> {
             let key = self.ipc::<T>(name)?.subscriber(capacity);
-            self.ports.push(exact::PlannedPort::new::<T>(
+            self.ports.push(ports::PlannedPort::new::<T>(
                 name,
                 false,
                 true,
@@ -805,7 +804,7 @@ mod ipc {
             let entry = self.event_plan(name)?;
             entry.1 += 1;
             let key = entry.0.events(capacity);
-            self.ports.push(exact::PlannedPort::new::<()>(
+            self.ports.push(ports::PlannedPort::new::<()>(
                 name, false, true, true, 0, capacity,
             ));
             Ok(key)
@@ -813,7 +812,7 @@ mod ipc {
         pub fn notifier(&mut self, name: &str) -> Result<Iox2NotifierKey, BuildError> {
             let key = self.event_plan(name)?.0.notifier();
             self.ports
-                .push(exact::PlannedPort::new::<()>(name, true, true, true, 0, 1));
+                .push(ports::PlannedPort::new::<()>(name, true, true, true, 0, 1));
             Ok(key)
         }
         pub fn require_event(&self, name: &str) -> Result<(), BuildError> {

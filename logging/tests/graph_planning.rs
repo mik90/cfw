@@ -1,5 +1,5 @@
-use logging::{AutomaticCapturePlan, CaptureOptions};
-use logging::{AutomaticReplayPlan, ReplayOptions};
+use logging::{CaptureOptions, GraphCapturePlan};
+use logging::{GraphReplayPlan, ReplayOptions};
 use task::{
     InputSpan, LoanError, OutputSpan, Publisher,
     loggable::{DeserializeError, Loggable, SerializeError},
@@ -81,7 +81,7 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
         plan.loggable_channels().collect::<Vec<_>>(),
         ["totals", "wire"]
     );
-    let captures = AutomaticCapturePlan::declare(
+    let captures = GraphCapturePlan::declare(
         &mut plan,
         &CaptureOptions::new(4)
             .exclude("totals")
@@ -141,9 +141,9 @@ fn capture_subscribers_do_not_satisfy_task_wiring_requirements_and_can_rebind() 
     assert!(plan.register_loggable_native::<Value>("unknown").is_err());
     plan.publisher::<Hidden>("opaque", 1).unwrap();
     assert!(plan.register_loggable_native::<Value>("opaque").is_err());
-    assert!(AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(0)).is_err());
-    let first = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
-    let second = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
+    assert!(GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(0)).is_err());
+    let first = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
+    let second = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
     assert!(plan.require("manual", false).is_err());
     assert!(plan.require("manual", true).is_ok());
     let storage = plan.allocate().unwrap();
@@ -175,7 +175,7 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
     TaskRegistration::new("hidden", Task, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
-    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
+    let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
     assert!(captures.channels().is_empty());
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
@@ -198,7 +198,7 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
             .output_channel("summary", format!("{name}_result"));
         task.register(&mut plan).unwrap();
     }
-    let replay = AutomaticReplayPlan::declare(
+    let replay = GraphReplayPlan::declare(
         &mut plan,
         ["wire", "wire", "unknown"],
         &ReplayOptions::new(1).exclude("unknown"),
@@ -206,7 +206,7 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
     .unwrap();
     assert_eq!(replay.channels(), ["wire"]);
     assert!(plan.require("wire", true).is_err());
-    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(4)).unwrap();
+    let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(4)).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let mut sources = replay.bind(&bindings).unwrap();
@@ -283,11 +283,11 @@ fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publ
         task::recording::EXECUTION_LOG_CHANNEL,
     ] {
         assert!(
-            AutomaticReplayPlan::declare(&mut plan, ["input", channel], &ReplayOptions::new(1))
+            GraphReplayPlan::declare(&mut plan, ["input", channel], &ReplayOptions::new(1))
                 .is_err()
         );
     }
-    assert!(AutomaticReplayPlan::declare(&mut plan, ["input"], &ReplayOptions::new(0)).is_err());
+    assert!(GraphReplayPlan::declare(&mut plan, ["input"], &ReplayOptions::new(0)).is_err());
     let key = plan.native::<Value>("input").unwrap().publisher(1);
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
@@ -332,7 +332,7 @@ fn log_driven_source_selection_carries_exclusions_into_replay_feed() {
         HashMap::new(),
     )
     .unwrap();
-    let replay = AutomaticReplayPlan::from_log(
+    let replay = GraphReplayPlan::from_log(
         &mut plan,
         &reader,
         &ReplayOptions::new(1).exclude("excluded"),
@@ -340,8 +340,7 @@ fn log_driven_source_selection_carries_exclusions_into_replay_feed() {
     .unwrap();
     assert_eq!(replay.channels(), ["input"]);
     let captures =
-        AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1).exclude("summary"))
-            .unwrap();
+        GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1).exclude("summary")).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let mut captures = captures.bind(&bindings).unwrap();
@@ -370,7 +369,7 @@ fn log_driven_planning_rejects_incomplete_logs_before_allocating_sources() {
     )
     .unwrap();
     assert!(
-        matches!(AutomaticReplayPlan::from_log(&mut plan, &reader, &ReplayOptions::new(1)), Err(e) if e.to_string().contains("incomplete"))
+        matches!(GraphReplayPlan::from_log(&mut plan, &reader, &ReplayOptions::new(1)), Err(e) if e.to_string().contains("incomplete"))
     );
 }
 
@@ -388,7 +387,7 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
     TaskRegistration::new("serde", SerdeSource, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
-    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
+    let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
     assert_eq!(captures.channels(), ["output"]);
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
@@ -428,7 +427,7 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
             .register(&mut plan)
             .unwrap();
         let captures =
-            AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(capacity)).unwrap();
+            GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(capacity)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let recorder = ExecutionRecorder::new(1);

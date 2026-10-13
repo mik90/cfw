@@ -99,30 +99,31 @@ pub(super) type CaptureBinding = Box<
     dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<Box<dyn SerializedCapture + 'a>, BuildError>,
 >;
 
+/// A publisher observer attachment borrowing endpoints only while it is installed.
+pub type OutputBinding = Box<
+    dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<super::port_capture::PortCapture, BuildError>,
+>;
+
 #[derive(Clone, Copy)]
 pub(super) struct CaptureDeclaration {
-    pub declare_output: fn(
-        &mut GraphPlan,
-        &super::exact::PlannedPort,
-    ) -> Result<super::exact::ExactBinding, BuildError>,
+    pub declare_output:
+        fn(&mut GraphPlan, &super::ports::PlannedPort) -> Result<OutputBinding, BuildError>,
     pub declare: fn(&mut GraphPlan, &str, usize) -> Result<CaptureBinding, BuildError>,
 }
 
 fn native_output<T: Loggable + Send + Sync + 'static>(
     plan: &mut GraphPlan,
-    port: &super::exact::PlannedPort,
-) -> Result<super::exact::ExactBinding, BuildError> {
+    port: &super::ports::PlannedPort,
+) -> Result<OutputBinding, BuildError> {
     let publisher = plan.native::<T>(&port.channel)?.publisher_key(port.index);
     let channel = port.channel.clone();
     let capacity = port.capacity;
     Ok(Box::new(move |bindings| {
-        Ok(super::exact::ExactPort::Output(
-            bindings
-                .native::<T>(&channel)?
-                .configure_publisher(&publisher, |publisher| {
-                    super::port_capture::PortCapture::native(publisher, capacity)
-                })?,
-        ))
+        Ok(bindings
+            .native::<T>(&channel)?
+            .configure_publisher(&publisher, |publisher| {
+                super::port_capture::PortCapture::native(publisher, capacity)
+            })?)
     }))
 }
 fn native<T: Loggable + Send + Sync + 'static>(
@@ -285,19 +286,17 @@ mod ipc {
     }
     fn declare_output<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>(
         plan: &mut GraphPlan,
-        port: &super::super::exact::PlannedPort,
-    ) -> Result<super::super::exact::ExactBinding, BuildError> {
+        port: &super::super::ports::PlannedPort,
+    ) -> Result<OutputBinding, BuildError> {
         let publisher = plan.ipc::<T>(&port.channel)?.publisher_key(port.index);
         let channel = port.channel.clone();
         let capacity = port.capacity;
         Ok(Box::new(move |bindings| {
-            Ok(super::super::exact::ExactPort::Output(
-                bindings
-                    .ipc::<T>(&channel)?
-                    .configure_publisher(&publisher, |publisher| {
-                        super::super::port_capture::PortCapture::ipc(publisher, capacity)
-                    })?,
-            ))
+            Ok(bindings
+                .ipc::<T>(&channel)?
+                .configure_publisher(&publisher, |publisher| {
+                    super::super::port_capture::PortCapture::ipc(publisher, capacity)
+                })?)
         }))
     }
     fn declare<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>(

@@ -1,6 +1,6 @@
 #![cfg(feature = "iceoryx2")]
-use exact_replay_executor::{AutomaticExactReplayPlan, ExactReplayExecutor, ReplayLog};
-use logging::{AutomaticCapturePlan, CaptureOptions, ExecutionRecorder, LogSession};
+use exact_replay_executor::{ExactReplayExecutor, ExactReplayPlan, ReplayLog};
+use logging::{CaptureOptions, ExecutionRecorder, GraphCapturePlan, LogSession};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -63,7 +63,7 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
         let mut plan = GraphPlan::default();
         source(&mut plan, &data);
         sink(&mut plan, &data, &output, &event);
-        let capture = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(4)).unwrap();
+        let capture = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(4)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let recorder = ExecutionRecorder::new(4);
@@ -99,7 +99,7 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
     let mut plan = GraphPlan::default();
     sink(&mut plan, &data, &output, &event);
     source(&mut plan, &data);
-    let replay = AutomaticExactReplayPlan::declare(&mut plan, &log).unwrap();
+    let replay = ExactReplayPlan::declare(&mut plan, &log).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let replay = replay.bind(&bindings).unwrap();

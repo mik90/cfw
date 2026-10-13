@@ -1,64 +1,6 @@
-//! Automatic capture planning for named graphs, before arena allocation.
-//!
-//! ```
-//! use logging::{AutomaticCapturePlan, CaptureOptions};
-//! use task_graph::GraphPlan;
-//!
-//! let mut plan = GraphPlan::default();
-//! // Register tasks and their channel overrides here.
-//! let captures = AutomaticCapturePlan::declare(
-//!     &mut plan, &CaptureOptions::new(16).exclude("diagnostics"),
-//! )?;
-//! let storage = plan.allocate()?;
-//! let bindings = storage.bind()?;
-//! let captures = captures.bind(&bindings)?;
-//! // Pass captures to LogSession; retain storage until execution and logging end.
-//! # Ok::<(), task_graph::BuildError>(())
-//! ```
-use crate::Capture;
+//! Channel-wide replay source planning.
 use std::collections::BTreeSet;
-use task_graph::{BuildError, GraphBindings, GraphPlan, capture::NamedCapturePlan};
-
-#[derive(Clone, Debug)]
-pub struct CaptureOptions {
-    pub capacity: usize,
-    pub excluded_channels: BTreeSet<String>,
-}
-impl CaptureOptions {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            excluded_channels: BTreeSet::new(),
-        }
-    }
-    /// Exclude a resolved channel name, including any task-instance override.
-    pub fn exclude(mut self, channel: impl Into<String>) -> Self {
-        self.excluded_channels.insert(channel.into());
-        self
-    }
-}
-
-pub struct AutomaticCapturePlan(NamedCapturePlan);
-impl AutomaticCapturePlan {
-    /// Register all tasks first. Each discovered data channel gets one capture.
-    pub fn declare(plan: &mut GraphPlan, options: &CaptureOptions) -> Result<Self, BuildError> {
-        Ok(Self(plan.declare_captures(
-            options.capacity,
-            &options.excluded_channels,
-        )?))
-    }
-    pub fn channels(&self) -> &[String] {
-        self.0.channels()
-    }
-    pub fn bind<'a>(self, bindings: &GraphBindings<'a>) -> Result<Vec<Capture<'a>>, BuildError> {
-        Ok(self
-            .0
-            .bind(bindings)?
-            .into_iter()
-            .map(Capture::from_serialized)
-            .collect())
-    }
-}
+use task_graph::{BuildError, GraphBindings, GraphPlan};
 
 #[derive(Clone, Debug)]
 pub struct ReplayOptions {
@@ -83,7 +25,7 @@ impl ReplayOptions {
 /// Contextual decoders (including borrowed forwarding) use explicit sources.
 ///
 /// ```
-/// use logging::{AutomaticReplayPlan, ReplayOptions};
+/// use logging::{GraphReplayPlan, ReplayOptions};
 /// use task::SubscriberPolicy;
 /// use task_graph::GraphPlan;
 /// let mut plan = GraphPlan::default();
@@ -92,7 +34,7 @@ impl ReplayOptions {
 /// # #[cfg(feature = "serde")]
 /// plan.register_replay_native::<u64>("input")?;
 /// # #[cfg(feature = "serde")]
-/// let replay = AutomaticReplayPlan::declare(&mut plan, ["input"], &ReplayOptions::new(1))?;
+/// let replay = GraphReplayPlan::declare(&mut plan, ["input"], &ReplayOptions::new(1))?;
 /// let storage = plan.allocate()?;
 /// let bindings = storage.bind()?;
 /// # #[cfg(feature = "serde")]
@@ -101,21 +43,30 @@ impl ReplayOptions {
 /// // use from_log before allocation; bind_feed also carries exclusions forward.
 /// # Ok::<(), task_graph::BuildError>(())
 /// ```
-pub struct AutomaticReplayPlan {
+pub struct GraphReplayPlan {
     plan: task_graph::replay::NamedReplayPlan,
     excluded: BTreeSet<String>,
 }
-impl AutomaticReplayPlan {
+impl GraphReplayPlan {
     pub fn declare(
         plan: &mut GraphPlan,
         channels: impl IntoIterator<Item = impl AsRef<str>>,
         options: &ReplayOptions,
     ) -> Result<Self, BuildError> {
-        let channels = channels
+        let channels: BTreeSet<_> = channels
             .into_iter()
             .map(|c| c.as_ref().to_owned())
             .filter(|c| !options.excluded_channels.contains(c))
             .collect();
+        for channel in &channels {
+            if channel == task::recording::EXECUTION_LOG_CHANNEL
+                || channel == task::recording::EXECUTION_EVENT_CHANNEL
+            {
+                return Err(BuildError(format!(
+                    "reserved replay source channel '{channel}'"
+                )));
+            }
+        }
         Ok(Self {
             plan: plan.declare_replay_sources(&channels, options.capacity)?,
             excluded: options.excluded_channels.clone(),

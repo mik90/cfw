@@ -298,7 +298,7 @@ fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop(
             task.register(&mut plan).unwrap();
         }
         let capture =
-            logging::AutomaticCapturePlan::declare(&mut plan, &logging::CaptureOptions::new(4))
+            logging::GraphCapturePlan::declare(&mut plan, &logging::CaptureOptions::new(4))
                 .unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();

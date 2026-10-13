@@ -1,8 +1,5 @@
 //! Replay decoding capabilities and preallocated injection endpoints.
-use super::{
-    BuildError, GraphBindings, GraphPlan,
-    exact::{ExactBinding, ExactPort, PlannedPort},
-};
+use super::{BuildError, GraphBindings, GraphPlan, ports::PlannedPort};
 use std::{collections::BTreeSet, marker::PhantomData};
 use task::{Publisher, loggable::Loggable, message::MessageHeader};
 
@@ -81,13 +78,13 @@ impl<'a> ReplaySource<'a> {
     }
 }
 
-pub(super) type SourceBinding =
+pub type SourceBinding =
     Box<dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<ReplaySource<'a>, BuildError>>;
 
 #[derive(Clone, Copy)]
 pub(super) struct SourceDeclaration {
     pub declare: fn(&mut GraphPlan, &str, usize) -> Result<SourceBinding, BuildError>,
-    pub declare_exact: fn(&mut GraphPlan, &PlannedPort) -> Result<ExactBinding, BuildError>,
+    pub inject_input: fn(&mut GraphPlan, &PlannedPort, usize) -> Result<SourceBinding, BuildError>,
 }
 
 fn native<T>(
@@ -107,20 +104,24 @@ where
         ))
     }))
 }
-fn native_exact<T>(plan: &mut GraphPlan, port: &PlannedPort) -> Result<ExactBinding, BuildError>
+fn native_input<T>(
+    plan: &mut GraphPlan,
+    port: &PlannedPort,
+    capacity: usize,
+) -> Result<SourceBinding, BuildError>
 where
     T: Send + Sync + 'static,
     for<'ctx> T: Loggable<Context<'ctx> = ()>,
 {
     let channel = plan.native::<T>(&port.channel)?;
     let subscriber = channel.subscriber_key(port.index);
-    let publisher = channel.publisher(1);
+    let publisher = channel.publisher(capacity);
     channel.restrict_subscriber_sources(&subscriber, std::slice::from_ref(&publisher))?;
     let channel = port.channel.clone();
     Ok(Box::new(move |bindings| {
-        Ok(ExactPort::Input(ReplaySource::native(
+        Ok(ReplaySource::native(
             bindings.native::<T>(&channel)?.take_publisher(&publisher)?,
-        )))
+        ))
     }))
 }
 
@@ -159,7 +160,7 @@ impl GraphPlan {
             .replay
             .get_or_insert(SourceDeclaration {
                 declare: native::<T>,
-                declare_exact: native_exact::<T>,
+                inject_input: native_input::<T>,
             });
         Ok(())
     }
@@ -181,13 +182,6 @@ impl GraphPlan {
             ));
         }
         for channel in channels {
-            if channel == task::recording::EXECUTION_LOG_CHANNEL
-                || channel == task::recording::EXECUTION_EVENT_CHANNEL
-            {
-                return Err(BuildError(format!(
-                    "reserved replay source channel '{channel}'"
-                )));
-            }
             if !self
                 .channels
                 .get(channel)
@@ -264,10 +258,11 @@ mod ipc {
             ))
         }))
     }
-    fn declare_exact<T>(
+    fn inject_input<T>(
         plan: &mut GraphPlan,
         port: &PlannedPort,
-    ) -> Result<ExactBinding, BuildError>
+        _capacity: usize,
+    ) -> Result<SourceBinding, BuildError>
     where
         T: Debug + ZeroCopySend + Send + Sync + 'static,
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
@@ -275,9 +270,9 @@ mod ipc {
         let subscriber = plan.ipc::<T>(&port.channel)?.subscriber_key(port.index);
         let channel = port.channel.clone();
         Ok(Box::new(move |bindings| {
-            Ok(ExactPort::Input(ReplaySource::ipc_input(
+            Ok(ReplaySource::ipc_input(
                 bindings.ipc::<T>(&channel)?.replay_input(&subscriber)?,
-            )))
+            ))
         }))
     }
     impl GraphPlan {
@@ -296,7 +291,7 @@ mod ipc {
                 .replay
                 .get_or_insert(SourceDeclaration {
                     declare: declare::<T>,
-                    declare_exact: declare_exact::<T>,
+                    inject_input: inject_input::<T>,
                 });
             Ok(())
         }

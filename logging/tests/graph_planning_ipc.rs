@@ -1,6 +1,6 @@
 #![cfg(feature = "iceoryx2")]
 use iceoryx2::prelude::ZeroCopySend;
-use logging::{AutomaticCapturePlan, CaptureOptions};
+use logging::{CaptureOptions, GraphCapturePlan};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use task::{
     LoanError,
@@ -14,7 +14,7 @@ use task_macros::task_callback;
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn automatic_ipc_replay_injects_full_headers_without_notifications() {
-    use logging::{AutomaticReplayPlan, ReplayOptions};
+    use logging::{GraphReplayPlan, ReplayOptions};
     use task::iox2::Iox2EventBindings;
     struct NoWake;
     impl task::wake::Wake for NoWake {
@@ -32,8 +32,8 @@ fn automatic_ipc_replay_injects_full_headers_without_notifications() {
         [data.as_str()]
     );
     let events = plan.ipc::<Wire>(&data).unwrap().events(4);
-    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(2)).unwrap();
-    let replay = AutomaticReplayPlan::declare(&mut plan, [&data], &ReplayOptions::new(1)).unwrap();
+    let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(2)).unwrap();
+    let replay = GraphReplayPlan::declare(&mut plan, [&data], &ReplayOptions::new(1)).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let mut listener = bindings
@@ -113,7 +113,7 @@ fn named_ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() 
         plan.loggable_channels().collect::<Vec<_>>(),
         [data.as_str()]
     );
-    let captures = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
+    let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
     assert!(plan.require(&data, false).is_err());
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
@@ -163,7 +163,7 @@ fn ipc_capture_capacity_is_checked_by_storage_planning_and_exclusions_reserve_no
         if exclude {
             options = options.exclude(&data);
         }
-        let capture = AutomaticCapturePlan::declare(&mut plan, &options).unwrap();
+        let capture = GraphCapturePlan::declare(&mut plan, &options).unwrap();
         assert_eq!(capture.channels().is_empty(), exclude);
         assert_eq!(plan.allocate().is_ok(), exclude);
     }
