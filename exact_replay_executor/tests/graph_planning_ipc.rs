@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use task::{
-    iox2::{Iox2Event, Iox2Output, Iox2SpanInput},
+    iox2::{Iox2Event, Iox2NotifyOutput, Iox2Output, Iox2SpanInput},
     time::FrameworkTime,
 };
 use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
@@ -25,9 +25,11 @@ impl Write for Bytes {
 struct Source;
 #[task_callback]
 impl Source {
-    fn run(&self, mut output: Iox2Output<u64>) {
+    fn run(&self, mut output: Iox2Output<u64>, first: Iox2NotifyOutput, second: Iox2NotifyOutput) {
         *output = 42;
         output.send();
+        first.send();
+        second.send();
     }
 }
 struct Sink;
@@ -39,9 +41,11 @@ impl Sink {
         output.send();
     }
 }
-fn source(plan: &mut GraphPlan, data: &str) {
+fn source(plan: &mut GraphPlan, data: &str, event: &str) {
     let mut task = TaskRegistration::new("source", Source, CallbackSchedule::default());
     task.output_channel("output", data);
+    task.output_channel("first", event)
+        .output_channel("second", event);
     task.register(plan).unwrap()
 }
 fn sink(plan: &mut GraphPlan, data: &str, output: &str, event: &str) {
@@ -61,12 +65,12 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
     let bytes = Bytes::default();
     {
         let mut plan = GraphPlan::default();
-        source(&mut plan, &data);
+        source(&mut plan, &data, &event);
         sink(&mut plan, &data, &output, &event);
-        let capture = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(4)).unwrap();
+        let capture = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(16)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let recorder = ExecutionRecorder::new(4);
+        let recorder = ExecutionRecorder::new(16);
         let mut graph = storage
             .build_with(&bindings)
             .unwrap()
@@ -98,7 +102,7 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
     .unwrap();
     let mut plan = GraphPlan::default();
     sink(&mut plan, &data, &output, &event);
-    source(&mut plan, &data);
+    source(&mut plan, &data, &event);
     let replay = ExactReplayPlan::declare(&mut plan, &log).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();

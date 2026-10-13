@@ -95,6 +95,9 @@ pub struct ExactReplayExecutor<'storage> {
     stop: StopSignal,
 }
 impl<'storage> ExactReplayExecutor<'storage> {
+    /// Construct replay over callbacks whose outputs are already bound locally.
+    /// `ExactReplayPlan::bind` configures graph-planned IPC outputs. For explicit
+    /// IPC bindings, use `Iox2ChannelStorage::build_with_delivery(OutputDelivery::Local)`.
     pub fn new(
         graph: BuiltGraph<'storage>,
         log: ReplayLog,
@@ -108,7 +111,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         mut bindings: ReplayBindings<'storage>,
         config: ExactReplayConfig,
     ) -> Result<Self, ReplayError> {
-        let (mut nodes, mut metadata) = graph.into_parts();
+        let (nodes, mut metadata) = graph.into_parts();
         let mut callback_names = task::string_interner::CallbackNameInterner::new();
         for callback in &log.descriptor.callbacks {
             callback_names.intern(&callback.name);
@@ -195,9 +198,12 @@ impl<'storage> ExactReplayExecutor<'storage> {
                     }
                 }
             }
-            nodes[index].callback.enable_exact_replay().map_err(|e| {
-                ReplayError::Setup(format!("callback '{}': {e:?}", descriptor.name))
-            })?;
+            if !nodes[index].callback.outputs_are_local() {
+                return Err(ReplayError::Setup(format!(
+                    "callback '{}': bind outputs with local delivery before exact replay",
+                    descriptor.name
+                )));
+            }
             mapping.push(index);
             publishers.push(publisher_indices);
         }

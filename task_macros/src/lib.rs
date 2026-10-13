@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::visit_mut::VisitMut;
 use syn::{
     FnArg, GenericArgument, ItemImpl, Pat, PathArguments, ReturnType, Type, parse_macro_input,
@@ -192,7 +192,23 @@ impl VisitMut for StorageLifetimes {
     }
 }
 
-fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
+mod generate;
+
+struct TaskDefinition {
+    item: ItemImpl,
+    name: syn::Ident,
+    ports: Vec<Port>,
+    arguments: Vec<Option<usize>>,
+    fallible: bool,
+}
+
+fn expand(item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
+    let task = parse_task(item)?;
+    validate_ports(&task.ports)?;
+    Ok(generate::task(&task))
+}
+
+fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
     if item.trait_.is_some() || !item.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &item,
@@ -211,8 +227,6 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             "expected a simple task type",
         ));
     };
-    let declaration = format_ident!("{}Declaration", task_name);
-    let callback = format_ident!("{}Callback", task_name);
     let run = item
         .items
         .iter_mut()
@@ -282,7 +296,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
                     "context is not a channel endpoint",
                 ));
             }
-            arguments.push(quote!(__cfw_context));
+            arguments.push(None);
             continue;
         }
         let kind = match segment.ident.to_string().as_str() {
@@ -438,23 +452,7 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
                 parse_quote!(1)
             }
         });
-        arguments.push(match kind {
-            PortKind::Input if forwardable => quote!(self.#name.input_forwardable()),
-            PortKind::Input => quote!(self.#name.input_readonly()),
-            PortKind::Required if forwardable => {
-                quote!(::task::RequiredInput::new_forwardable(&self.#name))
-            }
-            PortKind::Required => quote!(::task::RequiredInput::new(&self.#name)),
-            PortKind::Output => quote!(self.#name.loan(::core::default::Default::default())?),
-            PortKind::OutputSpan => quote!(self.#name.span()),
-            PortKind::Uninit => quote!(self.#name.loan_uninit()?),
-            PortKind::Publisher => quote!(&mut self.#name),
-            PortKind::IoxInput => quote!(::task::iox2::Iox2OptionalInput::new(&self.#name)),
-            PortKind::IoxSpan => quote!(::task::iox2::Iox2SpanInput::new(&self.#name)),
-            PortKind::IoxEvent => quote!(::task::iox2::Iox2Event::new(&self.#name)),
-            PortKind::IoxOutput => quote!(::task::iox2::Iox2Output::new_default(&mut self.#name)?),
-            PortKind::IoxNotifier => quote!(::task::iox2::Iox2NotifyOutput::new(&mut self.#name)),
-        });
+        arguments.push(Some(ports.len()));
         ports.push(Port {
             forwardable,
             forwards,
@@ -489,7 +487,17 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
-    for port in &ports {
+    Ok(TaskDefinition {
+        item,
+        name: task_name,
+        ports,
+        arguments,
+        fallible,
+    })
+}
+
+fn validate_ports(ports: &[Port]) -> syn::Result<()> {
+    for port in ports {
         if !port.forwards.is_empty()
             && !matches!(
                 port.kind,
@@ -518,282 +526,10 @@ fn expand(mut item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
             }
         }
     }
-    let automatic = automatic_registration(&task_name, &declaration, &ports);
-    let mut key_fields = Vec::new();
-    let mut key_params = Vec::new();
-    let mut plan_params = Vec::new();
-    let mut validation = Vec::new();
-    let mut registration = Vec::new();
-    let mut binding_params = Vec::new();
-    let mut construction = Vec::new();
-    let mut endpoint_fields = Vec::new();
-    let mut updates = Vec::new();
-    let mut finish_inputs = Vec::new();
-    let mut wake = Vec::new();
-    let mut pending = Vec::new();
-    let mut channel_names = Vec::new();
-    let mut ready = Vec::new();
-    let mut available = Vec::new();
-    let mut flush = Vec::new();
-    let mut discard = Vec::new();
-    let mut names = Vec::new();
-    let mut events = Vec::new();
-    let mut descriptors = Vec::new();
-    let mut recorded_inputs = Vec::new();
-    let mut recorded_outputs = Vec::new();
-    let mut recorded_events = Vec::new();
-    let mut recorded_output_events = Vec::new();
-    let mut input_ordinal = 0_usize;
-    let mut output_ordinal = 0_usize;
-    let mut replay_resets = Vec::new();
-    let mut replay_isolation = Vec::new();
-    let mut replay_events = Vec::new();
-    let mut key_accessors = Vec::new();
-    for port in ports {
-        let Port {
-            name,
-            payload,
-            kind,
-            channel,
-            capacity,
-            trigger,
-            keep,
-            ..
-        } = port;
-        let input = matches!(kind, PortKind::Input | PortKind::Required);
-        let receiving = input
-            || matches!(
-                kind,
-                PortKind::IoxInput | PortKind::IoxSpan | PortKind::IoxEvent
-            );
-        let ordinal = if receiving {
-            let n = input_ordinal;
-            input_ordinal += 1;
-            n
-        } else {
-            let n = output_ordinal;
-            output_ordinal += 1;
-            n
-        };
-        if receiving {
-            replay_resets.push(quote!(self.#name.clear();));
-        } else if matches!(kind, PortKind::IoxOutput | PortKind::IoxNotifier) {
-            replay_isolation.push(quote!(self.#name.suppress_transport();));
-        }
-
-        if matches!(kind, PortKind::IoxEvent) {
-            replay_events.push(quote!(#ordinal => self.#name.stage_replay(event_id, count),));
-        }
-        let direction = if receiving {
-            quote!(Received)
-        } else {
-            quote!(Published)
-        };
-        let transport = match kind {
-            PortKind::IoxEvent | PortKind::IoxNotifier => quote!(Event),
-            PortKind::IoxInput | PortKind::IoxSpan | PortKind::IoxOutput => quote!(Ipc),
-            _ => quote!(Native),
-        };
-        let publisher_index = if !receiving && !matches!(kind, PortKind::IoxNotifier) {
-            quote!(Some(self.#name.publisher_index()))
-        } else {
-            quote!(None)
-        };
-        descriptors.push(quote!(::task::recording::EndpointDescriptor {
-            ordinal: #ordinal, channel: self.#name.channel_name().into(),
-            direction: ::task::recording::Direction::#direction,
-            transport: ::task::recording::Transport::#transport,
-            payload_type: ::core::any::type_name::<#payload>().into(),
-            publisher_index: #publisher_index,
-        }));
-        match kind {
-            PortKind::IoxEvent => recorded_events.push(quote!(self.#name.visit_records(|event| visit(::task::recording::LoggedEvent { ordinal: #ordinal, event_id: event.event_id.as_value(), count: event.count }));)),
-            PortKind::IoxNotifier => recorded_output_events.push(quote!(if let Some(event) = self.#name.pending_event() { visit(::task::recording::LoggedEvent { ordinal: #ordinal, event_id: event.event_id.as_value(), count: event.count }); })),
-            _ if receiving => recorded_inputs.push(quote!(self.#name.visit_headers(|header| visit(::task::recording::LoggedMessage { ordinal: #ordinal, header }));)),
-            _ => {
-                recorded_outputs.push(quote!(self.#name.visit_pending_headers(|header| visit(::task::recording::LoggedMessage { ordinal: #ordinal, header }));));
-                if matches!(kind, PortKind::IoxOutput) { recorded_output_events.push(quote!(self.#name.visit_pending_headers(|_| visit(::task::recording::LoggedEvent { ordinal: #ordinal, event_id: 0, count: 1 }));)); }
-            }
-        }
-        channel_names.push(quote!(visit(self.#name.channel_name());));
-        let (key, plan, bindings) = match kind {
-            PortKind::IoxInput | PortKind::IoxSpan => (
-                quote!(::task::iox2::Iox2SubscriberKey<#payload>),
-                quote!(&mut ::task::iox2::Iox2ChannelPlan<#payload>),
-                quote!(&::task::iox2::Iox2Bindings<#payload>),
-            ),
-            PortKind::IoxOutput => (
-                quote!(::task::iox2::Iox2PublisherKey<#payload>),
-                quote!(&mut ::task::iox2::Iox2ChannelPlan<#payload>),
-                quote!(&::task::iox2::Iox2Bindings<#payload>),
-            ),
-            PortKind::IoxEvent => (
-                quote!(::task::iox2::Iox2EventKey),
-                quote!(&mut dyn ::task::iox2::Iox2EventPlan),
-                quote!(&dyn ::task::iox2::Iox2EventBindings),
-            ),
-            PortKind::IoxNotifier => (
-                quote!(::task::iox2::Iox2NotifierKey),
-                quote!(&mut dyn ::task::iox2::Iox2EventPlan),
-                quote!(&dyn ::task::iox2::Iox2EventBindings),
-            ),
-            _ => (
-                if input {
-                    quote!(::task::SubscriberKey<#payload>)
-                } else {
-                    quote!(::task::PublisherKey<#payload>)
-                },
-                quote!(&mut ::task::ChannelPlan<#payload>),
-                quote!(&::task::EndpointBindings<'storage, #payload>),
-            ),
-        };
-        key_fields.push(quote!(#name: #key));
-        let accessor = format_ident!("{}_key", name);
-        key_accessors
-            .push(quote!(#[cfg(test)] pub(crate) fn #accessor(&self) -> &#key { &self.#name }));
-        key_params.push(quote!(#name: #key));
-        plan_params.push(quote!(#name: #plan));
-        binding_params.push(quote!(#name: #bindings));
-        if let Some(channel) = channel {
-            validation.push(quote! {
-                {
-                    let expected_value = #channel;
-                    let expected: &str = ::core::convert::AsRef::<str>::as_ref(&expected_value);
-                    if #name.name() != expected {
-                        return Err(::task::DeclarationError { field: stringify!(#name), expected: expected.into(), actual: #name.name().into() });
-                    }
-                }
-            });
-        }
-        if matches!(kind, PortKind::IoxEvent) {
-            registration.push(quote!(#name: #name.events(#capacity)));
-            construction.push(quote!(#name: #name.take_event(&__cfw_declaration.#name)?));
-            endpoint_fields.push(quote!(#name: ::task::iox2::Iox2EventSubscriber));
-            updates.push(quote!(self.#name.update();));
-            wake.push(quote!(self.#name.set_waker(wake.clone());));
-            pending.push(quote!(self.#name.has_pending()));
-            events.push(quote!(if let Some(event) = self.#name.take_registration() { registrations.push(event); }));
-        } else if matches!(kind, PortKind::IoxNotifier) {
-            registration.push(quote!(#name: #name.notifier()));
-            construction.push(quote!(#name: #name.take_notifier(&__cfw_declaration.#name)?));
-            endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Notifier));
-            flush.push(quote!(self.#name.flush(timestamp);));
-            discard.push(quote!(self.#name.discard_pending();));
-        } else if matches!(kind, PortKind::IoxInput | PortKind::IoxSpan) {
-            registration.push(quote!(#name: #name.subscriber(#capacity)));
-            construction.push(quote!(#name: #name.take_subscriber(&__cfw_declaration.#name)?));
-            endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Subscriber<#payload>));
-            updates.push(quote!(self.#name.update();));
-        } else if matches!(kind, PortKind::IoxOutput) {
-            registration.push(quote!(#name: #name.publisher(#capacity)));
-            construction.push(quote!(#name: #name.take_publisher(&__cfw_declaration.#name)?));
-            endpoint_fields.push(quote!(#name: ::task::iox2::Iox2Publisher<#payload>));
-            flush.push(quote!(self.#name.flush(timestamp);));
-            discard.push(quote!(self.#name.discard_pending();));
-        } else if input {
-            registration.push(quote!(#name: #name.subscriber_with_policy(#capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })));
-            construction.push(quote!(#name: #name.take_subscriber(&__cfw_declaration.#name)?));
-            endpoint_fields.push(quote!(#name: ::task::Subscriber<'storage, #payload>));
-            updates.push(quote!(self.#name.update();));
-            finish_inputs.push(quote!(self.#name.finish_iteration();));
-            wake.push(quote!(self.#name.set_waker(wake.clone());));
-            pending.push(quote!(self.#name.requests_execution()));
-            if matches!(kind, PortKind::Required) {
-                available.push(quote!(self.#name.has_pending()));
-                ready.push(quote!(!self.#name.is_empty()));
-            }
-        } else {
-            registration.push(quote!(#name: #name.publisher(#capacity)));
-            construction.push(quote!(#name: #name.take_publisher(&__cfw_declaration.#name)?));
-            endpoint_fields.push(quote!(#name: ::task::Publisher<'storage, #payload>));
-            flush.push(quote!(self.#name.flush(timestamp);));
-            discard.push(quote!(self.#name.discard_pending();));
-        }
-        names.push(name);
-    }
-    let result = if fallible {
-        quote!(self.__cfw_user.run(#(#arguments),*))
-    } else {
-        quote! { self.__cfw_user.run(#(#arguments),*); Ok(()) }
-    };
-    let event_method = if events.is_empty() {
-        quote!()
-    } else {
-        quote! {
-            fn take_iox2_events(&mut self) -> Vec<::task::iox2::Iox2EventRegistration> {
-                let mut registrations = Vec::new(); #(#events)* registrations
-            }
-        }
-    };
-    let binding_arity = (binding_params.len() + 2 > 7).then(|| quote! {
-        #[expect(clippy::too_many_arguments, reason = "one typed binding per declared endpoint")]
-    });
-    let declaration_arity = (plan_params.len() > 7).then(|| {
-        quote! {
-            #[expect(clippy::too_many_arguments, reason = "one typed plan per declared endpoint")]
-        }
-    });
-    Ok(quote! {
-        #item
-        #automatic
-
-        pub(crate) struct #declaration<'storage> {
-            #(#key_fields,)*
-            __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
-        }
-        pub(crate) struct #callback<'storage> {
-            __cfw_user: #task_name,
-            #(#endpoint_fields,)*
-            __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
-        }
-        impl #task_name {
-            #[cfg(test)]
-            #[allow(dead_code)]
-            #declaration_arity
-            pub(crate) fn declare<'storage>(#(#plan_params),*) -> Result<#declaration<'storage>, ::task::DeclarationError> {
-                #(#validation)*
-                Ok(#declaration { #(#registration,)* __cfw_lifetime: ::core::marker::PhantomData })
-            }
-            #binding_arity
-            pub(crate) fn bind<'storage>(self, __cfw_declaration: #declaration<'storage>, #(#binding_params),*) -> Result<#callback<'storage>, ::task::EndpointError> {
-                Ok(#callback { __cfw_user: self, #(#construction,)* __cfw_lifetime: ::core::marker::PhantomData })
-            }
-        }
-        #[allow(dead_code)]
-        impl<'storage> #declaration<'storage> {
-            #(#key_accessors)*
-            #declaration_arity
-            pub(crate) fn from_keys(#(#key_params),*) -> Self {
-                Self { #(#names,)* __cfw_lifetime: ::core::marker::PhantomData }
-            }
-        }
-        impl<'storage> ::task::Callback for #callback<'storage> {
-            fn enable_exact_replay(&mut self) -> Result<(), ::task::LoanError> { #(#replay_isolation)* Ok(()) }
-            fn clear_replay_inputs(&mut self) -> Result<(), ::task::LoanError> { #(#replay_resets)* Ok(()) }
-            fn stage_replay_event(&mut self, ordinal: usize, event_id: usize, count: u64) -> Result<(), ::task::LoanError> {
-                match ordinal { #(#replay_events)* _ => Err(::task::LoanError::Transport("unknown replay event port".into())) }
-            }
-            fn recording_endpoints(&self) -> Option<Vec<::task::recording::EndpointDescriptor>> { Some(vec![#(#descriptors),*]) }
-            fn visit_prepared_messages(&self, visit: &mut dyn FnMut(::task::recording::LoggedMessage)) { #(#recorded_inputs)* }
-            fn visit_pending_messages(&self, visit: &mut dyn FnMut(::task::recording::LoggedMessage)) { #(#recorded_outputs)* }
-            fn visit_prepared_events(&self, visit: &mut dyn FnMut(::task::recording::LoggedEvent)) { #(#recorded_events)* }
-            fn visit_pending_events(&self, visit: &mut dyn FnMut(::task::recording::LoggedEvent)) { #(#recorded_output_events)* }
-            #event_method
-            fn set_waker(&mut self, wake: ::task::wake::WakeHandle) { #(#wake)* }
-            fn has_pending_inputs(&self) -> bool { false #(|| #pending)* }
-            fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) { #(#channel_names)* }
-            fn update_inputs(&mut self) { #(#updates)* }
-            fn finish_inputs(&mut self) { #(#finish_inputs)* }
-            fn required_inputs_ready(&self) -> bool { true #(&& #ready)* }
-            fn required_inputs_available(&self) -> bool { true #(&& #available)* }
-            fn run(&mut self, __cfw_context: &::task::Context) -> Result<(), ::task::LoanError> { #result }
-            fn flush_outputs(&mut self, timestamp: ::task::time::FrameworkTime) { #(#flush)* }
-            fn discard_outputs(&mut self) { #(#discard)* }
-        }
-    })
+    Ok(())
 }
 
-fn automatic_registration(
+fn generate_registration(
     task: &syn::Ident,
     declaration: &syn::Ident,
     ports: &[Port],

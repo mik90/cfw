@@ -141,17 +141,26 @@ fn data_notification_policy_preserves_deferred_commit_and_silent_explicit_signal
                 max_notifiers: if policy == Iox2Notification::Silent {
                     1
                 } else {
-                    2
+                    3
                 },
                 ..Default::default()
             });
         let pub_key = plan.publisher(2);
         plan.set_publisher_notification(&pub_key, policy).unwrap();
+        let local_key = plan.publisher_with_notification(2, policy);
         let sub_key = plan.subscriber(2);
         let events_key = plan.events(8);
         let signal_key = plan.notifier_with_id(3);
         let storage = plan.allocate().unwrap();
         let bindings = storage.build().unwrap();
+        bindings
+            .set_output_delivery(1, false, task::iox2::OutputDelivery::Local)
+            .unwrap();
+        let mut local = bindings.take_publisher(&local_key).unwrap();
+        assert_eq!(
+            bindings.set_output_delivery(1, false, task::iox2::OutputDelivery::Transport),
+            Err(task::EndpointError::AlreadyTaken)
+        );
         let mut publisher = bindings.take_publisher(&pub_key).unwrap();
         let subscriber = bindings.take_subscriber(&sub_key).unwrap();
         let mut signal = bindings.take_notifier(&signal_key).unwrap();
@@ -198,9 +207,8 @@ fn data_notification_policy_preserves_deferred_commit_and_silent_explicit_signal
         Iox2NotifyOutput::new(&mut signal).send();
         signal.flush(FrameworkTime::from_nanoseconds(2));
         assert_eq!(poll(), [3]);
-        publisher.suppress_transport();
-        publisher.loan(99).unwrap().send();
-        publisher.flush(FrameworkTime::from_nanoseconds(3));
+        local.loan(99).unwrap().send();
+        local.flush(FrameworkTime::from_nanoseconds(3));
         subscriber.update();
         assert_eq!(Iox2OptionalInput::new(&subscriber).value(), Some(&42));
         assert!(poll().is_empty());

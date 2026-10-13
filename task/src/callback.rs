@@ -1,15 +1,17 @@
 use crate::time::FrameworkTime;
-use crate::{Context, LoanError, Publisher, Subscriber};
+use crate::{Context, LoanError};
+mod node;
+mod ports;
+pub use node::CallbackNode;
+pub use ports::*;
 
 /// Callback body and IO lifecycle, shared by live and deterministic executors.
 /// Executors invoke `execute_callback` or `execute_callback_batch` rather than
 /// calling `run` directly.
 pub trait Callback: Send {
-    /// Isolate framework-managed outputs from live channel delivery.
-    fn enable_exact_replay(&mut self) -> Result<(), LoanError> {
-        Err(LoanError::Transport(
-            "callback does not support exact replay".into(),
-        ))
+    /// Whether all outputs are known to avoid external transport delivery.
+    fn outputs_are_local(&self) -> bool {
+        false
     }
     /// Clear prepared and incoming snapshots before exact-replay hydration.
     fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
@@ -125,146 +127,5 @@ impl<'a> PreparedCallback<'a> {
 impl CompletedCallback<'_> {
     pub fn commit(self) {
         self.invocation.callback.flush_outputs(self.timestamp);
-    }
-}
-
-pub trait InputPorts {
-    fn update(&self);
-    fn finish(&self);
-    fn set_waker(&mut self, wake: crate::wake::WakeHandle);
-    fn has_pending(&self) -> bool;
-    fn visit_channel_names(&self, visit: &mut dyn FnMut(&str));
-}
-pub trait OutputPorts {
-    fn flush(&mut self, timestamp: FrameworkTime);
-    fn discard(&mut self);
-    fn visit_channel_names(&self, visit: &mut dyn FnMut(&str));
-}
-impl<T> InputPorts for Subscriber<'_, T> {
-    fn finish(&self) {
-        self.finish_iteration();
-    }
-    fn set_waker(&mut self, wake: crate::wake::WakeHandle) {
-        Subscriber::set_waker(self, wake);
-    }
-    fn has_pending(&self) -> bool {
-        self.requests_execution()
-    }
-    fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) {
-        visit(self.channel_name());
-    }
-    fn update(&self) {
-        Subscriber::update(self);
-    }
-}
-impl<T> OutputPorts for Publisher<'_, T> {
-    fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) {
-        visit(self.channel_name());
-    }
-    fn flush(&mut self, timestamp: FrameworkTime) {
-        Publisher::flush(self, timestamp);
-    }
-    fn discard(&mut self) {
-        self.discard_pending();
-    }
-}
-impl InputPorts for () {
-    fn finish(&self) {}
-    fn set_waker(&mut self, _wake: crate::wake::WakeHandle) {}
-    fn has_pending(&self) -> bool {
-        false
-    }
-    fn visit_channel_names(&self, _visit: &mut dyn FnMut(&str)) {}
-    fn update(&self) {}
-}
-impl OutputPorts for () {
-    fn visit_channel_names(&self, _visit: &mut dyn FnMut(&str)) {}
-    fn flush(&mut self, _timestamp: FrameworkTime) {}
-    fn discard(&mut self) {}
-}
-impl<A: InputPorts, B: InputPorts> InputPorts for (A, B) {
-    fn finish(&self) {
-        self.0.finish();
-        self.1.finish();
-    }
-    fn set_waker(&mut self, wake: crate::wake::WakeHandle) {
-        self.0.set_waker(wake.clone());
-        self.1.set_waker(wake);
-    }
-    fn has_pending(&self) -> bool {
-        self.0.has_pending() || self.1.has_pending()
-    }
-    fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) {
-        self.0.visit_channel_names(visit);
-        self.1.visit_channel_names(visit);
-    }
-    fn update(&self) {
-        self.0.update();
-        self.1.update();
-    }
-}
-impl<A: OutputPorts, B: OutputPorts> OutputPorts for (A, B) {
-    fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) {
-        self.0.visit_channel_names(visit);
-        self.1.visit_channel_names(visit);
-    }
-    fn flush(&mut self, timestamp: FrameworkTime) {
-        self.0.flush(timestamp);
-        self.1.flush(timestamp);
-    }
-    fn discard(&mut self) {
-        self.0.discard();
-        self.1.discard();
-    }
-}
-
-/// Hand-written callback with typed IO bundles. The body decides how to handle
-/// empty inputs; macro-generated required inputs additionally gate execution.
-pub struct CallbackNode<InputsType, OutputsType, BodyFunc> {
-    inputs: InputsType,
-    outputs: OutputsType,
-    body: BodyFunc,
-}
-
-impl<InputsType, OutputsType, BodyFunc> CallbackNode<InputsType, OutputsType, BodyFunc> {
-    pub fn new(inputs: InputsType, outputs: OutputsType, body: BodyFunc) -> Self {
-        Self {
-            inputs,
-            outputs,
-            body,
-        }
-    }
-}
-
-impl<InputsType, OutputsType, BodyFunc> Callback for CallbackNode<InputsType, OutputsType, BodyFunc>
-where
-    InputsType: InputPorts + Send,
-    OutputsType: OutputPorts + Send,
-    BodyFunc: FnMut(&InputsType, &mut OutputsType, &Context) -> Result<(), LoanError> + Send,
-{
-    fn finish_inputs(&mut self) {
-        self.inputs.finish();
-    }
-    fn set_waker(&mut self, wake: crate::wake::WakeHandle) {
-        self.inputs.set_waker(wake);
-    }
-    fn has_pending_inputs(&self) -> bool {
-        self.inputs.has_pending()
-    }
-    fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) {
-        self.inputs.visit_channel_names(visit);
-        self.outputs.visit_channel_names(visit);
-    }
-    fn update_inputs(&mut self) {
-        self.inputs.update();
-    }
-    fn run(&mut self, context: &Context) -> Result<(), LoanError> {
-        (self.body)(&self.inputs, &mut self.outputs, context)
-    }
-    fn flush_outputs(&mut self, timestamp: FrameworkTime) {
-        self.outputs.flush(timestamp);
-    }
-    fn discard_outputs(&mut self) {
-        self.outputs.discard();
     }
 }

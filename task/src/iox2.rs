@@ -101,6 +101,16 @@ impl<T> Iox2SubscriberKey<T> {
 }
 pub struct Iox2EventKey(Key);
 pub struct Iox2NotifierKey(Key);
+impl Iox2EventKey {
+    pub fn index(&self) -> usize {
+        self.0.index
+    }
+}
+impl Iox2NotifierKey {
+    pub fn index(&self) -> usize {
+        self.0.index
+    }
+}
 
 pub trait Iox2EventPlan {
     fn name(&self) -> &str;
@@ -437,6 +447,14 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
         self.plan.name()
     }
     pub fn build(&self) -> Result<Iox2Bindings<T>, StorageError> {
+        self.build_with_delivery(OutputDelivery::Transport)
+    }
+
+    /// Bind outputs with their delivery policy fixed before callbacks take ownership.
+    pub fn build_with_delivery(
+        &self,
+        delivery: OutputDelivery,
+    ) -> Result<Iox2Bindings<T>, StorageError> {
         let mut publishers = Vec::new();
         for (index, spec) in self.plan.publishers.iter().enumerate() {
             let capacity = spec.capacity;
@@ -464,7 +482,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                 },
                 pending: Vec::with_capacity(capacity),
                 observers: Vec::new(),
-                replay_only: false,
+                delivery,
                 runtime: self.plan.runtime.clone(),
             })));
         }
@@ -506,7 +524,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                 channel: self.plan.name.to_string(),
                 pending: false,
                 event_id: id,
-                replay_only: false,
+                delivery,
                 port: self
                     .event
                     .notifier_builder()
@@ -534,6 +552,32 @@ pub struct Iox2Bindings<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     notifiers: Vec<RefCell<Option<Iox2Notifier>>>,
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Bindings<T> {
+    /// Configure an output slot before it is consumed by a callback binding.
+    pub fn set_output_delivery(
+        &self,
+        index: usize,
+        notifier: bool,
+        delivery: OutputDelivery,
+    ) -> Result<(), EndpointError> {
+        if notifier {
+            self.notifiers
+                .get(index)
+                .ok_or(EndpointError::InvalidIndex(index))?
+                .borrow_mut()
+                .as_mut()
+                .ok_or(EndpointError::AlreadyTaken)?
+                .delivery = delivery;
+        } else {
+            self.publishers
+                .get(index)
+                .ok_or(EndpointError::InvalidIndex(index))?
+                .borrow_mut()
+                .as_mut()
+                .ok_or(EndpointError::AlreadyTaken)?
+                .delivery = delivery;
+        }
+        Ok(())
+    }
     pub fn configure_publisher<R>(
         &self,
         key: &Iox2PublisherKey<T>,
@@ -663,6 +707,14 @@ mod key_tests {
     }
 }
 
+/// Whether bound outputs reach IPC services or only local observation hooks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OutputDelivery {
+    #[default]
+    Transport,
+    Local,
+}
+
 pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     channel: String,
     publisher_index: u32,
@@ -671,7 +723,7 @@ pub struct Iox2Publisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     notifier: Option<Notifier<ipc_threadsafe::Service>>,
     pending: Vec<SampleMut<ipc_threadsafe::Service, Message<T>, ()>>,
     observers: Vec<IpcPublishObserver<T>>,
-    replay_only: bool,
+    delivery: OutputDelivery,
     runtime: Arc<Iox2Runtime>,
 }
 type IpcPublishObserver<T> = Box<dyn FnMut(&Message<T>) + Send>;
@@ -682,9 +734,8 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     pub fn observe(&mut self, observer: impl FnMut(&Message<T>) + Send + 'static) {
         self.observers.push(Box::new(observer));
     }
-    /// Exact replay observes outputs locally without notifying external services.
-    pub fn suppress_transport(&mut self) {
-        self.replay_only = true;
+    pub fn delivery(&self) -> OutputDelivery {
+        self.delivery
     }
     pub fn visit_pending_headers(&self, mut visit: impl FnMut(MessageHeader)) {
         for (index, sample) in self.pending.iter().enumerate() {
@@ -697,9 +748,9 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     /// Publish timestamped data without an event notification, for deterministic
     /// simulation/replay that schedules counted events independently.
     pub fn publish_with_header(&self, header: MessageHeader, value: T) -> Result<(), LoanError> {
-        if self.replay_only {
+        if self.delivery == OutputDelivery::Local {
             return Err(LoanError::Transport(
-                "immediate IPC publication is disabled during exact replay".into(),
+                "immediate IPC publication requires transport delivery".into(),
             ));
         }
         self.port
@@ -728,7 +779,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
             for observer in &mut self.observers {
                 observer(&sample);
             }
-            if self.replay_only {
+            if self.delivery == OutputDelivery::Local {
                 continue;
             }
             sample.send().expect("iceoryx2 send failed");
@@ -1107,12 +1158,12 @@ pub struct Iox2Notifier {
     port: Notifier<ipc_threadsafe::Service>,
     pending: bool,
     event_id: usize,
-    replay_only: bool,
+    delivery: OutputDelivery,
     _runtime: Arc<Iox2Runtime>,
 }
 impl Iox2Notifier {
-    pub fn suppress_transport(&mut self) {
-        self.replay_only = true;
+    pub fn delivery(&self) -> OutputDelivery {
+        self.delivery
     }
     pub fn pending_event(&self) -> Option<EventRecord> {
         self.pending.then_some(EventRecord {
@@ -1127,7 +1178,7 @@ impl Iox2Notifier {
         self.pending = false;
     }
     pub fn flush(&mut self, _timestamp: FrameworkTime) {
-        if std::mem::take(&mut self.pending) && !self.replay_only {
+        if std::mem::take(&mut self.pending) && self.delivery == OutputDelivery::Transport {
             self.port.notify().expect("iceoryx2 notification failed");
         }
     }

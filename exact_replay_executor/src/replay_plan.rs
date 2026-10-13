@@ -53,6 +53,8 @@ impl ExplicitReplayPort {
 /// Validates a recorded task layout and prepares isolated per-port replay wiring.
 pub struct ExactReplayPlan {
     ports: Vec<(String, usize, PortBinding)>,
+    #[cfg(feature = "iceoryx2")]
+    local_outputs: Vec<(String, usize, bool)>,
 }
 impl ExactReplayPlan {
     pub fn declare(plan: &mut GraphPlan, log: &ReplayLog) -> Result<Self, ReplayError> {
@@ -72,6 +74,8 @@ impl ExactReplayPlan {
             ));
         }
         let mut requests = Vec::new();
+        #[cfg(feature = "iceoryx2")]
+        let mut local_outputs = Vec::new();
         let mut remaining = ports.clone();
         let mut names = BTreeSet::new();
         for callback in &descriptor.callbacks {
@@ -112,6 +116,14 @@ impl ExactReplayPlan {
                         "endpoint layout differs for '{}' ordinal {}",
                         callback.name, expected.ordinal
                     )));
+                }
+                #[cfg(feature = "iceoryx2")]
+                if output && port.transport != Transport::Native {
+                    local_outputs.push((
+                        port.channel.clone(),
+                        port.index,
+                        port.transport == Transport::Event,
+                    ));
                 }
                 if port.transport == Transport::Event {
                     continue;
@@ -168,11 +180,27 @@ impl ExactReplayPlan {
             .map_err(|e| ReplayError::Setup(e.to_string()))?;
             ports.push((name, ordinal, bind));
         }
-        Ok(Self { ports })
+        Ok(Self {
+            ports,
+            #[cfg(feature = "iceoryx2")]
+            local_outputs,
+        })
     }
     /// Bind before task factories consume their endpoints. No publisher indices
     /// are changed; the executor translates them into recorded identity space.
+    /// IPC publishers and notifiers, including explicit outputs, use local delivery.
     pub fn bind<'a>(self, bindings: &GraphBindings<'a>) -> Result<ReplayBindings<'a>, ReplayError> {
+        #[cfg(feature = "iceoryx2")]
+        for (channel, index, notifier) in self.local_outputs {
+            bindings
+                .set_ipc_output_delivery(
+                    &channel,
+                    index,
+                    notifier,
+                    task::iox2::OutputDelivery::Local,
+                )
+                .map_err(|e| ReplayError::Setup(e.to_string()))?;
+        }
         let mut replay = ReplayBindings::new();
         for (name, ordinal, port) in self.ports {
             match port {

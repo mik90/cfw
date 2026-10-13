@@ -264,8 +264,8 @@ struct Recorded<'a> {
     active: Option<ExecutionRecord>,
 }
 impl Callback for Recorded<'_> {
-    fn enable_exact_replay(&mut self) -> Result<(), LoanError> {
-        self.callback.enable_exact_replay()
+    fn outputs_are_local(&self) -> bool {
+        self.callback.outputs_are_local()
     }
     fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
         self.callback.clear_replay_inputs()

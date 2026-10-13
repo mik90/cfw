@@ -263,6 +263,15 @@ pub(crate) trait Binding<'a> {
     fn ipc_any(&self) -> Option<&dyn Any> {
         None
     }
+    #[cfg(feature = "iceoryx2")]
+    fn set_output_delivery(
+        &self,
+        _index: usize,
+        _notifier: bool,
+        _delivery: task::iox2::OutputDelivery,
+    ) -> Result<(), BuildError> {
+        Err(BuildError("expected IPC output binding".into()))
+    }
 }
 impl<T: Send + Sync + 'static> Plan for ChannelPlan<T> {
     fn forwarding_slots(&self) -> Result<usize, BuildError> {
@@ -610,6 +619,25 @@ pub struct GraphBindings<'a> {
     events: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
 }
 impl<'a> GraphBindings<'a> {
+    /// Select delivery for one IPC output before its endpoint is taken by a task.
+    #[cfg(feature = "iceoryx2")]
+    pub fn set_ipc_output_delivery(
+        &self,
+        channel: &str,
+        index: usize,
+        notifier: bool,
+        delivery: task::iox2::OutputDelivery,
+    ) -> Result<(), BuildError> {
+        let binding = if notifier {
+            self.events
+                .get(channel)
+                .or_else(|| self.channels.get(channel))
+        } else {
+            self.channels.get(channel)
+        }
+        .ok_or_else(|| BuildError(format!("unknown channel '{channel}'")))?;
+        binding.set_output_delivery(index, notifier, delivery)
+    }
     pub fn native<T: 'static>(&self, name: &str) -> Result<&EndpointBindings<'a, T>, BuildError> {
         let binding = self
             .channels
@@ -667,6 +695,14 @@ mod ipc {
         }
     }
     impl<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> Binding<'a> for Iox2Bindings<T> {
+        fn set_output_delivery(
+            &self,
+            index: usize,
+            notifier: bool,
+            delivery: OutputDelivery,
+        ) -> Result<(), BuildError> {
+            Iox2Bindings::set_output_delivery(self, index, notifier, delivery).map_err(Into::into)
+        }
         fn payload(&self) -> TypeId {
             TypeId::of::<T>()
         }
@@ -839,14 +875,25 @@ mod ipc {
             entry.1 += 1;
             let key = entry.0.events(capacity);
             self.ports.push(ports::PlannedPort::new::<()>(
-                name, false, true, true, 0, capacity,
+                name,
+                false,
+                true,
+                true,
+                key.index(),
+                capacity,
             ));
             Ok(key)
         }
         pub fn notifier(&mut self, name: &str) -> Result<Iox2NotifierKey, BuildError> {
             let key = self.event_plan(name)?.0.notifier();
-            self.ports
-                .push(ports::PlannedPort::new::<()>(name, true, true, true, 0, 1));
+            self.ports.push(ports::PlannedPort::new::<()>(
+                name,
+                true,
+                true,
+                true,
+                key.index(),
+                1,
+            ));
             Ok(key)
         }
         pub fn require_event(&self, name: &str) -> Result<(), BuildError> {

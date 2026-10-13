@@ -23,7 +23,7 @@ pub mod time;
 pub mod wake;
 
 pub use base::arena::ArenaReaderPtr;
-pub use callback::{Callback, CallbackNode, execute_callback};
+pub use callback::{Callback, CallbackNode, Inputs, Outputs, Required, execute_callback};
 pub use channel::{
     ChannelPlan, ChannelStorage, DeclarationError, EndpointBindings, EndpointError, PublisherKey,
     SubscriberKey,
