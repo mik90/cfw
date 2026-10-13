@@ -6,7 +6,7 @@ use std::{
     any::{Any, TypeId},
     collections::BTreeMap,
 };
-use task::{ChannelPlan, ChannelStorage, EndpointBindings, StorageLayout, SubscriberPolicy};
+use task::{ChannelPlan, ChannelStorage, EndpointBindings, SubscriberPolicy};
 use task::{Forwarded, ForwardedSources, PublisherKey, SubscriberKey};
 
 type Value<'a, M, S> = Forwarded<M, <S as ForwardedSources>::Bound<'a>>;
@@ -28,7 +28,7 @@ impl<M: Send + Sync + 'static, S: ForwardedSources> Plan for BundlePlan<M, S> {
         self
     }
     fn validate(&self) -> Result<(), BuildError> {
-        StorageLayout::validate(&self.0).map_err(Into::into)
+        self.0.validate().map_err(Into::into)
     }
     fn forwarding_slots(&self) -> Result<usize, BuildError> {
         self.0.total_publisher_capacity().map_err(Into::into)
@@ -38,9 +38,7 @@ impl<M: Send + Sync + 'static, S: ForwardedSources> Plan for BundlePlan<M, S> {
         Ok(())
     }
     fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError> {
-        Ok(Box::new(BundleStorage::<M, S>(StorageLayout::allocate(
-            self.0,
-        )?)))
+        Ok(Box::new(BundleStorage::<M, S>(self.0.allocate()?)))
     }
 }
 impl<M: Send + Sync + 'static, S: ForwardedSources> Stored for BundleStorage<M, S> {

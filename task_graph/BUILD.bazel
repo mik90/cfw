@@ -37,13 +37,6 @@ rust_test(
     deps = [":task_graph"] + all_crate_deps(normal = True, normal_dev = True),
 )
 
-rust_test(
-    name = "ipc_test",
-    srcs = ["tests/iox2.rs"],
-    crate_features = ["iceoryx2"],
-    deps = [":task_graph"] + all_crate_deps(normal = True),
-)
-
 miri_test(
     name = "task_graph_miri",
     srcs = glob(["src/**/*.rs"]),

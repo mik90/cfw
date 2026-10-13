@@ -12,7 +12,6 @@ use task::{
     time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
-use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 struct Producer;
@@ -64,12 +63,14 @@ fn eof_drain_waits_for_computed_ipc_notifications_and_downstream_callbacks() {
         ReceiveDeclaration::from_keys(middle.events(4), middle.subscriber(1), output.publisher(1));
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let capture = CapturePlan::declare(&mut output, 1);
-    let storage = StoragePlan::new((input, (middle, output)))
-        .allocate()
-        .unwrap();
-    let input = storage.channels().0.build();
-    let middle = storage.channels().1.0.build().unwrap();
-    let output = storage.channels().1.1.build();
+    let storage = (
+        input.allocate().unwrap(),
+        middle.allocate().unwrap(),
+        output.allocate().unwrap(),
+    );
+    let input = storage.0.build();
+    let middle = storage.1.build().unwrap();
+    let output = storage.2.build();
     let trace: Trace = Default::default();
     let mut graph = GraphBuilder::new();
     graph.add_callback("producer", || Ok(Producer.bind(a, &input, &middle)?));
@@ -111,9 +112,9 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
     let b =
         ReceiveDeclaration::from_keys(input.events(4), input.subscriber(1), output.publisher(1));
     let source = input.publisher(1);
-    let storage = StoragePlan::new((input, output)).allocate().unwrap();
-    let input = storage.channels().0.build().unwrap();
-    let output = storage.channels().1.build();
+    let storage = (input.allocate().unwrap(), output.allocate().unwrap());
+    let input = storage.0.build().unwrap();
+    let output = storage.1.build();
     let trace: Trace = Default::default();
     let mut graph = GraphBuilder::new();
     graph.add_callback("b", || {

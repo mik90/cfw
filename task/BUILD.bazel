@@ -24,6 +24,13 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
 )
 
+rust_test(
+    name = "ipc_test",
+    srcs = ["tests/iox2.rs"],
+    crate_features = ["iceoryx2"],
+    deps = [":task"] + all_crate_deps(normal = True),
+)
+
 rust_benchmark(
     name = "pub_sub_latency",
     srcs = ["benches/pub_sub_latency.rs"],

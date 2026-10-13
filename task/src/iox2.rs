@@ -1,6 +1,6 @@
 //! Typed iceoryx2 channels. All processes must agree on service-wide settings.
 use crate::{
-    EndpointError, LoanError, StorageError, StorageLayout,
+    EndpointError, LoanError, StorageError,
     message::{Message, MessageHeader},
     time::FrameworkTime,
     wake::{Wake, WakeHandle},
@@ -23,7 +23,7 @@ use iceoryx2::{
 };
 use std::{
     cell::{RefCell, RefMut},
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     fmt::Debug,
     marker::PhantomData,
     ops::{Deref, DerefMut},

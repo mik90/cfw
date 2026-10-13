@@ -11,7 +11,6 @@ use task::{
     ChannelPlan, Forwarded, Input, InputSpan, LoanError, OutputSpan, Publisher, time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
-use task_graph::StoragePlan;
 use task_macros::task_callback;
 type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Value>>;
 
@@ -104,14 +103,22 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         let forward_log = logged_forward.then(|| CapturePlan::declare(&mut forward, 8));
         let observed_log = CapturePlan::declare(&mut observed, 2);
         let result_log = CapturePlan::declare(&mut result, 2);
-        let storage = StoragePlan::new((source, (forward, (observed, result))))
-            .allocate()
-            .unwrap();
-        let source = storage.channels().0.build();
-        let forward = storage.channels().1.0.build();
-        let observed = storage.channels().1.1.0.build();
-        let result = storage.channels().1.1.1.build();
-        let mut graph = GraphBuilder::with_storage(&storage);
+        let storage = (
+            source.allocate().unwrap(),
+            forward.allocate().unwrap(),
+            observed.allocate().unwrap(),
+            result.allocate().unwrap(),
+        );
+        let source = storage.0.build();
+        let forward = storage.1.build();
+        let observed = storage.2.build();
+        let result = storage.3.build();
+        let mut graph = GraphBuilder::with_channel_names([
+            storage.0.name(),
+            storage.1.name(),
+            storage.2.name(),
+            storage.3.name(),
+        ]);
         graph.add_callback("a", || Ok(Source(10).bind(a, &source)?));
         graph.add_callback("b", || Ok(Source(20).bind(b, &source)?));
         graph.add_callback("forward", || Ok(Forward.bind(f, &source, &forward)?));
@@ -190,13 +197,16 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
     let hydrate_f = ReplayInputPlan::declare(&mut source, f.input_key()).unwrap();
     let hydrate_o = ReplayInputPlan::declare(&mut source, o.input_key()).unwrap();
     let hydrate_c = ReplayInputPlan::declare(&mut forward, c.input_key()).unwrap();
-    let storage = StoragePlan::new((source, (forward, (observed, result))))
-        .allocate()
-        .unwrap();
-    let source = storage.channels().0.build();
-    let forward = storage.channels().1.0.build();
-    let observed = storage.channels().1.1.0.build();
-    let result = storage.channels().1.1.1.build();
+    let storage = (
+        source.allocate().unwrap(),
+        forward.allocate().unwrap(),
+        observed.allocate().unwrap(),
+        result.allocate().unwrap(),
+    );
+    let source = storage.0.build();
+    let forward = storage.1.build();
+    let observed = storage.2.build();
+    let result = storage.3.build();
     let cache = cache.bind(&source).unwrap();
     let captured_indices = Arc::new(Mutex::new(Vec::new()));
     let mut ports = ReplayBindings::new();
@@ -268,7 +278,12 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
                 .unwrap(),
         )
         .unwrap();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let mut graph = GraphBuilder::with_channel_names([
+        storage.0.name(),
+        storage.1.name(),
+        storage.2.name(),
+        storage.3.name(),
+    ]);
     graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
     graph.add_callback("observe", || Ok(Observe.bind(o, &source, &observed)?));
     graph.add_callback("forward", || Ok(Forward.bind(f, &source, &forward)?));

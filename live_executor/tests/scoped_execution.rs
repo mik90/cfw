@@ -6,7 +6,6 @@ use std::time::Duration;
 use task::executor::TimeSource;
 use task::time::FrameworkTime;
 use task::{ChannelPlan, Context, LoanError, Output, Publisher, RequiredInput};
-use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -51,23 +50,25 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
     let declaration = Increment::declare(&mut input, &mut output).unwrap();
     let source_key = input.publisher(1);
     let capture_key = output.subscriber(2);
-    let storage = StoragePlan::new((input, (output, ChannelPlan::<u64>::new("fixture-only"))))
-        .allocate()
-        .unwrap();
-    let input = storage.channels().0.build();
-    let output = storage.channels().1.0.build();
+    let storage = (input.allocate().unwrap(), output.allocate().unwrap());
+    let input = storage.0.build();
+    let output = storage.1.build();
     let mut source = input.take_publisher(&source_key).unwrap();
     let capture = output.take_subscriber(&capture_key).unwrap();
     let (done, completed) = channel::unbounded();
-    let mut builder = GraphBuilder::with_storage(&storage);
+    let mut builder =
+        GraphBuilder::with_channel_names([storage.0.name(), storage.1.name(), "fixture-only"]);
     builder.add_scheduled_callback("increment", CallbackSchedule::default().in_pool(1), || {
         Ok(Increment { done }.bind(declaration, &input, &output)?)
     });
     let graph = builder.build().unwrap();
-    assert!(Arc::ptr_eq(
-        storage.channel_names(),
-        &graph.metadata().channel_names
-    ));
+    assert!(
+        graph
+            .metadata()
+            .channel_names
+            .lookup_by_value("fixture-only")
+            .is_some()
+    );
     drop((input, output));
     // A pre-start publication must not be lost when notifications are installed.
     source.publish(40).unwrap();
@@ -128,8 +129,8 @@ fn trigger_during_run_is_requeued_without_concurrent_invocations() {
     let mut plan = ChannelPlan::new("input");
     let declaration = Blocking::declare(&mut plan).unwrap();
     let source_key = plan.publisher(1);
-    let storage = StoragePlan::new(plan).allocate().unwrap();
-    let bindings = storage.channels().build();
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.build();
     let mut source = bindings.take_publisher(&source_key).unwrap();
     let (entered, entry) = channel::unbounded();
     let (release, permission) = channel::bounded(1);
@@ -206,9 +207,9 @@ fn callback_errors_and_panics_wake_control_and_leave_captured_messages_valid() {
         let source_decl = Source::declare(&mut source).unwrap();
         let fail_decl = Failing::declare(&mut source, &mut output).unwrap();
         let capture_key = source.subscriber(1);
-        let storage = StoragePlan::new((source, output)).allocate().unwrap();
-        let source = storage.channels().0.build();
-        let output = storage.channels().1.build();
+        let storage = (source.allocate().unwrap(), output.allocate().unwrap());
+        let source = storage.0.build();
+        let output = storage.1.build();
         let capture = source.take_subscriber(&capture_key).unwrap();
         let mut builder = GraphBuilder::new();
         builder.add_scheduled_callback("source", CallbackSchedule::on_start(), || {

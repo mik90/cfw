@@ -2,7 +2,6 @@ use logging::{CapturePlan, ExecutionRecord, ExecutionRecorder, InMemoryWriter, L
 use simulation_executor::{SimulationConfig, SimulationState};
 use std::time::Duration;
 use task::{ChannelPlan, Output};
-use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -25,9 +24,9 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
             let mut values = ChannelPlan::new("values");
             let declaration = Counter::declare(&mut values).unwrap();
             let capture = capture_payload.then(|| CapturePlan::declare(&mut values, 8));
-            let storage = StoragePlan::new(values).allocate().unwrap();
-            let values = storage.channels().build();
-            let mut builder = GraphBuilder::with_storage(&storage);
+            let storage = values.allocate().unwrap();
+            let values = storage.build();
+            let mut builder = GraphBuilder::with_channel_names([storage.name()]);
             builder.add_scheduled_callback(
                 "counter",
                 CallbackSchedule::periodic(Duration::from_nanos(10))

@@ -10,7 +10,6 @@ use std::{
 use task::iox2::{Iox2ChannelPlan, Iox2EventBindings, Iox2NotifyOutput, Iox2Runtime};
 use task::{ChannelPlan, message::MessageHeader, time::FrameworkTime};
 use task_graph::GraphBuilder;
-use task_graph::StoragePlan;
 
 struct Writer(Arc<AtomicUsize>);
 impl LogFileWriter for Writer {
@@ -40,9 +39,9 @@ fn real_ipc_event_requests_a_flush_without_data_arrival_triggering_it() {
     let capture = CapturePlan::declare(&mut data, 1);
     let trigger = events.events(4);
     let notifier = events.notifier();
-    let storage = StoragePlan::new((data, events)).allocate().unwrap();
-    let data = storage.channels().0.build();
-    let events = storage.channels().1.build().unwrap();
+    let storage = (data.allocate().unwrap(), events.allocate().unwrap());
+    let data = storage.0.build();
+    let events = storage.1.build().unwrap();
     let mut publisher = data.take_publisher(&publisher).unwrap();
     let mut notifier = events.take_notifier(&notifier).unwrap();
     let messages = Arc::new(AtomicUsize::new(0));
@@ -53,7 +52,9 @@ fn real_ipc_event_requests_a_flush_without_data_arrival_triggering_it() {
     );
     let graph = logger
         .attach_event(
-            GraphBuilder::with_storage(&storage).build().unwrap(),
+            GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()])
+                .build()
+                .unwrap(),
             vec![FlushTrigger::ipc(events.take_event(&trigger).unwrap())],
         )
         .unwrap();

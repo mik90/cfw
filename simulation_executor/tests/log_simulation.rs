@@ -8,7 +8,6 @@ use std::{
 use task::{
     ChannelPlan, InputSpan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime,
 };
-use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -47,10 +46,10 @@ fn streaming_deadlines_prevent_skipping_inputs_and_eof_drains_downstream_work() 
     let declaration = Double::declare(&mut input, &mut output).unwrap();
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let capture = CapturePlan::declare(&mut output, 8);
-    let storage = StoragePlan::new((input, output)).allocate().unwrap();
-    let input = storage.channels().0.build();
-    let output = storage.channels().1.build();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let storage = (input.allocate().unwrap(), output.allocate().unwrap());
+    let input = storage.0.build();
+    let output = storage.1.build();
+    let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
         CallbackSchedule::default().with_execution_duration(Duration::from_nanos(100)),
@@ -115,8 +114,8 @@ fn missing_sources_past_inputs_and_bad_payloads_are_reported() {
     ] {
         let mut input = ChannelPlan::<u64>::new("input");
         let source = ReplaySourcePlan::declare(&mut input, 1);
-        let storage = StoragePlan::new(input).allocate().unwrap();
-        let bindings = storage.channels().build();
+        let storage = input.allocate().unwrap();
+        let bindings = storage.build();
         let options = LogSimulationOptions {
             simulation: start.map(|start_time| SimulationConfig {
                 start_time,
@@ -125,7 +124,9 @@ fn missing_sources_past_inputs_and_bad_payloads_are_reported() {
             ..Default::default()
         };
         let result = LogSimulation::with_options(
-            GraphBuilder::with_storage(&storage).build().unwrap(),
+            GraphBuilder::with_channel_names([storage.name()])
+                .build()
+                .unwrap(),
             reader(vec![entry(10, "input", body)]),
             [source.bind(&bindings).unwrap()],
             options,
@@ -304,10 +305,10 @@ fn with_graph<R>(
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let input_capture = CapturePlan::declare(&mut input, 8);
     let output_capture = CapturePlan::declare(&mut output, 8);
-    let storage = StoragePlan::new((input, output)).allocate().unwrap();
-    let input = storage.channels().0.build();
-    let output = storage.channels().1.build();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let storage = (input.allocate().unwrap(), output.allocate().unwrap());
+    let input = storage.0.build();
+    let output = storage.1.build();
+    let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
         CallbackSchedule::default().with_execution_duration(Duration::from_nanos(3)),
@@ -539,11 +540,11 @@ mod ipc {
         );
         let data_source = events.publisher(1);
         let source = ReplaySourcePlan::declare(&mut gate, 1);
-        let storage = StoragePlan::new((events, gate)).allocate().unwrap();
-        let events = storage.channels().0.build().unwrap();
-        let gate = storage.channels().1.build();
+        let storage = (events.allocate().unwrap(), gate.allocate().unwrap());
+        let events = storage.0.build().unwrap();
+        let gate = storage.1.build();
         let trace: Trace = Default::default();
-        let mut graph = GraphBuilder::with_storage(&storage);
+        let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
         // Current graph indices differ from the log: resolve by callback name.
         graph.add_scheduled_callback(
             "b",

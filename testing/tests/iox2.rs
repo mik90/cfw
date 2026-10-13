@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
 use task::{ChannelPlan, Context, RequiredInput};
 use task_graph::GraphBuilder;
-use task_graph::StoragePlan;
 use task_macros::task_callback;
 use testing::UnitTestExecutor;
 
@@ -55,14 +54,17 @@ fn counted_events_survive_native_gating_and_capture_outlives_executor() {
     let input_key = input.publisher(1);
     let gate_key = gate.publisher(1);
     let capture_key = output.subscriber(2);
-    let storage = StoragePlan::new((input, (output, gate)))
-        .allocate()
-        .unwrap();
-    let input = storage.channels().0.build().unwrap();
-    let output = storage.channels().1.0.build().unwrap();
-    let gate = storage.channels().1.1.build();
+    let storage = (
+        input.allocate().unwrap(),
+        output.allocate().unwrap(),
+        gate.allocate().unwrap(),
+    );
+    let input = storage.0.build().unwrap();
+    let output = storage.1.build().unwrap();
+    let gate = storage.2.build();
     let observations = Arc::new(Mutex::new(Vec::new()));
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let mut graph =
+        GraphBuilder::with_channel_names([storage.0.name(), storage.1.name(), storage.2.name()]);
     graph.add_scheduled_callback(
         "observe",
         task_graph::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),

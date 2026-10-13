@@ -5,7 +5,6 @@ use task::Context;
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Runtime};
 use task::time::FrameworkTime;
 use task_graph::GraphBuilder;
-use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 type Observation = (i64, u64, i64, u64);
@@ -32,11 +31,11 @@ fn timestamped_data_and_counted_events_are_injected_without_duplicate_notificati
     let mut plan = Iox2ChannelPlan::new(&channel, &runtime);
     let declaration = ObserveDeclaration::from_keys(plan.subscriber(1), plan.events(1));
     let publisher = plan.publisher(1);
-    let storage = StoragePlan::new(plan).allocate().unwrap();
-    let bindings = storage.channels().build().unwrap();
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.build().unwrap();
     let publisher = Arc::new(Mutex::new(bindings.take_publisher(&publisher).unwrap()));
     let samples = Arc::new(Mutex::new(Vec::new()));
-    let mut builder = GraphBuilder::with_storage(&storage);
+    let mut builder = GraphBuilder::with_channel_names([storage.name()]);
     builder.add_scheduled_callback(
         "observe",
         task_graph::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),

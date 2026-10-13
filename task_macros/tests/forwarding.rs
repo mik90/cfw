@@ -215,9 +215,9 @@ fn derive_has_no_eight_field_limit_and_validates_all_mappings() {
     let mut b = task::ChannelPlan::<u32>::new("b");
     let pb = b.publisher(1);
     let sb = b.subscriber(1);
-    let storage = task_graph::StoragePlan::new((a, b)).allocate().unwrap();
-    let a = storage.channels().0.build();
-    let b = storage.channels().1.build();
+    let storage = (a.allocate().unwrap(), b.allocate().unwrap());
+    let a = storage.0.build();
+    let b = storage.1.build();
     let mut pa = a.take_publisher(&pa).unwrap();
     let sa = a.take_subscriber(&sa).unwrap();
     let mut pb = b.take_publisher(&pb).unwrap();
@@ -388,12 +388,11 @@ fn named_bundle_rebinds_after_separately_owned_sources_are_destroyed() {
     let input = channel.subscriber(1);
     let storage = plan.allocate().unwrap();
     for value in 0..8 {
-        let source = task_graph::StoragePlan::new(
-            task::PublisherStoragePlan::<u64>::new(1).with_subscriber(1),
-        )
-        .allocate()
-        .unwrap();
-        let mut source_endpoints = source.channels().build();
+        let source = task::PublisherStoragePlan::<u64>::new(1)
+            .with_subscriber(1)
+            .allocate()
+            .unwrap();
+        let mut source_endpoints = source.build();
         let bindings = storage.bind().unwrap();
         let channel = bindings.bundle::<(), One<'static>>("forwarded").unwrap();
         let mut publisher = channel

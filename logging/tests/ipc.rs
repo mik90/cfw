@@ -11,7 +11,6 @@ use task::{
     recording::{Outcome, Transport},
     time::FrameworkTime,
 };
-use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -62,14 +61,20 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     let injection = input.publisher(1);
     let gate_key = gate.publisher(1);
     let capture = output.subscriber(1);
-    let storage = StoragePlan::new((input, (output, (events, gate))))
-        .allocate()
-        .unwrap();
-    let input = storage.channels().0.build().unwrap();
-    let output = storage.channels().1.0.build().unwrap();
-    let events = storage.channels().1.1.0.build().unwrap();
-    let gate = storage.channels().1.1.1.build();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let input_storage = input.allocate().unwrap();
+    let output_storage = output.allocate().unwrap();
+    let event_storage = events.allocate().unwrap();
+    let gate_storage = gate.allocate().unwrap();
+    let input = input_storage.build().unwrap();
+    let output = output_storage.build().unwrap();
+    let events = event_storage.build().unwrap();
+    let gate = gate_storage.build();
+    let mut graph = GraphBuilder::with_channel_names([
+        input_storage.name(),
+        output_storage.name(),
+        event_storage.name(),
+        gate_storage.name(),
+    ]);
     graph.add_scheduled_callback(
         "observe",
         CallbackSchedule::default().with_execution_duration(Duration::from_nanos(2)),
@@ -238,14 +243,20 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
     let data_key = input.publisher(1);
     let event_key = input.notifier_with_id(9);
     let gate_key = gate.publisher(1);
-    let storage = StoragePlan::new((input, (output, (events, gate))))
-        .allocate()
-        .unwrap();
-    let input = storage.channels().0.build().unwrap();
-    let output = storage.channels().1.0.build().unwrap();
-    let events = storage.channels().1.1.0.build().unwrap();
-    let gate = storage.channels().1.1.1.build();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let input_storage = input.allocate().unwrap();
+    let output_storage = output.allocate().unwrap();
+    let event_storage = events.allocate().unwrap();
+    let gate_storage = gate.allocate().unwrap();
+    let input = input_storage.build().unwrap();
+    let output = output_storage.build().unwrap();
+    let events = event_storage.build().unwrap();
+    let gate = gate_storage.build();
+    let mut graph = GraphBuilder::with_channel_names([
+        input_storage.name(),
+        output_storage.name(),
+        event_storage.name(),
+        gate_storage.name(),
+    ]);
     graph.add_callback("observe", || {
         Ok(Observe.bind(declaration, &input, &input, &gate, &output, &events)?)
     });

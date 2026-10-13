@@ -5,7 +5,6 @@ use std::sync::{
 };
 use std::time::Duration;
 use task::{ChannelPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
-use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 use testing::{UnitTestExecutor, UnitTestExecutorConfig};
@@ -29,11 +28,11 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
     let declaration = Double::declare(&mut input, &mut output).unwrap();
     let sender = input.publisher(1);
     let capture = output.subscriber(4);
-    let storage = StoragePlan::new((input, output)).allocate().unwrap();
-    let (input, output) = storage.channels();
+    let storage = (input.allocate().unwrap(), output.allocate().unwrap());
+    let (input, output) = &storage;
     let input = input.build();
     let output = output.build();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
         CallbackSchedule::default().with_execution_duration(Duration::ZERO),
@@ -87,9 +86,9 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
     let mut plan = ChannelPlan::<u64>::new("fixture_only");
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(2);
-    let storage = StoragePlan::new(plan).allocate().unwrap();
-    let bindings = storage.channels().build();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.build();
+    let mut graph = GraphBuilder::with_channel_names([storage.name()]);
     graph.add_scheduled_callback(
         "tick",
         CallbackSchedule::periodic(Duration::from_nanos(10))
@@ -123,10 +122,12 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
     let mut plan = ChannelPlan::<u64>::new("fixture_only");
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(1);
-    let storage = StoragePlan::new(plan).allocate().unwrap();
-    let bindings = storage.channels().build();
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.build();
     let mut executor = UnitTestExecutor::new_with_graph(
-        GraphBuilder::with_storage(&storage).build().unwrap(),
+        GraphBuilder::with_channel_names([storage.name()])
+            .build()
+            .unwrap(),
         Default::default(),
     );
     let mut sender = executor.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
@@ -160,10 +161,12 @@ fn retained_payload_drops_exactly_once_after_all_endpoints_and_executor() {
     let mut plan = ChannelPlan::new("tracked");
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(1);
-    let storage = StoragePlan::new(plan).allocate().unwrap();
-    let bindings = storage.channels().build();
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.build();
     let mut executor = UnitTestExecutor::new_with_graph(
-        GraphBuilder::with_storage(&storage).build().unwrap(),
+        GraphBuilder::with_channel_names([storage.name()])
+            .build()
+            .unwrap(),
         Default::default(),
     );
     let mut sender = executor.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
@@ -192,9 +195,9 @@ fn failed_step_cancels_capture_and_poisons_executor() {
     let declaration = Fails::declare(&mut plan).unwrap();
     let capture = plan.subscriber(1);
     let sender = plan.publisher(1);
-    let storage = StoragePlan::new(plan).allocate().unwrap();
-    let bindings = storage.channels().build();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.build();
+    let mut graph = GraphBuilder::with_channel_names([storage.name()]);
     graph.add_scheduled_callback(
         "fails",
         CallbackSchedule::periodic(Duration::from_nanos(10))

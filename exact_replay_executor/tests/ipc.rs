@@ -12,7 +12,6 @@ use task::iox2::{
 };
 use task::{Callback, message::MessageHeader, time::FrameworkTime};
 use task_graph::GraphBuilder;
-use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 #[derive(Clone, Default)]
@@ -89,12 +88,14 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         );
         let capture_input = input.subscriber(1);
         let capture_output = output.subscriber(1);
-        let storage = StoragePlan::new((input, (output, notify)))
-            .allocate()
-            .unwrap();
-        let input = storage.channels().0.build().unwrap();
-        let output = storage.channels().1.0.build().unwrap();
-        let notify = storage.channels().1.1.build().unwrap();
+        let storage = (
+            input.allocate().unwrap(),
+            output.allocate().unwrap(),
+            notify.allocate().unwrap(),
+        );
+        let input = storage.0.build().unwrap();
+        let output = storage.1.build().unwrap();
+        let notify = storage.2.build().unwrap();
         input
             .replay_input(declaration.first_key())
             .unwrap()
@@ -109,7 +110,11 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
             .bind(declaration, &input, &input, &input, &output, &notify)
             .unwrap();
         callback.stage_replay_event(2, 9, 5).unwrap();
-        let mut graph = GraphBuilder::with_storage(&storage);
+        let mut graph = GraphBuilder::with_channel_names([
+            storage.0.name(),
+            storage.1.name(),
+            storage.2.name(),
+        ]);
         graph.add_callback("observe", || Ok(callback));
         let recorder = ExecutionRecorder::new(2);
         let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
@@ -179,12 +184,14 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         notify.notifier_with_id(17),
     );
     let probe = output.subscriber(1);
-    let storage = StoragePlan::new((input, (output, notify)))
-        .allocate()
-        .unwrap();
-    let input = storage.channels().0.build().unwrap();
-    let output = storage.channels().1.0.build().unwrap();
-    let notify = storage.channels().1.1.build().unwrap();
+    let storage = (
+        input.allocate().unwrap(),
+        output.allocate().unwrap(),
+        notify.allocate().unwrap(),
+    );
+    let input = storage.0.build().unwrap();
+    let output = storage.1.build().unwrap();
+    let notify = storage.2.build().unwrap();
     let probe = output.take_subscriber(&probe).unwrap();
     let mut ports = ReplayBindings::new();
     ports
@@ -210,7 +217,8 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
                 .unwrap(),
         )
         .unwrap();
-    let mut graph = GraphBuilder::with_storage(&storage);
+    let mut graph =
+        GraphBuilder::with_channel_names([storage.0.name(), storage.1.name(), storage.2.name()]);
     graph.add_callback("observe", || {
         Ok(Observe.bind(declaration, &input, &input, &input, &output, &notify)?)
     });
