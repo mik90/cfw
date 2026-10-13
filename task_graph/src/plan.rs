@@ -1,4 +1,4 @@
-//! Named construction for owned payloads and storage-borrowing Forwarded source bundles.
+//! Graph planning for owned payloads and storage-borrowing Forwarded source bundles.
 //! Storage remains externally owned; only the construction metadata is erased.
 use crate::{BuiltGraph, ScheduledCallback, bundle, capture, ports, replay, topology};
 use std::{

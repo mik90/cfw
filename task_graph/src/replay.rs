@@ -125,11 +125,11 @@ where
     }))
 }
 
-pub struct NamedReplayPlan {
+pub struct ReplayPlan {
     bindings: Vec<SourceBinding>,
     channels: Vec<String>,
 }
-impl NamedReplayPlan {
+impl ReplayPlan {
     pub fn channels(&self) -> &[String] {
         &self.channels
     }
@@ -175,7 +175,7 @@ impl GraphPlan {
         &mut self,
         channels: &BTreeSet<String>,
         capacity: usize,
-    ) -> Result<NamedReplayPlan, BuildError> {
+    ) -> Result<ReplayPlan, BuildError> {
         if capacity == 0 || u32::try_from(capacity).is_err() {
             return Err(BuildError(
                 "replay publisher capacity must be in 1..=u32::MAX".into(),
@@ -199,7 +199,7 @@ impl GraphPlan {
                 declare(self, channel, capacity)
             })
             .collect::<Result<_, _>>()?;
-        Ok(NamedReplayPlan {
+        Ok(ReplayPlan {
             bindings,
             channels: channels.iter().cloned().collect(),
         })

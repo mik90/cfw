@@ -1,4 +1,4 @@
-//! Named task registration, graph construction, and capture/replay planning.
+//! Task registration, graph construction, and capture/replay planning.
 mod application;
 pub mod bundle;
 pub mod capture;

@@ -50,7 +50,7 @@ impl Observe {
 
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
-fn named_ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
+fn ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
     let mut builder = UnitTestExecutorBuilder::new().with_iox2_runtime(Iox2Runtime::new().unwrap());
     let observations = Arc::new(Mutex::new(Vec::new()));
     builder.add_task(
@@ -164,7 +164,7 @@ fn ipc_fixture_mismatches_fail_during_allocation() {
 fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
     use task::iox2::{Iox2ChannelConfig, Iox2Notification};
     use task_graph::GraphPlan;
-    let name = format!("named_limits_{}", std::process::id());
+    let name = format!("fixture_limits_{}", std::process::id());
     let mut plan = GraphPlan::default();
     let publisher = plan
         .ipc::<u64>(&name)

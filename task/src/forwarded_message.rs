@@ -37,7 +37,7 @@ impl<MessageType, ForwardedMessages> Forwarded<MessageType, ForwardedMessages> {
 /// Rebinding must change only the lifetime of ArenaReaderPtr fields, retaining
 /// identical layout and destruction behavior for every Bound lifetime.
 /// This must also hold for nested source payloads and enclosing arena/channel
-/// storage types: named storage reinterprets those types under the substitution.
+/// storage types: graph storage reinterprets those types under the substitution.
 /// Every field must be described exactly once, in declaration order.
 pub unsafe trait ForwardedSources: Send + Sync + 'static {
     type Bound<'a>: Send + Sync + 'a;

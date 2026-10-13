@@ -101,7 +101,7 @@ fn names() -> (String, String) {
 
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
-fn named_ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() {
+fn ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() {
     let (data, event) = names();
     let mut plan = GraphPlan::default();
     let mut registration = TaskRegistration::new("ipc", Source, CallbackSchedule::default());

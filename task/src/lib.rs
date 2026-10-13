@@ -1,4 +1,5 @@
 pub mod callback;
+pub mod channel;
 pub mod context;
 pub mod executor;
 pub mod forwarded_message;
@@ -7,7 +8,6 @@ pub mod input;
 pub mod iox2;
 pub mod loggable;
 pub mod message;
-pub mod named_channels;
 pub mod output;
 pub mod publisher;
 pub mod recording;
@@ -24,13 +24,13 @@ pub mod wake;
 
 pub use base::arena::ArenaReaderPtr;
 pub use callback::{Callback, CallbackNode, execute_callback};
-pub use context::Context;
-pub use forwarded_message::{Forwarded, ForwardedSources};
-pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, RequiredInput};
-pub use named_channels::{
+pub use channel::{
     ChannelPlan, ChannelStorage, DeclarationError, EndpointBindings, EndpointError, PublisherKey,
     SubscriberKey,
 };
+pub use context::Context;
+pub use forwarded_message::{Forwarded, ForwardedSources};
+pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, RequiredInput};
 pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};
 pub use publisher::{LoanError, Publisher};
 pub use replay_publisher::{PublisherOps, ReplayError, ReplayPublisher};

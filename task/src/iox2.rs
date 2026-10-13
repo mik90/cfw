@@ -124,7 +124,7 @@ struct PublisherSpec {
     notification: Iox2Notification,
 }
 
-/// One named IPC channel, with data and optional event-trigger endpoints.
+/// One IPC channel, with data and optional event-trigger endpoints.
 pub struct Iox2ChannelPlan<T> {
     name: Arc<str>,
     runtime: Arc<Iox2Runtime>,
@@ -137,8 +137,8 @@ pub struct Iox2ChannelPlan<T> {
     payload: PhantomData<fn(T) -> T>,
 }
 impl<T> Iox2ChannelPlan<T> {
-    pub fn topology(&self) -> crate::named_channels::ChannelTopology {
-        crate::named_channels::ChannelTopology {
+    pub fn topology(&self) -> crate::channel::ChannelTopology {
+        crate::channel::ChannelTopology {
             forwarding_retention_per_publisher: 0,
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),

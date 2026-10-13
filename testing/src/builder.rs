@@ -252,7 +252,7 @@ fn output_fixture<T: Send + Sync + 'static>(
     })
 }
 
-/// Plans named task ports and fixtures before allocating any native arenas.
+/// Plans task ports and fixtures before allocating any native arenas.
 /// Generated tasks supply their declarations through `task_graph::Task`.
 pub struct UnitTestExecutorBuilder {
     tasks: ApplicationBuilder,
@@ -357,7 +357,7 @@ impl UnitTestExecutorBuilder {
             payload: PhantomData,
         }
     }
-    /// Allocate storage after validating all named task/fixture connections.
+    /// Allocate storage after validating all task/fixture connections.
     pub fn allocate(self) -> UnitTestStorage {
         self.try_allocate().expect("could not allocate unit test")
     }

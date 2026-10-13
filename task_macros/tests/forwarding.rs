@@ -53,7 +53,7 @@ impl Merge {
 }
 
 #[test]
-fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
+fn bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
     for shared in [false, true] {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut plan = GraphPlan::default();
@@ -293,7 +293,7 @@ impl Relay {
     }
 }
 #[test]
-fn nested_named_bundle_retention_propagates_to_original_sources() {
+fn nested_bundle_retention_propagates_to_original_sources() {
     let mut plan = GraphPlan::default();
     TaskRegistration::new("merge", Merge, CallbackSchedule::default())
         .register(&mut plan)
@@ -381,7 +381,7 @@ struct One<'s> {
 }
 
 #[test]
-fn named_bundle_rebinds_after_separately_owned_sources_are_destroyed() {
+fn bundle_rebinds_after_separately_owned_sources_are_destroyed() {
     let mut plan = GraphPlan::default();
     let channel = plan.bundle::<(), One<'static>>("forwarded").unwrap();
     let output = channel.publisher(1);

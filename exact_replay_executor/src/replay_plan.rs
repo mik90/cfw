@@ -1,4 +1,4 @@
-//! Exact per-port bindings planned before allocating a named graph.
+//! Exact per-port bindings planned before allocating graph storage.
 //!
 //! ```no_run
 //! use exact_replay_executor::{ExactReplayPlan, ExactReplayExecutor, ReplayLog};

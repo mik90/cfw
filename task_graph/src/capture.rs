@@ -1,4 +1,4 @@
-//! Lifetime-preserving serialization capabilities for planned named captures.
+//! Lifetime-preserving serialization capabilities for planned captures.
 use crate::{BuildError, GraphBindings, GraphPlan};
 use std::{collections::BTreeSet, marker::PhantomData};
 use task::{Subscriber, SubscriberPolicy, loggable::Loggable, message::MessageHeader};
@@ -149,11 +149,11 @@ fn native<T: Loggable + Send + Sync + 'static>(
 }
 
 /// All subscribers are declared before storage allocation and bound afterwards.
-pub struct NamedCapturePlan {
+pub struct CapturePlan {
     bindings: Vec<CaptureBinding>,
     channels: Vec<String>,
 }
-impl NamedCapturePlan {
+impl CapturePlan {
     pub fn channels(&self) -> &[String] {
         &self.channels
     }
@@ -199,7 +199,7 @@ impl GraphPlan {
         &mut self,
         capacity: usize,
         excluded: &BTreeSet<String>,
-    ) -> Result<NamedCapturePlan, BuildError> {
+    ) -> Result<CapturePlan, BuildError> {
         if capacity == 0 {
             return Err(BuildError("capture capacity must be nonzero".into()));
         }
@@ -215,7 +215,7 @@ impl GraphPlan {
                 declare(self, channel, capacity)
             })
             .collect::<Result<_, _>>()?;
-        Ok(NamedCapturePlan { bindings, channels })
+        Ok(CapturePlan { bindings, channels })
     }
 }
 

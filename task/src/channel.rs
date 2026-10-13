@@ -88,7 +88,7 @@ pub struct ChannelTopology {
     pub sources: Vec<Option<Vec<usize>>>,
 }
 
-/// Runtime endpoint declarations for one named channel.
+/// Runtime endpoint declarations for one channel.
 ///
 /// Endpoints may belong to different tasks. Every publisher connects to every
 /// subscriber in this plan and gets its own arena. Distinct channel names can
@@ -316,7 +316,7 @@ impl<T> ChannelPlan<T> {
     }
 }
 
-/// Fixed arenas and endpoint configuration for one named channel.
+/// Fixed arenas and endpoint configuration for one channel.
 pub struct ChannelStorage<T> {
     name: Arc<str>,
     publishers: Vec<PublisherStorage<T>>,

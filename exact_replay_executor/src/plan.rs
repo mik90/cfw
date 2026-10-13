@@ -154,7 +154,7 @@ impl<T> ReplayInputPlan<T> {
     }
 }
 pub(crate) type Port = (String, usize);
-/// Isolated contextual hydration for a named heterogeneous source bundle.
+/// Isolated contextual hydration for a heterogeneous source bundle.
 pub struct BundleReplayInputPlan<M, S: task::ForwardedSources> {
     plan: ReplayInputPlan<task::Forwarded<M, S::Bound<'static>>>,
 }

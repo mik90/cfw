@@ -170,7 +170,7 @@ fn topology_exposes_ports_capacities_and_conflicting_declarations() {
 }
 
 #[test]
-fn scoped_and_explicit_forms_share_named_binding_and_send_time() {
+fn scoped_and_explicit_forms_share_binding_and_send_time() {
     for scoped in [false, true] {
         let mut builder = UnitTestExecutorBuilder::with_config(UnitTestExecutorConfig {
             start_time: at(100),
@@ -277,7 +277,7 @@ impl RetainForwarded {
     }
 }
 #[test]
-fn named_borrowed_tasks_budget_nonclone_sources_and_destroy_retained_values() {
+fn borrowed_tasks_budget_nonclone_sources_and_destroy_retained_values() {
     let drops = Arc::new(AtomicUsize::new(0));
     let sum = Arc::new(AtomicUsize::new(0));
     let mut builder = UnitTestExecutorBuilder::new();

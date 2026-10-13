@@ -98,7 +98,7 @@ fn main() {
         }
         assert_eq!(retained.load(Ordering::SeqCst), 32);
     });
-    println!("Retained 32 detections with named image and calibration sources");
+    println!("Retained 32 detections with image and calibration sources");
 }
 
 #[test]

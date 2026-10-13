@@ -1,4 +1,4 @@
-//! Named, heterogeneous forwarding families and explicit retention dependencies.
+//! Heterogeneous forwarding families and explicit retention dependencies.
 use crate::plan::{Binding, Channel, Plan, Stored};
 use crate::{BuildError, GraphBindings, GraphPlan, capture, port_capture, ports, topology};
 use std::marker::PhantomData;

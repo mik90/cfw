@@ -1,4 +1,4 @@
-//! Graph capture planning for named graphs, before arena allocation.
+//! Graph capture planning before arena allocation.
 //!
 //! ```
 //! use logging::{GraphCapturePlan, CaptureOptions};
@@ -17,7 +17,7 @@
 //! ```
 use crate::Capture;
 use std::collections::BTreeSet;
-use task_graph::{BuildError, GraphBindings, GraphPlan, capture::NamedCapturePlan};
+use task_graph::{BuildError, GraphBindings, GraphPlan, capture::CapturePlan};
 
 #[derive(Clone, Debug)]
 pub struct CaptureOptions {
@@ -38,7 +38,7 @@ impl CaptureOptions {
     }
 }
 
-pub struct GraphCapturePlan(NamedCapturePlan);
+pub struct GraphCapturePlan(CapturePlan);
 impl GraphCapturePlan {
     /// Register all tasks first. Each discovered data channel gets one capture.
     pub fn declare(plan: &mut GraphPlan, options: &CaptureOptions) -> Result<Self, BuildError> {

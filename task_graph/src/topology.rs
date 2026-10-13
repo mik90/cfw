@@ -1,7 +1,7 @@
 //! Owned, deterministic graph inspection before or after storage allocation.
 use task::recording::Transport;
 
-pub use task::named_channels::ChannelTopology;
+pub use task::channel::ChannelTopology;
 #[derive(Clone, Debug)]
 pub struct PortTopology {
     pub forwardable: bool,

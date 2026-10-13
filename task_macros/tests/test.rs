@@ -462,7 +462,7 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
 }
 
 #[test]
-fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
+fn forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     use task_graph::{GraphPlan, TaskRegistration};
     let mut plan = GraphPlan::default();
     let mut registration =

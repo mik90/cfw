@@ -44,7 +44,7 @@ impl ReplayOptions {
 /// # Ok::<(), task_graph::BuildError>(())
 /// ```
 pub struct GraphReplayPlan {
-    plan: task_graph::replay::NamedReplayPlan,
+    plan: task_graph::replay::ReplayPlan,
     excluded: BTreeSet<String>,
 }
 impl GraphReplayPlan {

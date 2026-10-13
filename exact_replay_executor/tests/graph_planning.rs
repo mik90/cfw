@@ -290,7 +290,7 @@ fn pair_tasks(plan: &mut GraphPlan, reverse: bool) {
     }
 }
 #[test]
-fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
+fn heterogeneous_bundles_replay_logged_and_reproduced_sources() {
     use exact_replay_executor::{BundleReplayInputPlan, ExplicitReplayPort};
     use task::loggable::Loggable;
     for logged in [false, true] {
@@ -450,7 +450,7 @@ fn forwarding_tasks(plan: &mut GraphPlan, reverse: bool) {
     }
 }
 #[test]
-fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
+fn borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
     use exact_replay_executor::{BundleReplayInputPlan, ExplicitReplayPort};
     for logged in [false, true] {
         let bytes = Bytes::default();

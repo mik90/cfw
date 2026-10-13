@@ -164,7 +164,7 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
 }
 
 #[test]
-fn factories_connect_borrowed_forwarding_across_named_channels() {
+fn factories_connect_borrowed_forwarding_across_channels() {
     let mut sources = ChannelPlan::<u64>::new("source");
     let source_key = sources.publisher(1);
     let forward_input = sources.subscriber(1);
