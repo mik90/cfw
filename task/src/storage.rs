@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::marker::PhantomData;
 
 use base::arena::Arena;
@@ -14,7 +13,6 @@ pub enum StorageError {
     ForeignPublisherKey,
     InvalidPublisherIndex(usize),
     InvalidConnection(String),
-    DuplicateChannel(String),
     Transport(String),
 }
 
@@ -121,72 +119,17 @@ pub struct ChannelEndpoints<'storage, T> {
     pub subscribers: Vec<Subscriber<'storage, T>>,
 }
 
-pub(super) mod private {
-    pub trait Sealed {}
-}
-
-/// A publisher storage plan, a named channel plan, an empty layout, or a pair of layouts.
-/// Sealed so validation and allocation cannot disagree in external implementations.
-pub trait StorageLayout: private::Sealed {
-    type Storage;
-
-    #[doc(hidden)]
-    fn validate(&self) -> Result<(), StorageError>;
-    #[doc(hidden)]
-    fn validate_channel_names(&self, _names: &mut HashSet<String>) -> Result<(), StorageError> {
-        Ok(())
-    }
-    #[doc(hidden)]
-    fn allocate(self) -> Result<Self::Storage, StorageError>;
-}
-
-impl<T> private::Sealed for PublisherStoragePlan<T> {}
-
-impl<T> StorageLayout for PublisherStoragePlan<T> {
-    type Storage = PublisherStorage<T>;
-
-    fn validate(&self) -> Result<(), StorageError> {
+impl<T> PublisherStoragePlan<T> {
+    pub fn validate(&self) -> Result<(), StorageError> {
         self.capacity().map(|_| ())
     }
 
-    fn allocate(self) -> Result<Self::Storage, StorageError> {
+    /// Validate the capacity and allocate this publisher's arena.
+    pub fn allocate(self) -> Result<PublisherStorage<T>, StorageError> {
         Ok(PublisherStorage {
-            arena: Arena::new(self.capacity().expect("storage plan must be validated")),
+            arena: Arena::new(self.capacity()?),
             loan_capacity: self.loan_capacity,
             subscribers: self.subscribers,
         })
-    }
-}
-
-impl private::Sealed for () {}
-
-impl StorageLayout for () {
-    type Storage = ();
-
-    fn validate(&self) -> Result<(), StorageError> {
-        Ok(())
-    }
-    fn allocate(self) -> Result<Self::Storage, StorageError> {
-        Ok(())
-    }
-}
-
-impl<L: StorageLayout, R: StorageLayout> private::Sealed for (L, R) {}
-
-impl<L: StorageLayout, R: StorageLayout> StorageLayout for (L, R) {
-    type Storage = (L::Storage, R::Storage);
-
-    fn validate(&self) -> Result<(), StorageError> {
-        self.0.validate()?;
-        self.1.validate()
-    }
-
-    fn allocate(self) -> Result<Self::Storage, StorageError> {
-        Ok((self.0.allocate()?, self.1.allocate()?))
-    }
-
-    fn validate_channel_names(&self, names: &mut HashSet<String>) -> Result<(), StorageError> {
-        self.0.validate_channel_names(names)?;
-        self.1.validate_channel_names(names)
     }
 }

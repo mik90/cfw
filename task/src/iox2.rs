@@ -337,10 +337,8 @@ impl<T> Iox2EventPlan for Iox2ChannelPlan<T> {
         self.notifier()
     }
 }
-impl<T> crate::storage::private::Sealed for Iox2ChannelPlan<T> {}
-impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2ChannelPlan<T> {
-    type Storage = Iox2ChannelStorage<T>;
-    fn validate(&self) -> Result<(), StorageError> {
+impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelPlan<T> {
+    pub fn validate(&self) -> Result<(), StorageError> {
         u32::try_from(self.publishers.len()).map_err(|_| StorageError::CapacityOverflow)?;
         for publisher in &self.publishers {
             u32::try_from(publisher.capacity).map_err(|_| StorageError::CapacityOverflow)?;
@@ -376,13 +374,9 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> StorageLayout for Iox2Chan
         }
         Ok(())
     }
-    fn validate_channel_names(&self, names: &mut HashSet<String>) -> Result<(), StorageError> {
-        if !names.insert(self.name.to_string()) {
-            return Err(StorageError::DuplicateChannel(self.name.to_string()));
-        }
-        Ok(())
-    }
-    fn allocate(self) -> Result<Self::Storage, StorageError> {
+    /// Validate endpoint and service requirements before opening any IPC service.
+    pub fn allocate(self) -> Result<Iox2ChannelStorage<T>, StorageError> {
+        self.validate()?;
         let name = ServiceName::new(&self.name).map_err(transport)?;
         let data = if self.publishers.is_empty() && self.subscribers.is_empty() {
             None
@@ -439,6 +433,9 @@ pub struct Iox2ChannelStorage<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     plan: Iox2ChannelPlan<T>,
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
+    pub fn name(&self) -> &str {
+        self.plan.name()
+    }
     pub fn build(&self) -> Result<Iox2Bindings<T>, StorageError> {
         let mut publishers = Vec::new();
         for (index, spec) in self.plan.publishers.iter().enumerate() {

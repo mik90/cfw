@@ -291,12 +291,8 @@ impl<T> ChannelPlan<T> {
     }
 }
 
-impl<T> private::Sealed for ChannelPlan<T> {}
-
-impl<T> StorageLayout for ChannelPlan<T> {
-    type Storage = ChannelStorage<T>;
-
-    fn validate(&self) -> Result<(), StorageError> {
+impl<T> ChannelPlan<T> {
+    pub fn validate(&self) -> Result<(), StorageError> {
         u32::try_from(self.publishers.len()).map_err(|_| StorageError::CapacityOverflow)?;
         // Validate disconnected subscribers too; they still own bounded queues.
         if self.subscribers.iter().any(|s| s.capacity == 0) {
@@ -308,14 +304,9 @@ impl<T> StorageLayout for ChannelPlan<T> {
         Ok(())
     }
 
-    fn validate_channel_names(&self, names: &mut HashSet<String>) -> Result<(), StorageError> {
-        if !names.insert(self.name.to_string()) {
-            return Err(StorageError::DuplicateChannel(self.name.to_string()));
-        }
-        Ok(())
-    }
-
-    fn allocate(self) -> Result<Self::Storage, StorageError> {
+    /// Validate every endpoint before allocating any publisher arena.
+    pub fn allocate(self) -> Result<ChannelStorage<T>, StorageError> {
+        self.validate()?;
         let publishers = self
             .publishers
             .iter()

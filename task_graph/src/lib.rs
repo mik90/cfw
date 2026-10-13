@@ -7,9 +7,7 @@ mod plan;
 pub mod port_capture;
 pub mod ports;
 pub mod replay;
-pub mod storage;
 pub mod topology;
-pub use storage::{Storage, StoragePlan};
 
 pub use application::ApplicationBuilder;
 pub use graph::{

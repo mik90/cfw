@@ -43,11 +43,18 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
         }
     }
 
-    /// Retain the finalized channel interner, including fixture-only channels.
-    pub fn with_storage<S>(storage: &crate::Storage<S>) -> Self {
+    /// Include channels without callback endpoints, such as fixture-only channels.
+    /// Names are sorted to keep their IDs independent of declaration order.
+    pub fn with_channel_names(names: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        let mut names: Vec<_> = names.into_iter().map(|name| name.as_ref().to_owned()).collect();
+        names.sort();
+        names.dedup();
+        let mut channel_names = ChannelNameInterner::new();
+        for name in names { channel_names.intern(&name); }
+        channel_names.shrink_to_fit();
         Self {
             factories: Vec::new(),
-            channel_names: storage.channel_names().clone(),
+            channel_names: Arc::new(channel_names),
         }
     }
 
