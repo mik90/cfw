@@ -4,7 +4,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use task::{ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task::{ChannelPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 use testing::{UnitTestExecutor, UnitTestExecutorConfig};
@@ -28,7 +29,7 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
     let declaration = Double::declare(&mut input, &mut output).unwrap();
     let sender = input.publisher(1);
     let capture = output.subscriber(4);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let (input, output) = storage.channels();
     let input = input.build();
     let output = output.build();
@@ -86,7 +87,7 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
     let mut plan = ChannelPlan::<u64>::new("fixture_only");
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(2);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::with_storage(&storage);
     graph.add_scheduled_callback(
@@ -122,7 +123,7 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
     let mut plan = ChannelPlan::<u64>::new("fixture_only");
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut executor = UnitTestExecutor::new_with_graph(
         GraphBuilder::with_storage(&storage).build().unwrap(),
@@ -159,7 +160,7 @@ fn retained_payload_drops_exactly_once_after_all_endpoints_and_executor() {
     let mut plan = ChannelPlan::new("tracked");
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut executor = UnitTestExecutor::new_with_graph(
         GraphBuilder::with_storage(&storage).build().unwrap(),
@@ -191,7 +192,7 @@ fn failed_step_cancels_capture_and_poisons_executor() {
     let declaration = Fails::declare(&mut plan).unwrap();
     let capture = plan.subscriber(1);
     let sender = plan.publisher(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::with_storage(&storage);
     graph.add_scheduled_callback(

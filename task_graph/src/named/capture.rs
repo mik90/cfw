@@ -1,9 +1,7 @@
 //! Lifetime-preserving serialization capabilities for planned named captures.
-use super::{BuildError, NamedBindings, NamedPlan};
+use super::{BuildError, GraphBindings, GraphPlan};
 use std::{collections::BTreeSet, marker::PhantomData};
-use task::{
-    Subscriber, SubscriberKey, SubscriberPolicy, loggable::Loggable, message::MessageHeader,
-};
+use task::{Subscriber, SubscriberPolicy, loggable::Loggable, message::MessageHeader};
 
 pub type CaptureError = Box<dyn std::error::Error + Send + Sync>;
 pub type CaptureVisitor<'a> = dyn FnMut(MessageHeader, &[u8]) -> Result<(), CaptureError> + 'a;
@@ -97,96 +95,61 @@ impl<T: Loggable + Send + Sync> SerializedCapture for NativeCapture<'_, T> {
     }
 }
 
-pub(super) trait CaptureDeclaration {
-    fn declare_output(
-        &self,
-        plan: &mut NamedPlan,
-        port: &super::exact::PlannedPort,
-    ) -> Result<Box<dyn super::exact::ExactFactory>, BuildError>;
-    fn declare(
-        &self,
-        plan: &mut NamedPlan,
-        channel: &str,
-        capacity: usize,
-    ) -> Result<Box<dyn CaptureFactory>, BuildError>;
+pub(super) type CaptureBinding = Box<
+    dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<Box<dyn SerializedCapture + 'a>, BuildError>,
+>;
+
+#[derive(Clone, Copy)]
+pub(super) struct CaptureDeclaration {
+    pub declare_output: fn(
+        &mut GraphPlan,
+        &super::exact::PlannedPort,
+    ) -> Result<super::exact::ExactBinding, BuildError>,
+    pub declare: fn(&mut GraphPlan, &str, usize) -> Result<CaptureBinding, BuildError>,
 }
-pub(super) trait CaptureFactory {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-    ) -> Result<Box<dyn SerializedCapture + 'a>, BuildError>;
-}
-struct NativeDeclaration<T>(PhantomData<fn() -> T>);
-struct NativeFactory<T> {
-    channel: String,
-    subscriber: SubscriberKey<T>,
-}
-impl<T: Loggable + Send + Sync + 'static> CaptureDeclaration for NativeDeclaration<T> {
-    fn declare_output(
-        &self,
-        plan: &mut NamedPlan,
-        port: &super::exact::PlannedPort,
-    ) -> Result<Box<dyn super::exact::ExactFactory>, BuildError> {
-        Ok(Box::new(NativeOutputFactory {
-            channel: port.channel.clone(),
-            publisher: plan.native::<T>(&port.channel)?.publisher_key(port.index),
-            capacity: port.capacity,
-        }))
-    }
-    fn declare(
-        &self,
-        plan: &mut NamedPlan,
-        channel: &str,
-        capacity: usize,
-    ) -> Result<Box<dyn CaptureFactory>, BuildError> {
-        let subscriber = plan.native::<T>(channel)?.subscriber_with_policy(
-            capacity,
-            SubscriberPolicy {
-                trigger: false,
-                keep_across_runs: true,
-            },
-        );
-        Ok(Box::new(NativeFactory {
-            channel: channel.into(),
-            subscriber,
-        }))
-    }
-}
-struct NativeOutputFactory<T> {
-    channel: String,
-    publisher: task::PublisherKey<T>,
-    capacity: usize,
-}
-impl<T: Loggable + Send + Sync + 'static> super::exact::ExactFactory for NativeOutputFactory<T> {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-    ) -> Result<super::exact::ExactPort<'a>, BuildError> {
+
+fn native_output<T: Loggable + Send + Sync + 'static>(
+    plan: &mut GraphPlan,
+    port: &super::exact::PlannedPort,
+) -> Result<super::exact::ExactBinding, BuildError> {
+    let publisher = plan.native::<T>(&port.channel)?.publisher_key(port.index);
+    let channel = port.channel.clone();
+    let capacity = port.capacity;
+    Ok(Box::new(move |bindings| {
         Ok(super::exact::ExactPort::Output(
             bindings
-                .native::<T>(&self.channel)?
-                .configure_publisher(&self.publisher, |publisher| {
-                    super::port_capture::PortCapture::native(publisher, self.capacity)
+                .native::<T>(&channel)?
+                .configure_publisher(&publisher, |publisher| {
+                    super::port_capture::PortCapture::native(publisher, capacity)
                 })?,
         ))
-    }
+    }))
 }
-impl<T: Loggable + Send + Sync + 'static> CaptureFactory for NativeFactory<T> {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-    ) -> Result<Box<dyn SerializedCapture + 'a>, BuildError> {
+fn native<T: Loggable + Send + Sync + 'static>(
+    plan: &mut GraphPlan,
+    channel: &str,
+    capacity: usize,
+) -> Result<CaptureBinding, BuildError> {
+    let subscriber = plan.native::<T>(channel)?.subscriber_with_policy(
+        capacity,
+        SubscriberPolicy {
+            trigger: false,
+            keep_across_runs: true,
+        },
+    );
+    let channel = channel.to_owned();
+    Ok(Box::new(move |bindings| {
         Ok(Box::new(NativeCapture::new(
             bindings
-                .native::<T>(&self.channel)?
-                .take_subscriber(&self.subscriber)?,
+                .native::<T>(&channel)?
+                .take_subscriber(&subscriber)?,
         )))
-    }
+    }))
 }
 
 /// All subscribers are declared before storage allocation and bound afterwards.
 pub struct NamedCapturePlan {
-    factories: Vec<Box<dyn CaptureFactory>>,
+    bindings: Vec<CaptureBinding>,
     channels: Vec<String>,
 }
 impl NamedCapturePlan {
@@ -195,15 +158,15 @@ impl NamedCapturePlan {
     }
     pub fn bind<'a>(
         self,
-        bindings: &NamedBindings<'a>,
+        bindings: &GraphBindings<'a>,
     ) -> Result<Vec<Box<dyn SerializedCapture + 'a>>, BuildError> {
-        self.factories
+        self.bindings
             .into_iter()
-            .map(|factory| factory.bind(bindings))
+            .map(|bind| bind(bindings))
             .collect()
     }
 }
-impl NamedPlan {
+impl GraphPlan {
     /// Register a custom codec or a manually declared native loggable channel.
     pub fn register_loggable_native<T: Loggable + Send + Sync + 'static>(
         &mut self,
@@ -213,13 +176,21 @@ impl NamedPlan {
             return Err(BuildError(format!("unknown channel '{channel}'")));
         }
         self.native::<T>(channel)?;
-        self.captures
-            .entry(channel.into())
-            .or_insert_with(|| Box::new(NativeDeclaration::<T>(PhantomData)));
+        self.channels
+            .get_mut(channel)
+            .unwrap()
+            .capture
+            .get_or_insert(CaptureDeclaration {
+                declare: native::<T>,
+                declare_output: native_output::<T>,
+            });
         Ok(())
     }
     pub fn loggable_channels(&self) -> impl Iterator<Item = &str> {
-        self.captures.keys().map(String::as_str)
+        self.channels
+            .iter()
+            .filter(|(_, channel)| channel.capture.is_some())
+            .map(|(name, _)| name.as_str())
     }
     /// Call after registering tasks, before allocating their storage.
     /// Exclusions refer to resolved channel names; unmatched exclusions are harmless.
@@ -231,23 +202,19 @@ impl NamedPlan {
         if capacity == 0 {
             return Err(BuildError("capture capacity must be nonzero".into()));
         }
-        let declarations = std::mem::take(&mut self.captures);
-        let result = (|| {
-            let mut factories = Vec::new();
-            let mut channels = Vec::new();
-            for (channel, declaration) in &declarations {
-                if !excluded.contains(channel) {
-                    factories.push(declaration.declare(self, channel, capacity)?);
-                    channels.push(channel.clone());
-                }
-            }
-            Ok(NamedCapturePlan {
-                factories,
-                channels,
+        let channels: Vec<_> = self
+            .loggable_channels()
+            .filter(|name| !excluded.contains(*name))
+            .map(str::to_owned)
+            .collect();
+        let bindings = channels
+            .iter()
+            .map(|channel| {
+                let declare = self.channels[channel].capture.unwrap().declare;
+                declare(self, channel, capacity)
             })
-        })();
-        self.captures = declarations;
-        result
+            .collect::<Result<_, _>>()?;
+        Ok(NamedCapturePlan { bindings, channels })
     }
 }
 
@@ -259,17 +226,17 @@ impl<T> Default for CaptureProbe<T> {
     }
 }
 pub trait MaybeCapture {
-    fn register_native(&self, _plan: &mut NamedPlan, _channel: &str) -> Result<(), BuildError> {
+    fn register_native(&self, _plan: &mut GraphPlan, _channel: &str) -> Result<(), BuildError> {
         Ok(())
     }
     #[cfg(feature = "iceoryx2")]
-    fn register_ipc(&self, _plan: &mut NamedPlan, _channel: &str) -> Result<(), BuildError> {
+    fn register_ipc(&self, _plan: &mut GraphPlan, _channel: &str) -> Result<(), BuildError> {
         Ok(())
     }
 }
 impl<T> MaybeCapture for CaptureProbe<T> {}
 impl<T: Loggable + Send + Sync + 'static> CaptureProbe<T> {
-    pub fn register_native(&self, plan: &mut NamedPlan, channel: &str) -> Result<(), BuildError> {
+    pub fn register_native(&self, plan: &mut GraphPlan, channel: &str) -> Result<(), BuildError> {
         plan.register_loggable_native::<T>(channel)
     }
 }
@@ -279,7 +246,7 @@ mod ipc {
     use super::*;
     use iceoryx2::prelude::ZeroCopySend;
     use std::fmt::Debug;
-    use task::iox2::{Iox2Subscriber, Iox2SubscriberKey};
+    use task::iox2::Iox2Subscriber;
     pub struct IpcCapture<T: Debug + ZeroCopySend + Send + Sync + 'static>(pub Iox2Subscriber<T>);
     impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static> SerializedCapture
         for IpcCapture<T>
@@ -316,73 +283,37 @@ mod ipc {
             result
         }
     }
-    struct IpcDeclaration<T>(PhantomData<fn() -> T>);
-    struct IpcFactory<T> {
-        channel: String,
-        subscriber: Iox2SubscriberKey<T>,
-    }
-    impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static> CaptureDeclaration
-        for IpcDeclaration<T>
-    {
-        fn declare_output(
-            &self,
-            plan: &mut NamedPlan,
-            port: &super::super::exact::PlannedPort,
-        ) -> Result<Box<dyn super::super::exact::ExactFactory>, BuildError> {
-            Ok(Box::new(IpcOutputFactory {
-                channel: port.channel.clone(),
-                publisher: plan.ipc::<T>(&port.channel)?.publisher_key(port.index),
-                capacity: port.capacity,
-            }))
-        }
-        fn declare(
-            &self,
-            plan: &mut NamedPlan,
-            channel: &str,
-            capacity: usize,
-        ) -> Result<Box<dyn CaptureFactory>, BuildError> {
-            let subscriber = plan.ipc::<T>(channel)?.subscriber(capacity);
-            Ok(Box::new(IpcFactory {
-                channel: channel.into(),
-                subscriber,
-            }))
-        }
-    }
-    struct IpcOutputFactory<T> {
-        channel: String,
-        publisher: task::iox2::Iox2PublisherKey<T>,
-        capacity: usize,
-    }
-    impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>
-        super::super::exact::ExactFactory for IpcOutputFactory<T>
-    {
-        fn bind<'a>(
-            self: Box<Self>,
-            bindings: &NamedBindings<'a>,
-        ) -> Result<super::super::exact::ExactPort<'a>, BuildError> {
+    fn declare_output<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>(
+        plan: &mut GraphPlan,
+        port: &super::super::exact::PlannedPort,
+    ) -> Result<super::super::exact::ExactBinding, BuildError> {
+        let publisher = plan.ipc::<T>(&port.channel)?.publisher_key(port.index);
+        let channel = port.channel.clone();
+        let capacity = port.capacity;
+        Ok(Box::new(move |bindings| {
             Ok(super::super::exact::ExactPort::Output(
-                bindings.ipc::<T>(&self.channel)?.configure_publisher(
-                    &self.publisher,
-                    |publisher| {
-                        super::super::port_capture::PortCapture::ipc(publisher, self.capacity)
-                    },
-                )?,
-            ))
-        }
-    }
-    impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static> CaptureFactory for IpcFactory<T> {
-        fn bind<'a>(
-            self: Box<Self>,
-            bindings: &NamedBindings<'a>,
-        ) -> Result<Box<dyn SerializedCapture + 'a>, BuildError> {
-            Ok(Box::new(IpcCapture(
                 bindings
-                    .ipc::<T>(&self.channel)?
-                    .take_subscriber(&self.subscriber)?,
-            )))
-        }
+                    .ipc::<T>(&channel)?
+                    .configure_publisher(&publisher, |publisher| {
+                        super::super::port_capture::PortCapture::ipc(publisher, capacity)
+                    })?,
+            ))
+        }))
     }
-    impl NamedPlan {
+    fn declare<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>(
+        plan: &mut GraphPlan,
+        channel: &str,
+        capacity: usize,
+    ) -> Result<CaptureBinding, BuildError> {
+        let subscriber = plan.ipc::<T>(channel)?.subscriber(capacity);
+        let channel = channel.to_owned();
+        Ok(Box::new(move |bindings| {
+            Ok(Box::new(IpcCapture(
+                bindings.ipc::<T>(&channel)?.take_subscriber(&subscriber)?,
+            )))
+        }))
+    }
+    impl GraphPlan {
         pub fn register_loggable_ipc<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>(
             &mut self,
             channel: &str,
@@ -391,14 +322,19 @@ mod ipc {
                 return Err(BuildError(format!("unknown channel '{channel}'")));
             }
             self.ipc::<T>(channel)?;
-            self.captures
-                .entry(channel.into())
-                .or_insert_with(|| Box::new(IpcDeclaration::<T>(PhantomData)));
+            self.channels
+                .get_mut(channel)
+                .unwrap()
+                .capture
+                .get_or_insert(CaptureDeclaration {
+                    declare: declare::<T>,
+                    declare_output: declare_output::<T>,
+                });
             Ok(())
         }
     }
     impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static> CaptureProbe<T> {
-        pub fn register_ipc(&self, plan: &mut NamedPlan, channel: &str) -> Result<(), BuildError> {
+        pub fn register_ipc(&self, plan: &mut GraphPlan, channel: &str) -> Result<(), BuildError> {
             plan.register_loggable_ipc::<T>(channel)
         }
     }

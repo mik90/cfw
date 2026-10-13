@@ -508,8 +508,9 @@ mod tests {
         );
         plan.reserve_retained(&pub_key, 2).unwrap();
         assert_eq!(plan.publisher_capacity(&pub_key).unwrap(), 6);
-        let storage = crate::GraphPlan::new(plan).allocate().unwrap();
-        let bindings = storage.channels().build();
+        plan.validate().unwrap();
+        let storage = plan.allocate().unwrap();
+        let bindings = storage.build();
         assert!(matches!(
             bindings.take_publisher(&invalid_pub),
             Err(EndpointError::InvalidIndex(9))

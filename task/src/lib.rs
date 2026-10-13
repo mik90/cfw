@@ -35,7 +35,6 @@ pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninit
 pub use publisher::{LoanError, Publisher};
 pub use replay_publisher::{PublisherOps, ReplayError, ReplayPublisher};
 pub use storage::{
-    ChannelEndpoints, GraphPlan, GraphStorage, PublisherStorage, PublisherStoragePlan,
-    StorageError, StorageLayout,
+    ChannelEndpoints, PublisherStorage, PublisherStoragePlan, StorageError, StorageLayout,
 };
 pub use subscriber::{Subscriber, SubscriberPolicy};

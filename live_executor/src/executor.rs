@@ -359,7 +359,7 @@ mod tests {
             &runtime,
         );
         let event = plan.events(1);
-        let storage = task::GraphPlan::new(plan).allocate().unwrap();
+        let storage = task_graph::StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build().unwrap();
         let mut builder = GraphBuilder::new();
         builder.add_callback("events", || Ok(EventCallback(bindings.take_event(&event)?)));

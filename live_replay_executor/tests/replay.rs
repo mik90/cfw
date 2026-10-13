@@ -11,10 +11,10 @@ use std::{
     time::Duration,
 };
 use task::{
-    ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, executor::TimeSource,
-    time::FrameworkTime,
+    ChannelPlan, LoanError, Publisher, RequiredInput, executor::TimeSource, time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 fn at(n: i64) -> FrameworkTime {
     FrameworkTime::from_nanoseconds(n)
@@ -91,7 +91,7 @@ fn pause_resume_and_eof_drain_preserve_the_entire_native_pipeline() {
     let b = Double::declare(&mut middle, &mut output).unwrap();
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let capture = CapturePlan::declare(&mut output, 1);
-    let storage = GraphPlan::new((input, (middle, output)))
+    let storage = StoragePlan::new((input, (middle, output)))
         .allocate()
         .unwrap();
     let input = storage.channels().0.build();
@@ -148,7 +148,7 @@ fn stopping_a_paused_replay_and_controller_panic_join_all_threads() {
     for panic in [false, true] {
         let mut plan = ChannelPlan::<u64>::new("input");
         let source = ReplaySourcePlan::declare(&mut plan, 1);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         let reader =
             SortedLogStreamReader::from_entries(vec![row(0, b"1")], HashMap::new()).unwrap();
@@ -184,7 +184,7 @@ fn stopping_a_paused_replay_and_controller_panic_join_all_threads() {
 fn malformed_payload_reports_input_failure_and_empty_logs_complete() {
     let mut plan = ChannelPlan::<u64>::new("input");
     let source = ReplaySourcePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let reader = SortedLogStreamReader::from_entries(vec![row(0, b"bad")], HashMap::new()).unwrap();
     let replay = LiveReplayExecutor::new(
@@ -228,7 +228,7 @@ fn configured_tail_allows_periodic_consumers_before_quiescing_timers() {
     let declaration = Poll::declare(&mut input, &mut output).unwrap();
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let capture = CapturePlan::declare(&mut output, 2);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let input = storage.channels().0.build();
     let output = storage.channels().1.build();
     let mut graph = GraphBuilder::new();
@@ -280,7 +280,7 @@ impl Panics {
 fn drain_timeout_and_worker_failure_are_not_successful_completion() {
     let mut plan = ChannelPlan::new("feedback");
     let declaration = FeedbackDeclaration::from_keys(plan.subscriber(1), plan.publisher(1));
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::new();
     graph.add_scheduled_callback("feedback", task_graph::CallbackSchedule::on_start(), || {
@@ -302,7 +302,7 @@ fn drain_timeout_and_worker_failure_are_not_successful_completion() {
     let mut input = ChannelPlan::new("input");
     let declaration = Panics::declare(&mut input).unwrap();
     let source = ReplaySourcePlan::declare(&mut input, 1);
-    let storage = GraphPlan::new(input).allocate().unwrap();
+    let storage = StoragePlan::new(input).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::new();
     graph.add_callback("panic", || Ok(Panics.bind(declaration, &bindings)?));

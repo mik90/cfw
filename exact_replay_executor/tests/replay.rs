@@ -8,8 +8,9 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
-use task::{ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task::{ChannelPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 fn at(n: i64) -> FrameworkTime {
@@ -113,7 +114,7 @@ fn recorded(log_source: bool) -> ReplayLog {
         let b = Transform::declare(&mut source, &mut output).unwrap();
         let source_capture = log_source.then(|| CapturePlan::declare(&mut source, 4));
         let output_capture = CapturePlan::declare(&mut output, 4);
-        let storage = GraphPlan::new((source, output)).allocate().unwrap();
+        let storage = StoragePlan::new((source, output)).allocate().unwrap();
         let source = storage.channels().0.build();
         let output = storage.channels().1.build();
         let mut graph = GraphBuilder::with_storage(&storage);
@@ -163,7 +164,7 @@ fn replay<R>(
     let a = Source::declare(&mut source).unwrap();
     let b = Transform::declare(&mut source, &mut output).unwrap();
     let hydration = ReplayInputPlan::declare(&mut source, b.input_key()).unwrap();
-    let storage = GraphPlan::new((source, output)).allocate().unwrap();
+    let storage = StoragePlan::new((source, output)).allocate().unwrap();
     let source = storage.channels().0.build();
     let output = storage.channels().1.build();
     let mut bindings = ReplayBindings::new();
@@ -469,7 +470,7 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
     let mut output = ChannelPlan::new("output");
     let a = Source::declare(&mut source).unwrap();
     let b = Transform::declare(&mut source, &mut output).unwrap();
-    let storage = GraphPlan::new((source, output)).allocate().unwrap();
+    let storage = StoragePlan::new((source, output)).allocate().unwrap();
     let source = storage.channels().0.build();
     let output = storage.channels().1.build();
     let mut graph = GraphBuilder::new();
@@ -632,7 +633,7 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
             .unwrap();
         let capture = CapturePlan::declare(&mut shared, 2);
         let out = CapturePlan::declare(&mut result, 1);
-        let storage = GraphPlan::new((shared, result)).allocate().unwrap();
+        let storage = StoragePlan::new((shared, result)).allocate().unwrap();
         let shared = storage.channels().0.build();
         let result = storage.channels().1.build();
         let mut graph = GraphBuilder::new();
@@ -681,7 +682,7 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
     );
     let first = ReplayInputPlan::declare(&mut shared, declaration.first_key()).unwrap();
     let second = ReplayInputPlan::declare(&mut shared, declaration.second_key()).unwrap();
-    let storage = GraphPlan::new((shared, result)).allocate().unwrap();
+    let storage = StoragePlan::new((shared, result)).allocate().unwrap();
     let shared = storage.channels().0.build();
     let result = storage.channels().1.build();
     let mut ports = ReplayBindings::new();
@@ -739,7 +740,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
         let mut plan = ChannelPlan::new("shared");
         let declaration = TwoOutputsDeclaration::from_keys(plan.publisher(1), plan.publisher(1));
         let capture = CapturePlan::declare(&mut plan, 2);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         let mut graph = GraphBuilder::new();
         graph.add_callback("pair", || {
@@ -770,7 +771,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
     let second = plan.publisher(1);
     let first = plan.publisher(1);
     let declaration = TwoOutputsDeclaration::from_keys(first, second);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut ports = ReplayBindings::new();
     ports
@@ -858,7 +859,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 let source_log = logged_source.then(|| CapturePlan::declare(&mut source, 2));
                 let forward_log = logged_forward.then(|| CapturePlan::declare(&mut forward, 2));
                 let result_log = CapturePlan::declare(&mut result, 2);
-                let storage = GraphPlan::new((source, (forward, result)))
+                let storage = StoragePlan::new((source, (forward, result)))
                     .allocate()
                     .unwrap();
                 let source = storage.channels().0.build();
@@ -919,7 +920,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
             .unwrap();
             let hydrate_b = ReplayInputPlan::declare(&mut source, b.input_key()).unwrap();
             let hydrate_c = ReplayInputPlan::declare(&mut forward, c.input_key()).unwrap();
-            let storage = GraphPlan::new((source, (forward, result)))
+            let storage = StoragePlan::new((source, (forward, result)))
                 .allocate()
                 .unwrap();
             let source = storage.channels().0.build();

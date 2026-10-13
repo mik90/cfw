@@ -5,7 +5,7 @@ use task::{
     loggable::{DeserializeError, Loggable, SerializeError},
     time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
+use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 
 struct Value(u64);
@@ -66,7 +66,7 @@ impl Sum {
 
 #[test]
 fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusions() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let mut a = TaskRegistration::new("a", Source(10), CallbackSchedule::default());
     a.output_channel("output", "wire");
     a.register(&mut plan).unwrap();
@@ -134,7 +134,7 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
 
 #[test]
 fn capture_subscribers_do_not_satisfy_task_wiring_requirements_and_can_rebind() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let publisher = plan.publisher::<Value>("manual", 1).unwrap();
     plan.register_loggable_native::<Value>("manual").unwrap();
     plan.register_loggable_native::<Value>("manual").unwrap();
@@ -171,7 +171,7 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
             output.publish(Hidden)
         }
     }
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     TaskRegistration::new("hidden", Task, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
@@ -191,7 +191,7 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
 
 #[test]
 fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     for name in ["first", "second"] {
         let mut task = TaskRegistration::new(name, Sum, CallbackSchedule::default());
         task.input_channel("input", "wire")
@@ -267,7 +267,7 @@ fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publ
             let _ = (input, opaque, contextual);
         }
     }
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     TaskRegistration::new("consumer", Consumer, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
@@ -307,7 +307,7 @@ fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publ
 fn log_driven_source_selection_carries_exclusions_into_replay_feed() {
     use logging::{OwnedLogEntry, SortedLogStreamReader};
     use std::collections::HashMap;
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     TaskRegistration::new("sum", Sum, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
@@ -358,7 +358,7 @@ fn log_driven_source_selection_carries_exclusions_into_replay_feed() {
 #[cfg(feature = "serde")]
 #[test]
 fn log_driven_planning_rejects_incomplete_logs_before_allocating_sources() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     plan.native::<Value>("data").unwrap();
     plan.register_replay_native::<Value>("data").unwrap();
     let reader = logging::SortedLogStreamReader::from_entries(
@@ -384,7 +384,7 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
             output.publish(42)
         }
     }
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     TaskRegistration::new("serde", SerdeSource, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
@@ -423,7 +423,7 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
         }
     }
     for capacity in [1, 2] {
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         TaskRegistration::new("source", Source(5), CallbackSchedule::default())
             .register(&mut plan)
             .unwrap();

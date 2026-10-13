@@ -8,8 +8,9 @@ use std::{
     time::Duration,
 };
 use task::iox2::{Iox2ChannelPlan, Iox2EventBindings, Iox2NotifyOutput, Iox2Runtime};
-use task::{ChannelPlan, GraphPlan, message::MessageHeader, time::FrameworkTime};
+use task::{ChannelPlan, message::MessageHeader, time::FrameworkTime};
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 
 struct Writer(Arc<AtomicUsize>);
 impl LogFileWriter for Writer {
@@ -39,7 +40,7 @@ fn real_ipc_event_requests_a_flush_without_data_arrival_triggering_it() {
     let capture = CapturePlan::declare(&mut data, 1);
     let trigger = events.events(4);
     let notifier = events.notifier();
-    let storage = GraphPlan::new((data, events)).allocate().unwrap();
+    let storage = StoragePlan::new((data, events)).allocate().unwrap();
     let data = storage.channels().0.build();
     let events = storage.channels().1.build().unwrap();
     let mut publisher = data.take_publisher(&publisher).unwrap();

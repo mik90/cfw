@@ -9,7 +9,7 @@ use task::{
     iox2::{Iox2Event, Iox2Output, Iox2SpanInput},
     time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
+use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 #[derive(Clone, Default)]
 struct Bytes(Arc<Mutex<Vec<u8>>>);
@@ -39,12 +39,12 @@ impl Sink {
         output.send();
     }
 }
-fn source(plan: &mut NamedPlan, data: &str) {
+fn source(plan: &mut GraphPlan, data: &str) {
     let mut task = TaskRegistration::new("source", Source, CallbackSchedule::default());
     task.output_channel("output", data);
     task.register(plan).unwrap()
 }
-fn sink(plan: &mut NamedPlan, data: &str, output: &str, event: &str) {
+fn sink(plan: &mut GraphPlan, data: &str, output: &str, event: &str) {
     let mut task = TaskRegistration::new("sink", Sink, CallbackSchedule::default());
     task.input_channel("event", event)
         .input_channel("input", data)
@@ -60,7 +60,7 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
     let event = format!("{prefix}_event");
     let bytes = Bytes::default();
     {
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         source(&mut plan, &data);
         sink(&mut plan, &data, &output, &event);
         let capture = AutomaticCapturePlan::declare(&mut plan, &CaptureOptions::new(4)).unwrap();
@@ -96,7 +96,7 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
             .unwrap(),
     )
     .unwrap();
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     sink(&mut plan, &data, &output, &event);
     source(&mut plan, &data);
     let replay = AutomaticExactReplayPlan::declare(&mut plan, &log).unwrap();

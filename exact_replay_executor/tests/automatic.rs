@@ -6,7 +6,7 @@ use std::{
 };
 use task::loggable::Loggable;
 use task::{InputSpan, LoanError, OutputSpan, Publisher, time::FrameworkTime};
-use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
+use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 type SourcePtr<'a, T> = task::ArenaReaderPtr<'a, task::message::Message<T>>;
 
@@ -50,12 +50,12 @@ impl Sum {
         )
     }
 }
-fn source(plan: &mut NamedPlan, name: &str, value: u64) {
+fn source(plan: &mut GraphPlan, name: &str, value: u64) {
     let mut registration = TaskRegistration::new(name, Source(value), CallbackSchedule::default());
     registration.output_channel("output", "shared");
     registration.register(plan).unwrap()
 }
-fn sum(plan: &mut NamedPlan) {
+fn sum(plan: &mut GraphPlan) {
     let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
     registration
         .input_channel("first", "shared")
@@ -65,7 +65,7 @@ fn sum(plan: &mut NamedPlan) {
 fn recorded(logged: bool) -> ReplayLog {
     let bytes = Bytes::default();
     {
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         source(&mut plan, "a", 10);
         source(&mut plan, "b", 20);
         sum(&mut plan);
@@ -113,7 +113,7 @@ fn recorded(logged: bool) -> ReplayLog {
 fn automatic_exact_bindings_restore_distinct_windows_and_reordered_publishers() {
     for logged in [false, true] {
         let log = recorded(logged);
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         sum(&mut plan);
         source(&mut plan, "b", 20);
         source(&mut plan, "a", 10);
@@ -141,7 +141,7 @@ fn automatic_exact_bindings_restore_distinct_windows_and_reordered_publishers() 
 #[test]
 fn mismatched_layout_is_rejected_before_hydration_publishers_are_declared() {
     let log = recorded(true);
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     source(&mut plan, "a", 10);
     source(&mut plan, "b", 20);
     let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
@@ -168,7 +168,7 @@ fn mismatched_layout_is_rejected_before_hydration_publishers_are_declared() {
 fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
     use exact_replay_executor::{ExplicitReplayPort, ReplayInputPlan};
     let log = recorded(true);
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     source(&mut plan, "a", 10);
     source(&mut plan, "b", 20);
     sum(&mut plan);
@@ -278,7 +278,7 @@ impl PairSink {
         )
     }
 }
-fn pair_tasks(plan: &mut NamedPlan, reverse: bool) {
+fn pair_tasks(plan: &mut GraphPlan, reverse: bool) {
     let mut tasks = vec![
         TaskRegistration::new("producer", PairProducer, CallbackSchedule::default()),
         TaskRegistration::new("forward", PairForward, CallbackSchedule::default()),
@@ -298,7 +298,7 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
     for logged in [false, true] {
         let bytes = Bytes::default();
         {
-            let mut plan = NamedPlan::default();
+            let mut plan = GraphPlan::default();
             pair_tasks(&mut plan, false);
             let options = if logged {
                 CaptureOptions::new(16)
@@ -340,7 +340,7 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
             .unwrap(),
         )
         .unwrap();
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         pair_tasks(&mut plan, true);
         let left = AutomaticExactReplayPlan::source_cache::<u64>(&mut plan, &log, "left").unwrap();
         let right =
@@ -432,7 +432,7 @@ impl ForwardSink {
         Ok(())
     }
 }
-fn forwarding_tasks(plan: &mut NamedPlan, reverse: bool) {
+fn forwarding_tasks(plan: &mut GraphPlan, reverse: bool) {
     let mut source =
         TaskRegistration::new("source", ForwardSource(10), CallbackSchedule::default());
     source.output_channel("output", "source-values");
@@ -458,7 +458,7 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
     for logged in [false, true] {
         let bytes = Bytes::default();
         {
-            let mut plan = NamedPlan::default();
+            let mut plan = GraphPlan::default();
             forwarding_tasks(&mut plan, false);
             let options = if logged {
                 CaptureOptions::new(8)
@@ -500,7 +500,7 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
             .unwrap(),
         )
         .unwrap();
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         forwarding_tasks(&mut plan, true);
         let cache = AutomaticExactReplayPlan::source_cache::<u64>(&mut plan, &log, "source-values")
             .unwrap();
@@ -577,7 +577,7 @@ impl ContextualSource {
 fn contextual_output_capture_does_not_require_a_context_free_decoder() {
     let bytes = Bytes::default();
     {
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
             .register(&mut plan)
             .unwrap();
@@ -610,7 +610,7 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
             .unwrap(),
     )
     .unwrap();
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();

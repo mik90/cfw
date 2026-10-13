@@ -8,10 +8,10 @@ use std::{
 };
 use task::loggable::Loggable;
 use task::{
-    ChannelPlan, Forwarded, GraphPlan, Input, InputSpan, LoanError, OutputSpan, Publisher,
-    time::FrameworkTime,
+    ChannelPlan, Forwarded, Input, InputSpan, LoanError, OutputSpan, Publisher, time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Value>>;
 
@@ -104,7 +104,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         let forward_log = logged_forward.then(|| CapturePlan::declare(&mut forward, 8));
         let observed_log = CapturePlan::declare(&mut observed, 2);
         let result_log = CapturePlan::declare(&mut result, 2);
-        let storage = GraphPlan::new((source, (forward, (observed, result))))
+        let storage = StoragePlan::new((source, (forward, (observed, result))))
             .allocate()
             .unwrap();
         let source = storage.channels().0.build();
@@ -190,7 +190,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
     let hydrate_f = ReplayInputPlan::declare(&mut source, f.input_key()).unwrap();
     let hydrate_o = ReplayInputPlan::declare(&mut source, o.input_key()).unwrap();
     let hydrate_c = ReplayInputPlan::declare(&mut forward, c.input_key()).unwrap();
-    let storage = GraphPlan::new((source, (forward, (observed, result))))
+    let storage = StoragePlan::new((source, (forward, (observed, result))))
         .allocate()
         .unwrap();
     let source = storage.channels().0.build();

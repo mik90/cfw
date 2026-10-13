@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 use task::{
-    ChannelPlan, GraphPlan, InputSpan, LoanError, Publisher, message::MessageHeader,
-    time::FrameworkTime,
+    ChannelPlan, InputSpan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime,
 };
+use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -47,7 +47,7 @@ fn streaming_deadlines_prevent_skipping_inputs_and_eof_drains_downstream_work() 
     let declaration = Double::declare(&mut input, &mut output).unwrap();
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let capture = CapturePlan::declare(&mut output, 8);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let input = storage.channels().0.build();
     let output = storage.channels().1.build();
     let mut graph = GraphBuilder::with_storage(&storage);
@@ -115,7 +115,7 @@ fn missing_sources_past_inputs_and_bad_payloads_are_reported() {
     ] {
         let mut input = ChannelPlan::<u64>::new("input");
         let source = ReplaySourcePlan::declare(&mut input, 1);
-        let storage = GraphPlan::new(input).allocate().unwrap();
+        let storage = StoragePlan::new(input).allocate().unwrap();
         let bindings = storage.channels().build();
         let options = LogSimulationOptions {
             simulation: start.map(|start_time| SimulationConfig {
@@ -254,7 +254,7 @@ fn eof_drain_finishes_inflight_work_and_bounds_feedback_cycles() {
     assert_eq!(completion.reason, CompletionReason::TailDrained);
     assert_eq!(completion.at, at(25));
 
-    let mut plan = task_graph::NamedPlan::default();
+    let mut plan = task_graph::GraphPlan::default();
     let mut task = task_graph::TaskRegistration::new(
         "feedback",
         Double,
@@ -304,7 +304,7 @@ fn with_graph<R>(
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let input_capture = CapturePlan::declare(&mut input, 8);
     let output_capture = CapturePlan::declare(&mut output, 8);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let input = storage.channels().0.build();
     let output = storage.channels().1.build();
     let mut graph = GraphBuilder::with_storage(&storage);
@@ -539,7 +539,7 @@ mod ipc {
         );
         let data_source = events.publisher(1);
         let source = ReplaySourcePlan::declare(&mut gate, 1);
-        let storage = GraphPlan::new((events, gate)).allocate().unwrap();
+        let storage = StoragePlan::new((events, gate)).allocate().unwrap();
         let events = storage.channels().0.build().unwrap();
         let gate = storage.channels().1.build();
         let trace: Trace = Default::default();

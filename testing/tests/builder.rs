@@ -662,7 +662,7 @@ struct BadFactory(Arc<AtomicUsize>);
 impl task_graph::Task for BadFactory {
     fn register(
         self: Box<Self>,
-        plan: &mut task_graph::NamedPlan,
+        plan: &mut task_graph::GraphPlan,
         overrides: &task_graph::ChannelOverrides,
     ) -> Result<task_graph::TaskBinding, testing::TestBuildError> {
         overrides.validate(&[])?;

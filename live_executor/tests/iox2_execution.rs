@@ -3,11 +3,11 @@ use crossbeam::channel::Sender;
 use live_executor::LiveExecutor;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use task::GraphPlan;
 use task::iox2::{Iox2ChannelConfig, Iox2NotifyOutput};
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Runtime};
 use task::time::FrameworkTime;
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 fn name() -> String {
@@ -48,7 +48,7 @@ fn pre_start_notification_wakes_each_listener_without_periodic_polling() {
     let first = ReceiverTaskDeclaration::from_keys(plan.subscriber(1), plan.events(1));
     let second = ReceiverTaskDeclaration::from_keys(plan.subscriber(1), plan.events(1));
     let pub_key = plan.publisher(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build().unwrap();
     let mut publisher = bindings.take_publisher(&pub_key).unwrap();
     let (sent, received) = crossbeam::channel::bounded(2);
@@ -96,7 +96,7 @@ fn controller_panic_wakes_and_joins_an_idle_readiness_thread() {
     let runtime = Iox2Runtime::new().unwrap();
     let mut plan = Iox2ChannelPlan::<u64>::new(name(), &runtime);
     let declaration = ReceiverTaskDeclaration::from_keys(plan.subscriber(1), plan.events(1));
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build().unwrap();
     let (sent, _) = crossbeam::channel::bounded(1);
     let mut graph = GraphBuilder::new();
@@ -146,7 +146,7 @@ fn standalone_notifier_dispatches_configured_event_id() {
     let mut plan = Iox2ChannelPlan::<u64>::new(name(), &runtime).with_config(config);
     let notifier = NotifyDeclaration::from_keys(plan.notifier_with_id(3));
     let events = Events::declare(&mut plan).unwrap();
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build().unwrap();
     let (sent, received) = crossbeam::channel::bounded(1);
     let mut builder = GraphBuilder::new();
@@ -184,7 +184,7 @@ fn event_is_retained_until_required_native_input_allows_execution() {
     let mut input = task::ChannelPlan::<u64>::new("required");
     let declaration = Gated::declare(&mut input, &mut event).unwrap();
     let source_key = input.publisher(1);
-    let storage = GraphPlan::new((input, event)).allocate().unwrap();
+    let storage = StoragePlan::new((input, event)).allocate().unwrap();
     let input = storage.channels().0.build();
     let event = storage.channels().1.build().unwrap();
     let mut source = input.take_publisher(&source_key).unwrap();

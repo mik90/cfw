@@ -15,11 +15,10 @@ use std::{
     time::Duration,
 };
 use task::{
-    Publisher, PublisherKey, SubscriberKey, SubscriberPolicy, message::Message,
-    testing_time::TimeSource, time::FrameworkTime,
+    Publisher, SubscriberPolicy, message::Message, testing_time::TimeSource, time::FrameworkTime,
 };
 use task_graph::{
-    ApplicationBuilder, BuildError, CallbackSchedule, NamedBindings, NamedPlan, NamedStorage, Task,
+    ApplicationBuilder, BuildError, CallbackSchedule, GraphBindings, GraphPlan, GraphStorage, Task,
 };
 
 #[cfg(feature = "iceoryx2")]
@@ -206,112 +205,58 @@ impl<T> Drop for NativePump<'_, T> {
     }
 }
 
-trait FixturePlan {
-    fn declare(
-        self: Box<Self>,
-        plan: &mut NamedPlan,
-    ) -> Result<Box<dyn FixtureFactory>, BuildError>;
-}
-trait FixtureFactory {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-        executor: &mut UnitTestExecutor<'a>,
-    ) -> Result<(), BuildError>;
-}
-struct InputPlan<T> {
-    channel: String,
-    queue: Queue<T>,
-}
-struct InputFactory<T> {
-    channel: String,
-    queue: Queue<T>,
-    key: PublisherKey<T>,
-}
-impl<T: Send + Sync + 'static> FixturePlan for InputPlan<T> {
-    fn declare(
-        self: Box<Self>,
-        plan: &mut NamedPlan,
-    ) -> Result<Box<dyn FixtureFactory>, BuildError> {
-        plan.require(&self.channel, false)?;
-        let key = plan.native::<T>(&self.channel)?.publisher(1);
-        Ok(Box::new(InputFactory {
-            channel: self.channel,
-            queue: self.queue,
-            key,
+type FixtureDeclaration = Box<dyn FnOnce(&mut GraphPlan) -> Result<FixtureBinding, BuildError>>;
+type FixtureBinding = Box<
+    dyn for<'a> FnOnce(&GraphBindings<'a>, &mut UnitTestExecutor<'a>) -> Result<(), BuildError>,
+>;
+
+fn input_fixture<T: Send + Sync + 'static>(channel: String, queue: Queue<T>) -> FixtureDeclaration {
+    Box::new(move |plan| {
+        plan.require(&channel, false)?;
+        let key = plan.native::<T>(&channel)?.publisher(1);
+        Ok(Box::new(move |bindings, executor| {
+            let publisher = bindings.native::<T>(&channel)?.take_publisher(&key)?;
+            executor.inputs.push(Box::new(NativePump {
+                publisher: Arc::new(Mutex::new(publisher)),
+                queue,
+            }));
+            Ok(())
         }))
-    }
+    })
 }
-impl<T: Send + Sync + 'static> FixtureFactory for InputFactory<T> {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-        executor: &mut UnitTestExecutor<'a>,
-    ) -> Result<(), BuildError> {
-        let publisher = bindings
-            .native::<T>(&self.channel)?
-            .take_publisher(&self.key)?;
-        executor.inputs.push(Box::new(NativePump {
-            publisher: Arc::new(Mutex::new(publisher)),
-            queue: self.queue,
-        }));
-        Ok(())
-    }
-}
-struct OutputPlan<T> {
-    sources: CaptureSources,
+fn output_fixture<T: Send + Sync + 'static>(
     channel: String,
     capacity: usize,
-    payload: PhantomData<T>,
-}
-struct OutputFactory<T> {
-    channel: String,
-    key: SubscriberKey<T>,
-}
-impl<T: Send + Sync + 'static> FixturePlan for OutputPlan<T> {
-    fn declare(
-        self: Box<Self>,
-        plan: &mut NamedPlan,
-    ) -> Result<Box<dyn FixtureFactory>, BuildError> {
-        plan.require(&self.channel, true)?;
-        let sources = plan.native_workload_publishers::<T>(&self.channel)?;
-        let key = plan.native::<T>(&self.channel)?.subscriber_with_policy(
-            self.capacity,
+    capture_sources: CaptureSources,
+) -> FixtureDeclaration {
+    Box::new(move |plan| {
+        plan.require(&channel, true)?;
+        let sources = plan.native_workload_publishers::<T>(&channel)?;
+        let key = plan.native::<T>(&channel)?.subscriber_with_policy(
+            capacity,
             SubscriberPolicy {
                 trigger: false,
                 keep_across_runs: true,
             },
         );
-        if self.sources == CaptureSources::TaskOutputs {
-            plan.native::<T>(&self.channel)?
+        if capture_sources == CaptureSources::TaskOutputs {
+            plan.native::<T>(&channel)?
                 .restrict_subscriber_sources(&key, &sources)?;
         }
-        Ok(Box::new(OutputFactory {
-            channel: self.channel,
-            key,
+        Ok(Box::new(move |bindings, executor| {
+            executor.captures.push(Box::new(TestSubscriber::new(
+                bindings.native::<T>(&channel)?.take_subscriber(&key)?,
+            )));
+            Ok(())
         }))
-    }
-}
-impl<T: Send + Sync + 'static> FixtureFactory for OutputFactory<T> {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-        executor: &mut UnitTestExecutor<'a>,
-    ) -> Result<(), BuildError> {
-        executor.captures.push(Box::new(TestSubscriber::new(
-            bindings
-                .native::<T>(&self.channel)?
-                .take_subscriber(&self.key)?,
-        )));
-        Ok(())
-    }
+    })
 }
 
 /// Plans named task ports and fixtures before allocating any native arenas.
 /// Generated tasks supply their declarations through `task_graph::Task`.
 pub struct UnitTestExecutorBuilder {
     tasks: ApplicationBuilder,
-    fixtures: Vec<Box<dyn FixturePlan>>,
+    fixtures: Vec<FixtureDeclaration>,
     captures: usize,
     config: UnitTestExecutorConfig,
     session: SessionGuard,
@@ -376,10 +321,8 @@ impl UnitTestExecutorBuilder {
     }
     pub fn add_test_publisher<T: Send + Sync + 'static>(&mut self, channel: &str) -> TestInput<T> {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
-        self.fixtures.push(Box::new(InputPlan {
-            channel: channel.into(),
-            queue: queue.clone(),
-        }));
+        self.fixtures
+            .push(input_fixture(channel.into(), queue.clone()));
         TestInput {
             queue,
             session: self.session.0.clone(),
@@ -406,12 +349,8 @@ impl UnitTestExecutorBuilder {
     ) -> TestOutput<T> {
         let index = self.captures;
         self.captures += 1;
-        self.fixtures.push(Box::new(OutputPlan::<T> {
-            sources,
-            channel: channel.into(),
-            capacity,
-            payload: PhantomData,
-        }));
+        self.fixtures
+            .push(output_fixture::<T>(channel.into(), capacity, sources));
         TestOutput {
             index,
             session: self.session.0.clone(),
@@ -423,12 +362,12 @@ impl UnitTestExecutorBuilder {
         self.try_allocate().expect("could not allocate unit test")
     }
     pub fn try_allocate(self) -> Result<UnitTestStorage, BuildError> {
-        let plan = NamedPlan::default();
+        let plan = GraphPlan::default();
         #[cfg(feature = "iceoryx2")]
         let plan = {
             let mut plan = self
                 .runtime
-                .map(NamedPlan::with_iox2_runtime)
+                .map(GraphPlan::with_iox2_runtime)
                 .unwrap_or(plan);
             for (channel, limits) in self.ipc_limits {
                 plan.set_ipc_service_limits(channel, limits);
@@ -439,7 +378,7 @@ impl UnitTestExecutorBuilder {
         let fixtures = self
             .fixtures
             .into_iter()
-            .map(|f| f.declare(&mut plan))
+            .map(|declare| declare(&mut plan))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(UnitTestStorage {
             storage: plan.allocate()?,
@@ -470,7 +409,7 @@ impl UnitTestExecutorBuilder {
     }
 }
 struct Definition {
-    fixtures: Vec<Box<dyn FixtureFactory>>,
+    fixtures: Vec<FixtureBinding>,
     config: UnitTestExecutorConfig,
 }
 /// Owns test storage and the single-use task/fixture construction state.
@@ -478,7 +417,7 @@ struct Definition {
 /// Ordinary scope cleanup suffices; retained low-level messages must not outlive
 /// the storage owner.
 pub struct UnitTestStorage {
-    storage: NamedStorage,
+    storage: GraphStorage,
     definition: RefCell<Option<Definition>>,
     session: SessionGuard,
 }
@@ -501,7 +440,7 @@ impl UnitTestStorage {
         let mut executor = UnitTestExecutor::try_new_with_graph(graph, definition.config)
             .map_err(|e| BuildError(e.to_string()))?;
         for fixture in definition.fixtures {
-            fixture.bind(&bindings, &mut executor)?;
+            fixture(&bindings, &mut executor)?;
         }
         executor.time = self.session.0.time.clone();
         executor.time.set(start_time);

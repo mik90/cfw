@@ -6,11 +6,12 @@ use task::iox2::{
     Iox2ChannelPlan, Iox2Event, Iox2NotifyOutput, Iox2OptionalInput, Iox2Output, Iox2Runtime,
 };
 use task::{
-    ChannelPlan, GraphPlan, RequiredInput,
+    ChannelPlan, RequiredInput,
     message::MessageHeader,
     recording::{Outcome, Transport},
     time::FrameworkTime,
 };
+use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -61,7 +62,7 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     let injection = input.publisher(1);
     let gate_key = gate.publisher(1);
     let capture = output.subscriber(1);
-    let storage = GraphPlan::new((input, (output, (events, gate))))
+    let storage = StoragePlan::new((input, (output, (events, gate))))
         .allocate()
         .unwrap();
     let input = storage.channels().0.build().unwrap();
@@ -237,7 +238,7 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
     let data_key = input.publisher(1);
     let event_key = input.notifier_with_id(9);
     let gate_key = gate.publisher(1);
-    let storage = GraphPlan::new((input, (output, (events, gate))))
+    let storage = StoragePlan::new((input, (output, (events, gate))))
         .allocate()
         .unwrap();
     let input = storage.channels().0.build().unwrap();

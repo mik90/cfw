@@ -4,7 +4,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use task::{ChannelPlan, GraphPlan, LoanError, Publisher};
+use task::{ChannelPlan, LoanError, Publisher};
+use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -38,7 +39,7 @@ fn body_error_panic_and_post_execution_timing_failure_cancel_the_whole_batch() {
         let first = Sender::declare(&mut plan).unwrap();
         let second = Sender::declare(&mut plan).unwrap();
         let capture_key = plan.subscriber(2);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
         let mut builder = GraphBuilder::new();
@@ -103,7 +104,7 @@ fn panic_during_commit_preserves_already_published_messages_and_cancels_remainin
     let first = Sender::declare(&mut plan).unwrap();
     let second = plan.publisher(1);
     let capture_key = plan.subscriber(2);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let capture = bindings.take_subscriber(&capture_key).unwrap();
     let mut builder = GraphBuilder::new();

@@ -1,7 +1,5 @@
-use crate::string_interner::ChannelNameInterner;
 use std::collections::HashSet;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use base::arena::Arena;
 
@@ -79,87 +77,6 @@ impl<T> PublisherStoragePlan<T> {
                 .ok_or(StorageError::CapacityOverflow)?;
         }
         Ok(total)
-    }
-}
-
-/// A typed graph layout before storage allocation. Pairs compose recursively;
-/// multiple named channels may use the same payload type.
-pub struct GraphPlan<LayoutType> {
-    layout: LayoutType,
-}
-
-impl<LayoutType: StorageLayout> GraphPlan<LayoutType> {
-    pub fn new(layout: LayoutType) -> Self {
-        Self { layout }
-    }
-
-    /// Validate the entire layout, then consume it to allocate fixed storage.
-    pub fn allocate(self) -> Result<GraphStorage<LayoutType::Storage>, StorageError> {
-        self.layout.validate()?;
-        let mut names = HashSet::new();
-        self.layout.validate_channel_names(&mut names)?;
-        let mut names: Vec<_> = names.into_iter().collect();
-        names.sort();
-        let mut channel_names = ChannelNameInterner::new();
-        for name in names {
-            channel_names.intern(&name);
-        }
-        channel_names.shrink_to_fit();
-        Ok(GraphStorage {
-            channels: self.layout.allocate()?,
-            channel_names: Arc::new(channel_names),
-        })
-    }
-}
-
-/// External owner of typed, heterogeneous channel arenas.
-///
-/// Endpoints and retained messages borrow this owner. Storage has no payload-
-/// traversing destructor: initialized payloads are destroyed by their last arena
-/// pointer, not by graph storage. This permits forwarding between arenas within
-/// one owner without storing Rust references in the owner's structural fields.
-///
-/// ```
-/// use task::{ChannelPlan, GraphPlan};
-/// let mut counter = ChannelPlan::<u64>::new("counter");
-/// let counter_pub = counter.publisher(1);
-/// let counter_sub = counter.subscriber(2);
-/// let mut processed = ChannelPlan::<u64>::new("processed");
-/// let processed_pub = processed.publisher(1);
-/// let processed_sub = processed.subscriber(1);
-/// let storage = GraphPlan::new((counter, processed)).allocate().unwrap();
-/// let counter = storage.channels().0.build();
-/// let processed = storage.channels().1.build();
-/// let publisher = counter.take_publisher(&counter_pub).unwrap();
-/// let subscriber = processed.take_subscriber(&processed_sub).unwrap();
-/// ```
-///
-/// A retained message prevents destruction of the storage owner:
-/// ```compile_fail
-/// use task::{PublisherStoragePlan, GraphPlan};
-/// use task::time::FrameworkTime;
-/// let storage = GraphPlan::new(PublisherStoragePlan::<u64>::new(1).with_subscriber(1))
-///     .allocate().unwrap();
-/// let mut endpoints = storage.channels().build();
-/// endpoints.publisher.publish(42).unwrap();
-/// endpoints.publisher.flush(FrameworkTime::from_nanoseconds(1));
-/// endpoints.subscribers[0].update();
-/// let message = endpoints.subscribers[0].input_forwardable().pop().unwrap();
-/// drop(endpoints);
-/// drop(storage);
-/// assert_eq!(message.message, 42);
-/// ```
-pub struct GraphStorage<ChannelStorage> {
-    channels: ChannelStorage,
-    channel_names: Arc<ChannelNameInterner>,
-}
-
-impl<ChannelStorage> GraphStorage<ChannelStorage> {
-    pub fn channel_names(&self) -> &Arc<ChannelNameInterner> {
-        &self.channel_names
-    }
-    pub fn channels(&self) -> &ChannelStorage {
-        &self.channels
     }
 }
 

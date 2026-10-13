@@ -163,9 +163,9 @@ fn ipc_fixture_mismatches_fail_during_allocation() {
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
     use task::iox2::{Iox2ChannelConfig, Iox2Notification};
-    use task_graph::NamedPlan;
+    use task_graph::GraphPlan;
     let name = format!("named_limits_{}", std::process::id());
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let publisher = plan
         .ipc::<u64>(&name)
         .unwrap()
@@ -195,7 +195,7 @@ fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
         1024
     );
 
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     plan.ipc::<u64>("too-small").unwrap().subscriber(2048);
     assert_eq!(
         plan.ipc_service_limits().unwrap()["too-small"].buffer_capacity,
@@ -207,7 +207,7 @@ fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
         error.contains("too-small") && error.contains("requires 2048, configured 1024"),
         "{error}"
     );
-    let mut counts = NamedPlan::default();
+    let mut counts = GraphPlan::default();
     for _ in 0..20 {
         counts.ipc::<u64>("counts").unwrap().subscriber(1);
     }

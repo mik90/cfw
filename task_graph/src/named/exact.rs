@@ -1,6 +1,6 @@
 //! Per-port planning metadata for isolated replay of named tasks.
 use super::{
-    BuildError, NamedBindings, NamedPlan, port_capture::PortCapture, replay::SerializedSource,
+    BuildError, GraphBindings, GraphPlan, port_capture::PortCapture, replay::ReplaySource,
 };
 use std::collections::BTreeMap;
 use task::recording::{Direction, ExecutionDescriptor, Transport};
@@ -43,12 +43,10 @@ impl PlannedPort {
         }
     }
 }
-pub(super) trait ExactFactory {
-    fn bind<'a>(self: Box<Self>, bindings: &NamedBindings<'a>)
-    -> Result<ExactPort<'a>, BuildError>;
-}
+pub(super) type ExactBinding =
+    Box<dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<ExactPort<'a>, BuildError>>;
 pub enum ExactPort<'a> {
-    Input(SerializedSource<'a>),
+    Input(ReplaySource<'a>),
     Output(PortCapture),
 }
 /// A caller-supplied port binding, omitted from automatic declaration/binding.
@@ -75,20 +73,20 @@ impl ExplicitReplayPort {
     }
 }
 pub struct NamedExactPlan {
-    ports: Vec<(String, usize, Box<dyn ExactFactory>)>,
+    ports: Vec<(String, usize, ExactBinding)>,
 }
 impl NamedExactPlan {
     pub fn bind<'a>(
         self,
-        bindings: &NamedBindings<'a>,
+        bindings: &GraphBindings<'a>,
     ) -> Result<Vec<(String, usize, ExactPort<'a>)>, BuildError> {
         self.ports
             .into_iter()
-            .map(|(name, ordinal, factory)| Ok((name, ordinal, factory.bind(bindings)?)))
+            .map(|(name, ordinal, bind)| Ok((name, ordinal, bind(bindings)?)))
             .collect()
     }
 }
-impl NamedPlan {
+impl GraphPlan {
     pub(super) fn port(
         &self,
         callback: &str,
@@ -232,9 +230,13 @@ impl NamedPlan {
                         continue;
                     }
                     if !(if output {
-                        self.captures.contains_key(&port.channel)
+                        self.channels
+                            .get(&port.channel)
+                            .is_some_and(|channel| channel.capture.is_some())
                     } else {
-                        self.replay_sources.contains_key(&port.channel)
+                        self.channels
+                            .get(&port.channel)
+                            .is_some_and(|channel| channel.replay.is_some())
                     }) {
                         return Err(BuildError(format!(
                             "channel '{}': missing {} capability; use an explicit port binding",
@@ -255,25 +257,16 @@ impl NamedPlan {
                 "explicit replay ports do not identify data endpoints: {remaining:?}"
             )));
         }
-        let declarations = std::mem::take(&mut self.replay_sources);
-        let outputs = std::mem::take(&mut self.captures);
-        let result = (|| {
-            let mut ports = Vec::new();
-            for (name, ordinal, port) in requests {
-                let factory = if port.output {
-                    outputs[&port.channel].declare_output(self, &port)?
-                } else {
-                    declarations[&port.channel].declare_exact(self, &port)?
-                };
-                ports.push((name, ordinal, factory));
-            }
-            Ok(NamedExactPlan { ports })
-        })();
-        self.replay_sources = declarations;
-        self.captures = outputs;
-        if result.is_ok() {
-            self.exact_planned = true;
+        let mut ports = Vec::new();
+        for (name, ordinal, port) in requests {
+            let declare = if port.output {
+                self.channels[&port.channel].capture.unwrap().declare_output
+            } else {
+                self.channels[&port.channel].replay.unwrap().declare_exact
+            };
+            ports.push((name, ordinal, declare(self, &port)?));
         }
-        result
+        self.exact_planned = true;
+        Ok(NamedExactPlan { ports })
     }
 }

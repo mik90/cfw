@@ -13,11 +13,11 @@ use syn::{
 /// Bound endpoints cannot promote source handles to static:
 /// ```compile_fail
 /// use task::{ArenaReaderPtr, Forwarded, Subscriber, SubscriberKey, message::Message};
-/// use task_graph::NamedBindings;
+/// use task_graph::GraphBindings;
 /// use task_macros::ForwardedSources;
 /// #[derive(ForwardedSources)]
 /// struct Sources<'s> { source: ArenaReaderPtr<'s,Message<u64>> }
-/// fn extend<'a>(bindings: &NamedBindings<'a>, key: SubscriberKey<Forwarded<bool,Sources<'static>>>)
+/// fn extend<'a>(bindings: &GraphBindings<'a>, key: SubscriberKey<Forwarded<bool,Sources<'static>>>)
 ///     -> Subscriber<'a,Forwarded<bool,Sources<'static>>> {
 ///     bindings.bundle::<bool,Sources<'static>>("output").unwrap()
 ///         .take_subscriber(&task_graph::bundle::subscriber_key::<bool,Sources<'static>>(key)).unwrap()
@@ -964,7 +964,7 @@ fn automatic_registration(
     }
     quote! {
         impl ::task_graph::Task for #task {
-            fn register(self: Box<Self>, __cfw_plan: &mut ::task_graph::NamedPlan, __cfw_overrides: &::task_graph::ChannelOverrides) -> Result<::task_graph::TaskBinding, ::task_graph::BuildError> {
+            fn register(self: Box<Self>, __cfw_plan: &mut ::task_graph::GraphPlan, __cfw_overrides: &::task_graph::ChannelOverrides) -> Result<::task_graph::TaskBinding, ::task_graph::BuildError> {
                 __cfw_overrides.validate(&[#(#schema),*])?;
                 let __cfw_names: Vec<String> = vec![#(#channel_names),*];
                 let __cfw_declaration = #declaration::from_keys(#(#keys),*);

@@ -3,9 +3,8 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use task::{
-    ChannelPlan, GraphPlan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime,
-};
+use task::{ChannelPlan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime};
+use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -84,7 +83,7 @@ fn periodic_flush_uses_executor_time_and_does_not_run_at_start() {
     let mut plan = ChannelPlan::new("data");
     let source = Source::declare(&mut plan).unwrap();
     let capture = CapturePlan::declare(&mut plan, 2);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut builder = GraphBuilder::with_storage(&storage);
     builder.add_scheduled_callback(
@@ -121,7 +120,7 @@ fn event_mode_waits_for_explicit_pulses_and_final_finish_drains_the_tail() {
     let pulse = events.publisher(1);
     let capture = CapturePlan::declare(&mut data, 2);
     let triggers = FlushEventPlan::declare(&mut events, 1);
-    let storage = GraphPlan::new((data, events)).allocate().unwrap();
+    let storage = StoragePlan::new((data, events)).allocate().unwrap();
     let data = storage.channels().0.build();
     let events = storage.channels().1.build();
     let mut publisher = data.take_publisher(&publisher).unwrap();
@@ -163,7 +162,7 @@ fn event_pulses_fan_out_to_shards_and_coalesce_without_duplicate_messages() {
     let a_log = CapturePlan::declare(&mut a, 1);
     let b_log = CapturePlan::declare(&mut b, 1);
     let triggers = FlushEventPlan::declare(&mut events, 2);
-    let storage = GraphPlan::new((a, (b, events))).allocate().unwrap();
+    let storage = StoragePlan::new((a, (b, events))).allocate().unwrap();
     let a = storage.channels().0.build();
     let b = storage.channels().1.0.build();
     let events = storage.channels().1.1.build();
@@ -212,7 +211,7 @@ fn scheduled_errors_do_not_stop_workload_and_remain_sticky_after_recovery() {
     let mut plan = ChannelPlan::<Wire>::new("data");
     let publisher = plan.publisher(1);
     let capture = CapturePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut publisher = bindings.take_publisher(&publisher).unwrap();
     let writer = Writer::default();
@@ -306,7 +305,7 @@ fn shards_share_a_writer_and_record_only_workload_callbacks_once() {
     let b_source = Source::declare(&mut b).unwrap();
     let a_log = CapturePlan::declare(&mut a, 2);
     let b_log = CapturePlan::declare(&mut b, 2);
-    let storage = GraphPlan::new((a, b)).allocate().unwrap();
+    let storage = StoragePlan::new((a, b)).allocate().unwrap();
     let a = storage.channels().0.build();
     let b = storage.channels().1.build();
     let mut builder = GraphBuilder::with_storage(&storage);
@@ -375,7 +374,7 @@ fn scope_cleanup_after_unwind_flushes_tail_and_keeps_errors_observable() {
     let mut plan = ChannelPlan::<Wire>::new("data");
     let publisher = plan.publisher(1);
     let capture = CapturePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut publisher = bindings.take_publisher(&publisher).unwrap();
     publisher.publish(Wire(1)).unwrap();
@@ -406,7 +405,7 @@ fn live_periodic_logger_flushes_while_workers_run() {
     let mut plan = ChannelPlan::new("data");
     let source = Source::declare(&mut plan).unwrap();
     let capture = CapturePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::with_storage(&storage);
     graph.add_scheduled_callback("source", CallbackSchedule::on_start(), || {

@@ -104,24 +104,7 @@ let graph = storage.build()?;
 // Hand graph to a live, simulation, or replay executor.
 ```
 
-Each registration supports `.input_channel("argument", "channel")` and
-`.output_channel("argument", "channel")` overrides. These use callback argument
-names and apply per task instance before endpoint registration.
-
-For recording or replay, `app.plan()` returns the resolved `NamedPlan` directly.
-Pass `&mut plan` to `AutomaticCapturePlan`, `AutomaticReplayPlan`, or
-`AutomaticExactReplayPlan`, before `plan.allocate()` produces `NamedStorage`.
-`build_with_bindings()` also returns bindings for captures and replay sources.
-Exact replay configures publisher observers before callbacks take their endpoints:
-use `storage.bind()`, bind the replay plan, then `storage.build_with(&bindings)`.
-
-Storage remains an external owner: graphs, endpoints, and forwarded messages
-cannot outlive their storage borrows. Construction is shared with the test builder.
-The plan owns task definitions in registration order; storage binds those tasks
-directly. Manual `TaskRegistration::register(&mut plan)` follows the same path.
-`BuiltGraph` contains callbacks and metadata; execution belongs to executors.
-The lower-level `GraphBuilder` supports custom factories and scoped borrowed
-callbacks, including logging infrastructure.
+Channel overrides are allowed, although a lot of this is in flux.
 
 ### Executors
 

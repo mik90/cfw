@@ -5,7 +5,8 @@ use task::iox2::{
     Iox2OptionalInput, Iox2Runtime,
 };
 use task::time::FrameworkTime;
-use task::{ChannelPlan, GraphPlan, LoanError, StorageError};
+use task::{ChannelPlan, LoanError, StorageError};
+use task_graph::StoragePlan;
 
 fn name() -> String {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -23,7 +24,7 @@ fn unsent_and_cancelled_loans_release_capacity_and_success_stamps_headers() {
     let mut plan = Iox2ChannelPlan::<u64>::new(name(), &runtime);
     let pub_key = plan.publisher(1);
     let sub_key = plan.subscriber(2);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build().unwrap();
     let mut publisher = bindings.take_publisher(&pub_key).unwrap();
     let subscriber = bindings.take_subscriber(&sub_key).unwrap();
@@ -55,7 +56,7 @@ fn same_timestamp_ipc_batches_preserve_publisher_indices_and_send_order() {
     let first = plan.publisher_with_notification(2, Iox2Notification::Silent);
     let second = plan.publisher_with_notification(2, Iox2Notification::Silent);
     let capture = plan.subscriber(4);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build().unwrap();
     let mut first = bindings.take_publisher(&first).unwrap();
     let mut second = bindings.take_publisher(&second).unwrap();
@@ -100,11 +101,11 @@ fn type_and_service_setting_mismatches_are_reported() {
     let name = name();
     let mut first = Iox2ChannelPlan::<u64>::new(&name, &runtime);
     first.publisher(1);
-    let storage = GraphPlan::new(first).allocate().unwrap();
+    let storage = StoragePlan::new(first).allocate().unwrap();
     let mut wrong_type = Iox2ChannelPlan::<u32>::new(&name, &runtime);
     wrong_type.subscriber(1);
     assert!(matches!(
-        GraphPlan::new(wrong_type).allocate(),
+        StoragePlan::new(wrong_type).allocate(),
         Err(StorageError::Transport(_))
     ));
     let config = Iox2ChannelConfig {
@@ -115,7 +116,7 @@ fn type_and_service_setting_mismatches_are_reported() {
     let mut incompatible = Iox2ChannelPlan::<u64>::new(&name, &runtime).with_config(config);
     incompatible.subscriber(1);
     assert!(matches!(
-        GraphPlan::new(incompatible).allocate(),
+        StoragePlan::new(incompatible).allocate(),
         Err(StorageError::Transport(_))
     ));
     drop(storage);
@@ -129,7 +130,7 @@ fn native_and_ipc_channels_cannot_claim_the_same_name() {
     let native = ChannelPlan::<u64>::new(&name);
     let ipc = Iox2ChannelPlan::<u64>::new(&name, &runtime);
     assert!(matches!(
-        GraphPlan::new((native, ipc)).allocate(),
+        StoragePlan::new((native, ipc)).allocate(),
         Err(StorageError::DuplicateChannel(_))
     ));
 }
@@ -163,7 +164,7 @@ fn data_notification_policy_preserves_deferred_commit_and_silent_explicit_signal
         let sub_key = plan.subscriber(2);
         let events_key = plan.events(8);
         let signal_key = plan.notifier_with_id(3);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build().unwrap();
         let mut publisher = bindings.take_publisher(&pub_key).unwrap();
         let subscriber = bindings.take_subscriber(&sub_key).unwrap();
@@ -227,7 +228,7 @@ fn notification_plan_checks_ids_keys_and_only_budgets_enabled_notifiers() {
     let mut plan = Iox2ChannelPlan::<u64>::new(name(), &runtime);
     plan.publisher_with_notification(1, Iox2Notification::Event(1));
     assert!(matches!(
-        GraphPlan::new(plan).allocate(),
+        StoragePlan::new(plan).allocate(),
         Err(StorageError::Transport(_))
     ));
     let mut plan = Iox2ChannelPlan::<u64>::new(name(), &runtime).with_config(Iox2ChannelConfig {
@@ -247,6 +248,6 @@ fn notification_plan_checks_ids_keys_and_only_budgets_enabled_notifiers() {
         same_name.set_publisher_notification(&key, Iox2Notification::Silent),
         Err(task::EndpointError::InvalidIndex(0))
     );
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let _bindings = storage.channels().build().unwrap();
 }

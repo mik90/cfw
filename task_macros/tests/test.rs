@@ -2,10 +2,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use task::time::FrameworkTime;
 use task::{
-    ChannelPlan, Context, GraphPlan, Input, InputSpan, LoanError, Output, OutputSpan, OutputUninit,
-    Publisher, RequiredInput,
+    ChannelPlan, Context, Input, InputSpan, LoanError, Output, OutputSpan, OutputUninit, Publisher,
+    RequiredInput,
 };
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 struct Increment;
@@ -32,7 +33,7 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
     let declaration = Increment::declare(&mut input, &mut output).unwrap();
     let source_key = input.publisher(1);
     let capture_key = output.subscriber(1);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let (mut graph, mut source, capture) = {
         let input = storage.channels().0.build();
         let output = storage.channels().1.build();
@@ -126,7 +127,7 @@ fn arrival_after_input_snapshot_does_not_make_an_empty_required_view_ready() {
     let declaration = Increment::declare(&mut input, &mut output).unwrap();
     let source_key = input.publisher(1);
     let capture_key = output.subscriber(1);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let input = storage.channels().0.build();
     let output = storage.channels().1.build();
     let mut source = input.take_publisher(&source_key).unwrap();
@@ -180,7 +181,7 @@ fn generated_pending_outputs_are_discarded_on_error_and_panic() {
         let mut output = ChannelPlan::new("output");
         let declaration = Failure::declare(&mut output).unwrap();
         let capture_key = output.subscriber(1);
-        let storage = GraphPlan::new(output).allocate().unwrap();
+        let storage = StoragePlan::new(output).allocate().unwrap();
         let bindings = storage.channels().build();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
         let mut callback = Failure {
@@ -281,7 +282,7 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
     let declaration = SpanTransform::declare(&mut input, &mut output).unwrap();
     let source_key = input.publisher(1);
     let capture_key = output.subscriber(3);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let input = storage.channels().0.build();
     let output = storage.channels().1.build();
     let mut source = input.take_publisher(&source_key).unwrap();
@@ -345,7 +346,7 @@ fn generated_span_outputs_cancel_sent_and_unsent_loans_on_failure() {
         let mut plan = ChannelPlan::new("span");
         let declaration = SpanFailure::declare(&mut plan).unwrap();
         let capture_key = plan.subscriber(3);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
         let mut callback = SpanFailure {
@@ -391,7 +392,7 @@ fn generated_uninitialized_output_publishes_on_success() {
     let mut plan = ChannelPlan::new("text");
     let declaration = InPlace::declare(&mut plan).unwrap();
     let capture_key = plan.subscriber(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let capture = bindings.take_subscriber(&capture_key).unwrap();
     let mut callback = InPlace.bind(declaration, &bindings).unwrap();
@@ -437,7 +438,7 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
     let input_key = source.publisher(2);
     let capture_key = destination.subscriber(2);
     source.reserve_retained(&input_key, 8).unwrap();
-    let storage = GraphPlan::new((source, destination)).allocate().unwrap();
+    let storage = StoragePlan::new((source, destination)).allocate().unwrap();
     let source = storage.channels().0.build();
     let destination = storage.channels().1.build();
     let mut fixture = source.take_publisher(&input_key).unwrap();
@@ -462,8 +463,8 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
 
 #[test]
 fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
-    use task_graph::{NamedPlan, TaskRegistration};
-    let mut plan = NamedPlan::default();
+    use task_graph::{GraphPlan, TaskRegistration};
+    let mut plan = GraphPlan::default();
     let mut registration =
         TaskRegistration::new("forward", Forward, task_graph::CallbackSchedule::default());
     registration
@@ -560,7 +561,7 @@ fn explicit_keys_allow_input_and_output_on_the_same_channel() {
     let declaration = FeedbackDeclaration::from_keys(plan.subscriber(1), plan.publisher(1));
     let fixture_key = plan.publisher(1);
     let capture_key = plan.subscriber(2);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut fixture = bindings.take_publisher(&fixture_key).unwrap();
     let capture = bindings.take_subscriber(&capture_key).unwrap();

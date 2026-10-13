@@ -1,10 +1,11 @@
 #![cfg(feature = "iceoryx2")]
 use simulation_executor::SimulationState;
 use std::sync::{Arc, Mutex};
+use task::Context;
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Runtime};
 use task::time::FrameworkTime;
-use task::{Context, GraphPlan};
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 type Observation = (i64, u64, i64, u64);
@@ -31,7 +32,7 @@ fn timestamped_data_and_counted_events_are_injected_without_duplicate_notificati
     let mut plan = Iox2ChannelPlan::new(&channel, &runtime);
     let declaration = ObserveDeclaration::from_keys(plan.subscriber(1), plan.events(1));
     let publisher = plan.publisher(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build().unwrap();
     let publisher = Arc::new(Mutex::new(bindings.take_publisher(&publisher).unwrap()));
     let samples = Arc::new(Mutex::new(Vec::new()));

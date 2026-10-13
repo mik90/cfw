@@ -10,8 +10,9 @@ use task::iox2::{
     Iox2ChannelConfig, Iox2ChannelPlan, Iox2Event, Iox2NotifyOutput, Iox2OptionalInput, Iox2Output,
     Iox2Runtime, Iox2SpanInput,
 };
-use task::{Callback, GraphPlan, message::MessageHeader, time::FrameworkTime};
+use task::{Callback, message::MessageHeader, time::FrameworkTime};
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 #[derive(Clone, Default)]
@@ -88,7 +89,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         );
         let capture_input = input.subscriber(1);
         let capture_output = output.subscriber(1);
-        let storage = GraphPlan::new((input, (output, notify)))
+        let storage = StoragePlan::new((input, (output, notify)))
             .allocate()
             .unwrap();
         let input = storage.channels().0.build().unwrap();
@@ -178,7 +179,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         notify.notifier_with_id(17),
     );
     let probe = output.subscriber(1);
-    let storage = GraphPlan::new((input, (output, notify)))
+    let storage = StoragePlan::new((input, (output, notify)))
         .allocate()
         .unwrap();
     let input = storage.channels().0.build().unwrap();

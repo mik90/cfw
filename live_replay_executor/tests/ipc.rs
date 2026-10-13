@@ -8,10 +8,11 @@ use std::{
 };
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
 use task::{
-    ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, message::MessageHeader,
-    recording::*, time::FrameworkTime,
+    ChannelPlan, LoanError, Publisher, RequiredInput, message::MessageHeader, recording::*,
+    time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 
 struct Producer;
@@ -63,7 +64,7 @@ fn eof_drain_waits_for_computed_ipc_notifications_and_downstream_callbacks() {
         ReceiveDeclaration::from_keys(middle.events(4), middle.subscriber(1), output.publisher(1));
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let capture = CapturePlan::declare(&mut output, 1);
-    let storage = GraphPlan::new((input, (middle, output)))
+    let storage = StoragePlan::new((input, (middle, output)))
         .allocate()
         .unwrap();
     let input = storage.channels().0.build();
@@ -110,7 +111,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
     let b =
         ReceiveDeclaration::from_keys(input.events(4), input.subscriber(1), output.publisher(1));
     let source = input.publisher(1);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let input = storage.channels().0.build().unwrap();
     let output = storage.channels().1.build();
     let trace: Trace = Default::default();

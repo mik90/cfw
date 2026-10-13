@@ -2,16 +2,15 @@ use simulation_executor::callback_execution::{
     BatchExecutionError, BatchFailure, execute_callback_batch,
 };
 use task::time::FrameworkTime;
-use task::{
-    Callback, CallbackNode, ChannelPlan, Context, GraphPlan, LoanError, Publisher, execute_callback,
-};
+use task::{Callback, CallbackNode, ChannelPlan, Context, LoanError, Publisher, execute_callback};
+use task_graph::StoragePlan;
 
 #[test]
 fn rejected_batch_commit_cancels_outputs_before_single_callback_reuse() {
     let mut plan = ChannelPlan::<u64>::new("output");
     let source = plan.publisher(1);
     let capture = plan.subscriber(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let capture = bindings.take_subscriber(&capture).unwrap();
     let mut callback = CallbackNode::new(

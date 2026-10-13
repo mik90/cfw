@@ -4,8 +4,9 @@ use iceoryx2::prelude::EventId;
 use simulation_executor::StepError;
 use std::sync::{Arc, Mutex};
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
-use task::{ChannelPlan, Context, GraphPlan, RequiredInput};
+use task::{ChannelPlan, Context, RequiredInput};
 use task_graph::GraphBuilder;
+use task_graph::StoragePlan;
 use task_macros::task_callback;
 use testing::UnitTestExecutor;
 
@@ -54,7 +55,9 @@ fn counted_events_survive_native_gating_and_capture_outlives_executor() {
     let input_key = input.publisher(1);
     let gate_key = gate.publisher(1);
     let capture_key = output.subscriber(2);
-    let storage = GraphPlan::new((input, (output, gate))).allocate().unwrap();
+    let storage = StoragePlan::new((input, (output, gate)))
+        .allocate()
+        .unwrap();
     let input = storage.channels().0.build().unwrap();
     let output = storage.channels().1.0.build().unwrap();
     let gate = storage.channels().1.1.build();

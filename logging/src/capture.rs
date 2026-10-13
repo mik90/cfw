@@ -32,7 +32,6 @@ impl<T> CapturePlan<T> {
 }
 /// Type-erased capture retaining the storage lifetime, never requiring Clone or Any.
 pub struct Capture<'a> {
-    channel: String,
     drain: Box<dyn task_graph::capture::SerializedCapture + 'a>,
 }
 impl<'a> Capture<'a> {
@@ -44,19 +43,16 @@ impl<'a> Capture<'a> {
     pub(crate) fn from_serialized(
         drain: Box<dyn task_graph::capture::SerializedCapture + 'a>,
     ) -> Self {
-        Self {
-            channel: drain.channel().into(),
-            drain,
-        }
+        Self { drain }
     }
     pub fn channel(&self) -> &str {
-        &self.channel
+        self.drain.channel()
     }
     #[cfg(feature = "serde")]
     pub(crate) fn loss(&self) -> crate::incompleteness::CaptureLoss {
         let (writer_drops, reader_drops, receive_errors) = self.drain.loss_counts();
         crate::incompleteness::CaptureLoss {
-            channel: self.channel.clone(),
+            channel: self.channel().into(),
             writer_drops: writer_drops as u64,
             reader_drops: reader_drops as u64,
             receive_errors: receive_errors as u64,

@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 use task::{
-    ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput,
+    ChannelPlan, LoanError, Publisher, RequiredInput,
     message::MessageHeader,
     recording::{
         EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionDescriptor,
@@ -19,6 +19,7 @@ use task::{
     },
     time::FrameworkTime,
 };
+use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -37,7 +38,7 @@ fn recording_modes_preserve_execution_and_select_metadata() {
         RecordingMode::DurationOnly,
         RecordingMode::Full,
     ] {
-        let mut plan = task_graph::NamedPlan::default();
+        let mut plan = task_graph::GraphPlan::default();
         for name in ["default", "off", "duration", "full"] {
             task_graph::TaskRegistration::new(
                 name,
@@ -152,7 +153,7 @@ fn diagnostic_policies_keep_channel_time_header_and_flush_before_panic() {
         let mut plan = ChannelPlan::<u64>::new("diagnostic-output");
         let source = ReplaySourcePlan::declare(&mut plan, 1);
         let capture = CapturePlan::declare(&mut plan, 1);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         source
             .bind(&bindings)
@@ -215,7 +216,7 @@ fn planned_capture_replay_and_execution_records_round_trip_through_json() {
     let injection = ReplaySourcePlan::declare(&mut input, 1);
     let input_log = CapturePlan::declare(&mut input, 2);
     let output_log = CapturePlan::declare(&mut output, 2);
-    let storage = GraphPlan::new((input, output)).allocate().unwrap();
+    let storage = StoragePlan::new((input, output)).allocate().unwrap();
     let input = storage.channels().0.build();
     let output = storage.channels().1.build();
     let bytes = Bytes::default();
@@ -285,11 +286,11 @@ fn planned_capture_replay_and_execution_records_round_trip_through_json() {
 
 #[test]
 fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop() {
-    use task_graph::{NamedPlan, TaskRegistration};
+    use task_graph::{GraphPlan, TaskRegistration};
     let bytes = Bytes::default();
     let status;
     {
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         for name in ["z", "a"] {
             let mut task =
                 TaskRegistration::new(name, Source { fail: 0 }, CallbackSchedule::default());
@@ -421,7 +422,7 @@ fn failed_batches_and_timing_rejection_do_not_record_successful_publications() {
         let a = Source::declare(&mut plan).unwrap();
         let b = Source::declare(&mut plan).unwrap();
         let capture = CapturePlan::declare(&mut plan, 2);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         let mut graph = GraphBuilder::new();
         graph.add_scheduled_callback(
@@ -491,7 +492,7 @@ fn commit_panic_is_marked_indeterminate_and_payload_capture_retains_prefix() {
     let mut plan = ChannelPlan::new("output");
     let key = plan.publisher(1);
     let capture = CapturePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::new();
     graph.add_callback("broken", || Ok(Broken(bindings.take_publisher(&key)?)));
@@ -517,7 +518,7 @@ fn bounded_recording_and_capture_overflow_are_observable() {
     let mut plan = ChannelPlan::new("output");
     let declaration = Source::declare(&mut plan).unwrap();
     let capture = CapturePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::new();
     graph.add_callback("source", || {
@@ -561,7 +562,7 @@ fn incompleteness_persists_all_overflows_and_is_sticky_across_flushes() {
         let mut plan = ChannelPlan::new("output");
         let declaration = Source::declare(&mut plan).unwrap();
         let capture = CapturePlan::declare(&mut plan, capture_capacity);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         let mut graph = GraphBuilder::new();
         graph.add_callback("source", || {
@@ -684,7 +685,7 @@ fn recovered_writer_cannot_turn_failed_recording_into_a_complete_log() {
         let mut plan = ChannelPlan::<u64>::new("output");
         let source = ReplaySourcePlan::declare(&mut plan, 1);
         let capture = CapturePlan::declare(&mut plan, 1);
-        let storage = GraphPlan::new(plan).allocate().unwrap();
+        let storage = StoragePlan::new(plan).allocate().unwrap();
         let bindings = storage.channels().build();
         source
             .bind(&bindings)
@@ -719,7 +720,7 @@ fn recovered_writer_cannot_turn_failed_recording_into_a_complete_log() {
 fn failed_descriptor_write_attempts_a_marker_during_cleanup() {
     let mut plan = ChannelPlan::new("output");
     let declaration = Source::declare(&mut plan).unwrap();
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::new();
     graph.add_callback("source", || {
@@ -771,7 +772,7 @@ fn serialization_failure_is_marked_on_session_drop() {
     let mut plan = ChannelPlan::new("broken");
     let publisher = plan.publisher(1);
     let capture = CapturePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut publisher = bindings.take_publisher(&publisher).unwrap();
     publisher.publish(Unserializable).unwrap();
@@ -877,7 +878,7 @@ fn capture_write_failure_still_attempts_final_writer_flush() {
     let mut plan = ChannelPlan::<u64>::new("output");
     let replay = ReplaySourcePlan::declare(&mut plan, 1);
     let capture = CapturePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     replay
         .bind(&bindings)
@@ -907,7 +908,7 @@ fn capture_write_failure_still_attempts_final_writer_flush() {
 fn scoped_live_execution_uses_the_same_recording_lifecycle() {
     let mut plan = ChannelPlan::new("output");
     let declaration = Source::declare(&mut plan).unwrap();
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut graph = GraphBuilder::new();
     graph.add_scheduled_callback("source", CallbackSchedule::on_start(), || {

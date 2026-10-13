@@ -1,7 +1,7 @@
 #![cfg(feature = "log_simulation")]
 use logging::{AutomaticCapturePlan, AutomaticReplayPlan, CaptureOptions, ReplayOptions};
 use task::{InputSpan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime};
-use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
+use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 struct Sum;
 #[task_callback]
@@ -12,7 +12,7 @@ impl Sum {
 }
 #[test]
 fn automatic_sources_drive_log_simulation_through_overridden_input_names() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let mut registration = TaskRegistration::new(
         "sum",
         Sum,

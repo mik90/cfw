@@ -9,7 +9,7 @@ use task::{
     ArenaReaderPtr, Forwardable, Forwarded, ForwardedSources as _, OutputUninit, RequiredInput,
     message::Message, time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
+use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::{ForwardedSources, task_callback};
 
 struct Tracked {
@@ -56,7 +56,7 @@ impl Merge {
 fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
     for shared in [false, true] {
         let drops = Arc::new(AtomicUsize::new(0));
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         let mut task = TaskRegistration::new("merge", Merge, CallbackSchedule::default());
         if shared {
             task.input_channel("b", "a");
@@ -184,7 +184,7 @@ struct Nine<'s> {
 #[test]
 fn derive_has_no_eight_field_limit_and_validates_all_mappings() {
     assert_eq!(Nine::fields().len(), 9);
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let fields = Nine::fields();
     let mapping: Vec<_> = fields
         .iter()
@@ -215,7 +215,7 @@ fn derive_has_no_eight_field_limit_and_validates_all_mappings() {
     let mut b = task::ChannelPlan::<u32>::new("b");
     let pb = b.publisher(1);
     let sb = b.subscriber(1);
-    let storage = task::GraphPlan::new((a, b)).allocate().unwrap();
+    let storage = task_graph::StoragePlan::new((a, b)).allocate().unwrap();
     let a = storage.channels().0.build();
     let b = storage.channels().1.build();
     let mut pa = a.take_publisher(&pa).unwrap();
@@ -294,7 +294,7 @@ impl Relay {
 }
 #[test]
 fn nested_named_bundle_retention_propagates_to_original_sources() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     TaskRegistration::new("merge", Merge, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
@@ -382,16 +382,17 @@ struct One<'s> {
 
 #[test]
 fn named_bundle_rebinds_after_separately_owned_sources_are_destroyed() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let channel = plan.bundle::<(), One<'static>>("forwarded").unwrap();
     let output = channel.publisher(1);
     let input = channel.subscriber(1);
     let storage = plan.allocate().unwrap();
     for value in 0..8 {
-        let source =
-            task::GraphPlan::new(task::PublisherStoragePlan::<u64>::new(1).with_subscriber(1))
-                .allocate()
-                .unwrap();
+        let source = task_graph::StoragePlan::new(
+            task::PublisherStoragePlan::<u64>::new(1).with_subscriber(1),
+        )
+        .allocate()
+        .unwrap();
         let mut source_endpoints = source.channels().build();
         let bindings = storage.bind().unwrap();
         let channel = bindings.bundle::<(), One<'static>>("forwarded").unwrap();
@@ -432,7 +433,7 @@ fn named_bundle_rebinds_after_separately_owned_sources_are_destroyed() {
 }
 #[test]
 fn retention_dependencies_propagate_and_reject_cycles() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let source = plan.native::<u64>("source").unwrap().publisher(1);
     let middle = plan.native::<u64>("middle").unwrap().publisher(1);
     plan.native::<u64>("last").unwrap().publisher(1);

@@ -8,7 +8,7 @@ use task::{
     loggable::{DeserializeError, Loggable, SerializeError},
     time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, NamedPlan, TaskRegistration};
+use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 
 #[test]
@@ -21,7 +21,7 @@ fn automatic_ipc_replay_injects_full_headers_without_notifications() {
         fn wake(&self) {}
     }
     let (data, event) = names();
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let mut registration = TaskRegistration::new("ipc", Source, CallbackSchedule::default());
     registration
         .output_channel("output", &data)
@@ -103,7 +103,7 @@ fn names() -> (String, String) {
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn named_ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() {
     let (data, event) = names();
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let mut registration = TaskRegistration::new("ipc", Source, CallbackSchedule::default());
     registration
         .output_channel("output", &data)
@@ -148,7 +148,7 @@ fn named_ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() 
 fn ipc_capture_capacity_is_checked_by_storage_planning_and_exclusions_reserve_nothing() {
     for exclude in [false, true] {
         let (data, _) = names();
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         plan.ipc_publisher::<Wire>(&data, 1).unwrap();
         plan.set_ipc_service_limits(
             &data,

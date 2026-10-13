@@ -200,9 +200,6 @@ impl<'storage> SimulationState<'storage> {
         Ok(state)
     }
 
-    pub fn simulation_time(&self) -> FrameworkTime {
-        self.time
-    }
     pub fn current_time(&self) -> FrameworkTime {
         self.time
     }

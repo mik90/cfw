@@ -41,14 +41,14 @@ impl From<task::StorageError> for BuildError {
 pub trait Task {
     fn register(
         self: Box<Self>,
-        channels: &mut NamedPlan,
+        channels: &mut GraphPlan,
         overrides: &ChannelOverrides,
     ) -> Result<TaskBinding, BuildError>;
 }
 /// A single-use binding operation valid for any borrow of the allocated storage.
 pub type TaskBinding = Box<
     dyn for<'storage> FnOnce(
-        &NamedBindings<'storage>,
+        &GraphBindings<'storage>,
     ) -> Result<Box<dyn Callback + 'storage>, BuildError>,
 >;
 
@@ -169,7 +169,7 @@ impl TaskRegistration {
         self.channels.output_channel(port, channel);
         self
     }
-    pub fn register(self, plan: &mut NamedPlan) -> Result<(), BuildError> {
+    pub fn register(self, plan: &mut GraphPlan) -> Result<(), BuildError> {
         if plan.tasks.contains_key(&self.name) {
             return Err(BuildError(format!("duplicate task '{}'", self.name)));
         }
@@ -268,18 +268,18 @@ impl<'a, T: 'static> Binding<'a> for EndpointBindings<'a, T> {
 }
 
 struct Channel {
+    capture: Option<capture::CaptureDeclaration>,
+    replay: Option<replay::SourceDeclaration>,
     origin: Option<String>,
     plan: Box<dyn Plan>,
     publishers: usize,
     subscribers: usize,
 }
 #[derive(Default)]
-pub struct NamedPlan {
+pub struct GraphPlan {
     forwarding_edges: Vec<bundle::ForwardingEdge>,
     active_task: Option<String>,
     channels: BTreeMap<String, Channel>,
-    captures: BTreeMap<String, Box<dyn capture::CaptureDeclaration>>,
-    replay_sources: BTreeMap<String, Box<dyn replay::SourceDeclaration>>,
     ports: Vec<exact::PlannedPort>,
     tasks: BTreeMap<String, Range<usize>>,
     callbacks: Vec<TaskDefinition>,
@@ -291,7 +291,7 @@ pub struct NamedPlan {
     #[cfg(feature = "iceoryx2")]
     ipc_limits: BTreeMap<String, task::iox2::Iox2ChannelConfig>,
 }
-impl NamedPlan {
+impl GraphPlan {
     /// Generated registration annotates each endpoint after its checked declaration.
     #[doc(hidden)]
     pub fn annotate_last_port(&mut self, name: &str, forwardable: bool) {
@@ -374,6 +374,8 @@ impl NamedPlan {
             )));
         }
         let entry = self.channels.entry(name.into()).or_insert_with(|| Channel {
+            capture: None,
+            replay: None,
             origin: self.active_task.clone(),
             plan: Box::new(ChannelPlan::<T>::new(name)),
             publishers: 0,
@@ -442,7 +444,7 @@ impl NamedPlan {
             )))
         }
     }
-    pub fn allocate(mut self) -> Result<NamedStorage, BuildError> {
+    pub fn allocate(mut self) -> Result<GraphStorage, BuildError> {
         self.prepare()?;
         let topology = self.topology();
         let mut names = task::string_interner::ChannelNameInterner::new();
@@ -460,7 +462,7 @@ impl NamedPlan {
                 Ok((name, Box::new(plan).allocate()?))
             })
             .collect::<Result<_, BuildError>>()?;
-        Ok(NamedStorage {
+        Ok(GraphStorage {
             callbacks: RefCell::new(Some(self.callbacks)),
             topology,
             channels,
@@ -508,7 +510,7 @@ impl NamedPlan {
 /// };
 /// drop(graph);
 /// ```
-pub struct NamedStorage {
+pub struct GraphStorage {
     callbacks: RefCell<Option<Vec<TaskDefinition>>>,
     topology: Topology,
     channels: BTreeMap<String, Box<dyn Stored>>,
@@ -516,12 +518,12 @@ pub struct NamedStorage {
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, Box<dyn Stored>>,
 }
-impl NamedStorage {
+impl GraphStorage {
     pub fn topology(&self) -> &Topology {
         &self.topology
     }
-    pub fn bind(&self) -> Result<NamedBindings<'_>, BuildError> {
-        Ok(NamedBindings {
+    pub fn bind(&self) -> Result<GraphBindings<'_>, BuildError> {
+        Ok(GraphBindings {
             channels: self
                 .channels
                 .iter()
@@ -538,7 +540,7 @@ impl NamedStorage {
     pub fn build(&self) -> Result<BuiltGraph<'_>, BuildError> {
         Ok(self.build_with_bindings()?.0)
     }
-    pub fn build_with_bindings(&self) -> Result<(BuiltGraph<'_>, NamedBindings<'_>), BuildError> {
+    pub fn build_with_bindings(&self) -> Result<(BuiltGraph<'_>, GraphBindings<'_>), BuildError> {
         let bindings = self.bind()?;
         let graph = self.build_with(&bindings)?;
         Ok((graph, bindings))
@@ -546,7 +548,7 @@ impl NamedStorage {
     /// Construct tasks in registration order, after configuring any replay hooks.
     pub fn build_with<'a>(
         &'a self,
-        bindings: &NamedBindings<'a>,
+        bindings: &GraphBindings<'a>,
     ) -> Result<BuiltGraph<'a>, BuildError> {
         let tasks = self
             .callbacks
@@ -568,12 +570,12 @@ impl NamedStorage {
         Ok(BuiltGraph::from_callbacks(callbacks, self.names.clone()))
     }
 }
-pub struct NamedBindings<'a> {
+pub struct GraphBindings<'a> {
     channels: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
 }
-impl<'a> NamedBindings<'a> {
+impl<'a> GraphBindings<'a> {
     pub fn native<T: 'static>(&self, name: &str) -> Result<&EndpointBindings<'a, T>, BuildError> {
         let binding = self
             .channels
@@ -639,7 +641,7 @@ mod ipc {
             Some(self)
         }
     }
-    impl NamedPlan {
+    impl GraphPlan {
         pub fn ipc_workload_publishers<T: Debug + ZeroCopySend + Send + Sync + 'static>(
             &mut self,
             name: &str,
@@ -735,6 +737,8 @@ mod ipc {
         ) -> Result<&mut Iox2ChannelPlan<T>, BuildError> {
             let runtime = self.runtime()?;
             let channel = self.channels.entry(name.into()).or_insert_with(|| Channel {
+                capture: None,
+                replay: None,
                 origin: self.active_task.clone(),
                 plan: Box::new(Iox2ChannelPlan::<T>::new(name, &runtime)),
                 publishers: 0,
@@ -822,7 +826,7 @@ mod ipc {
             }
         }
     }
-    impl NamedBindings<'_> {
+    impl GraphBindings<'_> {
         pub fn ipc<T: Debug + ZeroCopySend + Send + Sync + 'static>(
             &self,
             name: &str,

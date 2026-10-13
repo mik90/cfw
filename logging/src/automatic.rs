@@ -2,9 +2,9 @@
 //!
 //! ```
 //! use logging::{AutomaticCapturePlan, CaptureOptions};
-//! use task_graph::NamedPlan;
+//! use task_graph::GraphPlan;
 //!
-//! let mut plan = NamedPlan::default();
+//! let mut plan = GraphPlan::default();
 //! // Register tasks and their channel overrides here.
 //! let captures = AutomaticCapturePlan::declare(
 //!     &mut plan, &CaptureOptions::new(16).exclude("diagnostics"),
@@ -17,7 +17,7 @@
 //! ```
 use crate::Capture;
 use std::collections::BTreeSet;
-use task_graph::{BuildError, NamedBindings, NamedPlan, capture::NamedCapturePlan};
+use task_graph::{BuildError, GraphBindings, GraphPlan, capture::NamedCapturePlan};
 
 #[derive(Clone, Debug)]
 pub struct CaptureOptions {
@@ -41,7 +41,7 @@ impl CaptureOptions {
 pub struct AutomaticCapturePlan(NamedCapturePlan);
 impl AutomaticCapturePlan {
     /// Register all tasks first. Each discovered data channel gets one capture.
-    pub fn declare(plan: &mut NamedPlan, options: &CaptureOptions) -> Result<Self, BuildError> {
+    pub fn declare(plan: &mut GraphPlan, options: &CaptureOptions) -> Result<Self, BuildError> {
         Ok(Self(plan.declare_captures(
             options.capacity,
             &options.excluded_channels,
@@ -50,7 +50,7 @@ impl AutomaticCapturePlan {
     pub fn channels(&self) -> &[String] {
         self.0.channels()
     }
-    pub fn bind<'a>(self, bindings: &NamedBindings<'a>) -> Result<Vec<Capture<'a>>, BuildError> {
+    pub fn bind<'a>(self, bindings: &GraphBindings<'a>) -> Result<Vec<Capture<'a>>, BuildError> {
         Ok(self
             .0
             .bind(bindings)?
@@ -85,8 +85,8 @@ impl ReplayOptions {
 /// ```
 /// use logging::{AutomaticReplayPlan, ReplayOptions};
 /// use task::SubscriberPolicy;
-/// use task_graph::NamedPlan;
-/// let mut plan = NamedPlan::default();
+/// use task_graph::GraphPlan;
+/// let mut plan = GraphPlan::default();
 /// // Task macros discover codecs automatically. Manual declarations opt in:
 /// let input = plan.subscriber::<u64>("input", 4, SubscriberPolicy::default())?;
 /// # #[cfg(feature = "serde")]
@@ -107,7 +107,7 @@ pub struct AutomaticReplayPlan {
 }
 impl AutomaticReplayPlan {
     pub fn declare(
-        plan: &mut NamedPlan,
+        plan: &mut GraphPlan,
         channels: impl IntoIterator<Item = impl AsRef<str>>,
         options: &ReplayOptions,
     ) -> Result<Self, BuildError> {
@@ -125,7 +125,7 @@ impl AutomaticReplayPlan {
     /// interpreted by ReplayFeed, not injected as ordinary payloads.
     #[cfg(feature = "serde")]
     pub fn from_log(
-        plan: &mut NamedPlan,
+        plan: &mut GraphPlan,
         reader: &crate::SortedLogStreamReader,
         options: &ReplayOptions,
     ) -> Result<Self, crate::BoxedLogError> {
@@ -149,20 +149,15 @@ impl AutomaticReplayPlan {
     }
     pub fn bind<'a>(
         self,
-        bindings: &NamedBindings<'a>,
+        bindings: &GraphBindings<'a>,
     ) -> Result<Vec<crate::ReplaySource<'a>>, BuildError> {
-        Ok(self
-            .plan
-            .bind(bindings)?
-            .into_iter()
-            .map(crate::ReplaySource::from_serialized)
-            .collect())
+        self.plan.bind(bindings)
     }
     /// Carry planning exclusions into the shared simulation/live replay feed.
     #[cfg(feature = "serde")]
     pub fn bind_feed<'a>(
         self,
-        bindings: &NamedBindings<'a>,
+        bindings: &GraphBindings<'a>,
         reader: crate::SortedLogStreamReader,
     ) -> Result<crate::ReplayFeed<'a>, crate::BoxedLogError> {
         let excluded = self.excluded.iter().cloned().collect();

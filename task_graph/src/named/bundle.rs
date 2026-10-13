@@ -75,7 +75,7 @@ pub struct ForwardingEdge {
     pub source_channel: String,
     pub output_channel: String,
 }
-impl NamedPlan {
+impl GraphPlan {
     pub fn bundle_input_key<M: Send + Sync + 'static, S: ForwardedSources>(
         &mut self,
         callback: &str,
@@ -97,6 +97,8 @@ impl NamedPlan {
             )));
         }
         let entry = self.channels.entry(name.into()).or_insert_with(|| Channel {
+            capture: None,
+            replay: None,
             origin: self.active_task.clone(),
             plan: Box::new(BundlePlan::<M, S>(ChannelPlan::new(name))),
             publishers: 0,
@@ -194,7 +196,7 @@ impl NamedPlan {
     pub(super) fn prepare_forwarding(&mut self) -> Result<(), BuildError> {
         fn budget(
             name: &str,
-            plan: &mut NamedPlan,
+            plan: &mut GraphPlan,
             visiting: &mut std::collections::BTreeSet<String>,
             done: &mut BTreeMap<String, usize>,
         ) -> Result<usize, BuildError> {
@@ -240,7 +242,7 @@ impl NamedPlan {
         Ok(())
     }
 }
-impl<'a> NamedBindings<'a> {
+impl<'a> GraphBindings<'a> {
     pub fn bundle<M: Send + Sync + 'static, S: ForwardedSources>(
         &self,
         name: &str,
@@ -272,7 +274,7 @@ impl<M, S> Default for CaptureProbe<M, S> {
     }
 }
 pub trait MaybeCapture {
-    fn register(&self, _: &mut NamedPlan, _: &str) -> Result<(), BuildError> {
+    fn register(&self, _: &mut GraphPlan, _: &str) -> Result<(), BuildError> {
         Ok(())
     }
 }
@@ -281,87 +283,62 @@ impl<M: Send + Sync + 'static, S: ForwardedSources> CaptureProbe<M, S>
 where
     for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
-    pub fn register(&self, plan: &mut NamedPlan, channel: &str) -> Result<(), BuildError> {
-        plan.captures
-            .entry(channel.into())
-            .or_insert_with(|| Box::new(Capture::<M, S>(PhantomData)));
+    pub fn register(&self, plan: &mut GraphPlan, channel: &str) -> Result<(), BuildError> {
+        plan.bundle::<M, S>(channel)?;
+        plan.channels
+            .get_mut(channel)
+            .unwrap()
+            .capture
+            .get_or_insert(capture::CaptureDeclaration {
+                declare: declare_capture::<M, S>,
+                declare_output: declare_output::<M, S>,
+            });
         Ok(())
     }
 }
-struct Capture<M, S>(PhantomData<fn() -> (M, S)>);
-struct CaptureFactory<M, S: ForwardedSources> {
-    channel: String,
-    key: SubscriberKey<Value<'static, M, S>>,
-}
-struct OutputFactory<M, S: ForwardedSources> {
-    channel: String,
-    key: PublisherKey<Value<'static, M, S>>,
+fn declare_capture<M: Send + Sync + 'static, S: ForwardedSources>(
+    plan: &mut GraphPlan,
+    channel: &str,
     capacity: usize,
-}
-impl<M: Send + Sync + 'static, S: ForwardedSources> capture::CaptureDeclaration for Capture<M, S>
+) -> Result<capture::CaptureBinding, BuildError>
 where
     for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
-    fn declare(
-        &self,
-        plan: &mut NamedPlan,
-        channel: &str,
-        capacity: usize,
-    ) -> Result<Box<dyn capture::CaptureFactory>, BuildError> {
-        Ok(Box::new(CaptureFactory::<M, S> {
-            channel: channel.into(),
-            key: plan.bundle::<M, S>(channel)?.subscriber_with_policy(
-                capacity,
-                SubscriberPolicy {
-                    trigger: false,
-                    keep_across_runs: true,
-                },
-            ),
-        }))
-    }
-    fn declare_output(
-        &self,
-        plan: &mut NamedPlan,
-        port: &exact::PlannedPort,
-    ) -> Result<Box<dyn exact::ExactFactory>, BuildError> {
-        Ok(Box::new(OutputFactory::<M, S> {
-            channel: port.channel.clone(),
-            key: plan
-                .bundle::<M, S>(&port.channel)?
-                .publisher_key(port.index),
-            capacity: port.capacity,
-        }))
-    }
-}
-impl<M: Send + Sync + 'static, S: ForwardedSources> capture::CaptureFactory for CaptureFactory<M, S>
-where
-    for<'a> Value<'a, M, S>: task::loggable::Loggable,
-{
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-    ) -> Result<Box<dyn capture::SerializedCapture + 'a>, BuildError> {
+    let key = plan.bundle::<M, S>(channel)?.subscriber_with_policy(
+        capacity,
+        SubscriberPolicy {
+            trigger: false,
+            keep_across_runs: true,
+        },
+    );
+    let channel = channel.to_owned();
+    Ok(Box::new(move |bindings| {
         Ok(Box::new(capture::NativeCapture::new(
             bindings
-                .bundle::<M, S>(&self.channel)?
-                .take_subscriber(&subscriber_key::<M, S>(self.key))?,
+                .bundle::<M, S>(&channel)?
+                .take_subscriber(&subscriber_key::<M, S>(key))?,
         )))
-    }
+    }))
 }
-impl<M: Send + Sync + 'static, S: ForwardedSources> exact::ExactFactory for OutputFactory<M, S>
+fn declare_output<M: Send + Sync + 'static, S: ForwardedSources>(
+    plan: &mut GraphPlan,
+    port: &exact::PlannedPort,
+) -> Result<exact::ExactBinding, BuildError>
 where
     for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-    ) -> Result<exact::ExactPort<'a>, BuildError> {
+    let key = plan
+        .bundle::<M, S>(&port.channel)?
+        .publisher_key(port.index);
+    let channel = port.channel.clone();
+    let capacity = port.capacity;
+    Ok(Box::new(move |bindings| {
         Ok(exact::ExactPort::Output(
             bindings
-                .bundle::<M, S>(&self.channel)?
-                .configure_publisher(&publisher_key::<M, S>(self.key), |publisher| {
-                    port_capture::PortCapture::native(publisher, self.capacity)
+                .bundle::<M, S>(&channel)?
+                .configure_publisher(&publisher_key::<M, S>(key), |publisher| {
+                    port_capture::PortCapture::native(publisher, capacity)
                 })?,
         ))
-    }
+    }))
 }

@@ -1,7 +1,7 @@
 use super::*;
 use iceoryx2::prelude::{EventId, ZeroCopySend};
 use std::fmt::Debug;
-use task::iox2::{EventRecord, Iox2Publisher, Iox2PublisherKey, Iox2Subscriber, Iox2SubscriberKey};
+use task::iox2::{EventRecord, Iox2Publisher, Iox2Subscriber};
 pub const DEFAULT_IPC_TEST_SUBSCRIBER_CAPACITY: usize = 1024;
 
 pub struct TestNotifier {
@@ -50,87 +50,44 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Drop for IpcPump<T> {
         drop(pending);
     }
 }
-struct IpcInputPlan<T> {
+fn input_fixture<T: Debug + ZeroCopySend + Send + Sync + 'static>(
     channel: String,
     queue: Queue<T>,
-}
-struct IpcInputFactory<T> {
-    channel: String,
-    queue: Queue<T>,
-    key: Iox2PublisherKey<T>,
-}
-impl<T: Debug + ZeroCopySend + Send + Sync + 'static> FixturePlan for IpcInputPlan<T> {
-    fn declare(
-        self: Box<Self>,
-        plan: &mut NamedPlan,
-    ) -> Result<Box<dyn FixtureFactory>, BuildError> {
-        plan.require(&self.channel, false)?;
-        let key = plan.ipc::<T>(&self.channel)?.publisher(1);
-        Ok(Box::new(IpcInputFactory {
-            channel: self.channel,
-            queue: self.queue,
-            key,
+) -> FixtureDeclaration {
+    Box::new(move |plan| {
+        plan.require(&channel, false)?;
+        let key = plan.ipc::<T>(&channel)?.publisher(1);
+        Ok(Box::new(move |bindings, executor| {
+            executor.inputs.push(Box::new(IpcPump {
+                publisher: Arc::new(Mutex::new(
+                    bindings.ipc::<T>(&channel)?.take_publisher(&key)?,
+                )),
+                queue,
+            }));
+            Ok(())
         }))
-    }
+    })
 }
-impl<T: Debug + ZeroCopySend + Send + Sync + 'static> FixtureFactory for IpcInputFactory<T> {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-        executor: &mut UnitTestExecutor<'a>,
-    ) -> Result<(), BuildError> {
-        executor.inputs.push(Box::new(IpcPump {
-            publisher: Arc::new(Mutex::new(
-                bindings
-                    .ipc::<T>(&self.channel)?
-                    .take_publisher(&self.key)?,
-            )),
-            queue: self.queue,
-        }));
-        Ok(())
-    }
-}
-struct IpcOutputPlan<T> {
-    sources: CaptureSources,
+fn output_fixture<T: Debug + ZeroCopySend + Send + Sync + 'static>(
     channel: String,
     capacity: usize,
-    payload: PhantomData<T>,
-}
-struct IpcOutputFactory<T> {
-    channel: String,
-    key: Iox2SubscriberKey<T>,
-}
-impl<T: Debug + ZeroCopySend + Send + Sync + 'static> FixturePlan for IpcOutputPlan<T> {
-    fn declare(
-        self: Box<Self>,
-        plan: &mut NamedPlan,
-    ) -> Result<Box<dyn FixtureFactory>, BuildError> {
-        plan.require(&self.channel, true)?;
-        let sources = plan.ipc_workload_publishers::<T>(&self.channel)?;
-        let key = plan.ipc::<T>(&self.channel)?.subscriber(self.capacity);
-        if self.sources == CaptureSources::TaskOutputs {
-            plan.ipc::<T>(&self.channel)?
+    capture_sources: CaptureSources,
+) -> FixtureDeclaration {
+    Box::new(move |plan| {
+        plan.require(&channel, true)?;
+        let sources = plan.ipc_workload_publishers::<T>(&channel)?;
+        let key = plan.ipc::<T>(&channel)?.subscriber(capacity);
+        if capture_sources == CaptureSources::TaskOutputs {
+            plan.ipc::<T>(&channel)?
                 .restrict_subscriber_sources(&key, &sources)?;
         }
-        Ok(Box::new(IpcOutputFactory {
-            channel: self.channel,
-            key,
+        Ok(Box::new(move |bindings, executor| {
+            executor.captures.push(Box::new(
+                bindings.ipc::<T>(&channel)?.take_subscriber(&key)?,
+            ));
+            Ok(())
         }))
-    }
-}
-impl<T: Debug + ZeroCopySend + Send + Sync + 'static> FixtureFactory for IpcOutputFactory<T> {
-    fn bind<'a>(
-        self: Box<Self>,
-        bindings: &NamedBindings<'a>,
-        executor: &mut UnitTestExecutor<'a>,
-    ) -> Result<(), BuildError> {
-        executor.captures.push(Box::new(
-            bindings
-                .ipc::<T>(&self.channel)?
-                .take_subscriber(&self.key)?,
-        ));
-        Ok(())
-    }
+    })
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Capture for Iox2Subscriber<T> {
     fn messages(&mut self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
@@ -142,35 +99,9 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Capture for Iox2Subscriber
         )
     }
 }
-struct EventPlan {
-    channel: String,
-    queue: Queue<EventRecord>,
-}
 struct EventPump {
     channel: String,
     queue: Queue<EventRecord>,
-}
-impl FixturePlan for EventPlan {
-    fn declare(
-        self: Box<Self>,
-        plan: &mut NamedPlan,
-    ) -> Result<Box<dyn FixtureFactory>, BuildError> {
-        plan.require_event(&self.channel)?;
-        Ok(self)
-    }
-}
-impl FixtureFactory for EventPlan {
-    fn bind<'a>(
-        self: Box<Self>,
-        _: &NamedBindings<'a>,
-        executor: &mut UnitTestExecutor<'a>,
-    ) -> Result<(), BuildError> {
-        executor.inputs.push(Box::new(EventPump {
-            channel: self.channel,
-            queue: self.queue,
-        }));
-        Ok(())
-    }
 }
 impl<'a> InputPump<'a> for EventPump {
     fn schedule(
@@ -202,10 +133,8 @@ impl UnitTestExecutorBuilder {
         channel: &str,
     ) -> TestInput<T> {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
-        self.fixtures.push(Box::new(IpcInputPlan {
-            channel: channel.into(),
-            queue: queue.clone(),
-        }));
+        self.fixtures
+            .push(input_fixture(channel.into(), queue.clone()));
         TestInput {
             queue,
             session: self.session.0.clone(),
@@ -236,12 +165,8 @@ impl UnitTestExecutorBuilder {
     ) -> TestOutput<T> {
         let index = self.captures;
         self.captures += 1;
-        self.fixtures.push(Box::new(IpcOutputPlan::<T> {
-            sources,
-            channel: channel.into(),
-            capacity,
-            payload: PhantomData,
-        }));
+        self.fixtures
+            .push(output_fixture::<T>(channel.into(), capacity, sources));
         TestOutput {
             index,
             session: self.session.0.clone(),
@@ -250,9 +175,17 @@ impl UnitTestExecutorBuilder {
     }
     pub fn add_iox2_test_notifier(&mut self, channel: &str) -> TestNotifier {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
-        self.fixtures.push(Box::new(EventPlan {
-            channel: channel.into(),
-            queue: queue.clone(),
+        let channel = channel.to_owned();
+        let pending = queue.clone();
+        self.fixtures.push(Box::new(move |plan| {
+            plan.require_event(&channel)?;
+            Ok(Box::new(move |_, executor| {
+                executor.inputs.push(Box::new(EventPump {
+                    channel,
+                    queue: pending,
+                }));
+                Ok(())
+            }))
         }));
         TestNotifier {
             input: TestInput {

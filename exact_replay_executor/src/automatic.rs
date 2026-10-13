@@ -2,9 +2,9 @@
 //!
 //! ```no_run
 //! use exact_replay_executor::{AutomaticExactReplayPlan, ExactReplayExecutor, ReplayLog};
-//! use task_graph::{NamedPlan, TaskRegistration};
+//! use task_graph::{GraphPlan, TaskRegistration};
 //! fn replay(tasks: Vec<TaskRegistration>, log: ReplayLog) -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut plan = NamedPlan::default();
+//!     let mut plan = GraphPlan::default();
 //!     for task in tasks { task.register(&mut plan)?; }
 //!     let replay = AutomaticExactReplayPlan::declare(&mut plan, &log)?;
 //!     let storage = plan.allocate()?;
@@ -19,13 +19,13 @@
 use crate::{ReplayBindings, ReplayError, ReplayLog, SourceCache, SourceCachePlan};
 pub use task_graph::exact::ExplicitReplayPort;
 use task_graph::{
-    NamedBindings, NamedPlan,
+    GraphBindings, GraphPlan,
     exact::{ExactPort, NamedExactPlan},
 };
 
 pub struct AutomaticExactReplayPlan(NamedExactPlan);
 impl AutomaticExactReplayPlan {
-    pub fn declare(plan: &mut NamedPlan, log: &ReplayLog) -> Result<Self, ReplayError> {
+    pub fn declare(plan: &mut GraphPlan, log: &ReplayLog) -> Result<Self, ReplayError> {
         plan.declare_exact_replay(log.descriptor_ref())
             .map(Self)
             .map_err(|error| ReplayError::Setup(error.to_string()))
@@ -33,7 +33,7 @@ impl AutomaticExactReplayPlan {
     /// Keep selected ports explicit for custom/contextual decoders. Add their
     /// bindings to the returned ReplayBindings before constructing the executor.
     pub fn declare_with_explicit(
-        plan: &mut NamedPlan,
+        plan: &mut GraphPlan,
         log: &ReplayLog,
         ports: &std::collections::BTreeSet<ExplicitReplayPort>,
     ) -> Result<Self, ReplayError> {
@@ -43,7 +43,7 @@ impl AutomaticExactReplayPlan {
     }
     /// Bind before task factories consume their endpoints. No publisher indices
     /// are changed; the executor translates them into recorded identity space.
-    pub fn bind<'a>(self, bindings: &NamedBindings<'a>) -> Result<ReplayBindings<'a>, ReplayError> {
+    pub fn bind<'a>(self, bindings: &GraphBindings<'a>) -> Result<ReplayBindings<'a>, ReplayError> {
         let mut replay = ReplayBindings::new();
         for (name, ordinal, port) in self
             .0
@@ -51,11 +51,7 @@ impl AutomaticExactReplayPlan {
             .map_err(|error| ReplayError::Setup(error.to_string()))?
         {
             match port {
-                ExactPort::Input(source) => replay.add_input(
-                    name,
-                    ordinal,
-                    logging::ReplaySource::from_serialized(source),
-                )?,
+                ExactPort::Input(source) => replay.add_input(name, ordinal, source)?,
                 ExactPort::Output(capture) => replay.add_output(name, ordinal, capture)?,
             }
         }
@@ -64,7 +60,7 @@ impl AutomaticExactReplayPlan {
     /// Typed extension for contextual forwarding graphs: reserve source retention
     /// from distinct full-header identities in the log, including reproduced outputs.
     pub fn source_cache<T: Send + Sync + 'static>(
-        plan: &mut NamedPlan,
+        plan: &mut GraphPlan,
         log: &ReplayLog,
         channel: &str,
     ) -> Result<AutomaticSourceCachePlan<T>, ReplayError> {
@@ -92,7 +88,7 @@ where
     /// Install the loader automatically; return the typed cache for contextual decoders.
     pub fn bind<'a>(
         self,
-        bindings: &NamedBindings<'a>,
+        bindings: &GraphBindings<'a>,
         replay: &mut ReplayBindings<'a>,
     ) -> Result<SourceCache<'a, T>, ReplayError> {
         let cache = self

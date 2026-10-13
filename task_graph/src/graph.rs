@@ -44,7 +44,7 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
     }
 
     /// Retain the finalized channel interner, including fixture-only channels.
-    pub fn with_storage<S>(storage: &task::GraphStorage<S>) -> Self {
+    pub fn with_storage<S>(storage: &crate::Storage<S>) -> Self {
         Self {
             factories: Vec::new(),
             channel_names: storage.channel_names().clone(),

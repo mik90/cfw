@@ -1,14 +1,15 @@
 //! End-to-end typed loan -> send -> flush -> drain -> read latency.
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use task::time::FrameworkTime;
-use task::{ChannelPlan, GraphPlan};
+use task::{ChannelPlan, StorageLayout};
 
 fn bench_publish_to_receive(c: &mut Criterion) {
     let mut plan = ChannelPlan::<u64>::new("bench_channel");
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
-    let bindings = storage.channels().build();
+    plan.validate().unwrap();
+    let storage = plan.allocate().unwrap();
+    let bindings = storage.build();
     let mut publisher = bindings.take_publisher(&publisher).unwrap();
     let subscriber = bindings.take_subscriber(&subscriber).unwrap();
     let mut value = 0_u64;

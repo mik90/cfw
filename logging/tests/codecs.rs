@@ -1,7 +1,6 @@
 use logging::{CapturePlan, ReplaySourcePlan};
-use task::{
-    ChannelPlan, GraphPlan, loggable::Loggable, message::MessageHeader, time::FrameworkTime,
-};
+use task::{ChannelPlan, loggable::Loggable, message::MessageHeader, time::FrameworkTime};
+use task_graph::StoragePlan;
 
 struct Wire(u64);
 impl Loggable for Wire {
@@ -30,7 +29,7 @@ fn custom_codec_and_nonclone_payload_work_without_serde() {
     let mut plan = ChannelPlan::<Wire>::new("wire");
     let replay = ReplaySourcePlan::declare(&mut plan, 1);
     let capture = CapturePlan::declare(&mut plan, 1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut replay = replay.bind(&bindings).unwrap();
     let mut capture = capture.bind(&bindings).unwrap();
@@ -58,7 +57,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     let mut plan = ChannelPlan::new("source");
     let publisher = plan.publisher(1);
     let tap = plan.subscriber(1);
-    let source_storage = GraphPlan::new(plan).allocate().unwrap();
+    let source_storage = StoragePlan::new(plan).allocate().unwrap();
     let source_bindings = source_storage.channels().build();
     let mut publisher = source_bindings.take_publisher(&publisher).unwrap();
     let tap = source_bindings.take_subscriber(&tap).unwrap();
@@ -79,7 +78,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     let replay = ReplaySourcePlan::declare(&mut plan, 1);
     let capture = CapturePlan::declare(&mut plan, 1);
     let retained_key = plan.subscriber(1);
-    let destination_storage = GraphPlan::new(plan).allocate().unwrap();
+    let destination_storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = destination_storage.channels().build();
     let retained = bindings.take_subscriber(&retained_key).unwrap();
     {

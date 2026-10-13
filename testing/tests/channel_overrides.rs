@@ -3,7 +3,7 @@ use task::{
     LoanError, Publisher, RequiredInput,
     recording::{Direction, ExecutionRecorder},
 };
-use task_graph::{CallbackSchedule, NamedPlan, Task};
+use task_graph::{CallbackSchedule, GraphPlan, Task};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
@@ -76,7 +76,7 @@ impl Lazy {
 }
 #[test]
 fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
-    let mut plan = NamedPlan::default();
+    let mut plan = GraphPlan::default();
     let extra_sub = plan.native::<u64>("chosen").unwrap().subscriber(1);
     let mut app = task_graph::ApplicationBuilder::new();
     let task = app.add_task(
@@ -152,7 +152,7 @@ fn invalid_port_overrides_fail_before_defaults_or_registration() {
         } else {
             overrides.input_channel(port, "chosen");
         }
-        let mut plan = NamedPlan::default();
+        let mut plan = GraphPlan::default();
         let error = Box::new(Lazy)
             .register(&mut plan, &overrides)
             .err()

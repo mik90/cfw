@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use task::executor::TimeSource;
 use task::time::FrameworkTime;
-use task::{ChannelPlan, Context, GraphPlan, LoanError, Output, Publisher, RequiredInput};
+use task::{ChannelPlan, Context, LoanError, Output, Publisher, RequiredInput};
+use task_graph::StoragePlan;
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -50,7 +51,7 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
     let declaration = Increment::declare(&mut input, &mut output).unwrap();
     let source_key = input.publisher(1);
     let capture_key = output.subscriber(2);
-    let storage = GraphPlan::new((input, (output, ChannelPlan::<u64>::new("fixture-only"))))
+    let storage = StoragePlan::new((input, (output, ChannelPlan::<u64>::new("fixture-only"))))
         .allocate()
         .unwrap();
     let input = storage.channels().0.build();
@@ -127,7 +128,7 @@ fn trigger_during_run_is_requeued_without_concurrent_invocations() {
     let mut plan = ChannelPlan::new("input");
     let declaration = Blocking::declare(&mut plan).unwrap();
     let source_key = plan.publisher(1);
-    let storage = GraphPlan::new(plan).allocate().unwrap();
+    let storage = StoragePlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
     let mut source = bindings.take_publisher(&source_key).unwrap();
     let (entered, entry) = channel::unbounded();
@@ -205,7 +206,7 @@ fn callback_errors_and_panics_wake_control_and_leave_captured_messages_valid() {
         let source_decl = Source::declare(&mut source).unwrap();
         let fail_decl = Failing::declare(&mut source, &mut output).unwrap();
         let capture_key = source.subscriber(1);
-        let storage = GraphPlan::new((source, output)).allocate().unwrap();
+        let storage = StoragePlan::new((source, output)).allocate().unwrap();
         let source = storage.channels().0.build();
         let output = storage.channels().1.build();
         let capture = source.take_subscriber(&capture_key).unwrap();
