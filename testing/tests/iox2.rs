@@ -7,7 +7,7 @@ use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2
 use task::{ChannelPlan, Context, GraphPlan, RequiredInput};
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
-use testing::BoundUnitTestExecutorBuilder as UnitTestExecutorBuilder;
+use testing::UnitTestExecutor;
 
 type Observations = Arc<Mutex<Vec<(i64, u64, Vec<(usize, u64)>)>>>;
 struct Observe {
@@ -70,12 +70,11 @@ fn counted_events_survive_native_gating_and_capture_outlives_executor() {
             .bind(declaration, &input, &input, &gate, &output)?)
         },
     );
-    let builder = UnitTestExecutorBuilder::new(graph.build().unwrap());
-    let sender = builder.add_iox2_test_publisher(input.take_publisher(&input_key).unwrap());
-    let events = builder.add_iox2_test_notifier(&channel);
-    let mut gate_sender = builder.add_test_publisher(gate.take_publisher(&gate_key).unwrap());
-    let capture = builder.add_iox2_test_subscriber(output.take_subscriber(&capture_key).unwrap());
-    let mut executor = builder.build();
+    let mut executor = UnitTestExecutor::new_with_graph(graph.build().unwrap(), Default::default());
+    let sender = executor.add_iox2_test_publisher(input.take_publisher(&input_key).unwrap());
+    let events = executor.add_iox2_test_notifier(&channel);
+    let mut gate_sender = executor.add_test_publisher(gate.take_publisher(&gate_key).unwrap());
+    let capture = executor.add_iox2_test_subscriber(output.take_subscriber(&capture_key).unwrap());
     sender.send(77);
     events.notify(EventId::new(9), 5);
     assert!(executor.step().executed.is_empty());
@@ -99,9 +98,9 @@ fn counted_events_survive_native_gating_and_capture_outlives_executor() {
 
 #[test]
 fn unknown_event_channel_returns_error_and_poisons_session() {
-    let builder = UnitTestExecutorBuilder::new(GraphBuilder::new().build().unwrap());
-    let events = builder.add_iox2_test_notifier("missing");
-    let mut executor = builder.build();
+    let mut executor =
+        UnitTestExecutor::new_with_graph(GraphBuilder::new().build().unwrap(), Default::default());
+    let events = executor.add_iox2_test_notifier("missing");
     events.notify(EventId::new(0), 1);
     assert!(matches!(
         executor.try_step(),

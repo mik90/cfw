@@ -100,18 +100,19 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
     a.add_to_graph(&mut builder, &bindings);
     b.add_to_graph(&mut builder, &bindings);
     sum.add_to_graph(&mut builder, &bindings);
-    let mut graph = testing::BoundUnitTestExecutorBuilder::with_config(
-        builder.build().unwrap(),
+    let mut graph = builder.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = CallbackSchedule::on_start()
+            .with_execution_duration(std::time::Duration::from_nanos(1));
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(
+        graph,
         testing::UnitTestExecutorConfig {
+            start_time: FrameworkTime::from_nanoseconds(7),
             virtual_pool_threads: vec![2],
             ..Default::default()
         },
-    )
-    .schedule_all(
-        CallbackSchedule::on_start().with_execution_duration(std::time::Duration::from_nanos(1)),
-    )
-    .start_time(FrameworkTime::from_nanoseconds(7))
-    .build();
+    );
     graph.run_until_idle(16).unwrap();
     let messages = captures[0].drain_to_vec().unwrap();
     assert_eq!(
@@ -185,11 +186,11 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
     assert!(captures.bind(&bindings).unwrap().is_empty());
     let mut graph = storage.graph_builder();
     task.add_to_graph(&mut graph, &bindings);
-    testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
-        .schedule_all(
-            CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO),
-        )
-        .build()
+    let mut graph = graph.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
+    });
+    testing::UnitTestExecutor::new_with_graph(graph, Default::default())
         .run_until_idle(8)
         .unwrap();
 }
@@ -221,18 +222,19 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
     for task in tasks {
         task.add_to_graph(&mut graph, &bindings);
     }
-    let mut graph = testing::BoundUnitTestExecutorBuilder::with_config(
-        graph.build().unwrap(),
+    let mut graph = graph.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = CallbackSchedule::on_start()
+            .with_execution_duration(std::time::Duration::from_nanos(1));
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(
+        graph,
         testing::UnitTestExecutorConfig {
+            start_time: FrameworkTime::from_nanoseconds(10),
             virtual_pool_threads: vec![2],
             ..Default::default()
         },
-    )
-    .schedule_all(
-        CallbackSchedule::on_start().with_execution_duration(std::time::Duration::from_nanos(1)),
-    )
-    .start_time(FrameworkTime::from_nanoseconds(10))
-    .build();
+    );
     let header = task::message::MessageHeader {
         published_at: FrameworkTime::from_nanoseconds(9),
         publisher_index: 12,
@@ -404,11 +406,11 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
     let mut captures = captures.bind(&bindings).unwrap();
     let mut graph = storage.graph_builder();
     source.add_to_graph(&mut graph, &bindings);
-    testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
-        .schedule_all(
-            CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO),
-        )
-        .build()
+    let mut graph = graph.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
+    });
+    testing::UnitTestExecutor::new_with_graph(graph, Default::default())
         .run_until_idle(8)
         .unwrap();
     assert_eq!(captures[0].drain_to_vec().unwrap()[0].1, b"42");
@@ -445,13 +447,12 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
         let mut builder = storage.graph_builder();
         source.add_to_graph(&mut builder, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
-            builder.build().unwrap().with_recording(&recorder).unwrap(),
-        )
-        .schedule_all(
-            CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO),
-        )
-        .build();
+        let mut graph = builder.build().unwrap().with_recording(&recorder).unwrap();
+        graph.configure_schedules(|_, schedule| {
+            *schedule =
+                CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
+        });
+        let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
         let bytes = Bytes::default();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),

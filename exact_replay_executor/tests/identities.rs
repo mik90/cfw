@@ -132,7 +132,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         });
         // Both sources publish at the same time. The downstream pool has room
         // for the forwarding/observation stage and its dependent consumer.
-        let mut graph = testing::UnitTestExecutor::new_with(
+        let mut graph = testing::UnitTestExecutor::new_with_graph(
             graph,
             testing::UnitTestExecutorConfig {
                 virtual_pool_threads: vec![2, 3],

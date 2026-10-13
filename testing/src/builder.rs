@@ -1,7 +1,7 @@
 //! High-level test construction with scoped, externally owned arena storage.
 use crate::{
-    BoundUnitTestExecutorBuilder, DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages,
-    TestSubscriber, UnitTestExecutor, UnitTestExecutorConfig,
+    DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages, TestSubscriber, UnitTestExecutor,
+    UnitTestExecutorConfig,
 };
 use std::{
     any::Any,
@@ -420,10 +420,10 @@ impl UnitTestExecutorBuilder {
         }
     }
     /// Allocate storage after validating all named task/fixture connections.
-    pub fn allocate(self) -> UnitTestSetup {
+    pub fn allocate(self) -> UnitTestStorage {
         self.try_allocate().expect("could not allocate unit test")
     }
-    pub fn try_allocate(self) -> Result<UnitTestSetup, BuildError> {
+    pub fn try_allocate(self) -> Result<UnitTestStorage, BuildError> {
         let plan = NamedPlan::default();
         #[cfg(feature = "iceoryx2")]
         let plan = {
@@ -442,7 +442,7 @@ impl UnitTestExecutorBuilder {
             .into_iter()
             .map(|f| f.declare(plan.channels_mut()))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(UnitTestSetup {
+        Ok(UnitTestStorage {
             storage: plan.allocate()?,
             definition: RefCell::new(Some(Definition {
                 fixtures,
@@ -465,8 +465,8 @@ impl UnitTestExecutorBuilder {
         self,
         test: impl for<'a> FnOnce(UnitTestExecutor<'a>) -> R,
     ) -> Result<R, BuildError> {
-        let setup = self.try_allocate()?;
-        let executor = setup.try_build()?;
+        let storage = self.try_allocate()?;
+        let executor = storage.try_build()?;
         Ok(test(executor))
     }
 }
@@ -474,15 +474,16 @@ struct Definition {
     fixtures: Vec<Box<dyn FixtureFactory>>,
     config: UnitTestExecutorConfig,
 }
-/// Owns arena storage independently of the single-use execution definition.
+/// Owns test storage and the single-use task/fixture construction state.
+/// Builds an executor that borrows the storage owner.
 /// Ordinary scope cleanup suffices; retained low-level messages must not outlive
 /// the storage owner.
-pub struct UnitTestSetup {
+pub struct UnitTestStorage {
     storage: ApplicationStorage,
     definition: RefCell<Option<Definition>>,
     session: SessionGuard,
 }
-impl UnitTestSetup {
+impl UnitTestStorage {
     pub fn topology(&self) -> &task_graph::Topology {
         self.storage.topology()
     }
@@ -494,12 +495,11 @@ impl UnitTestSetup {
             .definition
             .borrow_mut()
             .take()
-            .ok_or_else(|| BuildError("unit test setup has already been built".into()))?;
+            .ok_or_else(|| BuildError("unit test storage has already been built".into()))?;
         let guard = SessionGuard(self.session.0.clone());
         let (graph, bindings) = self.storage.build_with_bindings()?;
         let start_time = definition.config.start_time;
-        let mut executor = BoundUnitTestExecutorBuilder::with_config(graph, definition.config)
-            .try_build()
+        let mut executor = UnitTestExecutor::try_new_with_graph(graph, definition.config)
             .map_err(|e| BuildError(e.to_string()))?;
         for fixture in definition.fixtures {
             fixture.bind(&bindings, &mut executor)?;

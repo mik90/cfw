@@ -7,7 +7,7 @@ use std::time::Duration;
 use task::{ChannelPlan, GraphPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
-use testing::{BoundUnitTestExecutorBuilder as UnitTestExecutorBuilder, UnitTestExecutorConfig};
+use testing::{UnitTestExecutor, UnitTestExecutorConfig};
 
 fn at(n: i64) -> FrameworkTime {
     FrameworkTime::from_nanoseconds(n)
@@ -38,16 +38,15 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
         CallbackSchedule::default().with_execution_duration(Duration::ZERO),
         || Ok(Double.bind(declaration, &input, &output)?),
     );
-    let builder = UnitTestExecutorBuilder::with_config(
+    let mut executor = UnitTestExecutor::new_with_graph(
         graph.build().unwrap(),
         UnitTestExecutorConfig {
             start_time: at(100),
             ..Default::default()
         },
     );
-    let mut sender = builder.add_test_publisher(input.take_publisher(&sender).unwrap());
-    let mut capture = builder.add_test_subscriber(output.take_subscriber(&capture).unwrap());
-    let mut executor = builder.build();
+    let mut sender = executor.add_test_publisher(input.take_publisher(&sender).unwrap());
+    let mut capture = executor.add_test_subscriber(output.take_subscriber(&capture).unwrap());
     drop((input, output));
     assert!(executor.step().idle);
     sender.send(21);
@@ -97,7 +96,7 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
             .with_execution_duration(Duration::ZERO),
         || Ok(Tick.bind(Tick::declare()?)?),
     );
-    let builder = UnitTestExecutorBuilder::with_config(
+    let mut executor = UnitTestExecutor::new_with_graph(
         graph.build().unwrap(),
         UnitTestExecutorConfig {
             start_time: at(100),
@@ -106,9 +105,8 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
             ..Default::default()
         },
     );
-    let mut sender = builder.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
-    let mut capture = builder.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
-    let mut executor = builder.build();
+    let mut sender = executor.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
+    let mut capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
     sender.send(1);
     let step = executor.step();
     assert_eq!((step.before, step.after), (at(100), at(110)));
@@ -126,11 +124,12 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
     let subscriber = plan.subscriber(1);
     let storage = GraphPlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
-    let builder =
-        UnitTestExecutorBuilder::new(GraphBuilder::with_storage(&storage).build().unwrap());
-    let mut sender = builder.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
-    let mut capture = builder.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
-    let executor = builder.build();
+    let mut executor = UnitTestExecutor::new_with_graph(
+        GraphBuilder::with_storage(&storage).build().unwrap(),
+        Default::default(),
+    );
+    let mut sender = executor.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
+    let mut capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
     sender.send(1);
     sender.send(2);
     let (count, dropped) = capture.try_messages(|index, message| {
@@ -162,11 +161,12 @@ fn retained_payload_drops_exactly_once_after_all_endpoints_and_executor() {
     let subscriber = plan.subscriber(1);
     let storage = GraphPlan::new(plan).allocate().unwrap();
     let bindings = storage.channels().build();
-    let builder =
-        UnitTestExecutorBuilder::new(GraphBuilder::with_storage(&storage).build().unwrap());
-    let mut sender = builder.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
-    let mut capture = builder.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
-    let executor = builder.build();
+    let mut executor = UnitTestExecutor::new_with_graph(
+        GraphBuilder::with_storage(&storage).build().unwrap(),
+        Default::default(),
+    );
+    let mut sender = executor.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
+    let mut capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
     let drops = Arc::new(AtomicUsize::new(0));
     sender.send(Tracked(drops.clone()));
     let retained = capture.take_messages();
@@ -200,10 +200,9 @@ fn failed_step_cancels_capture_and_poisons_executor() {
             .with_execution_duration(Duration::ZERO),
         || Ok(Fails.bind(declaration, &bindings)?),
     );
-    let builder = UnitTestExecutorBuilder::new(graph.build().unwrap());
-    let mut capture = builder.add_test_subscriber(bindings.take_subscriber(&capture).unwrap());
-    let mut sender = builder.add_test_publisher(bindings.take_publisher(&sender).unwrap());
-    let mut executor = builder.build();
+    let mut executor = UnitTestExecutor::new_with_graph(graph.build().unwrap(), Default::default());
+    let mut capture = executor.add_test_subscriber(bindings.take_subscriber(&capture).unwrap());
+    let mut sender = executor.add_test_publisher(bindings.take_publisher(&sender).unwrap());
     assert_eq!(executor.step().after, at(10));
     assert!(matches!(
         executor.try_step(),
@@ -219,26 +218,25 @@ fn failed_step_cancels_capture_and_poisons_executor() {
 }
 
 #[test]
-fn invalid_configuration_is_reported_by_try_build() {
+fn invalid_configuration_is_reported_by_graph_constructor() {
     let graph = GraphBuilder::new().build().unwrap();
-    let builder = UnitTestExecutorBuilder::with_config(
+    let result = UnitTestExecutor::try_new_with_graph(
         graph,
         UnitTestExecutorConfig {
             node_executor_thread_count: 0,
             ..Default::default()
         },
     );
-    assert!(matches!(
-        builder.try_build(),
-        Err(StepError::InvalidConfig(_))
-    ));
+    assert!(matches!(result, Err(StepError::InvalidConfig(_))));
     let mut graph = GraphBuilder::new();
     graph.add_callback("tick", || Ok(|_: FrameworkTime| Ok(())));
-    let builder = UnitTestExecutorBuilder::new(graph.build().unwrap()).schedule_all(
-        CallbackSchedule::periodic(Duration::ZERO).with_execution_duration(Duration::ZERO),
-    );
+    let mut graph = graph.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule =
+            CallbackSchedule::periodic(Duration::ZERO).with_execution_duration(Duration::ZERO);
+    });
     assert!(matches!(
-        builder.try_build(),
+        UnitTestExecutor::try_new_with_graph(graph, Default::default()),
         Err(StepError::InvalidConfig(_))
     ));
 }

@@ -2,7 +2,6 @@ pub use crate::builder::UnitTestExecutorBuilder;
 pub use simulation_executor::{SimulationConfig as UnitTestExecutorConfig, StepResult};
 use simulation_executor::{SimulationState, StepError};
 use std::{
-    cell::RefCell,
     num::Saturating,
     sync::{Arc, Mutex},
 };
@@ -77,11 +76,53 @@ pub struct UnitTestExecutor<'storage> {
 }
 
 impl<'storage> UnitTestExecutor<'storage> {
-    pub fn new(graph: BuiltGraph<'storage>) -> Self {
-        BoundUnitTestExecutorBuilder::new(graph).build()
+    /// Execute an existing graph while its storage remains externally owned.
+    pub fn new_with_graph(graph: BuiltGraph<'storage>, config: UnitTestExecutorConfig) -> Self {
+        Self::try_new_with_graph(graph, config).expect("could not build unit test executor")
     }
-    pub fn new_with(graph: BuiltGraph<'storage>, config: UnitTestExecutorConfig) -> Self {
-        BoundUnitTestExecutorBuilder::with_config(graph, config).build()
+    pub fn try_new_with_graph(
+        graph: BuiltGraph<'storage>,
+        config: UnitTestExecutorConfig,
+    ) -> Result<Self, StepError> {
+        let time = Arc::new(TimeSource::new(config.start_time));
+        Ok(Self {
+            simulation: SimulationState::with_config(graph, config)?,
+            time,
+            failed: false,
+            inputs: Vec::new(),
+            captures: Vec::new(),
+            session: None,
+            #[cfg(feature = "iceoryx2")]
+            events: Default::default(),
+        })
+    }
+    /// Attach an endpoint reserved before storage allocation. The returned handle
+    /// borrows storage, not the executor; scheduled sends require a live executor.
+    pub fn add_test_publisher<T: Send + Sync + 'storage>(
+        &mut self,
+        publisher: Publisher<'storage, T>,
+    ) -> TestPublisher<'storage, T> {
+        let publisher = Arc::new(Mutex::new(publisher));
+        let queue: crate::builder::Queue<T> = Default::default();
+        let handle = TestPublisher {
+            publisher,
+            queue: Arc::downgrade(&queue),
+            time: self.time.clone(),
+        };
+        if !self.failed {
+            self.inputs.push(Box::new(crate::builder::NativePump {
+                publisher: handle.publisher.clone(),
+                queue,
+            }));
+        }
+        handle
+    }
+    /// Captured messages may outlive the executor, but not their channel storage.
+    pub fn add_test_subscriber<T>(
+        &self,
+        subscriber: Subscriber<'storage, T>,
+    ) -> TestSubscriber<'storage, T> {
+        TestSubscriber::new(subscriber)
     }
     pub fn step(&mut self) -> StepResult {
         self.try_step().expect("could not step unit test executor")
@@ -172,83 +213,5 @@ impl Drop for UnitTestExecutor<'_> {
         if let Some(session) = &self.session {
             session.close();
         }
-    }
-}
-
-/// Wrap a built graph and its already-bound fixture endpoints. Typed keys enforce
-/// channel identity, payload type and single endpoint ownership during binding.
-pub struct BoundUnitTestExecutorBuilder<'storage> {
-    graph: BuiltGraph<'storage>,
-    config: UnitTestExecutorConfig,
-    time: Arc<TimeSource>,
-    inputs: RefCell<Vec<Box<dyn crate::builder::InputPump<'storage> + 'storage>>>,
-    #[cfg(feature = "iceoryx2")]
-    events: iox2::PendingEvents,
-}
-impl<'storage> BoundUnitTestExecutorBuilder<'storage> {
-    pub fn new(graph: BuiltGraph<'storage>) -> Self {
-        Self::with_config(graph, UnitTestExecutorConfig::default())
-    }
-    pub fn with_config(graph: BuiltGraph<'storage>, config: UnitTestExecutorConfig) -> Self {
-        Self {
-            graph,
-            time: Arc::new(TimeSource::new(config.start_time)),
-            inputs: RefCell::new(Vec::new()),
-            config,
-            #[cfg(feature = "iceoryx2")]
-            events: Default::default(),
-        }
-    }
-    /// Apply an explicit test schedule to every callback in a low-level graph.
-    pub fn schedule_all(mut self, schedule: task_graph::CallbackSchedule) -> Self {
-        self.graph
-            .configure_schedules(|_, target| *target = schedule.clone());
-        self
-    }
-    pub fn start_time(mut self, at: FrameworkTime) -> Self {
-        self.config.start_time = at;
-        self.time.set(at);
-        self
-    }
-    pub fn add_test_publisher<T: Send + Sync + 'storage>(
-        &self,
-        publisher: Publisher<'storage, T>,
-    ) -> TestPublisher<'storage, T> {
-        let publisher = Arc::new(Mutex::new(publisher));
-        let queue: crate::builder::Queue<T> = Default::default();
-        let handle = TestPublisher {
-            publisher,
-            queue: Arc::downgrade(&queue),
-            time: self.time.clone(),
-        };
-        self.inputs
-            .borrow_mut()
-            .push(Box::new(crate::builder::NativePump {
-                publisher: handle.publisher.clone(),
-                queue,
-            }));
-        handle
-    }
-    pub fn add_test_subscriber<T>(
-        &self,
-        subscriber: Subscriber<'storage, T>,
-    ) -> TestSubscriber<'storage, T> {
-        TestSubscriber::new(subscriber)
-    }
-    pub fn build(self) -> UnitTestExecutor<'storage> {
-        self.try_build()
-            .expect("could not build unit test executor")
-    }
-    pub fn try_build(self) -> Result<UnitTestExecutor<'storage>, StepError> {
-        Ok(UnitTestExecutor {
-            simulation: SimulationState::with_config(self.graph, self.config)?,
-            time: self.time,
-            failed: false,
-            inputs: self.inputs.into_inner(),
-            captures: Vec::new(),
-            session: None,
-            #[cfg(feature = "iceoryx2")]
-            events: self.events,
-        })
     }
 }

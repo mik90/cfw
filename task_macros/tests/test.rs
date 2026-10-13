@@ -42,14 +42,19 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
         builder.add_callback("increment", || {
             Ok(Increment.bind(declaration, &input, &output)?)
         });
+        let mut graph = builder.build().unwrap();
+        graph.configure_schedules(|_, schedule| {
+            *schedule = task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::ZERO);
+        });
         (
-            testing::BoundUnitTestExecutorBuilder::new(builder.build().unwrap())
-                .schedule_all(
-                    task_graph::CallbackSchedule::on_start()
-                        .with_execution_duration(std::time::Duration::ZERO),
-                )
-                .start_time(FrameworkTime::from_nanoseconds(10))
-                .build(),
+            testing::UnitTestExecutor::new_with_graph(
+                graph,
+                testing::UnitTestExecutorConfig {
+                    start_time: FrameworkTime::from_nanoseconds(10),
+                    ..Default::default()
+                },
+            ),
             source,
             capture,
         )
@@ -285,13 +290,18 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
     graph.add_callback("spans", || {
         Ok(SpanTransform { runs: 0 }.bind(declaration, &input, &output)?)
     });
-    let mut graph = testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
-        .schedule_all(
-            task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(1))
-                .with_execution_duration(std::time::Duration::ZERO),
-        )
-        .start_time(FrameworkTime::from_nanoseconds(200))
-        .build();
+    let mut graph = graph.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(1))
+            .with_execution_duration(std::time::Duration::ZERO);
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(
+        graph,
+        testing::UnitTestExecutorConfig {
+            start_time: FrameworkTime::from_nanoseconds(200),
+            ..Default::default()
+        },
+    );
     for (index, value) in [5, 7, 11].into_iter().enumerate() {
         source.publish(SpanValue(value)).unwrap();
         source.flush(FrameworkTime::from_nanoseconds(100 + index as i64));
@@ -499,12 +509,12 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
         .unwrap();
     let mut graph = storage.graph_builder();
     forward.add_to_graph(&mut graph, &bindings);
-    let mut graph = testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
-        .schedule_all(
-            task_graph::CallbackSchedule::default()
-                .with_execution_duration(std::time::Duration::from_nanos(1)),
-        )
-        .build();
+    let mut graph = graph.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = task_graph::CallbackSchedule::default()
+            .with_execution_duration(std::time::Duration::from_nanos(1));
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
     for value in 0..32 {
         source.publish(value).unwrap();
         source.flush(FrameworkTime::from_nanoseconds(value as i64));

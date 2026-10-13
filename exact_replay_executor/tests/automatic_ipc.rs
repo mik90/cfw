@@ -70,15 +70,15 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
         source.add_to_graph(&mut graph, &bindings);
         sink.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(4);
-        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
-            graph.build().unwrap().with_recording(&recorder).unwrap(),
-        )
-        .schedule_all(task_graph::CallbackSchedule {
-            run_on_start: true,
-            ..task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(10))
-                .with_execution_duration(std::time::Duration::ZERO)
-        })
-        .build();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        graph.configure_schedules(|_, schedule| {
+            *schedule = task_graph::CallbackSchedule {
+                run_on_start: true,
+                ..task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(10))
+                    .with_execution_duration(std::time::Duration::ZERO)
+            };
+        });
+        let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),

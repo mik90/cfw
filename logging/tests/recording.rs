@@ -61,21 +61,23 @@ fn recording_modes_preserve_execution_and_select_metadata() {
             .with_callback("off", RecordingMode::Off)
             .with_callback("duration", RecordingMode::DurationOnly)
             .with_callback("full", RecordingMode::Full);
-        let graph = graph
+        let mut graph = graph
             .build()
             .unwrap()
             .with_recording_options(&recorder, options)
             .unwrap();
-        testing::BoundUnitTestExecutorBuilder::with_config(
+        graph.configure_schedules(|_, schedule| {
+            *schedule =
+                CallbackSchedule::on_start().with_execution_duration(Duration::from_nanos(1));
+        });
+        testing::UnitTestExecutor::new_with_graph(
             graph,
             testing::UnitTestExecutorConfig {
                 virtual_pool_threads: vec![4],
+                start_time: at(7),
                 ..Default::default()
             },
         )
-        .schedule_all(CallbackSchedule::on_start().with_execution_duration(Duration::from_nanos(1)))
-        .start_time(at(7))
-        .build()
         .run_until_idle(16)
         .unwrap();
         let records = recorder.drain();
@@ -116,18 +118,24 @@ fn reduced_recording_does_not_visit_payloads_and_retains_failure_outcomes() {
         let mut graph = GraphBuilder::new();
         graph.add_callback("bare", || Ok(Bare));
         let recorder = ExecutionRecorder::new(1);
-        let graph = graph
+        let mut graph = graph
             .build()
             .unwrap()
             .with_recording_options(&recorder, RecordingOptions::new(mode))
             .unwrap();
+        graph.configure_schedules(|_, schedule| {
+            *schedule = CallbackSchedule::on_start().with_execution_duration(Duration::ZERO);
+        });
         assert!(
-            testing::BoundUnitTestExecutorBuilder::new(graph)
-                .schedule_all(CallbackSchedule::on_start().with_execution_duration(Duration::ZERO))
-                .start_time(at(1))
-                .build()
-                .run_until_idle(8)
-                .is_err()
+            testing::UnitTestExecutor::new_with_graph(
+                graph,
+                testing::UnitTestExecutorConfig {
+                    start_time: at(1),
+                    ..Default::default()
+                }
+            )
+            .run_until_idle(8)
+            .is_err()
         );
         let records = recorder.drain();
         assert_eq!(
@@ -346,9 +354,11 @@ fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop(
                     graph.metadata().channel_names.lookup_by_value(name)
                 );
             }
-            testing::BoundUnitTestExecutorBuilder::new(graph)
-                .schedule_all(CallbackSchedule::on_start().with_execution_duration(Duration::ZERO))
-                .build()
+            let mut graph = graph;
+            graph.configure_schedules(|_, schedule| {
+                *schedule = CallbackSchedule::on_start().with_execution_duration(Duration::ZERO);
+            });
+            testing::UnitTestExecutor::new_with_graph(graph, Default::default())
                 .run_until_idle(16)
                 .unwrap();
         }
@@ -494,11 +504,11 @@ fn commit_panic_is_marked_indeterminate_and_payload_capture_retains_prefix() {
     let mut graph = GraphBuilder::new();
     graph.add_callback("broken", || Ok(Broken(bindings.take_publisher(&key)?)));
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = testing::BoundUnitTestExecutorBuilder::new(
-        graph.build().unwrap().with_recording(&recorder).unwrap(),
-    )
-    .schedule_all(CallbackSchedule::on_start().with_execution_duration(Duration::ZERO))
-    .build();
+    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = CallbackSchedule::on_start().with_execution_duration(Duration::ZERO);
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
     assert!(matches!(
         graph.try_step(),
         Err(simulation_executor::StepError::Panicked)
@@ -522,15 +532,15 @@ fn bounded_recording_and_capture_overflow_are_observable() {
         Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
     });
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = testing::BoundUnitTestExecutorBuilder::new(
-        graph.build().unwrap().with_recording(&recorder).unwrap(),
-    )
-    .schedule_all(CallbackSchedule {
-        run_on_start: true,
-        ..CallbackSchedule::periodic(Duration::from_nanos(1))
-            .with_execution_duration(Duration::ZERO)
-    })
-    .build();
+    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = CallbackSchedule {
+            run_on_start: true,
+            ..CallbackSchedule::periodic(Duration::from_nanos(1))
+                .with_execution_duration(Duration::ZERO)
+        };
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
     graph.step();
     graph.step();
     assert_eq!(recorder.dropped(), 1);
@@ -566,15 +576,15 @@ fn incompleteness_persists_all_overflows_and_is_sticky_across_flushes() {
             Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
         });
         let recorder = ExecutionRecorder::new(recorder_capacity);
-        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
-            graph.build().unwrap().with_recording(&recorder).unwrap(),
-        )
-        .schedule_all(CallbackSchedule {
-            run_on_start: true,
-            ..CallbackSchedule::periodic(Duration::from_nanos(1))
-                .with_execution_duration(Duration::ZERO)
-        })
-        .build();
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        graph.configure_schedules(|_, schedule| {
+            *schedule = CallbackSchedule {
+                run_on_start: true,
+                ..CallbackSchedule::periodic(Duration::from_nanos(1))
+                    .with_execution_duration(Duration::ZERO)
+            };
+        });
+        let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
         let bytes = Bytes::default();
         let mut session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
@@ -813,11 +823,11 @@ fn metadata_panic_before_commit_cannot_leave_outputs_on_a_cancelled_record() {
     let mut graph = GraphBuilder::new();
     graph.add_callback("metadata_failure", || Ok(MetadataFailure));
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = testing::BoundUnitTestExecutorBuilder::new(
-        graph.build().unwrap().with_recording(&recorder).unwrap(),
-    )
-    .schedule_all(CallbackSchedule::on_start().with_execution_duration(Duration::ZERO))
-    .build();
+    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = CallbackSchedule::on_start().with_execution_duration(Duration::ZERO);
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
     assert!(graph.try_step().is_err());
     let records = recorder.drain();
     assert_eq!(records[0].outcome, Outcome::Cancelled);

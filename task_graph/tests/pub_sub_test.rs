@@ -28,13 +28,18 @@ fn executor_updates_inputs_and_flushes_hand_written_callback_outputs() {
             },
         ))
     });
-    let mut graph = testing::BoundUnitTestExecutorBuilder::new(builder.build().unwrap())
-        .schedule_all(
-            task_graph::CallbackSchedule::on_start()
-                .with_execution_duration(std::time::Duration::ZERO),
-        )
-        .start_time(FrameworkTime::from_nanoseconds(2))
-        .build();
+    let mut graph = builder.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = task_graph::CallbackSchedule::on_start()
+            .with_execution_duration(std::time::Duration::ZERO);
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(
+        graph,
+        testing::UnitTestExecutorConfig {
+            start_time: FrameworkTime::from_nanoseconds(2),
+            ..Default::default()
+        },
+    );
     fixture.publish(41).unwrap();
     fixture.flush(FrameworkTime::from_nanoseconds(1));
     graph.run_until_idle(8).unwrap();

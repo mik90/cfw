@@ -120,12 +120,17 @@ fn named_ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() 
     let mut captures = captures.bind(&bindings).unwrap();
     let mut graph = storage.graph_builder();
     source.add_to_graph(&mut graph, &bindings);
-    let mut graph = testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
-        .schedule_all(
-            CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO),
-        )
-        .start_time(FrameworkTime::from_nanoseconds(9))
-        .build();
+    let mut graph = graph.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(
+        graph,
+        testing::UnitTestExecutorConfig {
+            start_time: FrameworkTime::from_nanoseconds(9),
+            ..Default::default()
+        },
+    );
     graph.run_until_idle(8).unwrap();
     let messages = captures[0].drain_to_vec().unwrap();
     assert_eq!(messages.len(), 1);

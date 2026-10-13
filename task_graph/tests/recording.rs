@@ -50,7 +50,7 @@ fn recording_preserves_borrowed_callbacks_and_ids_across_disabled_callbacks() {
                 Ok::<(), LoanError>(())
             })
         });
-        let graph = builder
+        let mut graph = builder
             .build()
             .unwrap()
             .with_recording_options(
@@ -59,19 +59,18 @@ fn recording_preserves_borrowed_callbacks_and_ids_across_disabled_callbacks() {
                     .with_callback("disabled", RecordingMode::Off),
             )
             .unwrap();
-        testing::BoundUnitTestExecutorBuilder::with_config(
+        graph.configure_schedules(|_, schedule| {
+            *schedule = task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::from_nanos(1));
+        });
+        testing::UnitTestExecutor::new_with_graph(
             graph,
             testing::UnitTestExecutorConfig {
                 virtual_pool_threads: vec![2],
+                start_time: FrameworkTime::from_nanoseconds(42),
                 ..Default::default()
             },
         )
-        .schedule_all(
-            task_graph::CallbackSchedule::on_start()
-                .with_execution_duration(std::time::Duration::from_nanos(1)),
-        )
-        .start_time(FrameworkTime::from_nanoseconds(42))
-        .build()
         .run_until_idle(8)
         .unwrap();
     }

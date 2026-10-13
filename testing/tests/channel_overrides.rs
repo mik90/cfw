@@ -104,7 +104,10 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     let (graph, bindings) = storage.build_with_bindings().unwrap();
     assert!(storage.build().is_err());
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = testing::UnitTestExecutor::new(graph.with_recording(&recorder).unwrap());
+    let mut graph = testing::UnitTestExecutor::new_with_graph(
+        graph.with_recording(&recorder).unwrap(),
+        Default::default(),
+    );
     let descriptor = recorder.descriptor().unwrap();
     let ports = &descriptor.callbacks[0].endpoints;
     assert_eq!(

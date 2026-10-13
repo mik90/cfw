@@ -30,7 +30,7 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
         .callback_names
         .lookup_by_value("workload")
         .unwrap();
-    let graph = graph
+    let mut graph = graph
         .append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
             callback: Box::new(Infrastructure),
@@ -45,15 +45,19 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
             .unwrap(),
         id
     );
-    testing::BoundUnitTestExecutorBuilder::new(graph)
-        .schedule_all(
-            task_graph::CallbackSchedule::on_start()
-                .with_execution_duration(std::time::Duration::ZERO),
-        )
-        .start_time(timestamp())
-        .build()
-        .run_until_idle(8)
-        .unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = task_graph::CallbackSchedule::on_start()
+            .with_execution_duration(std::time::Duration::ZERO);
+    });
+    testing::UnitTestExecutor::new_with_graph(
+        graph,
+        testing::UnitTestExecutorConfig {
+            start_time: timestamp(),
+            ..Default::default()
+        },
+    )
+    .run_until_idle(8)
+    .unwrap();
     let mut builder = GraphBuilder::new();
     builder.add_callback("logger", || Ok(Infrastructure));
     let graph = builder.build().unwrap();
@@ -114,20 +118,20 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
         let first = bindings[0].take_subscriber(&first_input).unwrap();
         let second = bindings[1].take_subscriber(&second_input).unwrap();
         let fanout = bindings[0].take_subscriber(&fanout).unwrap();
+        let mut graph = builder.build().unwrap();
+        graph.configure_schedules(|_, schedule| {
+            *schedule = task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::from_nanos(1));
+        });
         (
-            testing::BoundUnitTestExecutorBuilder::with_config(
-                builder.build().unwrap(),
+            testing::UnitTestExecutor::new_with_graph(
+                graph,
                 testing::UnitTestExecutorConfig {
+                    start_time: timestamp(),
                     virtual_pool_threads: vec![3],
                     ..Default::default()
                 },
-            )
-            .schedule_all(
-                task_graph::CallbackSchedule::on_start()
-                    .with_execution_duration(std::time::Duration::from_nanos(1)),
-            )
-            .start_time(timestamp())
-            .build(),
+            ),
             first,
             second,
             fanout,
@@ -200,14 +204,19 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
             })
         });
         let fixture = forward_bindings.take_subscriber(&fixture_key).unwrap();
+        let mut graph = builder.build().unwrap();
+        graph.configure_schedules(|_, schedule| {
+            *schedule = task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::ZERO);
+        });
         (
-            testing::BoundUnitTestExecutorBuilder::new(builder.build().unwrap())
-                .schedule_all(
-                    task_graph::CallbackSchedule::on_start()
-                        .with_execution_duration(std::time::Duration::ZERO),
-                )
-                .start_time(timestamp())
-                .build(),
+            testing::UnitTestExecutor::new_with_graph(
+                graph,
+                testing::UnitTestExecutorConfig {
+                    start_time: timestamp(),
+                    ..Default::default()
+                },
+            ),
             fixture,
         )
     };
@@ -365,13 +374,18 @@ fn step_error_preserves_published_messages_and_skips_later_callbacks() {
             Ok(())
         })
     });
-    let mut graph = testing::BoundUnitTestExecutorBuilder::new(builder.build().unwrap())
-        .schedule_all(
-            task_graph::CallbackSchedule::on_start()
-                .with_execution_duration(std::time::Duration::ZERO),
-        )
-        .start_time(timestamp())
-        .build();
+    let mut graph = builder.build().unwrap();
+    graph.configure_schedules(|_, schedule| {
+        *schedule = task_graph::CallbackSchedule::on_start()
+            .with_execution_duration(std::time::Duration::ZERO);
+    });
+    let mut graph = testing::UnitTestExecutor::new_with_graph(
+        graph,
+        testing::UnitTestExecutorConfig {
+            start_time: timestamp(),
+            ..Default::default()
+        },
+    );
     let error = graph.run_until_idle(8).unwrap_err();
     assert!(
         matches!(error, testing::StepError::Callback { callback, failure: testing::BatchFailure::Callback(LoanError::ArenaExhausted) } if callback == "fail")
