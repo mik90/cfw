@@ -4,7 +4,7 @@ use std::time::Duration;
 use task::string_interner::{CallbackNameInterner, ChannelNameInterner};
 
 use task::time::FrameworkTime;
-use task::{Callback, Context, LoanError, execute_callback};
+use task::{Callback, Context};
 
 pub type FactoryError = Box<dyn std::error::Error + Send + Sync>;
 type StoredCallback<'storage> = Box<dyn Callback + 'storage>;
@@ -19,12 +19,6 @@ pub enum GraphBuildError {
         callback: String,
         source: FactoryError,
     },
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct GraphStepError {
-    pub callback: String,
-    pub source: LoanError,
 }
 
 /// Deferred callback construction after storage and typed bindings exist.
@@ -262,19 +256,6 @@ impl<'storage> BuiltGraph<'storage> {
     }
     pub fn into_parts(self) -> (Vec<ScheduledCallback<'storage>>, GraphMetadata) {
         (self.callbacks, self.metadata)
-    }
-    /// Stop at the first error. Earlier callbacks may already have published;
-    /// the step is not transactional and later callbacks are not executed.
-    pub fn step(&mut self, timestamp: FrameworkTime) -> Result<(), GraphStepError> {
-        for node in &mut self.callbacks {
-            execute_callback(node.callback.as_mut(), &self.metadata.context(timestamp)).map_err(
-                |source| GraphStepError {
-                    callback: node.name.clone(),
-                    source,
-                },
-            )?;
-        }
-        Ok(())
     }
 }
 

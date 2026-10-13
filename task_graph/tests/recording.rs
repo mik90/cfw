@@ -50,7 +50,7 @@ fn recording_preserves_borrowed_callbacks_and_ids_across_disabled_callbacks() {
                 Ok::<(), LoanError>(())
             })
         });
-        let mut graph = builder
+        let graph = builder
             .build()
             .unwrap()
             .with_recording_options(
@@ -59,7 +59,9 @@ fn recording_preserves_borrowed_callbacks_and_ids_across_disabled_callbacks() {
                     .with_callback("disabled", RecordingMode::Off),
             )
             .unwrap();
-        graph.step(FrameworkTime::from_nanoseconds(42)).unwrap();
+        testing::SequentialExecutor::new(graph)
+            .step(FrameworkTime::from_nanoseconds(42))
+            .unwrap();
     }
     assert_eq!((disabled_calls, recorded_calls), (1, 1));
     let descriptor = recorder.descriptor().unwrap();

@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
 pub mod builder;
+mod sequential;
+pub use sequential::{SequentialExecutionError, SequentialExecutor};
 pub mod unit_test_executor;
 pub use builder::{
     CaptureSources, ExecutionDuration, TestInput, TestOutput, UnitTestExecutorBuilder,

@@ -118,7 +118,9 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         graph.add_callback("observe", || Ok(Observe.bind(o, &source, &observed)?));
         graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
         let recorder = ExecutionRecorder::new(10);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = testing::SequentialExecutor::new(
+            graph.build().unwrap().with_recording(&recorder).unwrap(),
+        );
         let mut captures = vec![
             observed_log.bind(&observed).unwrap(),
             result_log.bind(&result).unwrap(),

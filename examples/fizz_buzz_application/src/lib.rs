@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use exact_replay_executor::{
-    ExactReplayConfig, ExactReplayExecutor, ReplayBindings, ReplayInputPlan, ReplayLog,
+    AutomaticExactReplayPlan, ExactReplayConfig, ExactReplayExecutor, ReplayLog,
 };
 use logging::{
-    CapturePlan, ExecutionRecorder, LogSession, PortCapture, ReplaySource, ReplaySourcePlan,
+    AutomaticCapturePlan, AutomaticReplayPlan, CaptureOptions, ExecutionRecorder, LogSession,
+    ReplayOptions, ReplaySource,
 };
-use task::{ChannelPlan, GraphPlan};
-use task_graph::{BuiltGraph, GraphBuilder};
+use task_graph::{ApplicationBuilder, BuiltGraph};
 use test_tasks::{
     FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, IncrementingIntegerPublisher,
     StringCollector,
@@ -18,6 +18,30 @@ const CAPACITY: usize = 64;
 pub const PRODUCER: &str = "integer_publisher";
 pub const CALCULATOR: &str = "fizz_buzz";
 pub const COLLECTOR: &str = "string_collector";
+
+fn application(
+    producer: bool,
+    calculator: bool,
+    collected: &StringCollector,
+) -> ApplicationBuilder {
+    let mut app = ApplicationBuilder::new();
+    if producer {
+        app.add_task(
+            PRODUCER,
+            IncrementingIntegerPublisher::default(),
+            IncrementingIntegerPublisher::schedule(),
+        );
+    }
+    if calculator {
+        app.add_task(
+            CALCULATOR,
+            FizzBuzzCalculator,
+            FizzBuzzCalculator::schedule(),
+        );
+    }
+    app.add_task(COLLECTOR, collected.clone(), StringCollector::schedule());
+    app
+}
 
 pub fn replay_denylist(strings_only: bool) -> std::collections::HashSet<String> {
     [if strings_only {
@@ -36,38 +60,18 @@ pub fn with_recording<R>(
     log_integer: bool,
     run: impl for<'s> FnOnce(BuiltGraph<'s>, LogSession<'s>, StringCollector) -> Result<R, BuildError>,
 ) -> Result<R, BuildError> {
-    let mut integers = ChannelPlan::new(INTEGER_CHANNEL);
-    let mut strings = ChannelPlan::new(FIZZ_BUZZ_STRING_CHANNEL);
-    let producer = IncrementingIntegerPublisher::declare(&mut integers)?;
-    let calculator = FizzBuzzCalculator::declare(&mut integers, &mut strings)?;
-    let collector = StringCollector::declare(&mut strings)?;
-    let integer_capture = log_integer.then(|| CapturePlan::declare(&mut integers, CAPACITY));
-    let string_capture = CapturePlan::declare(&mut strings, CAPACITY);
-    let storage = GraphPlan::new((integers, strings))
-        .allocate()
-        .map_err(|e| format!("{e:?}"))?;
-    let integers = storage.channels().0.build();
-    let strings = storage.channels().1.build();
     let collected = StringCollector::default();
-    let mut graph = GraphBuilder::with_storage(&storage);
-    graph.add_scheduled_callback(PRODUCER, IncrementingIntegerPublisher::schedule(), || {
-        Ok(IncrementingIntegerPublisher::default().bind(producer, &integers)?)
-    });
-    graph.add_scheduled_callback(CALCULATOR, FizzBuzzCalculator::schedule(), || {
-        Ok(FizzBuzzCalculator.bind(calculator, &integers, &strings)?)
-    });
-    graph.add_scheduled_callback(COLLECTOR, StringCollector::schedule(), || {
-        Ok(collected.clone().bind(collector, &strings)?)
-    });
-    let recorder = ExecutionRecorder::new(CAPACITY * 3);
-    let graph = graph
-        .build()
-        .map_err(|e| format!("{e:?}"))?
-        .with_recording(&recorder)?;
-    let mut captures = vec![string_capture.bind(&strings)?];
-    if let Some(capture) = integer_capture {
-        captures.push(capture.bind(&integers)?);
+    let mut plan = application(true, true, &collected).plan()?;
+    let mut options = CaptureOptions::new(CAPACITY);
+    if !log_integer {
+        options = options.exclude(INTEGER_CHANNEL);
     }
+    let captures = AutomaticCapturePlan::declare(plan.channels_mut(), &options)?;
+    let storage = plan.allocate()?;
+    let (graph, bindings) = storage.build_with_bindings()?;
+    let recorder = ExecutionRecorder::new(CAPACITY * 3);
+    let graph = graph.with_recording(&recorder)?;
+    let captures = captures.bind(&bindings)?;
     let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(
         std::fs::File::create(path)?,
     ));
@@ -106,54 +110,15 @@ pub fn with_exact_replay_log<R>(
     config: ExactReplayConfig,
     run: impl for<'s> FnOnce(ExactReplayExecutor<'s>, StringCollector) -> Result<R, BuildError>,
 ) -> Result<R, BuildError> {
-    let mut integers = ChannelPlan::new(INTEGER_CHANNEL);
-    let mut strings = ChannelPlan::new(FIZZ_BUZZ_STRING_CHANNEL);
-    let producer = IncrementingIntegerPublisher::declare(&mut integers)?;
-    let calculator = FizzBuzzCalculator::declare(&mut integers, &mut strings)?;
-    let collector = StringCollector::declare(&mut strings)?;
-    let integer_input = ReplayInputPlan::declare(&mut integers, calculator.integer_key())
-        .map_err(|e| format!("{e:?}"))?;
-    let string_input = ReplayInputPlan::declare(&mut strings, collector.string_key())
-        .map_err(|e| format!("{e:?}"))?;
-    let storage = GraphPlan::new((integers, strings))
-        .allocate()
-        .map_err(|e| format!("{e:?}"))?;
-    let integers = storage.channels().0.build();
-    let strings = storage.channels().1.build();
-    let mut bindings = ReplayBindings::new();
-    bindings.add_input(CALCULATOR, 0, integer_input.bind(&integers)?)?;
-    bindings.add_input(COLLECTOR, 0, string_input.bind(&strings)?)?;
-    bindings.add_output(
-        PRODUCER,
-        0,
-        integers
-            .configure_publisher(producer.output_key(), |p| PortCapture::native(p, CAPACITY))?,
-    )?;
-    bindings.add_output(
-        CALCULATOR,
-        0,
-        strings.configure_publisher(calculator.fizz_buzz_string_key(), |p| {
-            PortCapture::native(p, CAPACITY)
-        })?,
-    )?;
     let collected = StringCollector::default();
-    let mut graph = GraphBuilder::with_storage(&storage);
-    graph.add_scheduled_callback(PRODUCER, IncrementingIntegerPublisher::schedule(), || {
-        Ok(IncrementingIntegerPublisher::default().bind(producer, &integers)?)
-    });
-    graph.add_scheduled_callback(CALCULATOR, FizzBuzzCalculator::schedule(), || {
-        Ok(FizzBuzzCalculator.bind(calculator, &integers, &strings)?)
-    });
-    graph.add_scheduled_callback(COLLECTOR, StringCollector::schedule(), || {
-        Ok(collected.clone().bind(collector, &strings)?)
-    });
+    let mut plan = application(true, true, &collected).plan()?;
+    let replay = AutomaticExactReplayPlan::declare(plan.channels_mut(), &log)?;
+    let storage = plan.allocate()?;
+    let endpoints = storage.bind()?;
+    let bindings = replay.bind(&endpoints)?;
+    let graph = storage.build_with(&endpoints)?;
     run(
-        ExactReplayExecutor::with_config(
-            graph.build().map_err(|e| format!("{e:?}"))?,
-            log,
-            bindings,
-            config,
-        )?,
+        ExactReplayExecutor::with_config(graph, log, bindings, config)?,
         collected,
     )
 }
@@ -167,44 +132,21 @@ pub fn with_replay_graph<R>(
         StringCollector,
     ) -> Result<R, BuildError>,
 ) -> Result<R, BuildError> {
-    let mut integers = ChannelPlan::new(INTEGER_CHANNEL);
-    let mut strings = ChannelPlan::new(FIZZ_BUZZ_STRING_CHANNEL);
-    let calculator = if strings_only {
-        None
-    } else {
-        Some(FizzBuzzCalculator::declare(&mut integers, &mut strings)?)
-    };
-    let collector = StringCollector::declare(&mut strings)?;
-    let integer_source =
-        (!strings_only).then(|| ReplaySourcePlan::declare(&mut integers, CAPACITY));
-    let string_source = strings_only.then(|| ReplaySourcePlan::declare(&mut strings, CAPACITY));
-    let storage = GraphPlan::new((integers, strings))
-        .allocate()
-        .map_err(|e| format!("{e:?}"))?;
-    let integers = storage.channels().0.build();
-    let strings = storage.channels().1.build();
-    let mut sources = Vec::new();
-    if let Some(source) = integer_source {
-        sources.push(source.bind(&integers)?);
-    }
-    if let Some(source) = string_source {
-        sources.push(source.bind(&strings)?);
-    }
     let collected = StringCollector::default();
-    let mut graph = GraphBuilder::with_storage(&storage);
-    if let Some(calculator) = calculator {
-        graph.add_scheduled_callback(CALCULATOR, FizzBuzzCalculator::schedule(), || {
-            Ok(FizzBuzzCalculator.bind(calculator, &integers, &strings)?)
-        });
-    }
-    graph.add_scheduled_callback(COLLECTOR, StringCollector::schedule(), || {
-        Ok(collected.clone().bind(collector, &strings)?)
-    });
-    run(
-        graph.build().map_err(|e| format!("{e:?}"))?,
-        sources,
-        collected,
-    )
+    let mut plan = application(false, !strings_only, &collected).plan()?;
+    let channel = if strings_only {
+        FIZZ_BUZZ_STRING_CHANNEL
+    } else {
+        INTEGER_CHANNEL
+    };
+    let replay = AutomaticReplayPlan::declare(
+        plan.channels_mut(),
+        [channel],
+        &ReplayOptions::new(CAPACITY),
+    )?;
+    let storage = plan.allocate()?;
+    let (graph, bindings) = storage.build_with_bindings()?;
+    run(graph, replay.bind(&bindings)?, collected)
 }
 
 pub fn print_graph(strings_only: bool, replay: bool) {

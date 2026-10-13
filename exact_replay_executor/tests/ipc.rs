@@ -111,7 +111,9 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         let mut graph = GraphBuilder::with_storage(&storage);
         graph.add_callback("observe", || Ok(callback));
         let recorder = ExecutionRecorder::new(2);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = testing::SequentialExecutor::new(
+            graph.build().unwrap().with_recording(&recorder).unwrap(),
+        );
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(bytes.clone());
         writer
             .store_message(&input_name, &input_header(3, 0), b"7")

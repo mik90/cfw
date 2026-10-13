@@ -30,7 +30,7 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
         .callback_names
         .lookup_by_value("workload")
         .unwrap();
-    let mut graph = graph
+    let graph = graph
         .append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
             callback: Box::new(Infrastructure),
@@ -45,7 +45,12 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
             .unwrap(),
         id
     );
-    graph.step(timestamp()).unwrap();
+    testing::SequentialExecutor::new(graph)
+        .step(timestamp())
+        .unwrap();
+    let mut builder = GraphBuilder::new();
+    builder.add_callback("logger", || Ok(Infrastructure));
+    let graph = builder.build().unwrap();
     assert!(matches!(
         graph.append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
@@ -103,7 +108,12 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
         let first = bindings[0].take_subscriber(&first_input).unwrap();
         let second = bindings[1].take_subscriber(&second_input).unwrap();
         let fanout = bindings[0].take_subscriber(&fanout).unwrap();
-        (builder.build().unwrap(), first, second, fanout)
+        (
+            testing::SequentialExecutor::new(builder.build().unwrap()),
+            first,
+            second,
+            fanout,
+        )
     }; // Bindings and factory borrows end before graph execution.
 
     std::thread::scope(|scope| {
@@ -172,7 +182,10 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
             })
         });
         let fixture = forward_bindings.take_subscriber(&fixture_key).unwrap();
-        (builder.build().unwrap(), fixture)
+        (
+            testing::SequentialExecutor::new(builder.build().unwrap()),
+            fixture,
+        )
     };
     graph.step(timestamp()).unwrap();
     fixture.update();
@@ -328,7 +341,7 @@ fn step_error_preserves_published_messages_and_skips_later_callbacks() {
             Ok(())
         })
     });
-    let mut graph = builder.build().unwrap();
+    let mut graph = testing::SequentialExecutor::new(builder.build().unwrap());
     let error = graph.step(timestamp()).unwrap_err();
     assert_eq!(error.callback, "fail");
     assert_eq!(error.source, LoanError::ArenaExhausted);

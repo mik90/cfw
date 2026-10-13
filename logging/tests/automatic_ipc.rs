@@ -120,7 +120,7 @@ fn named_ipc_data_is_discovered_and_captured_without_capturing_notifier_ports() 
     let mut captures = captures.bind(&bindings).unwrap();
     let mut graph = storage.graph_builder();
     source.add_to_graph(&mut graph, &bindings);
-    let mut graph = graph.build().unwrap();
+    let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
     graph.step(FrameworkTime::from_nanoseconds(9)).unwrap();
     let messages = captures[0].drain_to_vec().unwrap();
     assert_eq!(messages.len(), 1);

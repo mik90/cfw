@@ -3,7 +3,7 @@ use task::{
     LoanError, Publisher, RequiredInput,
     recording::{Direction, ExecutionRecorder},
 };
-use task_graph::{CallbackSchedule, NamedPlan, Task, TaskRegistration};
+use task_graph::{CallbackSchedule, NamedPlan, Task};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
@@ -78,7 +78,8 @@ impl Lazy {
 fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     let mut plan = NamedPlan::default();
     let extra_sub = plan.native::<u64>("chosen").unwrap().subscriber(1);
-    let mut task = TaskRegistration::new(
+    let mut app = task_graph::ApplicationBuilder::new();
+    let task = app.add_task(
         "lazy",
         Lazy,
         CallbackSchedule::default().with_execution_duration(Duration::from_nanos(1)),
@@ -86,17 +87,24 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     task.input_channel("input", "unused")
         .input_channel("input", "chosen")
         .output_channel("output", "answer");
-    let task = task.register(&mut plan).unwrap();
-    assert!(plan.require("unused", false).is_err());
-    assert!(plan.require("output", true).is_err());
-    let sender = plan.native::<u64>("chosen").unwrap().publisher(1);
-    let capture = plan.native::<u64>("answer").unwrap().subscriber(1);
+    let mut plan = app.plan_with(plan).unwrap();
+    assert!(plan.channels_mut().require("unused", false).is_err());
+    assert!(plan.channels_mut().require("output", true).is_err());
+    let sender = plan
+        .channels_mut()
+        .native::<u64>("chosen")
+        .unwrap()
+        .publisher(1);
+    let capture = plan
+        .channels_mut()
+        .native::<u64>("answer")
+        .unwrap()
+        .subscriber(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.bind().unwrap();
-    let mut graph = storage.graph_builder();
-    task.add_to_graph(&mut graph, &bindings);
+    let (graph, bindings) = storage.build_with_bindings().unwrap();
+    assert!(storage.build().is_err());
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    let mut graph = testing::SequentialExecutor::new(graph.with_recording(&recorder).unwrap());
     let descriptor = recorder.descriptor().unwrap();
     let ports = &descriptor.callbacks[0].endpoints;
     assert_eq!(

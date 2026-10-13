@@ -129,7 +129,7 @@ fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
             .unwrap();
         let mut graph = storage.graph_builder();
         task.add_to_graph(&mut graph, &bindings);
-        let mut graph = graph.build().unwrap();
+        let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
         for value in 0..32 {
             let now = FrameworkTime::from_nanoseconds(value as i64);
             a.publish(Tracked {
@@ -292,16 +292,17 @@ impl Relay {
 #[test]
 fn nested_named_bundle_retention_propagates_to_original_sources() {
     let mut plan = NamedPlan::default();
-    TaskRegistration::new("merge", Merge, CallbackSchedule::default())
+    let merge = TaskRegistration::new("merge", Merge, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
-    TaskRegistration::new("relay", Relay, CallbackSchedule::default())
+    let relay = TaskRegistration::new("relay", Relay, CallbackSchedule::default())
         .register(&mut plan)
         .unwrap();
     let a = plan.native::<Tracked>("a").unwrap().publisher(1);
-    plan.native::<Tracked>("b").unwrap().publisher(1);
-    plan.native::<u32>("c").unwrap().publisher(1);
-    plan.bundle::<bool, Nested<'static>>("last")
+    let b = plan.native::<Tracked>("b").unwrap().publisher(1);
+    let c = plan.native::<u32>("c").unwrap().publisher(1);
+    let last = plan
+        .bundle::<bool, Nested<'static>>("last")
         .unwrap()
         .subscriber(32);
     plan.prepare().unwrap();
@@ -316,12 +317,114 @@ fn nested_named_bundle_retention_propagates_to_original_sources() {
     );
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
-    assert!(bindings.bundle::<bool, Nested<'static>>("last").is_ok());
+    let capture = bindings
+        .bundle::<bool, Nested<'static>>("last")
+        .unwrap()
+        .take_subscriber(&task_graph::bundle::subscriber_key::<bool, Nested<'static>>(last))
+        .unwrap();
+    let mut a = bindings
+        .native::<Tracked>("a")
+        .unwrap()
+        .take_publisher(&a)
+        .unwrap();
+    let mut b = bindings
+        .native::<Tracked>("b")
+        .unwrap()
+        .take_publisher(&b)
+        .unwrap();
+    let mut c = bindings
+        .native::<u32>("c")
+        .unwrap()
+        .take_publisher(&c)
+        .unwrap();
+    let mut graph = storage.graph_builder();
+    merge.add_to_graph(&mut graph, &bindings);
+    relay.add_to_graph(&mut graph, &bindings);
+    let mut executor = testing::SequentialExecutor::new(graph.build().unwrap());
+    let drops = Arc::new(AtomicUsize::new(0));
+    for index in 0..80 {
+        let now = FrameworkTime::from_nanoseconds(index);
+        a.publish(Tracked {
+            value: 2,
+            drops: drops.clone(),
+        })
+        .unwrap();
+        b.publish(Tracked {
+            value: 3,
+            drops: drops.clone(),
+        })
+        .unwrap();
+        c.publish(4).unwrap();
+        a.flush(now);
+        b.flush(now);
+        c.flush(now);
+        executor.step(now).unwrap();
+        capture.update();
+        let value = capture.input_forwardable().pop().unwrap();
+        assert!(value.message.message);
+        assert_eq!(
+            value.message.forwarded_messages.previous.message.message,
+            20
+        );
+    }
+    drop((executor, a, b, c, capture, bindings));
+    assert_eq!(drops.load(Ordering::SeqCst), 160);
 }
 
 #[derive(ForwardedSources)]
 struct One<'s> {
     source: ArenaReaderPtr<'s, Message<u64>>,
+}
+
+#[test]
+fn named_bundle_rebinds_after_separately_owned_sources_are_destroyed() {
+    let mut plan = NamedPlan::default();
+    let channel = plan.bundle::<(), One<'static>>("forwarded").unwrap();
+    let output = channel.publisher(1);
+    let input = channel.subscriber(1);
+    let storage = plan.allocate().unwrap();
+    for value in 0..8 {
+        let source =
+            task::GraphPlan::new(task::PublisherStoragePlan::<u64>::new(1).with_subscriber(1))
+                .allocate()
+                .unwrap();
+        let mut source_endpoints = source.channels().build();
+        let bindings = storage.bind().unwrap();
+        let channel = bindings.bundle::<(), One<'static>>("forwarded").unwrap();
+        let mut publisher = channel
+            .take_publisher(&task_graph::bundle::publisher_key::<(), One<'static>>(
+                output.clone(),
+            ))
+            .unwrap();
+        let subscriber = channel
+            .take_subscriber(&task_graph::bundle::subscriber_key::<(), One<'static>>(
+                input.clone(),
+            ))
+            .unwrap();
+        let now = FrameworkTime::from_nanoseconds(value as i64);
+        source_endpoints.publisher.publish(value).unwrap();
+        source_endpoints.publisher.flush(now);
+        source_endpoints.subscribers[0].update();
+        let source_message = source_endpoints.subscribers[0]
+            .input_forwardable()
+            .pop()
+            .unwrap();
+        publisher
+            .publish(Forwarded::new(
+                (),
+                One {
+                    source: source_message,
+                },
+            ))
+            .unwrap();
+        publisher.flush(now);
+        subscriber.update();
+        let retained = subscriber.input_forwardable().pop().unwrap();
+        drop((publisher, subscriber, bindings, source_endpoints));
+        assert_eq!(retained.message.forwarded_messages.source.message, value);
+        drop(retained);
+        drop(source);
+    }
 }
 #[test]
 fn retention_dependencies_propagate_and_reject_cycles() {

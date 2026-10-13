@@ -82,7 +82,9 @@ fn recorded(logged: bool) -> ReplayLog {
         b.add_to_graph(&mut graph, &bindings);
         sum.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(6);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = testing::SequentialExecutor::new(
+            graph.build().unwrap().with_recording(&recorder).unwrap(),
+        );
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),
@@ -313,7 +315,9 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
                 t.add_to_graph(&mut graph, &bindings);
             }
             let recorder = ExecutionRecorder::new(12);
-            let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+            let mut graph = testing::SequentialExecutor::new(
+                graph.build().unwrap().with_recording(&recorder).unwrap(),
+            );
             let session = LogSession::new(
                 logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
                 capture.bind(&bindings).unwrap(),
@@ -470,7 +474,9 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
                 task.add_to_graph(&mut graph, &bindings);
             }
             let recorder = ExecutionRecorder::new(9);
-            let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+            let mut graph = testing::SequentialExecutor::new(
+                graph.build().unwrap().with_recording(&recorder).unwrap(),
+            );
             let log = LogSession::new(
                 logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
                 capture.bind(&bindings).unwrap(),
@@ -581,7 +587,9 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
         let mut graph = storage.graph_builder();
         source.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = testing::SequentialExecutor::new(
+            graph.build().unwrap().with_recording(&recorder).unwrap(),
+        );
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),

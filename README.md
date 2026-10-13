@@ -89,26 +89,37 @@ The `Callback` trait exposes an interface for callbacks to
 
 ### Task building API
 
-This is the part I'm least happy with, and would like to change.
+`task_graph::ApplicationBuilder` discovers channels from task declarations.
+Register each task instance with its schedule; matching channel names wire its
+typed ports together. Incompatible payload types are rejected during planning.
 
-Currently, each task definition requires a `callback_builder()` function that allows the user to set the expected execution time or any time-based execution behavior (periodics).
+```rust,ignore
+let mut app = task_graph::ApplicationBuilder::new();
+app.add_task("producer", IncrementingIntegerPublisher::default(),
+             IncrementingIntegerPublisher::schedule());
+app.add_task("calculator", FizzBuzzCalculator, FizzBuzzCalculator::schedule());
+app.add_task("collector", collected.clone(), StringCollector::schedule());
+let storage = app.allocate()?;
+let graph = storage.build()?;
+// Hand graph to a live, simulation, or replay executor.
+```
 
-On top of that, we have a `CallbackBuilder` type that allows for swapping out channel names and other frequently changed components of a callback.
+Each registration supports `.input_channel("argument", "channel")` and
+`.output_channel("argument", "channel")` overrides. These use callback argument
+names and apply per task instance before endpoint registration.
 
-On top of _that_, there is a `TaskGraphBuilder` that allows for composing pre-configured callbacks and `CallbackBuilder`s. 
-The `TaskGraphBuilder` is more inline with what I want to support, it's just the intermediate layers between this top level and the lower levels that I'm less settled on..
+For recording or replay, call `app.plan()` first. Its `channels_mut()` exposes
+the resolved plan to `AutomaticCapturePlan`, `AutomaticReplayPlan`, or
+`AutomaticExactReplayPlan`, before `plan.allocate()` freezes storage.
+`build_with_bindings()` also returns bindings for captures and replay sources.
+Exact replay configures publisher observers before callbacks take their endpoints:
+use `storage.bind()`, bind the replay plan, then `storage.build_with(&bindings)`.
 
-The `TaskGraphBuilder` lets us compose many callbacks together alongside where they live in a variable count of thread pools.
-Additionally, it's where we can layer on `TaskGraphBuildStep`s. This trait allows code to iterate over all existing callbacks (including channels) so that it can insert new callbacks. This allows us to inject logging or diagnostic handling callbacks that may subscribe to every channel in the graph, or channels with certain names/types, or something else entirely. 
-
-The main difficulty with build steps is that, as we layer them, there may be a cyclic dependency. For example, the logging build step may have a diagnostic channel that should be handled. But the diagnostic build step itself has a channel that should be logged. We need to run both, but no order is correct since it's a cycle.
-We can fix this by either
-1. having build steps declare some static channels that are present regardless of ordering
-2. running build steps multiple times, kind of like how compiler optimization passes can be run multiple times to piggyback off each other
-
-Haven't figured out what I want yet, I'd lean towards 2 but then there's the question of "what if you have an infinite loop of channels being created"?
-
-I think the best solution is to have a validation pass after the graph is built.
+Storage remains an external owner: graphs, endpoints, and forwarded messages
+cannot outlive their storage borrows. Construction is shared with the test builder.
+`BuiltGraph` contains callbacks and metadata; execution belongs to executors.
+The lower-level `GraphBuilder` supports custom factories and scoped borrowed
+callbacks, including logging infrastructure.
 
 ### Executors
 

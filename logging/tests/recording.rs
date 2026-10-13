@@ -61,12 +61,12 @@ fn recording_modes_preserve_execution_and_select_metadata() {
             .with_callback("off", RecordingMode::Off)
             .with_callback("duration", RecordingMode::DurationOnly)
             .with_callback("full", RecordingMode::Full);
-        let mut graph = graph
+        let graph = graph
             .build()
             .unwrap()
             .with_recording_options(&recorder, options)
             .unwrap();
-        graph.step(at(7)).unwrap();
+        testing::SequentialExecutor::new(graph).step(at(7)).unwrap();
         let records = recorder.drain();
         assert_eq!(
             records.len(),
@@ -105,12 +105,12 @@ fn reduced_recording_does_not_visit_payloads_and_retains_failure_outcomes() {
         let mut graph = GraphBuilder::new();
         graph.add_callback("bare", || Ok(Bare));
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = graph
+        let graph = graph
             .build()
             .unwrap()
             .with_recording_options(&recorder, RecordingOptions::new(mode))
             .unwrap();
-        assert!(graph.step(at(1)).is_err());
+        assert!(testing::SequentialExecutor::new(graph).step(at(1)).is_err());
         let records = recorder.drain();
         assert_eq!(
             records.len(),
@@ -303,7 +303,7 @@ fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop(
         .unwrap();
         status = logger.status();
         {
-            let mut graph = logger
+            let graph = logger
                 .attach_periodic(graph, Duration::from_nanos(1))
                 .unwrap();
             let raw = bytes.0.lock().unwrap().clone();
@@ -328,7 +328,7 @@ fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop(
                     graph.metadata().channel_names.lookup_by_value(name)
                 );
             }
-            graph.step(at(0)).unwrap();
+            testing::SequentialExecutor::new(graph).step(at(0)).unwrap();
         }
         assert!(logger.finish().is_err());
     }
@@ -472,7 +472,8 @@ fn commit_panic_is_marked_indeterminate_and_payload_capture_retains_prefix() {
     let mut graph = GraphBuilder::new();
     graph.add_callback("broken", || Ok(Broken(bindings.take_publisher(&key)?)));
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    let mut graph =
+        testing::SequentialExecutor::new(graph.build().unwrap().with_recording(&recorder).unwrap());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graph.step(at(0)))).is_err());
     assert_eq!(recorder.drain()[0].outcome, Outcome::CommitPanicked);
     assert_eq!(
@@ -493,7 +494,8 @@ fn bounded_recording_and_capture_overflow_are_observable() {
         Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
     });
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    let mut graph =
+        testing::SequentialExecutor::new(graph.build().unwrap().with_recording(&recorder).unwrap());
     graph.step(at(0)).unwrap();
     graph.step(at(1)).unwrap();
     assert_eq!(recorder.dropped(), 1);
@@ -529,7 +531,9 @@ fn incompleteness_persists_all_overflows_and_is_sticky_across_flushes() {
             Ok(Source { fail: 0 }.bind(declaration, &bindings)?)
         });
         let recorder = ExecutionRecorder::new(recorder_capacity);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = testing::SequentialExecutor::new(
+            graph.build().unwrap().with_recording(&recorder).unwrap(),
+        );
         let bytes = Bytes::default();
         let mut session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
@@ -768,7 +772,8 @@ fn metadata_panic_before_commit_cannot_leave_outputs_on_a_cancelled_record() {
     let mut graph = GraphBuilder::new();
     graph.add_callback("metadata_failure", || Ok(MetadataFailure));
     let recorder = ExecutionRecorder::new(1);
-    let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    let mut graph =
+        testing::SequentialExecutor::new(graph.build().unwrap().with_recording(&recorder).unwrap());
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| graph.step(at(0)))).is_err());
     let records = recorder.drain();
     assert_eq!(records[0].outcome, Outcome::Cancelled);

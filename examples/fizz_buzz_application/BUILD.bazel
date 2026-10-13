@@ -34,6 +34,10 @@ rust_binary(
 rust_test(
     name = "exact_replay_integration_test",
     srcs = ["tests/exact_replay_integration.rs"],
+    compile_data = [
+        "resources/fizz-buzz-log.ndjson",
+        "resources/fizz-buzz-log-integer-unlogged.ndjson",
+    ],
     data = [
         "resources/fizz-buzz-log.ndjson",
         "resources/fizz-buzz-log-integer-unlogged.ndjson",

@@ -20,6 +20,7 @@ iceoryx2 = ["task/iceoryx2", "task_graph/iceoryx2", "dep:iceoryx2"]
 testing = []
 
 [dev-dependencies]
+testing = { path = "../testing", default-features = false }
 task_macros = { path = "../task_macros" }
 simulation_executor = { path = "../simulation_executor" }
 live_executor = { path = "../live_executor" }

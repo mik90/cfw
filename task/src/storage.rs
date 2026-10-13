@@ -144,7 +144,7 @@ impl<LayoutType: StorageLayout> GraphPlan<LayoutType> {
 /// endpoints.publisher.publish(42).unwrap();
 /// endpoints.publisher.flush(FrameworkTime::from_nanoseconds(1));
 /// endpoints.subscribers[0].update();
-/// let message = endpoints.subscribers[0].input().pop().unwrap();
+/// let message = endpoints.subscribers[0].input_forwardable().pop().unwrap();
 /// drop(endpoints);
 /// drop(storage);
 /// assert_eq!(message.message, 42);

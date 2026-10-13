@@ -52,9 +52,13 @@ impl<M: Send + Sync + 'static, S: ForwardedSources> Stored for BundleStorage<M, 
             storage: &'a ChannelStorage<Value<'static, M, S>>,
         ) -> EndpointBindings<'a, Value<'a, M, S>> {
             // SAFETY: ForwardedSources guarantees layout/drop equivalence under
-            // lifetime substitution. Arenas own raw slots; loans and handles alone
-            // initialize/drop values. No canonical static binding is exposed, and
-            // each build wires its own endpoints. Handles cannot outlive storage.
+            // lifetime substitution, including nested source payloads. Each build
+            // creates fresh queues: it cannot recover publications from an older
+            // binding. Arenas only allocate free slots and never traverse payloads
+            // on drop. A publication is accessed/destroyed through its bound typed
+            // handles, which carry both destination and source storage lifetimes.
+            // Forgotten handles leak occupied slots; a later binding cannot read
+            // them. The private Family identity prevents canonical static access.
             let storage =
                 unsafe { &*std::ptr::from_ref(storage).cast::<ChannelStorage<Value<'a, M, S>>>() };
             storage.build()

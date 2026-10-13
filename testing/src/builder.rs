@@ -6,7 +6,7 @@ use crate::{
 use std::{
     any::Any,
     cell::RefCell,
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     marker::PhantomData,
     sync::{
         Arc, Mutex,
@@ -18,7 +18,10 @@ use task::{
     LoanError, Publisher, PublisherKey, SubscriberKey, SubscriberPolicy, message::Message,
     testing_time::TimeSource, time::FrameworkTime,
 };
-use task_graph::{BuildError, CallbackSchedule, NamedBindings, NamedPlan, NamedStorage, Task};
+use task_graph::{
+    ApplicationBuilder, ApplicationStorage, BuildError, CallbackSchedule, NamedBindings, NamedPlan,
+    Task,
+};
 
 #[cfg(feature = "iceoryx2")]
 mod ipc;
@@ -284,7 +287,7 @@ impl<T: 'static> FixtureFactory for OutputFactory<T> {
 /// Plans named task ports and fixtures before allocating any native arenas.
 /// Generated tasks supply their declarations through `task_graph::Task`.
 pub struct UnitTestExecutorBuilder {
-    tasks: Vec<task_graph::TaskRegistration>,
+    tasks: ApplicationBuilder,
     fixtures: Vec<Box<dyn FixturePlan>>,
     captures: usize,
     config: UnitTestExecutorConfig,
@@ -305,7 +308,7 @@ impl UnitTestExecutorBuilder {
     }
     pub fn with_config(config: UnitTestExecutorConfig) -> Self {
         Self {
-            tasks: Vec::new(),
+            tasks: ApplicationBuilder::new(),
             fixtures: Vec::new(),
             captures: 0,
             config,
@@ -345,12 +348,8 @@ impl UnitTestExecutorBuilder {
         duration: impl Into<ExecutionDuration>,
         schedule: CallbackSchedule,
     ) -> &mut task_graph::TaskRegistration {
-        self.tasks.push(task_graph::TaskRegistration::new(
-            name,
-            task,
-            duration.into().apply(schedule),
-        ));
-        self.tasks.last_mut().unwrap()
+        self.tasks
+            .add_task(name, task, duration.into().apply(schedule))
     }
     pub fn add_test_publisher<T: Send + Sync + 'static>(&mut self, channel: &str) -> TestInput<T> {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -401,32 +400,27 @@ impl UnitTestExecutorBuilder {
         self.try_allocate().expect("could not allocate unit test")
     }
     pub fn try_allocate(self) -> Result<UnitTestSetup, BuildError> {
-        let mut plan = NamedPlan::default();
+        let plan = NamedPlan::default();
         #[cfg(feature = "iceoryx2")]
-        if let Some(runtime) = self.runtime {
-            plan = NamedPlan::with_iox2_runtime(runtime);
-        }
-        #[cfg(feature = "iceoryx2")]
-        for (channel, limits) in self.ipc_limits {
-            plan.set_ipc_service_limits(channel, limits);
-        }
-        let mut factories = Vec::new();
-        let mut names = HashSet::new();
-        for task in self.tasks {
-            if !names.insert(task.name().to_owned()) {
-                return Err(BuildError(format!("duplicate task '{}'", task.name())));
+        let plan = {
+            let mut plan = self
+                .runtime
+                .map(NamedPlan::with_iox2_runtime)
+                .unwrap_or(plan);
+            for (channel, limits) in self.ipc_limits {
+                plan.set_ipc_service_limits(channel, limits);
             }
-            factories.push(task.register(&mut plan)?);
-        }
+            plan
+        };
+        let mut plan = self.tasks.plan_with(plan)?;
         let fixtures = self
             .fixtures
             .into_iter()
-            .map(|f| f.declare(&mut plan))
+            .map(|f| f.declare(plan.channels_mut()))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(UnitTestSetup {
             storage: plan.allocate()?,
             definition: RefCell::new(Some(Definition {
-                factories,
                 fixtures,
                 config: self.config,
             })),
@@ -453,7 +447,6 @@ impl UnitTestExecutorBuilder {
     }
 }
 struct Definition {
-    factories: Vec<task_graph::RegisteredTask>,
     fixtures: Vec<Box<dyn FixtureFactory>>,
     config: UnitTestExecutorConfig,
 }
@@ -461,7 +454,7 @@ struct Definition {
 /// Ordinary scope cleanup suffices; retained low-level messages must not outlive
 /// the storage owner.
 pub struct UnitTestSetup {
-    storage: NamedStorage,
+    storage: ApplicationStorage,
     definition: RefCell<Option<Definition>>,
     session: SessionGuard,
 }
@@ -479,12 +472,7 @@ impl UnitTestSetup {
             .take()
             .ok_or_else(|| BuildError("unit test setup has already been built".into()))?;
         let guard = SessionGuard(self.session.0.clone());
-        let bindings = self.storage.bind()?;
-        let mut graph = self.storage.graph_builder();
-        for task in definition.factories {
-            task.add_to_graph(&mut graph, &bindings);
-        }
-        let graph = graph.build().map_err(|e| BuildError(format!("{e:?}")))?;
+        let (graph, bindings) = self.storage.build_with_bindings()?;
         let start_time = definition.config.start_time;
         let mut executor = BoundUnitTestExecutorBuilder::with_config(graph, definition.config)
             .try_build()

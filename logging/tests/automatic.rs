@@ -100,7 +100,7 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
     a.add_to_graph(&mut builder, &bindings);
     b.add_to_graph(&mut builder, &bindings);
     sum.add_to_graph(&mut builder, &bindings);
-    let mut graph = builder.build().unwrap();
+    let mut graph = testing::SequentialExecutor::new(builder.build().unwrap());
     graph.step(FrameworkTime::from_nanoseconds(7)).unwrap();
     let messages = captures[0].drain_to_vec().unwrap();
     assert_eq!(
@@ -174,9 +174,7 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
     assert!(captures.bind(&bindings).unwrap().is_empty());
     let mut graph = storage.graph_builder();
     task.add_to_graph(&mut graph, &bindings);
-    graph
-        .build()
-        .unwrap()
+    testing::SequentialExecutor::new(graph.build().unwrap())
         .step(FrameworkTime::from_nanoseconds(0))
         .unwrap();
 }
@@ -208,7 +206,7 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
     for task in tasks {
         task.add_to_graph(&mut graph, &bindings);
     }
-    let mut graph = graph.build().unwrap();
+    let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
     let header = task::message::MessageHeader {
         published_at: FrameworkTime::from_nanoseconds(9),
         publisher_index: 12,
@@ -380,9 +378,7 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
     let mut captures = captures.bind(&bindings).unwrap();
     let mut graph = storage.graph_builder();
     source.add_to_graph(&mut graph, &bindings);
-    graph
-        .build()
-        .unwrap()
+    testing::SequentialExecutor::new(graph.build().unwrap())
         .step(FrameworkTime::from_nanoseconds(0))
         .unwrap();
     assert_eq!(captures[0].drain_to_vec().unwrap()[0].1, b"42");
@@ -419,7 +415,9 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
         let mut builder = storage.graph_builder();
         source.add_to_graph(&mut builder, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = builder.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = testing::SequentialExecutor::new(
+            builder.build().unwrap().with_recording(&recorder).unwrap(),
+        );
         let bytes = Bytes::default();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),

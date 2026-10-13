@@ -28,7 +28,7 @@ fn executor_updates_inputs_and_flushes_hand_written_callback_outputs() {
             },
         ))
     });
-    let mut graph = builder.build().unwrap();
+    let mut graph = testing::SequentialExecutor::new(builder.build().unwrap());
     fixture.publish(41).unwrap();
     fixture.flush(FrameworkTime::from_nanoseconds(1));
     graph.step(FrameworkTime::from_nanoseconds(2)).unwrap();

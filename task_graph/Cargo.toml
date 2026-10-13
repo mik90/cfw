@@ -12,5 +12,8 @@ serde = ["task/serde"]
 task = { path = "../task", default-features = false }
 iceoryx2 = { workspace = true, optional = true }
 
+[dev-dependencies]
+testing = { path = "../testing", default-features = false }
+
 [lints]
 workspace = true

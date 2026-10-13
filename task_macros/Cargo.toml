@@ -12,6 +12,7 @@ quote = "1.0.42"
 syn = { version = "2.0.111", features = ["full", "visit-mut"] }
 
 [dev-dependencies]
+testing = { path = "../testing", default-features = false }
 task = { path = "../task" }
 task_graph = { path = "../task_graph" }
 

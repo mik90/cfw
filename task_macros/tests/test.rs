@@ -42,7 +42,11 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
         builder.add_callback("increment", || {
             Ok(Increment.bind(declaration, &input, &output)?)
         });
-        (builder.build().unwrap(), source, capture)
+        (
+            testing::SequentialExecutor::new(builder.build().unwrap()),
+            source,
+            capture,
+        )
     };
     let time = FrameworkTime::from_nanoseconds(10);
     graph.step(time).unwrap(); // Required input is empty; no output is loaned.
@@ -275,7 +279,7 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
     graph.add_callback("spans", || {
         Ok(SpanTransform { runs: 0 }.bind(declaration, &input, &output)?)
     });
-    let mut graph = graph.build().unwrap();
+    let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
     for (index, value) in [5, 7, 11].into_iter().enumerate() {
         source.publish(SpanValue(value)).unwrap();
         source.flush(FrameworkTime::from_nanoseconds(100 + index as i64));
@@ -483,7 +487,7 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
         .unwrap();
     let mut graph = storage.graph_builder();
     forward.add_to_graph(&mut graph, &bindings);
-    let mut graph = graph.build().unwrap();
+    let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
     for value in 0..32 {
         source.publish(value).unwrap();
         source.flush(FrameworkTime::from_nanoseconds(value as i64));

@@ -70,7 +70,9 @@ fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
         source.add_to_graph(&mut graph, &bindings);
         sink.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(4);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let mut graph = testing::SequentialExecutor::new(
+            graph.build().unwrap().with_recording(&recorder).unwrap(),
+        );
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),
