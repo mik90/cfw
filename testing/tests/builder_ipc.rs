@@ -86,16 +86,22 @@ fn named_ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
             executor.step().executed.is_empty(),
             "silent publication must not duplicate event notifications"
         );
-        input.send(78);
-        events.notify(EventId::new(4), 2);
-        executor.step();
+        let deadline = task::time::FrameworkTime::from_nanoseconds(20);
+        input.send_at(deadline, 78);
+        events.notify_at(deadline, EventId::new(4), 2);
+        executor.run_until(deadline, 8).unwrap();
+        assert_eq!(
+            output.messages(&mut executor, |_, _| panic!("published early")),
+            0
+        );
+        executor.run_until_idle(8).unwrap();
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| output.messages(
                 &mut executor,
                 |i, m| {
                     assert_eq!(
                         (i, m.message.value, m.header.published_at.to_nanoseconds()),
-                        (0, 89, 10)
+                        (0, 89, 20)
                     );
                     panic!("inspection failed");
                 }
@@ -109,7 +115,7 @@ fn named_ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
     });
     assert_eq!(
         *observations.lock().unwrap(),
-        [(77, 0, vec![(9, 5)]), (78, 10, vec![(4, 2)])]
+        [(77, 0, vec![(9, 5)]), (78, 20, vec![(4, 2)])]
     );
     assert!(input.try_send(0).is_err());
 }

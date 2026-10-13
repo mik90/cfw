@@ -118,8 +118,26 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         graph.add_callback("observe", || Ok(Observe.bind(o, &source, &observed)?));
         graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
         let recorder = ExecutionRecorder::new(10);
-        let mut graph = testing::SequentialExecutor::new(
-            graph.build().unwrap().with_recording(&recorder).unwrap(),
+        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        graph.configure_schedules(|name, schedule| {
+            *schedule = if matches!(name, "a" | "b") {
+                task_graph::CallbackSchedule {
+                    run_on_start: true,
+                    ..task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(9))
+                }
+            } else {
+                task_graph::CallbackSchedule::default().in_pool(1)
+            }
+            .with_execution_duration(std::time::Duration::from_nanos(1));
+        });
+        // Both sources publish at the same time. The downstream pool has room
+        // for the forwarding/observation stage and its dependent consumer.
+        let mut graph = testing::UnitTestExecutor::new_with(
+            graph,
+            testing::UnitTestExecutorConfig {
+                virtual_pool_threads: vec![2, 3],
+                ..Default::default()
+            },
         );
         let mut captures = vec![
             observed_log.bind(&observed).unwrap(),
@@ -137,8 +155,9 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         )
         .with_recording(recorder.clone())
         .unwrap();
-        graph.step(FrameworkTime::from_nanoseconds(0)).unwrap();
-        graph.step(FrameworkTime::from_nanoseconds(10)).unwrap();
+        graph
+            .run_until(FrameworkTime::from_nanoseconds(11), 32)
+            .unwrap();
         let descriptor = recorder.descriptor().unwrap();
         assert_eq!(
             descriptor.callbacks[0].endpoints[0].publisher_index,

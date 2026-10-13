@@ -124,9 +124,15 @@ fn recorded(log_source: bool) -> ReplayLog {
             Ok(Transform { factor: 2 }.bind(b, &source, &output)?)
         });
         let recorder = ExecutionRecorder::new(8);
-        let mut graph = testing::SequentialExecutor::new(
+        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
             graph.build().unwrap().with_recording(&recorder).unwrap(),
-        );
+        )
+        .schedule_all(task_graph::CallbackSchedule {
+            run_on_start: true,
+            ..task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(10))
+                .with_execution_duration(std::time::Duration::ZERO)
+        })
+        .build();
         let mut captures = vec![output_capture.bind(&output).unwrap()];
         if let Some(capture) = source_capture {
             captures.push(capture.bind(&source).unwrap());
@@ -137,8 +143,7 @@ fn recorded(log_source: bool) -> ReplayLog {
         )
         .with_recording(recorder)
         .unwrap();
-        graph.step(at(0)).unwrap();
-        graph.step(at(10)).unwrap();
+        graph.run_until(at(11), 32).unwrap();
         log.finish().unwrap();
     }
     let reader =
@@ -635,9 +640,15 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
             Ok(TwoInputs.bind(declaration, &shared, &shared, &result)?)
         });
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = testing::SequentialExecutor::new(
+        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
             graph.build().unwrap().with_recording(&recorder).unwrap(),
-        );
+        )
+        .schedule_all(
+            task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::ZERO),
+        )
+        .start_time(at(20))
+        .build();
         let log = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             vec![capture.bind(&shared).unwrap(), out.bind(&result).unwrap()],
@@ -650,7 +661,7 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
         logging::ReplaySource::native(shared.take_publisher(&second).unwrap())
             .inject(task::message::MessageHeader::new(at(10)), b"2")
             .unwrap();
-        graph.step(at(20)).unwrap();
+        graph.run_until_idle(8).unwrap();
         log.finish().unwrap();
     }
     let log = ReplayLog::from_reader(
@@ -732,16 +743,21 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
             Ok(TwoOutputs { swapped: false }.bind(declaration, &bindings, &bindings)?)
         });
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = testing::SequentialExecutor::new(
+        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
             graph.build().unwrap().with_recording(&recorder).unwrap(),
-        );
+        )
+        .schedule_all(
+            task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::ZERO),
+        )
+        .build();
         let log = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             vec![capture.bind(&bindings).unwrap()],
         )
         .with_recording(recorder)
         .unwrap();
-        graph.step(at(0)).unwrap();
+        graph.run_until_idle(8).unwrap();
         log.finish().unwrap();
     }
     let log = ReplayLog::from_reader(
@@ -854,9 +870,15 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 graph.add_callback("forward", || Ok(Forward.bind(b, &source, &forward)?));
                 graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
                 let recorder = ExecutionRecorder::new(8);
-                let mut graph = testing::SequentialExecutor::new(
+                let mut graph = testing::BoundUnitTestExecutorBuilder::new(
                     graph.build().unwrap().with_recording(&recorder).unwrap(),
-                );
+                )
+                .schedule_all(task_graph::CallbackSchedule {
+                    run_on_start: true,
+                    ..task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(10))
+                        .with_execution_duration(std::time::Duration::ZERO)
+                })
+                .build();
                 let mut captures = vec![result_log.bind(&result).unwrap()];
                 if let Some(capture) = source_log {
                     captures.push(capture.bind(&source).unwrap());
@@ -870,8 +892,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 )
                 .with_recording(recorder)
                 .unwrap();
-                graph.step(at(0)).unwrap();
-                graph.step(at(10)).unwrap();
+                graph.run_until(at(11), 32).unwrap();
                 log.finish().unwrap();
             }
             let log = ReplayLog::from_reader(

@@ -60,6 +60,83 @@ fn feedback_captures_exclude_fixture_publications_without_breaking_feedback() {
 }
 
 struct Narrow;
+
+struct ScheduledBatch;
+#[task_callback]
+impl ScheduledBatch {
+    fn run(
+        &self,
+        #[capacity(4)] mut input: InputSpan<u64>,
+        output: &mut Publisher<Vec<u64>>,
+    ) -> Result<(), LoanError> {
+        output.publish(input.drain().map(|message| message.message).collect())
+    }
+}
+
+#[test]
+fn scheduled_inputs_wait_for_their_deadline_and_respect_virtual_pool_capacity() {
+    for threads in [1, 2] {
+        let mut builder = UnitTestExecutorBuilder::with_config(UnitTestExecutorConfig {
+            virtual_pool_threads: vec![threads],
+            ..Default::default()
+        });
+        for name in ["left", "right"] {
+            builder
+                .add_task(name, ScheduledBatch, ns(5))
+                .output_channel("output", name);
+        }
+        let mut input = builder.add_test_publisher::<u64>("input");
+        let left = builder.add_test_subscriber::<Vec<u64>>("left");
+        let right = builder.add_test_subscriber::<Vec<u64>>("right");
+        builder.run(|mut executor| {
+            assert!(input.try_send_at(FrameworkTime::INVALID, 0).is_err());
+            input.send_at(at(30), 4);
+            input.send_at(at(10), 1);
+            input.send_at(at(10), 2);
+            executor.run_until(at(10), 8).unwrap();
+            assert_eq!(
+                left.messages(&mut executor, |_, _| panic!("published early")),
+                0
+            );
+            assert_eq!(
+                right.messages(&mut executor, |_, _| panic!("published early")),
+                0
+            );
+            // Insert a new deadline ahead of an already scheduled publication.
+            input.send_at(at(20), 3);
+            let steps = executor.run_until_idle(16).unwrap();
+            assert_eq!(steps[0].before, at(10));
+            assert_eq!(steps[0].executed.len(), threads);
+            for (capture, delay) in [(&left, 0), (&right, if threads == 1 { 5 } else { 0 })] {
+                let mut actual = Vec::new();
+                capture.messages(&mut executor, |_, message| {
+                    actual.push((message.header.published_at, message.message.clone()));
+                });
+                assert_eq!(
+                    actual,
+                    [
+                        (at(10 + delay), vec![1, 2]),
+                        (at(20 + delay), vec![3]),
+                        (at(30 + delay), vec![4])
+                    ]
+                );
+            }
+            assert!(input.try_send_at(at(10), 9).is_err());
+            // Input can restart an idle executor.
+            input.send_at(at(50), 5);
+            executor.run_until_idle(8).unwrap();
+            assert_eq!(
+                left.messages(&mut executor, |_, message| assert_eq!(
+                    message.header.published_at,
+                    at(50)
+                )),
+                1
+            );
+        });
+        assert!(input.try_send_at(at(100), 9).is_err());
+    }
+}
+
 #[task_callback]
 impl Narrow {
     fn run(&self, input: RequiredInput<u32>) {

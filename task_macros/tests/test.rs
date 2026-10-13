@@ -43,20 +43,26 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
             Ok(Increment.bind(declaration, &input, &output)?)
         });
         (
-            testing::SequentialExecutor::new(builder.build().unwrap()),
+            testing::BoundUnitTestExecutorBuilder::new(builder.build().unwrap())
+                .schedule_all(
+                    task_graph::CallbackSchedule::on_start()
+                        .with_execution_duration(std::time::Duration::ZERO),
+                )
+                .start_time(FrameworkTime::from_nanoseconds(10))
+                .build(),
             source,
             capture,
         )
     };
     let time = FrameworkTime::from_nanoseconds(10);
-    graph.step(time).unwrap(); // Required input is empty; no output is loaned.
+    graph.run_until_idle(8).unwrap(); // Required input is empty; no output is loaned.
     capture.update();
     assert!(capture.input_forwardable().pop().is_none());
     source.publish(32).unwrap();
     source.flush(time);
     std::thread::scope(|scope| {
         scope
-            .spawn(move || graph.step(time).unwrap())
+            .spawn(move || graph.run_until_idle(8).unwrap())
             .join()
             .unwrap();
     });
@@ -279,14 +285,20 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
     graph.add_callback("spans", || {
         Ok(SpanTransform { runs: 0 }.bind(declaration, &input, &output)?)
     });
-    let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
+    let mut graph = testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
+        .schedule_all(
+            task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(1))
+                .with_execution_duration(std::time::Duration::ZERO),
+        )
+        .start_time(FrameworkTime::from_nanoseconds(200))
+        .build();
     for (index, value) in [5, 7, 11].into_iter().enumerate() {
         source.publish(SpanValue(value)).unwrap();
         source.flush(FrameworkTime::from_nanoseconds(100 + index as i64));
     }
     assert!(capture.input_forwardable().is_empty());
     for time in [200, 201] {
-        graph.step(FrameworkTime::from_nanoseconds(time)).unwrap();
+        assert_eq!(graph.step().before, FrameworkTime::from_nanoseconds(time));
         capture.update();
         let values: Vec<_> = capture
             .input_forwardable()
@@ -295,7 +307,7 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
             .collect();
         assert_eq!(values, [(22, time), (14, time), (10, time)]);
     }
-    graph.step(FrameworkTime::from_nanoseconds(202)).unwrap();
+    graph.step();
     capture.update();
     assert!(capture.input_forwardable().is_empty());
 }
@@ -487,13 +499,19 @@ fn named_forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
         .unwrap();
     let mut graph = storage.graph_builder();
     forward.add_to_graph(&mut graph, &bindings);
-    let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
+    let mut graph = testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
+        .schedule_all(
+            task_graph::CallbackSchedule::default()
+                .with_execution_duration(std::time::Duration::from_nanos(1)),
+        )
+        .build();
     for value in 0..32 {
         source.publish(value).unwrap();
         source.flush(FrameworkTime::from_nanoseconds(value as i64));
-        graph
-            .step(FrameworkTime::from_nanoseconds(value as i64))
-            .unwrap();
+        assert_eq!(
+            graph.step().before,
+            FrameworkTime::from_nanoseconds(value as i64)
+        );
         capture.update();
         fanout.update();
     }

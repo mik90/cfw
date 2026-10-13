@@ -55,9 +55,11 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
     assert_eq!(step.executed, [0]);
     assert_eq!((step.before, step.after), (at(100), at(100)));
     assert_eq!(executor.step_count().0, 2);
-    sender.send(22);
-    executor.step();
+    sender.send_at(at(110), 22);
+    executor.run_until_idle(8).unwrap();
+    assert!(sender.try_send_at(at(109), 23).is_err());
     drop(executor);
+    assert!(sender.try_send_at(at(200), 23).is_err());
     let retained = capture.take_messages();
     assert!(capture.take_messages().is_empty());
     drop((capture, sender));
@@ -65,7 +67,13 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
         retained.iter().map(|m| m.message).collect::<Vec<_>>(),
         [42, 44]
     );
-    assert!(retained.iter().all(|m| m.header.published_at == at(100)));
+    assert_eq!(
+        retained
+            .iter()
+            .map(|m| m.header.published_at)
+            .collect::<Vec<_>>(),
+        [at(100), at(110)]
+    );
 }
 
 struct Tick;
@@ -207,6 +215,7 @@ fn failed_step_cancels_capture_and_poisons_executor() {
     assert_eq!(messages[0].message, 9);
     assert_eq!(messages[0].header.published_at, at(10));
     assert!(matches!(executor.try_step(), Err(StepError::Poisoned)));
+    assert!(sender.try_send_at(at(20), 10).is_err());
 }
 
 #[test]
@@ -218,6 +227,15 @@ fn invalid_configuration_is_reported_by_try_build() {
             node_executor_thread_count: 0,
             ..Default::default()
         },
+    );
+    assert!(matches!(
+        builder.try_build(),
+        Err(StepError::InvalidConfig(_))
+    ));
+    let mut graph = GraphBuilder::new();
+    graph.add_callback("tick", || Ok(|_: FrameworkTime| Ok(())));
+    let builder = UnitTestExecutorBuilder::new(graph.build().unwrap()).schedule_all(
+        CallbackSchedule::periodic(Duration::ZERO).with_execution_duration(Duration::ZERO),
     );
     assert!(matches!(
         builder.try_build(),

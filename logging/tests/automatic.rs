@@ -100,8 +100,19 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
     a.add_to_graph(&mut builder, &bindings);
     b.add_to_graph(&mut builder, &bindings);
     sum.add_to_graph(&mut builder, &bindings);
-    let mut graph = testing::SequentialExecutor::new(builder.build().unwrap());
-    graph.step(FrameworkTime::from_nanoseconds(7)).unwrap();
+    let mut graph = testing::BoundUnitTestExecutorBuilder::with_config(
+        builder.build().unwrap(),
+        testing::UnitTestExecutorConfig {
+            virtual_pool_threads: vec![2],
+            ..Default::default()
+        },
+    )
+    .schedule_all(
+        CallbackSchedule::on_start().with_execution_duration(std::time::Duration::from_nanos(1)),
+    )
+    .start_time(FrameworkTime::from_nanoseconds(7))
+    .build();
+    graph.run_until_idle(16).unwrap();
     let messages = captures[0].drain_to_vec().unwrap();
     assert_eq!(
         messages
@@ -174,8 +185,12 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
     assert!(captures.bind(&bindings).unwrap().is_empty());
     let mut graph = storage.graph_builder();
     task.add_to_graph(&mut graph, &bindings);
-    testing::SequentialExecutor::new(graph.build().unwrap())
-        .step(FrameworkTime::from_nanoseconds(0))
+    testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
+        .schedule_all(
+            CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO),
+        )
+        .build()
+        .run_until_idle(8)
         .unwrap();
 }
 
@@ -206,7 +221,18 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
     for task in tasks {
         task.add_to_graph(&mut graph, &bindings);
     }
-    let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
+    let mut graph = testing::BoundUnitTestExecutorBuilder::with_config(
+        graph.build().unwrap(),
+        testing::UnitTestExecutorConfig {
+            virtual_pool_threads: vec![2],
+            ..Default::default()
+        },
+    )
+    .schedule_all(
+        CallbackSchedule::on_start().with_execution_duration(std::time::Duration::from_nanos(1)),
+    )
+    .start_time(FrameworkTime::from_nanoseconds(10))
+    .build();
     let header = task::message::MessageHeader {
         published_at: FrameworkTime::from_nanoseconds(9),
         publisher_index: 12,
@@ -223,7 +249,7 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
         )
         .unwrap();
     assert!(sources[0].inject(header, b"bad").is_err());
-    graph.step(FrameworkTime::from_nanoseconds(10)).unwrap();
+    graph.run_until_idle(8).unwrap();
     for capture in &mut captures {
         let messages = capture.drain_to_vec().unwrap();
         if capture.channel() == "wire" {
@@ -378,8 +404,12 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
     let mut captures = captures.bind(&bindings).unwrap();
     let mut graph = storage.graph_builder();
     source.add_to_graph(&mut graph, &bindings);
-    testing::SequentialExecutor::new(graph.build().unwrap())
-        .step(FrameworkTime::from_nanoseconds(0))
+    testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
+        .schedule_all(
+            CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO),
+        )
+        .build()
+        .run_until_idle(8)
         .unwrap();
     assert_eq!(captures[0].drain_to_vec().unwrap()[0].1, b"42");
 }
@@ -415,9 +445,13 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
         let mut builder = storage.graph_builder();
         source.add_to_graph(&mut builder, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = testing::SequentialExecutor::new(
+        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
             builder.build().unwrap().with_recording(&recorder).unwrap(),
-        );
+        )
+        .schedule_all(
+            CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO),
+        )
+        .build();
         let bytes = Bytes::default();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
@@ -425,7 +459,7 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
         )
         .with_recording(recorder)
         .unwrap();
-        graph.step(FrameworkTime::from_nanoseconds(0)).unwrap();
+        graph.run_until_idle(8).unwrap();
         assert_eq!(session.finish().is_ok(), capacity == 2);
         let reader = logging::log_file_json::JsonLogFileReader::from_reader(
             bytes.0.lock().unwrap().as_slice(),

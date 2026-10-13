@@ -15,18 +15,39 @@ impl TestNotifier {
         self.try_notify(event_id, count)
             .expect("test event notification failed");
     }
+    pub fn try_notify_at(
+        &mut self,
+        at: FrameworkTime,
+        event_id: EventId,
+        count: u64,
+    ) -> Result<(), BuildError> {
+        self.input.try_send_at(at, EventRecord { event_id, count })
+    }
+    pub fn notify_at(&mut self, at: FrameworkTime, event_id: EventId, count: u64) {
+        self.try_notify_at(at, event_id, count)
+            .expect("test event scheduling failed");
+    }
 }
 struct IpcPump<T: Debug + ZeroCopySend + Send + Sync + 'static> {
-    publisher: Iox2Publisher<T>,
+    publisher: Arc<Mutex<Iox2Publisher<T>>>,
     queue: Queue<T>,
 }
-impl<T: Debug + ZeroCopySend + Send + Sync + 'static> InputPump for IpcPump<T> {
-    fn flush(&mut self) -> Result<(), LoanError> {
+impl<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> InputPump<'a> for IpcPump<T> {
+    fn schedule(
+        &mut self,
+        simulation: &mut simulation_executor::SimulationState<'a>,
+    ) -> Result<(), simulation_executor::StepError> {
         let batch = std::mem::take(&mut *self.queue.lock().unwrap());
         for (at, value) in batch {
-            let mut header = task::message::MessageHeader::new(at);
-            header.publisher_index = self.publisher.publisher_index();
-            self.publisher.publish_with_header(header, value)?;
+            let publisher = self.publisher.clone();
+            simulation.schedule_at(at, move |at| {
+                let publisher = publisher.lock().unwrap();
+                let mut header = task::message::MessageHeader::new(at);
+                header.publisher_index = publisher.publisher_index();
+                publisher
+                    .publish_with_header(header, value)
+                    .map_err(|e| format!("{e:?}"))
+            })?;
         }
         Ok(())
     }
@@ -67,9 +88,11 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> FixtureFactory for IpcInpu
         executor: &mut UnitTestExecutor<'a>,
     ) -> Result<(), BuildError> {
         executor.inputs.push(Box::new(IpcPump {
-            publisher: bindings
-                .ipc::<T>(&self.channel)?
-                .take_publisher(&self.key)?,
+            publisher: Arc::new(Mutex::new(
+                bindings
+                    .ipc::<T>(&self.channel)?
+                    .take_publisher(&self.key)?,
+            )),
             queue: self.queue,
         }));
         Ok(())
@@ -134,7 +157,6 @@ struct EventPlan {
 struct EventPump {
     channel: String,
     queue: Queue<EventRecord>,
-    target: Arc<Mutex<Vec<(String, EventId, u64)>>>,
 }
 impl FixturePlan for EventPlan {
     fn declare(
@@ -154,17 +176,18 @@ impl FixtureFactory for EventPlan {
         executor.inputs.push(Box::new(EventPump {
             channel: self.channel,
             queue: self.queue,
-            target: executor.events.clone(),
         }));
         Ok(())
     }
 }
-impl InputPump for EventPump {
-    fn flush(&mut self) -> Result<(), LoanError> {
+impl<'a> InputPump<'a> for EventPump {
+    fn schedule(
+        &mut self,
+        simulation: &mut simulation_executor::SimulationState<'a>,
+    ) -> Result<(), simulation_executor::StepError> {
         let batch = std::mem::take(&mut *self.queue.lock().unwrap());
-        let mut target = self.target.lock().unwrap();
-        for (_, record) in batch {
-            target.push((self.channel.clone(), record.event_id, record.count));
+        for (at, record) in batch {
+            simulation.schedule_event(at, &self.channel, record.event_id, record.count)?;
         }
         Ok(())
     }

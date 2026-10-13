@@ -82,17 +82,24 @@ fn recorded(logged: bool) -> ReplayLog {
         b.add_to_graph(&mut graph, &bindings);
         sum.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(6);
-        let mut graph = testing::SequentialExecutor::new(
+        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
             graph.build().unwrap().with_recording(&recorder).unwrap(),
-        );
+        )
+        .schedule_all(CallbackSchedule {
+            run_on_start: true,
+            ..CallbackSchedule::periodic(std::time::Duration::from_nanos(10))
+                .with_execution_duration(std::time::Duration::ZERO)
+        })
+        .build();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),
         )
         .with_recording(recorder)
         .unwrap();
-        graph.step(FrameworkTime::from_nanoseconds(0)).unwrap();
-        graph.step(FrameworkTime::from_nanoseconds(10)).unwrap();
+        graph
+            .run_until(FrameworkTime::from_nanoseconds(11), 32)
+            .unwrap();
         session.finish().unwrap();
     }
     ReplayLog::from_reader(
@@ -315,18 +322,24 @@ fn named_heterogeneous_bundles_replay_logged_and_reproduced_sources() {
                 t.add_to_graph(&mut graph, &bindings);
             }
             let recorder = ExecutionRecorder::new(12);
-            let mut graph = testing::SequentialExecutor::new(
+            let mut graph = testing::BoundUnitTestExecutorBuilder::new(
                 graph.build().unwrap().with_recording(&recorder).unwrap(),
-            );
+            )
+            .schedule_all(CallbackSchedule {
+                run_on_start: true,
+                ..CallbackSchedule::periodic(std::time::Duration::from_nanos(1))
+                    .with_execution_duration(std::time::Duration::ZERO)
+            })
+            .build();
             let session = LogSession::new(
                 logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
                 capture.bind(&bindings).unwrap(),
             )
             .with_recording(recorder)
             .unwrap();
-            for time in 0..4 {
-                graph.step(FrameworkTime::from_nanoseconds(time)).unwrap();
-            }
+            graph
+                .run_until(FrameworkTime::from_nanoseconds(4), 32)
+                .unwrap();
             session.finish().unwrap();
         }
         let log = ReplayLog::from_reader(
@@ -474,18 +487,24 @@ fn named_borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
                 task.add_to_graph(&mut graph, &bindings);
             }
             let recorder = ExecutionRecorder::new(9);
-            let mut graph = testing::SequentialExecutor::new(
+            let mut graph = testing::BoundUnitTestExecutorBuilder::new(
                 graph.build().unwrap().with_recording(&recorder).unwrap(),
-            );
+            )
+            .schedule_all(CallbackSchedule {
+                run_on_start: true,
+                ..CallbackSchedule::periodic(std::time::Duration::from_nanos(1))
+                    .with_execution_duration(std::time::Duration::ZERO)
+            })
+            .build();
             let log = LogSession::new(
                 logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
                 capture.bind(&bindings).unwrap(),
             )
             .with_recording(recorder)
             .unwrap();
-            for time in 0..3 {
-                graph.step(FrameworkTime::from_nanoseconds(time)).unwrap();
-            }
+            graph
+                .run_until(FrameworkTime::from_nanoseconds(3), 32)
+                .unwrap();
             log.finish().unwrap();
         }
         let log = ReplayLog::from_reader(
@@ -587,16 +606,20 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
         let mut graph = storage.graph_builder();
         source.add_to_graph(&mut graph, &bindings);
         let recorder = ExecutionRecorder::new(1);
-        let mut graph = testing::SequentialExecutor::new(
+        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
             graph.build().unwrap().with_recording(&recorder).unwrap(),
-        );
+        )
+        .schedule_all(
+            CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO),
+        )
+        .build();
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             capture.bind(&bindings).unwrap(),
         )
         .with_recording(recorder)
         .unwrap();
-        graph.step(FrameworkTime::from_nanoseconds(0)).unwrap();
+        graph.run_until_idle(8).unwrap();
         session.finish().unwrap();
     }
     let log = ReplayLog::from_reader(

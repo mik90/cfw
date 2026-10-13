@@ -28,10 +28,16 @@ fn executor_updates_inputs_and_flushes_hand_written_callback_outputs() {
             },
         ))
     });
-    let mut graph = testing::SequentialExecutor::new(builder.build().unwrap());
+    let mut graph = testing::BoundUnitTestExecutorBuilder::new(builder.build().unwrap())
+        .schedule_all(
+            task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::ZERO),
+        )
+        .start_time(FrameworkTime::from_nanoseconds(2))
+        .build();
     fixture.publish(41).unwrap();
     fixture.flush(FrameworkTime::from_nanoseconds(1));
-    graph.step(FrameworkTime::from_nanoseconds(2)).unwrap();
+    graph.run_until_idle(8).unwrap();
     capture.update();
     let retained = capture.input_forwardable().pop().unwrap();
     drop((graph, source, output, fixture, capture));

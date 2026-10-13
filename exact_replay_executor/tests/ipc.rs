@@ -111,9 +111,15 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         let mut graph = GraphBuilder::with_storage(&storage);
         graph.add_callback("observe", || Ok(callback));
         let recorder = ExecutionRecorder::new(2);
-        let mut graph = testing::SequentialExecutor::new(
+        let mut graph = testing::BoundUnitTestExecutorBuilder::new(
             graph.build().unwrap().with_recording(&recorder).unwrap(),
-        );
+        )
+        .schedule_all(
+            task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::ZERO),
+        )
+        .start_time(at(10))
+        .build();
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(bytes.clone());
         writer
             .store_message(&input_name, &input_header(3, 0), b"7")
@@ -146,7 +152,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         )
         .with_recording(recorder)
         .unwrap();
-        graph.step(at(10)).unwrap();
+        graph.run_until_idle(8).unwrap();
         log.finish().unwrap();
     }
     let log = ReplayLog::from_reader(

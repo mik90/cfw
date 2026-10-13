@@ -1,8 +1,6 @@
 #![doc = include_str!("../README.md")]
 
 pub mod builder;
-mod sequential;
-pub use sequential::{SequentialExecutionError, SequentialExecutor};
 pub mod unit_test_executor;
 pub use builder::{
     CaptureSources, ExecutionDuration, TestInput, TestOutput, UnitTestExecutorBuilder,
@@ -10,6 +8,7 @@ pub use builder::{
 };
 #[cfg(feature = "iceoryx2")]
 pub use builder::{DEFAULT_IPC_TEST_SUBSCRIBER_CAPACITY, TestNotifier};
+pub use simulation_executor::{StepError, callback_execution::BatchFailure};
 pub use task_graph::BuildError as TestBuildError;
 pub use unit_test_executor::{
     BoundUnitTestExecutorBuilder, DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages, StepResult,

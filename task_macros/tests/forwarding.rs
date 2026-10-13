@@ -129,7 +129,12 @@ fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
             .unwrap();
         let mut graph = storage.graph_builder();
         task.add_to_graph(&mut graph, &bindings);
-        let mut graph = testing::SequentialExecutor::new(graph.build().unwrap());
+        let mut graph = testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
+            .schedule_all(
+                CallbackSchedule::default()
+                    .with_execution_duration(std::time::Duration::from_nanos(1)),
+            )
+            .build();
         for value in 0..32 {
             let now = FrameworkTime::from_nanoseconds(value as i64);
             a.publish(Tracked {
@@ -148,7 +153,7 @@ fn named_bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
             }
             c.publish(2).unwrap();
             c.flush(now);
-            graph.step(now).unwrap();
+            assert_eq!(graph.step().before, now);
             capture.update();
         }
         let retained: Vec<_> = capture.input_forwardable().drain().collect();
@@ -340,7 +345,11 @@ fn nested_named_bundle_retention_propagates_to_original_sources() {
     let mut graph = storage.graph_builder();
     merge.add_to_graph(&mut graph, &bindings);
     relay.add_to_graph(&mut graph, &bindings);
-    let mut executor = testing::SequentialExecutor::new(graph.build().unwrap());
+    let mut executor = testing::BoundUnitTestExecutorBuilder::new(graph.build().unwrap())
+        .schedule_all(
+            CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
+        )
+        .build();
     let drops = Arc::new(AtomicUsize::new(0));
     for index in 0..80 {
         let now = FrameworkTime::from_nanoseconds(index);
@@ -358,7 +367,7 @@ fn nested_named_bundle_retention_propagates_to_original_sources() {
         a.flush(now);
         b.flush(now);
         c.flush(now);
-        executor.step(now).unwrap();
+        executor.run_until_idle(8).unwrap();
         capture.update();
         let value = capture.input_forwardable().pop().unwrap();
         assert!(value.message.message);

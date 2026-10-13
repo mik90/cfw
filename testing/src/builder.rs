@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 use task::{
-    LoanError, Publisher, PublisherKey, SubscriberKey, SubscriberPolicy, message::Message,
+    Publisher, PublisherKey, SubscriberKey, SubscriberPolicy, message::Message,
     testing_time::TimeSource, time::FrameworkTime,
 };
 use task_graph::{
@@ -82,7 +82,7 @@ impl Drop for SessionGuard {
         self.close();
     }
 }
-type Queue<T> = Arc<Mutex<VecDeque<(FrameworkTime, T)>>>;
+pub(crate) type Queue<T> = Arc<Mutex<VecDeque<(FrameworkTime, T)>>>;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CaptureSources {
     #[default]
@@ -91,17 +91,30 @@ pub enum CaptureSources {
 }
 
 /// Owned injection handle, freely movable into the test closure. Values are
-/// stamped on send and published at the next step's input boundary.
+/// scheduled on send and published at their simulated input boundary.
 pub struct TestInput<T> {
     queue: Queue<T>,
     session: Arc<Session>,
 }
 impl<T> TestInput<T> {
     pub fn try_send(&mut self, value: T) -> Result<(), BuildError> {
+        self.try_send_at(self.session.time.get(), value)
+    }
+    /// Publish when simulated time reaches `at`, before selecting ready tasks.
+    pub fn try_send_at(&mut self, at: FrameworkTime, value: T) -> Result<(), BuildError> {
         let mut queue = self.queue.lock().unwrap();
         self.session.check()?;
-        queue.push_back((self.session.time.get(), value));
+        if at == FrameworkTime::INVALID || at < self.session.time.get() {
+            return Err(BuildError(
+                "test publication requires a valid present or future time".into(),
+            ));
+        }
+        queue.push_back((at, value));
         Ok(())
+    }
+    pub fn send_at(&mut self, at: FrameworkTime, value: T) {
+        self.try_send_at(at, value)
+            .expect("test input scheduling failed");
     }
     pub fn send(&mut self, value: T) {
         self.try_send(value).expect("test input send failed");
@@ -151,27 +164,38 @@ impl<T: 'static> TestOutput<T> {
         count
     }
 }
-pub(crate) trait InputPump {
-    fn flush(&mut self) -> Result<(), LoanError>;
+pub(crate) trait InputPump<'storage>: Send {
+    fn schedule(
+        &mut self,
+        simulation: &mut simulation_executor::SimulationState<'storage>,
+    ) -> Result<(), simulation_executor::StepError>;
 }
-pub(crate) trait Capture {
+pub(crate) trait Capture: Send {
     fn messages(&mut self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages);
 }
-impl<T: 'static> Capture for TestSubscriber<'_, T> {
+impl<T: Send + Sync + 'static> Capture for TestSubscriber<'_, T> {
     fn messages(&mut self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
         self.try_messages(|i, message| inspect(i, message))
     }
 }
-struct NativePump<'a, T> {
-    publisher: Publisher<'a, T>,
-    queue: Queue<T>,
+pub(crate) struct NativePump<'a, T> {
+    pub(crate) publisher: Arc<Mutex<Publisher<'a, T>>>,
+    pub(crate) queue: Queue<T>,
 }
-impl<T> InputPump for NativePump<'_, T> {
-    fn flush(&mut self) -> Result<(), LoanError> {
+impl<'a, T: Send + Sync + 'a> InputPump<'a> for NativePump<'a, T> {
+    fn schedule(
+        &mut self,
+        simulation: &mut simulation_executor::SimulationState<'a>,
+    ) -> Result<(), simulation_executor::StepError> {
         let batch = std::mem::take(&mut *self.queue.lock().unwrap());
         for (at, value) in batch {
-            self.publisher.publish(value)?;
-            self.publisher.flush(at);
+            let publisher = self.publisher.clone();
+            simulation.schedule_at(at, move |at| {
+                let mut publisher = publisher.lock().unwrap();
+                publisher.publish(value).map_err(|e| format!("{e:?}"))?;
+                publisher.flush(at);
+                Ok(())
+            })?;
         }
         Ok(())
     }
@@ -219,7 +243,7 @@ impl<T: Send + Sync + 'static> FixturePlan for InputPlan<T> {
         }))
     }
 }
-impl<T: 'static> FixtureFactory for InputFactory<T> {
+impl<T: Send + Sync + 'static> FixtureFactory for InputFactory<T> {
     fn bind<'a>(
         self: Box<Self>,
         bindings: &NamedBindings<'a>,
@@ -229,7 +253,7 @@ impl<T: 'static> FixtureFactory for InputFactory<T> {
             .native::<T>(&self.channel)?
             .take_publisher(&self.key)?;
         executor.inputs.push(Box::new(NativePump {
-            publisher,
+            publisher: Arc::new(Mutex::new(publisher)),
             queue: self.queue,
         }));
         Ok(())
@@ -269,7 +293,7 @@ impl<T: Send + Sync + 'static> FixturePlan for OutputPlan<T> {
         }))
     }
 }
-impl<T: 'static> FixtureFactory for OutputFactory<T> {
+impl<T: Send + Sync + 'static> FixtureFactory for OutputFactory<T> {
     fn bind<'a>(
         self: Box<Self>,
         bindings: &NamedBindings<'a>,

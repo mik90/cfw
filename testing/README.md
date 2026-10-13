@@ -39,10 +39,39 @@ For ordinary control flow outside a closure, keep the allocated setup in scope:
 let setup = builder.allocate();
 let mut executor = setup.build();
 
-input.send(21);
-executor.step();
-output.messages(&mut executor, |_, message| assert_eq!(message.message, 42));
+input.send_at(task::time::FrameworkTime::from_nanoseconds(1_000_000), 21);
+executor.run_until_idle(16).unwrap();
+output.messages(&mut executor, |_, message| {
+    assert_eq!(message.message, 42);
+    assert_eq!(message.header.published_at.to_nanoseconds(), 1_000_000);
+});
 ```
+
+## Scheduled input and execution
+
+`send_at(time, value)` delays publication until simulated time reaches the requested
+time. `send(value)` uses the current simulated time. Native and IPC named input
+handles support both; named event handles provide `notify_at(time, event_id, count)`.
+Invalid or past timestamps are rejected. Publications at equal times retain their
+send order within each publisher; different fixture queues are registered in fixture
+declaration order. Pending requests are incorporated before each executor step.
+
+`step()` executes one scheduled batch, not the whole graph. `run_until_idle(max_steps)`
+drives finite input sequences to completion. For periodic workloads, use
+`run_until(time, max_steps)`: it executes work strictly before the boundary and leaves
+work due exactly at that time for the next step. Both helpers retain the normal
+fixture clock and failure handling.
+
+Multiple ready callbacks start at the same timestamp when their virtual pools have
+capacity. Configure `UnitTestExecutorConfig::virtual_pool_threads` to model that
+capacity, and give each task its intended duration and pool. Input arrival does not
+guarantee immediate execution when a pool is occupied. Downstream callbacks awakened
+by a batch can run in another batch at the same timestamp if capacity remains.
+
+Low-level tests can use `BoundUnitTestExecutorBuilder` with a built graph and typed
+fixtures. `schedule_all(schedule)` explicitly assigns a common test schedule;
+`BuiltGraph::configure_schedules` permits per-callback scheduling. Portless sources
+need startup or timed schedules. All execution uses the simulation scheduler.
 
 ```rust
 use std::time::Duration;
@@ -67,6 +96,10 @@ let setup = builder.allocate();
 let mut executor = setup.build();
 
 input.send(21);
-executor.step();
-output.messages(&mut executor, |_, message| assert_eq!(message.message, 42));
+input.send_at(task::time::FrameworkTime::from_nanoseconds(1_000_000), 22);
+executor.run_until_idle(16).unwrap();
+assert_eq!(output.messages(&mut executor, |index, message| {
+    assert_eq!(message.message, if index == 0 { 42 } else { 44 });
+    assert_eq!(message.header.published_at.to_nanoseconds(), if index == 0 { 0 } else { 1_000_000 });
+}), 2);
 ```

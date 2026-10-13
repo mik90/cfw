@@ -59,9 +59,21 @@ fn recording_preserves_borrowed_callbacks_and_ids_across_disabled_callbacks() {
                     .with_callback("disabled", RecordingMode::Off),
             )
             .unwrap();
-        testing::SequentialExecutor::new(graph)
-            .step(FrameworkTime::from_nanoseconds(42))
-            .unwrap();
+        testing::BoundUnitTestExecutorBuilder::with_config(
+            graph,
+            testing::UnitTestExecutorConfig {
+                virtual_pool_threads: vec![2],
+                ..Default::default()
+            },
+        )
+        .schedule_all(
+            task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::from_nanos(1)),
+        )
+        .start_time(FrameworkTime::from_nanoseconds(42))
+        .build()
+        .run_until_idle(8)
+        .unwrap();
     }
     assert_eq!((disabled_calls, recorded_calls), (1, 1));
     let descriptor = recorder.descriptor().unwrap();

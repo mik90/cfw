@@ -254,6 +254,12 @@ impl<'storage> BuiltGraph<'storage> {
     pub fn metadata(&self) -> &GraphMetadata {
         &self.metadata
     }
+    /// Override scheduling policy by callback name before handing off to an executor.
+    pub fn configure_schedules(&mut self, mut configure: impl FnMut(&str, &mut CallbackSchedule)) {
+        for callback in &mut self.callbacks {
+            configure(&callback.name, &mut callback.schedule);
+        }
+    }
     pub fn into_parts(self) -> (Vec<ScheduledCallback<'storage>>, GraphMetadata) {
         (self.callbacks, self.metadata)
     }

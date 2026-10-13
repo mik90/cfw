@@ -169,6 +169,12 @@ impl<'storage> SimulationState<'storage> {
             event_targets: BTreeMap::new(),
         };
         for mut node in callbacks {
+            if node.schedule.period.is_some_and(|period| period.is_zero()) {
+                return Err(StepError::InvalidConfig(format!(
+                    "callback '{}' has a zero period",
+                    node.name
+                )));
+            }
             if !node.schedule.has_execution_duration() {
                 return Err(StepError::Timing {
                     callback: node.name,
@@ -255,6 +261,9 @@ impl<'storage> SimulationState<'storage> {
     }
     pub fn current_time(&self) -> FrameworkTime {
         self.time
+    }
+    pub fn metadata(&self) -> &GraphMetadata {
+        &self.metadata
     }
     pub fn step_count(&self) -> Saturating<usize> {
         self.step_count

@@ -45,8 +45,14 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
             .unwrap(),
         id
     );
-    testing::SequentialExecutor::new(graph)
-        .step(timestamp())
+    testing::BoundUnitTestExecutorBuilder::new(graph)
+        .schedule_all(
+            task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::ZERO),
+        )
+        .start_time(timestamp())
+        .build()
+        .run_until_idle(8)
         .unwrap();
     let mut builder = GraphBuilder::new();
     builder.add_callback("logger", || Ok(Infrastructure));
@@ -109,7 +115,19 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
         let second = bindings[1].take_subscriber(&second_input).unwrap();
         let fanout = bindings[0].take_subscriber(&fanout).unwrap();
         (
-            testing::SequentialExecutor::new(builder.build().unwrap()),
+            testing::BoundUnitTestExecutorBuilder::with_config(
+                builder.build().unwrap(),
+                testing::UnitTestExecutorConfig {
+                    virtual_pool_threads: vec![3],
+                    ..Default::default()
+                },
+            )
+            .schedule_all(
+                task_graph::CallbackSchedule::on_start()
+                    .with_execution_duration(std::time::Duration::from_nanos(1)),
+            )
+            .start_time(timestamp())
+            .build(),
             first,
             second,
             fanout,
@@ -118,7 +136,7 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
 
     std::thread::scope(|scope| {
         scope
-            .spawn(move || graph.step(timestamp()).unwrap())
+            .spawn(move || graph.run_until_idle(8).unwrap())
             .join()
             .unwrap();
     }); // Callback graph and publishers have been destroyed on the worker.
@@ -183,11 +201,17 @@ fn factories_connect_borrowed_forwarding_across_named_channels() {
         });
         let fixture = forward_bindings.take_subscriber(&fixture_key).unwrap();
         (
-            testing::SequentialExecutor::new(builder.build().unwrap()),
+            testing::BoundUnitTestExecutorBuilder::new(builder.build().unwrap())
+                .schedule_all(
+                    task_graph::CallbackSchedule::on_start()
+                        .with_execution_duration(std::time::Duration::ZERO),
+                )
+                .start_time(timestamp())
+                .build(),
             fixture,
         )
     };
-    graph.step(timestamp()).unwrap();
+    graph.run_until_idle(8).unwrap();
     fixture.update();
     let retained = fixture.input_forwardable().pop().unwrap();
     drop((graph, fixture));
@@ -341,10 +365,17 @@ fn step_error_preserves_published_messages_and_skips_later_callbacks() {
             Ok(())
         })
     });
-    let mut graph = testing::SequentialExecutor::new(builder.build().unwrap());
-    let error = graph.step(timestamp()).unwrap_err();
-    assert_eq!(error.callback, "fail");
-    assert_eq!(error.source, LoanError::ArenaExhausted);
+    let mut graph = testing::BoundUnitTestExecutorBuilder::new(builder.build().unwrap())
+        .schedule_all(
+            task_graph::CallbackSchedule::on_start()
+                .with_execution_duration(std::time::Duration::ZERO),
+        )
+        .start_time(timestamp())
+        .build();
+    let error = graph.run_until_idle(8).unwrap_err();
+    assert!(
+        matches!(error, testing::StepError::Callback { callback, failure: testing::BatchFailure::Callback(LoanError::ArenaExhausted) } if callback == "fail")
+    );
     assert_eq!(later_calls.load(Ordering::Relaxed), 0);
     drop((graph, bindings));
     fixture.update();
