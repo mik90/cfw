@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use base::arena::Arena;
 
-use super::{Publisher, Subscriber};
+use super::Publisher;
 use crate::message::Message;
 
 /// Capacity errors are detected before allocating any arena in a graph layout.
@@ -20,7 +20,7 @@ pub enum StorageError {
 ///
 /// `T` can contain borrowed forwarded messages; no `Any` or `'static` bound is
 /// required. Planning neither allocates arenas nor borrows their storage.
-pub struct PublisherStoragePlan<T> {
+pub(crate) struct PublisherStoragePlan<T> {
     loan_capacity: usize,
     subscribers: Vec<usize>,
     retained_capacity: usize,
@@ -28,7 +28,7 @@ pub struct PublisherStoragePlan<T> {
 }
 
 impl<T> PublisherStoragePlan<T> {
-    pub fn new(loan_capacity: usize) -> Self {
+    pub(crate) fn new(loan_capacity: usize) -> Self {
         Self {
             loan_capacity,
             subscribers: Vec::new(),
@@ -38,7 +38,7 @@ impl<T> PublisherStoragePlan<T> {
     }
 
     /// Add a subscriber, preserving its position in the built endpoint list.
-    pub fn with_subscriber(mut self, capacity: usize) -> Self {
+    pub(crate) fn with_subscriber(mut self, capacity: usize) -> Self {
         self.subscribers.push(capacity);
         self
     }
@@ -49,14 +49,14 @@ impl<T> PublisherStoragePlan<T> {
     /// Planning downstream capacities first provides a conservative source budget.
     /// Additional user-held pointers also consume this budget. Exceeding it yields
     /// `LoanError::ArenaExhausted`, never permission to reclaim a live message.
-    pub fn with_retained_capacity(mut self, capacity: usize) -> Self {
+    pub(crate) fn with_retained_capacity(mut self, capacity: usize) -> Self {
         self.retained_capacity = capacity;
         self
     }
 
     /// Pending loans + retained messages + each subscriber's read/write queues
     /// and one pointer in flight while transferring between them.
-    pub fn capacity(&self) -> Result<usize, StorageError> {
+    pub(crate) fn capacity(&self) -> Result<usize, StorageError> {
         u32::try_from(self.loan_capacity).map_err(|_| StorageError::CapacityOverflow)?;
         let mut total = self
             .loan_capacity
@@ -80,25 +80,11 @@ impl<T> PublisherStoragePlan<T> {
 
 /// Frozen per-publisher allocation. All builds share this publisher's fixed budget.
 /// A fresh build does not reset or reclaim messages retained from a prior build.
-///
-/// Retained messages borrow their storage, even after endpoints are dropped:
-/// ```compile_fail,E0505
-/// use task::{PublisherStoragePlan, time::FrameworkTime};
-/// let storage = PublisherStoragePlan::<u64>::new(1).with_subscriber(1).allocate().unwrap();
-/// let mut endpoints = storage.build();
-/// endpoints.publisher.publish(42).unwrap();
-/// endpoints.publisher.flush(FrameworkTime::from_nanoseconds(1));
-/// endpoints.subscribers[0].update();
-/// let message = endpoints.subscribers[0].input_forwardable().pop().unwrap();
-/// drop(endpoints);
-/// drop(storage);
-/// assert_eq!(message.message, 42);
-/// ```
+/// Retained messages borrow their storage, even after endpoints are dropped.
 #[derive(Debug)]
-pub struct PublisherStorage<MessageType> {
+pub(crate) struct PublisherStorage<MessageType> {
     arena: Arena<Message<MessageType>>,
     loan_capacity: usize,
-    subscribers: Vec<usize>,
 }
 
 impl<MessageType> PublisherStorage<MessageType> {
@@ -106,45 +92,17 @@ impl<MessageType> PublisherStorage<MessageType> {
         Publisher::new(self.arena.allocator(), self.loan_capacity)
     }
 
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.arena.capacity()
     }
-
-    /// Create typed endpoints wired according to the finalized plan. The caller
-    /// can move these endpoints into callbacks, graphs, or test fixture handles.
-    pub fn build(&self) -> ChannelEndpoints<'_, MessageType> {
-        let subscribers: Vec<_> = self
-            .subscribers
-            .iter()
-            .map(|&capacity| Subscriber::new(capacity))
-            .collect();
-        let mut publisher = self.publisher();
-        for subscriber in &subscribers {
-            publisher.connect(subscriber);
-        }
-        ChannelEndpoints {
-            publisher,
-            subscribers,
-        }
-    }
-}
-
-pub struct ChannelEndpoints<'storage, T> {
-    pub publisher: Publisher<'storage, T>,
-    pub subscribers: Vec<Subscriber<'storage, T>>,
 }
 
 impl<T> PublisherStoragePlan<T> {
-    pub fn validate(&self) -> Result<(), StorageError> {
-        self.capacity().map(|_| ())
-    }
-
     /// Validate the capacity and allocate this publisher's arena.
-    pub fn allocate(self) -> Result<PublisherStorage<T>, StorageError> {
+    pub(crate) fn allocate(self) -> Result<PublisherStorage<T>, StorageError> {
         Ok(PublisherStorage {
             arena: Arena::new(self.capacity()?),
             loan_capacity: self.loan_capacity,
-            subscribers: self.subscribers,
         })
     }
 }
@@ -152,7 +110,7 @@ impl<T> PublisherStoragePlan<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Forwarded, LoanError, time::FrameworkTime};
+    use crate::{ChannelPlan, Forwarded, LoanError, time::FrameworkTime};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -164,27 +122,48 @@ mod tests {
 
     #[test]
     fn forwarding_retains_source_messages_across_endpoint_rebuilds() {
-        let forwarding = PublisherStoragePlan::new(1).with_subscriber(1);
-        let source = PublisherStoragePlan::new(1)
-            .with_subscriber(1)
-            .with_retained_capacity(forwarding.capacity().unwrap());
-        let source = source.allocate().unwrap();
-        let forwarding = forwarding.allocate().unwrap();
+        let mut forwarding_plan = ChannelPlan::new("forwarding");
+        let forwarding_publisher_key = forwarding_plan.publisher(1);
+        let forwarding_subscriber_key = forwarding_plan.subscriber(1);
+        let mut source_plan = ChannelPlan::new("source");
+        let source_publisher_key = source_plan.publisher(1);
+        let source_subscriber_key = source_plan.subscriber(1);
+        source_plan
+            .reserve_retained(
+                &source_publisher_key,
+                forwarding_plan
+                    .publisher_capacity(&forwarding_publisher_key)
+                    .unwrap(),
+            )
+            .unwrap();
+        let source = source_plan.allocate().unwrap();
+        let forwarding = forwarding_plan.allocate().unwrap();
         let mut retained = Vec::new();
         for value in [42_u64, 100] {
-            let mut source = source.build();
-            let mut forwarding = forwarding.build();
-            source.publisher.publish(value).unwrap();
-            source.publisher.flush(timestamp());
-            source.subscribers[0].update();
-            let message = source.subscribers[0].input_forwardable().pop().unwrap();
-            forwarding
-                .publisher
+            let source_bindings = source.build();
+            let forwarding_bindings = forwarding.build();
+            let mut source_publisher = source_bindings
+                .take_publisher(&source_publisher_key)
+                .unwrap();
+            let source_subscriber = source_bindings
+                .take_subscriber(&source_subscriber_key)
+                .unwrap();
+            let mut forwarding_publisher = forwarding_bindings
+                .take_publisher(&forwarding_publisher_key)
+                .unwrap();
+            let forwarding_subscriber = forwarding_bindings
+                .take_subscriber(&forwarding_subscriber_key)
+                .unwrap();
+            source_publisher.publish(value).unwrap();
+            source_publisher.flush(timestamp());
+            source_subscriber.update();
+            let message = source_subscriber.input_forwardable().pop().unwrap();
+            forwarding_publisher
                 .publish(Forwarded::new(true, message))
                 .unwrap();
-            forwarding.publisher.flush(timestamp());
-            forwarding.subscribers[0].update();
-            retained.push(forwarding.subscribers[0].input_forwardable().pop().unwrap());
+            forwarding_publisher.flush(timestamp());
+            forwarding_subscriber.update();
+            retained.push(forwarding_subscriber.input_forwardable().pop().unwrap());
         }
         assert_eq!(retained[0].message.forwarded_messages.message, 42);
         assert_eq!(retained[1].message.forwarded_messages.message, 100);
@@ -192,37 +171,70 @@ mod tests {
 
     #[test]
     fn nested_forwarding_retains_original_source_storage() {
-        let last = PublisherStoragePlan::new(1).with_subscriber(1);
-        let middle = PublisherStoragePlan::new(1)
-            .with_subscriber(1)
-            .with_retained_capacity(last.capacity().unwrap());
-        let source = PublisherStoragePlan::new(1)
-            .with_subscriber(1)
-            .with_retained_capacity(middle.capacity().unwrap());
-        let source_storage = source.allocate().unwrap();
-        let middle_storage = middle.allocate().unwrap();
-        let last_storage = last.allocate().unwrap();
-        let mut source = source_storage.build();
-        let mut middle = middle_storage.build();
-        let mut last = last_storage.build();
-        source.publisher.publish(42_u64).unwrap();
-        source.publisher.flush(timestamp());
-        source.subscribers[0].update();
-        let input = source.subscribers[0].input_forwardable().pop().unwrap();
-        middle
-            .publisher
+        let mut last_plan = ChannelPlan::new("last");
+        let last_publisher_key = last_plan.publisher(1);
+        let last_subscriber_key = last_plan.subscriber(1);
+        let mut middle_plan = ChannelPlan::new("middle");
+        let middle_publisher_key = middle_plan.publisher(1);
+        let middle_subscriber_key = middle_plan.subscriber(1);
+        middle_plan
+            .reserve_retained(
+                &middle_publisher_key,
+                last_plan.publisher_capacity(&last_publisher_key).unwrap(),
+            )
+            .unwrap();
+        let mut source_plan = ChannelPlan::new("source");
+        let source_publisher_key = source_plan.publisher(1);
+        let source_subscriber_key = source_plan.subscriber(1);
+        source_plan
+            .reserve_retained(
+                &source_publisher_key,
+                middle_plan.publisher_capacity(&middle_publisher_key).unwrap(),
+            )
+            .unwrap();
+        let source_storage = source_plan.allocate().unwrap();
+        let middle_storage = middle_plan.allocate().unwrap();
+        let last_storage = last_plan.allocate().unwrap();
+        let source_bindings = source_storage.build();
+        let middle_bindings = middle_storage.build();
+        let last_bindings = last_storage.build();
+        let mut source_publisher = source_bindings
+            .take_publisher(&source_publisher_key)
+            .unwrap();
+        let source_subscriber = source_bindings
+            .take_subscriber(&source_subscriber_key)
+            .unwrap();
+        let mut middle_publisher = middle_bindings
+            .take_publisher(&middle_publisher_key)
+            .unwrap();
+        let middle_subscriber = middle_bindings
+            .take_subscriber(&middle_subscriber_key)
+            .unwrap();
+        let mut last_publisher = last_bindings
+            .take_publisher(&last_publisher_key)
+            .unwrap();
+        let last_subscriber = last_bindings
+            .take_subscriber(&last_subscriber_key)
+            .unwrap();
+        source_publisher.publish(42_u64).unwrap();
+        source_publisher.flush(timestamp());
+        source_subscriber.update();
+        let input = source_subscriber.input_forwardable().pop().unwrap();
+        middle_publisher
             .publish(Forwarded::new(true, input))
             .unwrap();
-        middle.publisher.flush(timestamp());
-        middle.subscribers[0].update();
-        let input = middle.subscribers[0].input_forwardable().pop().unwrap();
-        last.publisher
+        middle_publisher.flush(timestamp());
+        middle_subscriber.update();
+        let input = middle_subscriber.input_forwardable().pop().unwrap();
+        last_publisher
             .publish(Forwarded::new(7_u32, input))
             .unwrap();
-        last.publisher.flush(timestamp());
-        last.subscribers[0].update();
-        let retained = last.subscribers[0].input_forwardable().pop().unwrap();
-        drop((source, middle, last));
+        last_publisher.flush(timestamp());
+        last_subscriber.update();
+        let retained = last_subscriber.input_forwardable().pop().unwrap();
+        drop((source_publisher, source_subscriber, source_bindings));
+        drop((middle_publisher, middle_subscriber, middle_bindings));
+        drop((last_publisher, last_subscriber, last_bindings));
         assert_eq!(retained.message.message, 7);
         assert!(retained.message.forwarded_messages.message.message);
         assert_eq!(
@@ -238,39 +250,43 @@ mod tests {
 
     #[test]
     fn planned_capacity_covers_pending_and_both_subscriber_buffers() {
-        let plan = PublisherStoragePlan::<u64>::new(2).with_subscriber(2);
-        assert_eq!(plan.capacity().unwrap(), 7);
+        let mut plan = ChannelPlan::<u64>::new("numbers");
+        let publisher_key = plan.publisher(2);
+        let subscriber_key = plan.subscriber(2);
+        assert_eq!(plan.publisher_capacity(&publisher_key).unwrap(), 7);
         let storage = plan.allocate().unwrap();
-        assert_eq!(storage.capacity(), 7);
-        let mut graph = storage.build();
+        assert_eq!(storage.publisher_capacity(&publisher_key).unwrap(), 7);
+        let bindings = storage.build();
+        let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
+        let subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
         for value in [1, 2] {
-            graph.publisher.publish(value).unwrap();
+            publisher.publish(value).unwrap();
         }
-        graph.publisher.flush(timestamp());
-        graph.subscribers[0].update();
+        publisher.flush(timestamp());
+        subscriber.update();
         for value in [3, 4] {
-            graph.publisher.publish(value).unwrap();
+            publisher.publish(value).unwrap();
         }
-        graph.publisher.flush(timestamp());
+        publisher.flush(timestamp());
         for value in [5, 6] {
-            graph.publisher.publish(value).unwrap();
+            publisher.publish(value).unwrap();
         }
-        let old: Vec<_> = graph.subscribers[0]
+        let old: Vec<_> = subscriber
             .input_forwardable()
             .drain()
             .map(|p| p.message)
             .collect();
         assert_eq!(old, [1, 2]);
-        graph.subscribers[0].update();
-        let written: Vec<_> = graph.subscribers[0]
+        subscriber.update();
+        let written: Vec<_> = subscriber
             .input_forwardable()
             .drain()
             .map(|p| p.message)
             .collect();
         assert_eq!(written, [3, 4]);
-        graph.publisher.flush(timestamp());
-        graph.subscribers[0].update();
-        let pending: Vec<_> = graph.subscribers[0]
+        publisher.flush(timestamp());
+        subscriber.update();
+        let pending: Vec<_> = subscriber
             .input_forwardable()
             .drain()
             .map(|p| p.message)
@@ -280,38 +296,39 @@ mod tests {
 
     #[test]
     fn retained_messages_exhaust_budget_without_becoming_invalid() {
-        let storage = PublisherStoragePlan::<u64>::new(1)
-            .with_subscriber(1)
-            .with_retained_capacity(2)
-            .allocate()
-            .unwrap();
-        let mut graph = storage.build();
+        let mut plan = ChannelPlan::<u64>::new("numbers");
+        let publisher_key = plan.publisher(1);
+        let subscriber_key = plan.subscriber(1);
+        plan.reserve_retained(&publisher_key, 2).unwrap();
+        let storage = plan.allocate().unwrap();
+        let capacity = storage.publisher_capacity(&publisher_key).unwrap();
+        let bindings = storage.build();
+        let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
+        let subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
         let mut retained = Vec::new();
-        for value in 0..storage.capacity() {
-            graph.publisher.publish(value as u64).unwrap();
-            graph.publisher.flush(timestamp());
-            graph.subscribers[0].update();
-            retained.push(graph.subscribers[0].input_forwardable().pop().unwrap());
+        for value in 0..capacity {
+            publisher.publish(value as u64).unwrap();
+            publisher.flush(timestamp());
+            subscriber.update();
+            retained.push(subscriber.input_forwardable().pop().unwrap());
         }
-        drop(graph);
-        let mut graph = storage.build();
+        drop((publisher, subscriber, bindings));
+        let bindings = storage.build();
+        let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
         assert!(matches!(
-            graph.publisher.loan_uninit(),
+            publisher.loan_uninit(),
             Err(LoanError::ArenaExhausted)
         ));
         for (value, message) in retained.iter().enumerate() {
             assert_eq!(message.message, value as u64);
         }
         retained.pop();
-        graph.publisher.publish(100).unwrap();
-        graph.publisher.flush(timestamp());
-        graph.subscribers[0].update();
+        publisher.publish(100).unwrap();
+        publisher.flush(timestamp());
+        let subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
+        subscriber.update();
         assert_eq!(
-            graph.subscribers[0]
-                .input_forwardable()
-                .pop()
-                .unwrap()
-                .message,
+            subscriber.input_forwardable().pop().unwrap().message,
             100
         );
     }
@@ -345,20 +362,21 @@ mod tests {
             }
         }
         let drops = Arc::new(AtomicUsize::new(0));
-        let storage = PublisherStoragePlan::<Counted>::new(1).allocate().unwrap();
+        let mut plan = ChannelPlan::<Counted>::new("counted");
+        let publisher_key = plan.publisher(1);
+        let storage = plan.allocate().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut partially_built = storage.build();
-            partially_built
-                .publisher
-                .publish(Counted(drops.clone()))
-                .unwrap();
+            let bindings = storage.build();
+            let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
+            publisher.publish(Counted(drops.clone())).unwrap();
             panic!("another node failed during graph construction");
         }));
         assert!(result.is_err());
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        let mut rebuilt = storage.build();
-        rebuilt.publisher.publish(Counted(drops.clone())).unwrap();
-        drop(rebuilt);
+        let bindings = storage.build();
+        let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
+        publisher.publish(Counted(drops.clone())).unwrap();
+        drop(publisher);
         assert_eq!(drops.load(Ordering::Relaxed), 2);
     }
 }

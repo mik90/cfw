@@ -6,8 +6,8 @@ use std::{
     },
 };
 use task::{
-    ArenaReaderPtr, Forwardable, Forwarded, ForwardedSources as _, OutputUninit, RequiredInput,
-    message::Message, time::FrameworkTime,
+    ArenaReaderPtr, ChannelPlan, Forwardable, Forwarded, ForwardedSources as _, OutputUninit,
+    RequiredInput, message::Message, time::FrameworkTime,
 };
 use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::{ForwardedSources, task_callback};
@@ -388,11 +388,17 @@ fn bundle_rebinds_after_separately_owned_sources_are_destroyed() {
     let input = channel.subscriber(1);
     let storage = plan.allocate().unwrap();
     for value in 0..8 {
-        let source = task::PublisherStoragePlan::<u64>::new(1)
-            .with_subscriber(1)
-            .allocate()
+        let mut source_plan = ChannelPlan::<u64>::new("source");
+        let source_publisher_key = source_plan.publisher(1);
+        let source_subscriber_key = source_plan.subscriber(1);
+        let source = source_plan.allocate().unwrap();
+        let source_bindings = source.build();
+        let mut source_publisher = source_bindings
+            .take_publisher(&source_publisher_key)
             .unwrap();
-        let mut source_endpoints = source.build();
+        let source_subscriber = source_bindings
+            .take_subscriber(&source_subscriber_key)
+            .unwrap();
         let bindings = storage.bind().unwrap();
         let channel = bindings.bundle::<(), One<'static>>("forwarded").unwrap();
         let mut publisher = channel
@@ -406,13 +412,10 @@ fn bundle_rebinds_after_separately_owned_sources_are_destroyed() {
             ))
             .unwrap();
         let now = FrameworkTime::from_nanoseconds(value as i64);
-        source_endpoints.publisher.publish(value).unwrap();
-        source_endpoints.publisher.flush(now);
-        source_endpoints.subscribers[0].update();
-        let source_message = source_endpoints.subscribers[0]
-            .input_forwardable()
-            .pop()
-            .unwrap();
+        source_publisher.publish(value).unwrap();
+        source_publisher.flush(now);
+        source_subscriber.update();
+        let source_message = source_subscriber.input_forwardable().pop().unwrap();
         publisher
             .publish(Forwarded::new(
                 (),
@@ -424,7 +427,14 @@ fn bundle_rebinds_after_separately_owned_sources_are_destroyed() {
         publisher.flush(now);
         subscriber.update();
         let retained = subscriber.input_forwardable().pop().unwrap();
-        drop((publisher, subscriber, bindings, source_endpoints));
+        drop((
+            publisher,
+            subscriber,
+            bindings,
+            source_publisher,
+            source_subscriber,
+            source_bindings,
+        ));
         assert_eq!(retained.message.forwarded_messages.source.message, value);
         drop(retained);
         drop(source);

@@ -2,7 +2,8 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use super::{Publisher, PublisherStorage, PublisherStoragePlan, StorageError, Subscriber};
+use super::{Publisher, Subscriber};
+use crate::storage::{PublisherStorage, PublisherStoragePlan, StorageError};
 
 struct Key<T> {
     channel: Arc<str>,
@@ -330,6 +331,36 @@ impl<T> ChannelStorage<T> {
         &self.name
     }
 
+    /// Allocated arena capacity for a declared publisher, for budgeting checks.
+    pub fn publisher_capacity(&self, publisher: &PublisherKey<T>) -> Result<usize, StorageError> {
+        if self.name != publisher.0.channel {
+            return Err(StorageError::ForeignPublisherKey);
+        }
+        self.publishers
+            .get(publisher.0.index)
+            .map(PublisherStorage::capacity)
+            .ok_or(StorageError::InvalidPublisherIndex(publisher.0.index))
+    }
+
+    /// Bind typed endpoints to this storage. Endpoints and retained messages
+    /// borrow the storage and cannot outlive it:
+    /// ```compile_fail,E0505
+    /// use task::{ChannelPlan, time::FrameworkTime};
+    /// let mut plan = ChannelPlan::<u64>::new("numbers");
+    /// let publisher_key = plan.publisher(1);
+    /// let subscriber_key = plan.subscriber(1);
+    /// let storage = plan.allocate().unwrap();
+    /// let bindings = storage.build();
+    /// let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
+    /// let subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
+    /// publisher.publish(42).unwrap();
+    /// publisher.flush(FrameworkTime::from_nanoseconds(1));
+    /// subscriber.update();
+    /// let message = subscriber.input_forwardable().pop().unwrap();
+    /// drop((publisher, subscriber, bindings));
+    /// drop(storage);
+    /// assert_eq!(message.message, 42);
+    /// ```
     pub fn build(&self) -> EndpointBindings<'_, T> {
         let subscribers: Vec<_> = self
             .subscribers

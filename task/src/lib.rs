@@ -34,5 +34,5 @@ pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, Required
 pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};
 pub use publisher::{LoanError, Publisher};
 pub use replay_publisher::{PublisherOps, ReplayError, ReplayPublisher};
-pub use storage::{ChannelEndpoints, PublisherStorage, PublisherStoragePlan, StorageError};
+pub use storage::StorageError;
 pub use subscriber::{Subscriber, SubscriberPolicy};
