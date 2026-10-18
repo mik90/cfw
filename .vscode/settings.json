@@ -6,5 +6,18 @@
         ".lock": true,
         "**/.idea*": true,
         "**/*.code-search": true
-    }
+    },
+    "rust-analyzer.runnables.test.overrideCommand": [
+        "cargo",
+        "nextest",
+        "run",
+        "--package",
+        "${package}",
+        "${target_arg}",
+        "${target}",
+        "--",
+        "${test_name}",
+        "${exact}",
+        "${include_ignored}"
+    ]
 }

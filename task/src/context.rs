@@ -31,3 +31,31 @@ impl<'execution> Context<'execution> {
         self.callback_names
     }
 }
+
+#[cfg(test)]
+pub mod testing {
+    use super::*;
+
+    /// Test utility for creating contexts
+    pub struct ContextBuilder {
+        pub now: FrameworkTime,
+        pub channel_names: ChannelNameInterner,
+        pub callback_names: CallbackNameInterner,
+    }
+
+    impl Default for ContextBuilder {
+        fn default() -> Self {
+            Self {
+                now: FrameworkTime::INVALID,
+                channel_names: ChannelNameInterner::default(),
+                callback_names: CallbackNameInterner::default(),
+            }
+        }
+    }
+
+    impl ContextBuilder {
+        pub fn build(&'_ self) -> Context<'_> {
+            Context::new(self.now, &self.channel_names, &self.callback_names)
+        }
+    }
+}

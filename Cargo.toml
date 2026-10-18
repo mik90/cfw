@@ -36,6 +36,8 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 # Optional iceoryx2 integration
 iceoryx2 =  "0.10"
+googletest = "0.14.3"
+
 
 [profile.profiling]
 # See run_flamegraph.sh for how to run

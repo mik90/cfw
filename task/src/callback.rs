@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use crate::time::FrameworkTime;
 use crate::{Context, LoanError};
 mod node;
@@ -82,6 +84,15 @@ pub struct Invocation<'a> {
     callback: &'a mut dyn Callback,
     ran: bool,
 }
+
+impl<'a> std::fmt::Debug for Invocation<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Invocation")
+            .field("ran", &self.ran)
+            .finish()
+    }
+}
+
 impl Drop for Invocation<'_> {
     fn drop(&mut self) {
         self.callback.discard_outputs();
@@ -92,11 +103,13 @@ impl Drop for Invocation<'_> {
 }
 
 /// Exclusive, prepared input snapshot. Dropping it cancels pending outputs.
+#[derive(Debug)]
 #[must_use]
 pub struct PreparedCallback<'a>(Invocation<'a>);
 
 /// Completed body with unpublished outputs. Drop cancels; commit publishes at
 /// the invocation timestamp. The callback cannot be reused while this exists.
+#[derive(Debug)]
 #[must_use]
 pub struct CompletedCallback<'a> {
     invocation: Invocation<'a>,
@@ -114,6 +127,7 @@ pub fn prepare_callback(callback: &mut dyn Callback) -> Option<PreparedCallback<
         .required_inputs_ready()
         .then_some(PreparedCallback(invocation))
 }
+
 impl<'a> PreparedCallback<'a> {
     pub fn run(mut self, context: &Context) -> Result<CompletedCallback<'a>, LoanError> {
         self.0.ran = true;
@@ -127,5 +141,126 @@ impl<'a> PreparedCallback<'a> {
 impl CompletedCallback<'_> {
     pub fn commit(self) {
         self.invocation.callback.flush_outputs(self.timestamp);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use googletest::prelude::*;
+    struct FakeCallback {
+        has_pending_inputs: bool,
+        outputs_are_local: bool,
+        required_inputs_available: bool,
+        required_inputs_ready: bool,
+        output_flush_timestamps: Vec<FrameworkTime>,
+    }
+
+    impl Default for FakeCallback {
+        fn default() -> Self {
+            FakeCallback {
+                has_pending_inputs: false,
+                outputs_are_local: false,
+                required_inputs_available: false,
+                required_inputs_ready: false,
+                output_flush_timestamps: vec![],
+            }
+        }
+    }
+
+    impl Callback for FakeCallback {
+        fn run(&mut self, _context: &Context) -> Result<(), LoanError> {
+            Ok(())
+        }
+
+        fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
+            todo!()
+        }
+
+        fn discard_outputs(&mut self) {}
+        fn finish_inputs(&mut self) {}
+        fn flush_outputs(&mut self, timestamp: FrameworkTime) {
+            self.output_flush_timestamps.push(timestamp);
+        }
+
+        fn has_pending_inputs(&self) -> bool {
+            self.has_pending_inputs
+        }
+        fn outputs_are_local(&self) -> bool {
+            self.outputs_are_local
+        }
+
+        fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
+            None
+        }
+
+        fn required_inputs_available(&self) -> bool {
+            self.required_inputs_available
+        }
+
+        fn required_inputs_ready(&self) -> bool {
+            self.required_inputs_ready
+        }
+
+        fn set_waker(&mut self, _wake: crate::wake::WakeHandle) {}
+        fn stage_replay_event(
+            &mut self,
+            _ordinal: usize,
+            _event_id: usize,
+            _count: u64,
+        ) -> Result<(), LoanError> {
+            Ok(())
+        }
+        #[cfg(feature = "iceoryx2")]
+        fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
+            vec![]
+        }
+        fn update_inputs(&mut self) {}
+        fn visit_channel_names(&self, _visit: &mut dyn FnMut(&str)) {}
+        fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
+        fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
+        fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
+        fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {
+        }
+    }
+
+    #[gtest]
+    fn callback_transition() {
+        let mut fake_callback = FakeCallback::default();
+
+        fake_callback.required_inputs_ready = true;
+
+        let prepared_callback = {
+            let prepared_callback = prepare_callback(&mut fake_callback);
+            assert_true!(prepared_callback.is_some());
+            prepared_callback.unwrap()
+        };
+
+        let completed_callback = {
+            let mut context_builder = crate::context::testing::ContextBuilder::default();
+            context_builder.now = FrameworkTime::from_nanoseconds(42);
+
+            let completed_callback = prepared_callback.run(&context_builder.build());
+
+            assert_true!(completed_callback.is_ok());
+
+            completed_callback.unwrap()
+        };
+        expect_that!(
+            completed_callback.timestamp,
+            eq(FrameworkTime::from_nanoseconds(42))
+        );
+
+        let invocation = &completed_callback.invocation;
+        expect_true!(invocation.ran);
+
+        completed_callback.commit();
+
+        expect_that!(
+            fake_callback.output_flush_timestamps,
+            container_eq(vec![FrameworkTime::from_nanoseconds(42)]),
+            "One a callback has been committed, we should see the flushed outputs that we queued up"
+        );
     }
 }
