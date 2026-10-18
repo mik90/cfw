@@ -149,24 +149,13 @@ mod tests {
 
     use super::*;
     use googletest::prelude::*;
+    #[derive(Default)]
     struct FakeCallback {
         has_pending_inputs: bool,
         outputs_are_local: bool,
         required_inputs_available: bool,
         required_inputs_ready: bool,
         output_flush_timestamps: Vec<FrameworkTime>,
-    }
-
-    impl Default for FakeCallback {
-        fn default() -> Self {
-            FakeCallback {
-                has_pending_inputs: false,
-                outputs_are_local: false,
-                required_inputs_available: false,
-                required_inputs_ready: false,
-                output_flush_timestamps: vec![],
-            }
-        }
     }
 
     impl Callback for FakeCallback {

@@ -55,9 +55,10 @@ pub mod testing {
 
     impl ContextBuilder {
         pub fn with_time(time: FrameworkTime) -> Self {
-            let mut builder = Self::default();
-            builder.now = time;
-            builder
+            Self {
+                now: time,
+                ..Default::default()
+            }
         }
         pub fn build(&'_ self) -> Context<'_> {
             Context::new(self.now, &self.channel_names, &self.callback_names)
