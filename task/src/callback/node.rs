@@ -321,8 +321,10 @@ mod tests {
     use crate::{
         ChannelPlan, Publisher, Subscriber, SubscriberPolicy,
         callback::execute_callback,
+        context::testing,
         string_interner::{CallbackNameInterner, ChannelNameInterner},
     };
+    use base::arena::ArenaPtr;
     use googletest::prelude::*;
 
     #[gtest]
@@ -364,17 +366,22 @@ mod tests {
 
         let required_subscriber = Required(small_number_subscriber);
 
-        let body = |inputs: &(Required<Subscriber<'_, u8>>),
-                    output: &mut Publisher<'_, u64>,
+        let body = |inputs: &Required<Subscriber<'_, u8>>,
+                    outputs: &mut Publisher<'_, u64>,
                     _: &Context|
          -> Result<(), LoanError> {
             let number = inputs.0.input_readonly().value().copied();
+            assert_that!(number, some(anything()));
 
-            output.publish(u64::from(number.unwrap()))?;
+            outputs.publish(u64::from(number.unwrap()))?;
             Ok(())
         };
 
-        let callback_node = CallbackNode::new((required_subscriber), (big_number_publisher), body);
+        let mut callback_node = CallbackNode::new(required_subscriber, big_number_publisher, body);
+
+        let result = callback_node
+            .run(&testing::ContextBuilder::with_time(FrameworkTime::from_nanoseconds(42)).build());
+        assert_that!(result, ok(anything()));
     }
     #[gtest]
     fn manual_node_preserves_readiness_recording_and_cancellation_across_heterogeneous_ports() {
