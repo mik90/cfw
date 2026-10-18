@@ -25,7 +25,7 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
             let declaration = Counter::declare(&mut values).unwrap();
             let capture = capture_payload.then(|| CapturePlan::declare(&mut values, 8));
             let storage = values.allocate().unwrap();
-            let values = storage.build();
+            let values = storage.bind();
             let mut builder = GraphBuilder::with_channel_names([storage.name()]);
             builder.add_scheduled_callback(
                 "counter",

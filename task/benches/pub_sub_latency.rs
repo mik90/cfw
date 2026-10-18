@@ -9,7 +9,7 @@ fn bench_publish_to_receive(c: &mut Criterion) {
     let subscriber = plan.subscriber(1);
     plan.validate().unwrap();
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut publisher = bindings.take_publisher(&publisher).unwrap();
     let subscriber = bindings.take_subscriber(&subscriber).unwrap();
     let mut value = 0_u64;

@@ -51,8 +51,8 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
     let source_key = input.publisher(1);
     let capture_key = output.subscriber(2);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
-    let input = storage.0.build();
-    let output = storage.1.build();
+    let input = storage.0.bind();
+    let output = storage.1.bind();
     let mut source = input.take_publisher(&source_key).unwrap();
     let capture = output.take_subscriber(&capture_key).unwrap();
     let (done, completed) = channel::unbounded();
@@ -130,7 +130,7 @@ fn trigger_during_run_is_requeued_without_concurrent_invocations() {
     let declaration = Blocking::declare(&mut plan).unwrap();
     let source_key = plan.publisher(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut source = bindings.take_publisher(&source_key).unwrap();
     let (entered, entry) = channel::unbounded();
     let (release, permission) = channel::bounded(1);
@@ -208,8 +208,8 @@ fn callback_errors_and_panics_wake_control_and_leave_captured_messages_valid() {
         let fail_decl = Failing::declare(&mut source, &mut output).unwrap();
         let capture_key = source.subscriber(1);
         let storage = (source.allocate().unwrap(), output.allocate().unwrap());
-        let source = storage.0.build();
-        let output = storage.1.build();
+        let source = storage.0.bind();
+        let output = storage.1.bind();
         let capture = source.take_subscriber(&capture_key).unwrap();
         let mut builder = GraphBuilder::new();
         builder.add_scheduled_callback("source", CallbackSchedule::on_start(), || {

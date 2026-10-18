@@ -114,8 +114,8 @@ fn recorded(log_source: bool) -> ReplayLog {
         let source_capture = log_source.then(|| CapturePlan::declare(&mut source, 4));
         let output_capture = CapturePlan::declare(&mut output, 4);
         let storage = (source.allocate().unwrap(), output.allocate().unwrap());
-        let source = storage.0.build();
-        let output = storage.1.build();
+        let source = storage.0.bind();
+        let output = storage.1.bind();
         let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
         graph.add_callback("source", || {
             Ok(Source { next: 1, mode: 0 }.bind(a, &source)?)
@@ -164,8 +164,8 @@ fn replay<R>(
     let b = Transform::declare(&mut source, &mut output).unwrap();
     let hydration = ReplayInputPlan::declare(&mut source, b.input_key()).unwrap();
     let storage = (source.allocate().unwrap(), output.allocate().unwrap());
-    let source = storage.0.build();
-    let output = storage.1.build();
+    let source = storage.0.bind();
+    let output = storage.1.bind();
     let mut bindings = ReplayBindings::new();
     bindings
         .add_input("transform", 0, hydration.bind(&source).unwrap())
@@ -470,8 +470,8 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
     let a = Source::declare(&mut source).unwrap();
     let b = Transform::declare(&mut source, &mut output).unwrap();
     let storage = (source.allocate().unwrap(), output.allocate().unwrap());
-    let source = storage.0.build();
-    let output = storage.1.build();
+    let source = storage.0.bind();
+    let output = storage.1.bind();
     let mut graph = GraphBuilder::new();
     graph.add_callback("source", || {
         Ok(Source { next: 1, mode: 0 }.bind(a, &source)?)
@@ -633,8 +633,8 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
         let capture = CapturePlan::declare(&mut shared, 2);
         let out = CapturePlan::declare(&mut result, 1);
         let storage = (shared.allocate().unwrap(), result.allocate().unwrap());
-        let shared = storage.0.build();
-        let result = storage.1.build();
+        let shared = storage.0.bind();
+        let result = storage.1.bind();
         let mut graph = GraphBuilder::new();
         graph.add_callback("pair", || {
             Ok(TwoInputs.bind(declaration, &shared, &shared, &result)?)
@@ -682,8 +682,8 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
     let first = ReplayInputPlan::declare(&mut shared, declaration.first_key()).unwrap();
     let second = ReplayInputPlan::declare(&mut shared, declaration.second_key()).unwrap();
     let storage = (shared.allocate().unwrap(), result.allocate().unwrap());
-    let shared = storage.0.build();
-    let result = storage.1.build();
+    let shared = storage.0.bind();
+    let result = storage.1.bind();
     let mut ports = ReplayBindings::new();
     ports
         .add_input("pair", 0, first.bind(&shared).unwrap())
@@ -740,7 +740,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
         let declaration = TwoOutputsDeclaration::from_keys(plan.publisher(1), plan.publisher(1));
         let capture = CapturePlan::declare(&mut plan, 2);
         let storage = plan.allocate().unwrap();
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let mut graph = GraphBuilder::new();
         graph.add_callback("pair", || {
             Ok(TwoOutputs { swapped: false }.bind(declaration, &bindings, &bindings)?)
@@ -771,7 +771,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
     let first = plan.publisher(1);
     let declaration = TwoOutputsDeclaration::from_keys(first, second);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut ports = ReplayBindings::new();
     ports
         .add_output(
@@ -863,9 +863,9 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                     forward.allocate().unwrap(),
                     result.allocate().unwrap(),
                 );
-                let source = storage.0.build();
-                let forward = storage.1.build();
-                let result = storage.2.build();
+                let source = storage.0.bind();
+                let forward = storage.1.bind();
+                let result = storage.2.bind();
                 let mut graph = GraphBuilder::new();
                 graph.add_callback("source", || {
                     Ok(Source { next: 1, mode: 0 }.bind(a, &source)?)
@@ -926,9 +926,9 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 forward.allocate().unwrap(),
                 result.allocate().unwrap(),
             );
-            let source = storage.0.build();
-            let forward = storage.1.build();
-            let result = storage.2.build();
+            let source = storage.0.bind();
+            let forward = storage.1.bind();
+            let result = storage.2.bind();
             let cache = cache.bind(&source).unwrap();
             let mut ports = ReplayBindings::new();
             let loader = cache.clone();

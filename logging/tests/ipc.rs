@@ -65,10 +65,10 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     let output_storage = output.allocate().unwrap();
     let event_storage = events.allocate().unwrap();
     let gate_storage = gate.allocate().unwrap();
-    let input = input_storage.build().unwrap();
-    let output = output_storage.build().unwrap();
-    let events = event_storage.build().unwrap();
-    let gate = gate_storage.build();
+    let input = input_storage.bind().unwrap();
+    let output = output_storage.bind().unwrap();
+    let events = event_storage.bind().unwrap();
+    let gate = gate_storage.bind();
     let mut graph = GraphBuilder::with_channel_names([
         input_storage.name(),
         output_storage.name(),
@@ -247,10 +247,10 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
     let output_storage = output.allocate().unwrap();
     let event_storage = events.allocate().unwrap();
     let gate_storage = gate.allocate().unwrap();
-    let input = input_storage.build().unwrap();
-    let output = output_storage.build().unwrap();
-    let events = event_storage.build().unwrap();
-    let gate = gate_storage.build();
+    let input = input_storage.bind().unwrap();
+    let output = output_storage.bind().unwrap();
+    let events = event_storage.bind().unwrap();
+    let gate = gate_storage.bind();
     let mut graph = GraphBuilder::with_channel_names([
         input_storage.name(),
         output_storage.name(),

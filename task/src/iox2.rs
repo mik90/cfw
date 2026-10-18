@@ -446,12 +446,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
     pub fn name(&self) -> &str {
         self.plan.name()
     }
-    pub fn build(&self) -> Result<Iox2Bindings<T>, StorageError> {
-        self.build_with_delivery(OutputDelivery::Transport)
+    pub fn bind(&self) -> Result<Iox2Bindings<T>, StorageError> {
+        self.bind_with_delivery(OutputDelivery::Transport)
     }
 
     /// Bind outputs with their delivery policy fixed before callbacks take ownership.
-    pub fn build_with_delivery(
+    pub fn bind_with_delivery(
         &self,
         delivery: OutputDelivery,
     ) -> Result<Iox2Bindings<T>, StorageError> {

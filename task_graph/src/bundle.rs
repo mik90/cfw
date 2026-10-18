@@ -6,14 +6,14 @@ use std::{
     any::{Any, TypeId},
     collections::BTreeMap,
 };
-use task::{ChannelPlan, ChannelStorage, EndpointBindings, SubscriberPolicy};
+use task::{ChannelBindings, ChannelPlan, ChannelStorage, SubscriberPolicy};
 use task::{Forwarded, ForwardedSources, PublisherKey, SubscriberKey};
 
 type Value<'a, M, S> = Forwarded<M, <S as ForwardedSources>::Bound<'a>>;
 struct Family<M, S>(PhantomData<fn() -> (M, S)>);
 struct BundlePlan<M, S: ForwardedSources>(ChannelPlan<Value<'static, M, S>>);
 struct BundleStorage<M, S: ForwardedSources>(ChannelStorage<Value<'static, M, S>>);
-struct BundleBinding<'a, M, S: ForwardedSources>(EndpointBindings<'a, Value<'a, M, S>>);
+struct BundleBinding<'a, M, S: ForwardedSources>(ChannelBindings<'a, Value<'a, M, S>>);
 
 pub use task::forwarded_message::{publisher_key, subscriber_key};
 
@@ -45,7 +45,7 @@ impl<M: Send + Sync + 'static, S: ForwardedSources> Stored for BundleStorage<M, 
     fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError> {
         fn bind<'a, M: 'static, S: ForwardedSources>(
             storage: &'a ChannelStorage<Value<'static, M, S>>,
-        ) -> EndpointBindings<'a, Value<'a, M, S>> {
+        ) -> ChannelBindings<'a, Value<'a, M, S>> {
             // SAFETY: ForwardedSources guarantees layout/drop equivalence under
             // lifetime substitution, including nested source payloads. Each build
             // creates fresh queues: it cannot recover publications from an older
@@ -56,7 +56,7 @@ impl<M: Send + Sync + 'static, S: ForwardedSources> Stored for BundleStorage<M, 
             // them. The private Family identity prevents canonical static access.
             let storage =
                 unsafe { &*std::ptr::from_ref(storage).cast::<ChannelStorage<Value<'a, M, S>>>() };
-            storage.build()
+            storage.bind()
         }
         Ok(Box::new(BundleBinding::<M, S>(bind::<M, S>(&self.0))))
     }
@@ -250,7 +250,7 @@ impl<'a> GraphBindings<'a> {
     pub fn bundle<M: Send + Sync + 'static, S: ForwardedSources>(
         &self,
         name: &str,
-    ) -> Result<&EndpointBindings<'a, Value<'a, M, S>>, BuildError> {
+    ) -> Result<&ChannelBindings<'a, Value<'a, M, S>>, BuildError> {
         let binding = self
             .channels
             .get(name)
@@ -266,7 +266,7 @@ impl<'a> GraphBindings<'a> {
             &*binding
                 .pointer()
                 .unwrap()
-                .cast::<EndpointBindings<'a, Value<'a, M, S>>>()
+                .cast::<ChannelBindings<'a, Value<'a, M, S>>>()
         })
     }
 }

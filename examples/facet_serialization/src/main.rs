@@ -169,7 +169,7 @@ fn run_live(
     let mut plan = app.plan()?;
     let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(32))?;
     let storage = plan.allocate()?;
-    let (graph, bindings) = storage.build_with_bindings()?;
+    let (graph, bindings) = storage.bind_and_build()?;
     let recorder = ExecutionRecorder::new(32);
     let graph = graph.with_recording(&recorder)?;
     let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(

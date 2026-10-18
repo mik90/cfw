@@ -48,7 +48,7 @@ fn pre_start_notification_wakes_each_listener_without_periodic_polling() {
     let second = ReceiverTaskDeclaration::from_keys(plan.subscriber(1), plan.events(1));
     let pub_key = plan.publisher(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build().unwrap();
+    let bindings = storage.bind().unwrap();
     let mut publisher = bindings.take_publisher(&pub_key).unwrap();
     let (sent, received) = crossbeam::channel::bounded(2);
     let mut graph = GraphBuilder::with_channel_names([storage.name()]);
@@ -96,7 +96,7 @@ fn controller_panic_wakes_and_joins_an_idle_readiness_thread() {
     let mut plan = Iox2ChannelPlan::<u64>::new(name(), &runtime);
     let declaration = ReceiverTaskDeclaration::from_keys(plan.subscriber(1), plan.events(1));
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build().unwrap();
+    let bindings = storage.bind().unwrap();
     let (sent, _) = crossbeam::channel::bounded(1);
     let mut graph = GraphBuilder::new();
     graph.add_callback("idle", || {
@@ -146,7 +146,7 @@ fn standalone_notifier_dispatches_configured_event_id() {
     let notifier = NotifyDeclaration::from_keys(plan.notifier_with_id(3));
     let events = Events::declare(&mut plan).unwrap();
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build().unwrap();
+    let bindings = storage.bind().unwrap();
     let (sent, received) = crossbeam::channel::bounded(1);
     let mut builder = GraphBuilder::new();
     builder.add_scheduled_callback("notify", task_graph::CallbackSchedule::on_start(), || {
@@ -184,8 +184,8 @@ fn event_is_retained_until_required_native_input_allows_execution() {
     let declaration = Gated::declare(&mut input, &mut event).unwrap();
     let source_key = input.publisher(1);
     let storage = (input.allocate().unwrap(), event.allocate().unwrap());
-    let input = storage.0.build();
-    let event = storage.1.build().unwrap();
+    let input = storage.0.bind();
+    let event = storage.1.bind().unwrap();
     let mut source = input.take_publisher(&source_key).unwrap();
     let (sent, received) = crossbeam::channel::bounded(2);
     let mut callback = Gated { sent }.bind(declaration, &input, &event).unwrap();

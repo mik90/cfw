@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 use task::{
-    Callback, ChannelPlan, Context, EndpointBindings, LoanError, Subscriber, SubscriberKey,
+    Callback, ChannelBindings, ChannelPlan, Context, LoanError, Subscriber, SubscriberKey,
     SubscriberPolicy,
 };
 use task_graph::{BuiltGraph, CallbackSchedule, ScheduledCallback};
@@ -79,7 +79,7 @@ impl FlushEventPlan {
     }
     pub fn bind<'a>(
         self,
-        bindings: &EndpointBindings<'a, ()>,
+        bindings: &ChannelBindings<'a, ()>,
     ) -> Result<Vec<FlushTrigger<'a>>, task::EndpointError> {
         self.keys
             .into_iter()

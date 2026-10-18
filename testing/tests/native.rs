@@ -30,8 +30,8 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
     let capture = output.subscriber(4);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
     let (input, output) = &storage;
-    let input = input.build();
-    let output = output.build();
+    let input = input.bind();
+    let output = output.bind();
     let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
@@ -87,7 +87,7 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(2);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut graph = GraphBuilder::with_channel_names([storage.name()]);
     graph.add_scheduled_callback(
         "tick",
@@ -123,7 +123,7 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut executor = UnitTestExecutor::new_with_graph(
         GraphBuilder::with_channel_names([storage.name()])
             .build()
@@ -162,7 +162,7 @@ fn retained_payload_drops_exactly_once_after_all_endpoints_and_executor() {
     let publisher = plan.publisher(1);
     let subscriber = plan.subscriber(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut executor = UnitTestExecutor::new_with_graph(
         GraphBuilder::with_channel_names([storage.name()])
             .build()
@@ -196,7 +196,7 @@ fn failed_step_cancels_capture_and_poisons_executor() {
     let capture = plan.subscriber(1);
     let sender = plan.publisher(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut graph = GraphBuilder::with_channel_names([storage.name()]);
     graph.add_scheduled_callback(
         "fails",

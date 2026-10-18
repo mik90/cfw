@@ -66,7 +66,7 @@ fn parallel_bodies_commit_in_scheduling_order_and_retained_messages_outlive_simu
     let second = OrderedSource::declare(&mut plan).unwrap();
     let capture_key = plan.subscriber(2);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let capture = bindings.take_subscriber(&capture_key).unwrap();
     let barrier = Arc::new(Barrier::new(2));
     let released = Arc::new(AtomicUsize::new(0));
@@ -146,7 +146,7 @@ fn whole_batch_reads_precommit_inputs_then_new_work_runs_at_same_simulated_time(
     let source = Source::declare(&mut plan).unwrap();
     let observe = Observe::declare(&mut plan).unwrap();
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let observations = Arc::new(Mutex::new(Vec::new()));
     let mut builder = GraphBuilder::new();
     builder.add_scheduled_callback(
@@ -324,8 +324,8 @@ fn nontrigger_input_resumes_pending_request_and_input_retention_is_respected() {
     let trigger_key = trigger.publisher(1);
     let cached_key = cached.publisher(1);
     let storage = (trigger.allocate().unwrap(), cached.allocate().unwrap());
-    let trigger = storage.0.build();
-    let cached = storage.1.build();
+    let trigger = storage.0.bind();
+    let cached = storage.1.bind();
     let trigger_source = Arc::new(Mutex::new(trigger.take_publisher(&trigger_key).unwrap()));
     let cached_source = Arc::new(Mutex::new(cached.take_publisher(&cached_key).unwrap()));
     let trace = Arc::new(Mutex::new(Vec::new()));
@@ -399,8 +399,8 @@ fn oldest_ready_callback_wins_when_a_virtual_pool_becomes_free() {
     let b_source = b.publisher(1);
     let c_source = c.publisher(1);
     let storage = (b.allocate().unwrap(), c.allocate().unwrap());
-    let b = storage.0.build();
-    let c = storage.1.build();
+    let b = storage.0.bind();
+    let c = storage.1.bind();
     let b_source = b.take_publisher(&b_source).unwrap();
     let c_source = c.take_publisher(&c_source).unwrap();
     let trace = Arc::new(Mutex::new(Vec::new()));

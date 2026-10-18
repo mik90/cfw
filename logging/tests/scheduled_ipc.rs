@@ -40,8 +40,8 @@ fn real_ipc_event_requests_a_flush_without_data_arrival_triggering_it() {
     let trigger = events.events(4);
     let notifier = events.notifier();
     let storage = (data.allocate().unwrap(), events.allocate().unwrap());
-    let data = storage.0.build();
-    let events = storage.1.build().unwrap();
+    let data = storage.0.bind();
+    let events = storage.1.bind().unwrap();
     let mut publisher = data.take_publisher(&publisher).unwrap();
     let mut notifier = events.take_notifier(&notifier).unwrap();
     let messages = Arc::new(AtomicUsize::new(0));

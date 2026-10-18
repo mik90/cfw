@@ -93,7 +93,7 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     let sender = plan.native::<u64>("chosen").unwrap().publisher(1);
     let capture = plan.native::<u64>("answer").unwrap().subscriber(1);
     let storage = plan.allocate().unwrap();
-    let (graph, bindings) = storage.build_with_bindings().unwrap();
+    let (graph, bindings) = storage.bind_and_build().unwrap();
     assert!(storage.build().is_err());
     let recorder = ExecutionRecorder::new(1);
     let mut graph = testing::UnitTestExecutor::new_with_graph(

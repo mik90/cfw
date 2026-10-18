@@ -102,7 +102,7 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
     assert_eq!(storage.1.name(), "b");
 
     let (mut graph, first, second, fanout) = {
-        let bindings = [storage.0.build(), storage.1.build()];
+        let bindings = [storage.0.bind(), storage.1.bind()];
         let mut builder = GraphBuilder::new();
         for (index, key) in sources.iter().enumerate() {
             let bindings = &bindings[source_channels[index]];
@@ -180,8 +180,8 @@ fn factories_connect_borrowed_forwarding_across_channels() {
     let storage = (sources.allocate().unwrap(), forwards.allocate().unwrap());
 
     let (mut graph, fixture) = {
-        let source_bindings = storage.0.build();
-        let forward_bindings = storage.1.build();
+        let source_bindings = storage.0.bind();
+        let forward_bindings = storage.1.bind();
         let mut builder = GraphBuilder::new();
         builder.add_callback("source", || {
             let mut publisher = source_bindings.take_publisher(&source_key)?;
@@ -241,7 +241,7 @@ fn keys_check_channel_names_and_single_endpoint_ownership() {
         Err(StorageError::ForeignPublisherKey)
     );
     let storage = (first.allocate().unwrap(), second.allocate().unwrap());
-    let bindings = storage.0.build();
+    let bindings = storage.0.bind();
     assert!(matches!(
         bindings.take_publisher(&foreign_pub),
         Err(EndpointError::WrongChannel)
@@ -285,7 +285,7 @@ fn factory_failure_drops_already_built_callbacks_and_their_pending_loans() {
     let mut declarations = ChannelPlan::<Counted>::new("pending");
     let key = declarations.publisher(1);
     let storage = declarations.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut builder = GraphBuilder::new();
     builder.add_callback("first", || {
         let mut publisher = bindings.take_publisher(&key)?;
@@ -310,7 +310,7 @@ fn factory_failure_drops_already_built_callbacks_and_their_pending_loans() {
         _ => panic!("expected a factory failure"),
     }
     assert_eq!(drops.load(Ordering::Relaxed), 1);
-    let rebuilt = storage.build();
+    let rebuilt = storage.bind();
     rebuilt
         .take_publisher(&key)
         .unwrap()
@@ -341,7 +341,7 @@ fn step_error_preserves_published_messages_and_skips_later_callbacks() {
     let publisher = declarations.publisher(1);
     let subscriber = declarations.subscriber(1);
     let storage = declarations.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let fixture = bindings.take_subscriber(&subscriber).unwrap();
     let later_calls = Arc::new(AtomicUsize::new(0));
     let mut builder = GraphBuilder::new();

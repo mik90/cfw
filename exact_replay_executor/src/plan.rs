@@ -2,7 +2,7 @@ use crate::ReplayError;
 use logging::{BoxedLogError, PortCapture, ReplaySource};
 use std::collections::BTreeMap;
 use task::{
-    ChannelPlan, EndpointBindings, PublisherKey, StorageError, SubscriberKey, loggable::Loggable,
+    ChannelBindings, ChannelPlan, PublisherKey, StorageError, SubscriberKey, loggable::Loggable,
     message::MessageHeader,
 };
 
@@ -28,7 +28,7 @@ impl<T> SourceCachePlan<T> {
     }
     pub fn bind<'a>(
         self,
-        bindings: &EndpointBindings<'a, T>,
+        bindings: &ChannelBindings<'a, T>,
     ) -> Result<SourceCache<'a, T>, task::EndpointError>
     where
         T: Send + Sync + 'static,
@@ -38,7 +38,7 @@ impl<T> SourceCachePlan<T> {
     }
     pub fn bind_with_decoder<'a>(
         self,
-        bindings: &EndpointBindings<'a, T>,
+        bindings: &ChannelBindings<'a, T>,
         decode: impl Fn(&[u8]) -> Result<T, BoxedLogError> + Send + Sync + 'a,
     ) -> Result<SourceCache<'a, T>, task::EndpointError>
     where
@@ -129,7 +129,7 @@ impl<T> ReplayInputPlan<T> {
     }
     pub fn bind<'a>(
         self,
-        bindings: &EndpointBindings<'a, T>,
+        bindings: &ChannelBindings<'a, T>,
     ) -> Result<ReplaySource<'a>, task::EndpointError>
     where
         T: Send + Sync + 'static,
@@ -141,7 +141,7 @@ impl<T> ReplayInputPlan<T> {
     }
     pub fn bind_with_decoder<'a>(
         self,
-        bindings: &EndpointBindings<'a, T>,
+        bindings: &ChannelBindings<'a, T>,
         decode: impl FnMut(&[u8]) -> Result<T, BoxedLogError> + Send + 'a,
     ) -> Result<ReplaySource<'a>, task::EndpointError>
     where
@@ -169,7 +169,7 @@ impl<M: Send + Sync + 'static, S: task::ForwardedSources> BundleReplayInputPlan<
     }
     pub fn bind_with_decoder<'a>(
         self,
-        bindings: &EndpointBindings<'a, task::Forwarded<M, S::Bound<'a>>>,
+        bindings: &ChannelBindings<'a, task::Forwarded<M, S::Bound<'a>>>,
         decode: impl FnMut(&[u8]) -> Result<task::Forwarded<M, S::Bound<'a>>, BoxedLogError> + Send + 'a,
     ) -> Result<ReplaySource<'a>, task::EndpointError> {
         ReplayInputPlan {

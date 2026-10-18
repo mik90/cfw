@@ -24,7 +24,7 @@ fn unsent_and_cancelled_loans_release_capacity_and_success_stamps_headers() {
     let pub_key = plan.publisher(1);
     let sub_key = plan.subscriber(2);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build().unwrap();
+    let bindings = storage.bind().unwrap();
     let mut publisher = bindings.take_publisher(&pub_key).unwrap();
     let subscriber = bindings.take_subscriber(&sub_key).unwrap();
     drop(bindings);
@@ -56,7 +56,7 @@ fn same_timestamp_ipc_batches_preserve_publisher_indices_and_send_order() {
     let second = plan.publisher_with_notification(2, Iox2Notification::Silent);
     let capture = plan.subscriber(4);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build().unwrap();
+    let bindings = storage.bind().unwrap();
     let mut first = bindings.take_publisher(&first).unwrap();
     let mut second = bindings.take_publisher(&second).unwrap();
     let capture = bindings.take_subscriber(&capture).unwrap();
@@ -152,7 +152,7 @@ fn data_notification_policy_preserves_deferred_commit_and_silent_explicit_signal
         let events_key = plan.events(8);
         let signal_key = plan.notifier_with_id(3);
         let storage = plan.allocate().unwrap();
-        let bindings = storage.build().unwrap();
+        let bindings = storage.bind().unwrap();
         bindings
             .set_output_delivery(1, false, task::iox2::OutputDelivery::Local)
             .unwrap();
@@ -240,5 +240,5 @@ fn notification_plan_checks_ids_keys_and_only_budgets_enabled_notifiers() {
         Err(task::EndpointError::InvalidIndex(0))
     );
     let storage = plan.allocate().unwrap();
-    let _bindings = storage.build().unwrap();
+    let _bindings = storage.bind().unwrap();
 }

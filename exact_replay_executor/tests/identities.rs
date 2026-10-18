@@ -109,10 +109,10 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
             observed.allocate().unwrap(),
             result.allocate().unwrap(),
         );
-        let source = storage.0.build();
-        let forward = storage.1.build();
-        let observed = storage.2.build();
-        let result = storage.3.build();
+        let source = storage.0.bind();
+        let forward = storage.1.bind();
+        let observed = storage.2.bind();
+        let result = storage.3.bind();
         let mut graph = GraphBuilder::with_channel_names([
             storage.0.name(),
             storage.1.name(),
@@ -203,10 +203,10 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         observed.allocate().unwrap(),
         result.allocate().unwrap(),
     );
-    let source = storage.0.build();
-    let forward = storage.1.build();
-    let observed = storage.2.build();
-    let result = storage.3.build();
+    let source = storage.0.bind();
+    let forward = storage.1.bind();
+    let observed = storage.2.bind();
+    let result = storage.3.bind();
     let cache = cache.bind(&source).unwrap();
     let captured_indices = Arc::new(Mutex::new(Vec::new()));
     let mut ports = ReplayBindings::new();

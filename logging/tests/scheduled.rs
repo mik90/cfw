@@ -83,7 +83,7 @@ fn periodic_flush_uses_executor_time_and_does_not_run_at_start() {
     let source = Source::declare(&mut plan).unwrap();
     let capture = CapturePlan::declare(&mut plan, 2);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut builder = GraphBuilder::with_channel_names([storage.name()]);
     builder.add_scheduled_callback(
         "source",
@@ -120,8 +120,8 @@ fn event_mode_waits_for_explicit_pulses_and_final_finish_drains_the_tail() {
     let capture = CapturePlan::declare(&mut data, 2);
     let triggers = FlushEventPlan::declare(&mut events, 1);
     let storage = (data.allocate().unwrap(), events.allocate().unwrap());
-    let data = storage.0.build();
-    let events = storage.1.build();
+    let data = storage.0.bind();
+    let events = storage.1.bind();
     let mut publisher = data.take_publisher(&publisher).unwrap();
     let mut pulse = events.take_publisher(&pulse).unwrap();
     let writer = Writer::default();
@@ -168,9 +168,9 @@ fn event_pulses_fan_out_to_shards_and_coalesce_without_duplicate_messages() {
         b.allocate().unwrap(),
         events.allocate().unwrap(),
     );
-    let a = storage.0.build();
-    let b = storage.1.build();
-    let events = storage.2.build();
+    let a = storage.0.bind();
+    let b = storage.1.bind();
+    let events = storage.2.bind();
     let mut a_pub = a.take_publisher(&a_key).unwrap();
     let mut b_pub = b.take_publisher(&b_key).unwrap();
     let mut pulse = events.take_publisher(&pulse).unwrap();
@@ -223,7 +223,7 @@ fn scheduled_errors_do_not_stop_workload_and_remain_sticky_after_recovery() {
     let publisher = plan.publisher(1);
     let capture = CapturePlan::declare(&mut plan, 1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut publisher = bindings.take_publisher(&publisher).unwrap();
     let writer = Writer::default();
     let logger = LoggingScope::new(writer.clone(), vec![capture.bind(&bindings).unwrap()], 1);
@@ -319,8 +319,8 @@ fn shards_share_a_writer_and_record_only_workload_callbacks_once() {
     let a_log = CapturePlan::declare(&mut a, 2);
     let b_log = CapturePlan::declare(&mut b, 2);
     let storage = (a.allocate().unwrap(), b.allocate().unwrap());
-    let a = storage.0.build();
-    let b = storage.1.build();
+    let a = storage.0.bind();
+    let b = storage.1.bind();
     let mut builder = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     let schedule = CallbackSchedule::on_start().with_execution_duration(Duration::ZERO);
     builder.add_scheduled_callback("a", schedule.clone(), || Ok(Source.bind(a_source, &a)?));
@@ -388,7 +388,7 @@ fn scope_cleanup_after_unwind_flushes_tail_and_keeps_errors_observable() {
     let publisher = plan.publisher(1);
     let capture = CapturePlan::declare(&mut plan, 1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut publisher = bindings.take_publisher(&publisher).unwrap();
     publisher.publish(Wire(1)).unwrap();
     publisher.flush(at(0));
@@ -419,7 +419,7 @@ fn live_periodic_logger_flushes_while_workers_run() {
     let source = Source::declare(&mut plan).unwrap();
     let capture = CapturePlan::declare(&mut plan, 1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut graph = GraphBuilder::with_channel_names([storage.name()]);
     graph.add_scheduled_callback("source", CallbackSchedule::on_start(), || {
         Ok(Source.bind(source, &bindings)?)

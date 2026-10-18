@@ -215,7 +215,7 @@ impl Port {
             PortKind::IoxEvent | PortKind::IoxNotifier => {
                 quote!(&dyn ::task::iox2::Iox2EventBindings)
             }
-            _ => quote!(&::task::EndpointBindings<'storage, #payload>),
+            _ => quote!(&::task::ChannelBindings<'storage, #payload>),
         }
     }
     fn endpoint_type(&self) -> TokenStream {

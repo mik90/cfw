@@ -93,9 +93,9 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
             output.allocate().unwrap(),
             notify.allocate().unwrap(),
         );
-        let input = storage.0.build().unwrap();
-        let output = storage.1.build().unwrap();
-        let notify = storage.2.build().unwrap();
+        let input = storage.0.bind().unwrap();
+        let output = storage.1.bind().unwrap();
+        let notify = storage.2.bind().unwrap();
         input
             .replay_input(declaration.first_key())
             .unwrap()
@@ -189,14 +189,14 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         output.allocate().unwrap(),
         notify.allocate().unwrap(),
     );
-    let input = storage.0.build().unwrap();
+    let input = storage.0.bind().unwrap();
     let output = storage
         .1
-        .build_with_delivery(task::iox2::OutputDelivery::Local)
+        .bind_with_delivery(task::iox2::OutputDelivery::Local)
         .unwrap();
     let notify = storage
         .2
-        .build_with_delivery(task::iox2::OutputDelivery::Local)
+        .bind_with_delivery(task::iox2::OutputDelivery::Local)
         .unwrap();
     let probe = output.take_subscriber(&probe).unwrap();
     let mut ports = ReplayBindings::new();

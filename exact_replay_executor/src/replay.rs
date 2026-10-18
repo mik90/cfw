@@ -97,7 +97,7 @@ pub struct ExactReplayExecutor<'storage> {
 impl<'storage> ExactReplayExecutor<'storage> {
     /// Construct replay over callbacks whose outputs are already bound locally.
     /// `ExactReplayPlan::bind` configures graph-planned IPC outputs. For explicit
-    /// IPC bindings, use `Iox2ChannelStorage::build_with_delivery(OutputDelivery::Local)`.
+    /// IPC bindings, use `Iox2ChannelStorage::bind_with_delivery(OutputDelivery::Local)`.
     pub fn new(
         graph: BuiltGraph<'storage>,
         log: ReplayLog,

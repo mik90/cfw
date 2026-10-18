@@ -29,7 +29,7 @@ fn custom_codec_and_nonclone_payload_work_without_serde() {
     let replay = ReplaySourcePlan::declare(&mut plan, 1);
     let capture = CapturePlan::declare(&mut plan, 1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut replay = replay.bind(&bindings).unwrap();
     let mut capture = capture.bind(&bindings).unwrap();
     let header = MessageHeader {
@@ -57,7 +57,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     let publisher = plan.publisher(1);
     let tap = plan.subscriber(1);
     let source_storage = plan.allocate().unwrap();
-    let source_bindings = source_storage.build();
+    let source_bindings = source_storage.bind();
     let mut publisher = source_bindings.take_publisher(&publisher).unwrap();
     let tap = source_bindings.take_subscriber(&tap).unwrap();
     publisher.publish(Source("not Clone".into())).unwrap();
@@ -78,7 +78,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     let capture = CapturePlan::declare(&mut plan, 1);
     let retained_key = plan.subscriber(1);
     let destination_storage = plan.allocate().unwrap();
-    let bindings = destination_storage.build();
+    let bindings = destination_storage.bind();
     let retained = bindings.take_subscriber(&retained_key).unwrap();
     {
         let log = ReplayMessageLog::new(vec![source.clone()]);

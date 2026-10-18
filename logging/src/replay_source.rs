@@ -1,7 +1,7 @@
 //! Graph input sources that decode recorded payloads and publish them through
 //! bound endpoints. Replay drivers control when each source injects a message.
 use crate::BoxedLogError;
-use task::{ChannelPlan, EndpointBindings, PublisherKey, loggable::Loggable};
+use task::{ChannelBindings, ChannelPlan, PublisherKey, loggable::Loggable};
 
 pub struct ReplaySourcePlan<T> {
     key: PublisherKey<T>,
@@ -14,7 +14,7 @@ impl<T> ReplaySourcePlan<T> {
     }
     pub fn bind<'a>(
         self,
-        bindings: &EndpointBindings<'a, T>,
+        bindings: &ChannelBindings<'a, T>,
     ) -> Result<ReplaySource<'a>, task::EndpointError>
     where
         T: Send + Sync + 'static,
@@ -24,7 +24,7 @@ impl<T> ReplaySourcePlan<T> {
     }
     pub fn bind_with_decoder<'a>(
         self,
-        bindings: &EndpointBindings<'a, T>,
+        bindings: &ChannelBindings<'a, T>,
         decode: impl FnMut(&[u8]) -> Result<T, BoxedLogError> + Send + 'a,
     ) -> Result<ReplaySource<'a>, task::EndpointError>
     where

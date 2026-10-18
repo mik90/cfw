@@ -8,7 +8,7 @@ use std::{
     ops::Range,
     sync::Arc,
 };
-use task::{Callback, ChannelPlan, ChannelStorage, EndpointBindings, SubscriberPolicy};
+use task::{Callback, ChannelBindings, ChannelPlan, ChannelStorage, SubscriberPolicy};
 use topology::Topology;
 
 #[cfg(test)]
@@ -299,10 +299,10 @@ impl<T: Send + Sync + 'static> Plan for ChannelPlan<T> {
 }
 impl<T: Send + Sync + 'static> Stored for ChannelStorage<T> {
     fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError> {
-        Ok(Box::new(self.build()))
+        Ok(Box::new(self.bind()))
     }
 }
-impl<'a, T: 'static> Binding<'a> for EndpointBindings<'a, T> {
+impl<'a, T: 'static> Binding<'a> for ChannelBindings<'a, T> {
     fn payload(&self) -> TypeId {
         TypeId::of::<T>()
     }
@@ -581,9 +581,9 @@ impl GraphStorage {
         })
     }
     pub fn build(&self) -> Result<BuiltGraph<'_>, BuildError> {
-        Ok(self.build_with_bindings()?.0)
+        Ok(self.bind_and_build()?.0)
     }
-    pub fn build_with_bindings(&self) -> Result<(BuiltGraph<'_>, GraphBindings<'_>), BuildError> {
+    pub fn bind_and_build(&self) -> Result<(BuiltGraph<'_>, GraphBindings<'_>), BuildError> {
         let bindings = self.bind()?;
         let graph = self.build_with(&bindings)?;
         Ok((graph, bindings))
@@ -638,7 +638,7 @@ impl<'a> GraphBindings<'a> {
         .ok_or_else(|| BuildError(format!("unknown channel '{channel}'")))?;
         binding.set_output_delivery(index, notifier, delivery)
     }
-    pub fn native<T: 'static>(&self, name: &str) -> Result<&EndpointBindings<'a, T>, BuildError> {
+    pub fn native<T: 'static>(&self, name: &str) -> Result<&ChannelBindings<'a, T>, BuildError> {
         let binding = self
             .channels
             .get(name)
@@ -650,10 +650,10 @@ impl<'a> GraphBindings<'a> {
             .pointer()
             .ok_or_else(|| BuildError(format!("channel '{name}': expected native transport")))?;
         // SAFETY: Binding is private and native entries are exclusively constructed
-        // from EndpointBindings<'a, T>. The checked TypeId establishes T. The map
+        // from ChannelBindings<'a, T>. The checked TypeId establishes T. The map
         // owns the boxed value, and this reference borrows the map. 'a is preserved
         // from Stored::bind through the map; no reference is extended to 'static.
-        Ok(unsafe { &*pointer.cast::<EndpointBindings<'a, T>>() })
+        Ok(unsafe { &*pointer.cast::<ChannelBindings<'a, T>>() })
     }
 }
 
@@ -691,7 +691,7 @@ mod ipc {
     }
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Stored for Iox2ChannelStorage<T> {
         fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError> {
-            Ok(Box::new(self.build()?))
+            Ok(Box::new(self.bind()?))
         }
     }
     impl<'a, T: Debug + ZeroCopySend + Send + Sync + 'static> Binding<'a> for Iox2Bindings<T> {

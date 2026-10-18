@@ -348,7 +348,7 @@ mod tests {
             storage.unwrap()
         };
 
-        let small_number_channel_bindings = small_number_channel_storage.build();
+        let small_number_channel_bindings = small_number_channel_storage.bind();
 
         // Callback will use this
         let small_number_subscriber = {
@@ -366,7 +366,7 @@ mod tests {
             publisher.unwrap()
         };
 
-        let big_number_channel_bindings = big_number_channel_storage.build();
+        let big_number_channel_bindings = big_number_channel_storage.bind();
 
         // Callback will use this
         let big_number_publisher = {
@@ -439,9 +439,9 @@ mod tests {
         let numbers = numbers.allocate().unwrap();
         let labels = labels.allocate().unwrap();
         let results = results.allocate().unwrap();
-        let numbers = numbers.build();
-        let labels = labels.build();
-        let results = results.build();
+        let numbers = numbers.bind();
+        let labels = labels.bind();
+        let results = results.bind();
         let mut number_out = numbers.take_publisher(&number_out).unwrap();
         let mut label_out = labels.take_publisher(&label_out).unwrap();
         let result_in = results.take_subscriber(&result_in).unwrap();

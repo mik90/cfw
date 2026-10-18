@@ -216,8 +216,8 @@ fn derive_has_no_eight_field_limit_and_validates_all_mappings() {
     let pb = b.publisher(1);
     let sb = b.subscriber(1);
     let storage = (a.allocate().unwrap(), b.allocate().unwrap());
-    let a = storage.0.build();
-    let b = storage.1.build();
+    let a = storage.0.bind();
+    let b = storage.1.bind();
     let mut pa = a.take_publisher(&pa).unwrap();
     let sa = a.take_subscriber(&sa).unwrap();
     let mut pb = b.take_publisher(&pb).unwrap();
@@ -392,7 +392,7 @@ fn bundle_rebinds_after_separately_owned_sources_are_destroyed() {
         let source_publisher_key = source_plan.publisher(1);
         let source_subscriber_key = source_plan.subscriber(1);
         let source = source_plan.allocate().unwrap();
-        let source_bindings = source.build();
+        let source_bindings = source.bind();
         let mut source_publisher = source_bindings
             .take_publisher(&source_publisher_key)
             .unwrap();

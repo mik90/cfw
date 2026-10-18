@@ -47,8 +47,8 @@ fn streaming_deadlines_prevent_skipping_inputs_and_eof_drains_downstream_work() 
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let capture = CapturePlan::declare(&mut output, 8);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
-    let input = storage.0.build();
-    let output = storage.1.build();
+    let input = storage.0.bind();
+    let output = storage.1.bind();
     let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
@@ -115,7 +115,7 @@ fn missing_sources_past_inputs_and_bad_payloads_are_reported() {
         let mut input = ChannelPlan::<u64>::new("input");
         let source = ReplaySourcePlan::declare(&mut input, 1);
         let storage = input.allocate().unwrap();
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let options = LogSimulationOptions {
             simulation: start.map(|start_time| SimulationConfig {
                 start_time,
@@ -306,8 +306,8 @@ fn with_graph<R>(
     let input_capture = CapturePlan::declare(&mut input, 8);
     let output_capture = CapturePlan::declare(&mut output, 8);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
-    let input = storage.0.build();
-    let output = storage.1.build();
+    let input = storage.0.bind();
+    let output = storage.1.bind();
     let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
@@ -541,8 +541,8 @@ mod ipc {
         let data_source = events.publisher(1);
         let source = ReplaySourcePlan::declare(&mut gate, 1);
         let storage = (events.allocate().unwrap(), gate.allocate().unwrap());
-        let events = storage.0.build().unwrap();
-        let gate = storage.1.build();
+        let events = storage.0.bind().unwrap();
+        let gate = storage.1.bind();
         let trace: Trace = Default::default();
         let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
         // Current graph indices differ from the log: resolve by callback name.

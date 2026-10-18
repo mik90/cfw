@@ -140,8 +140,8 @@ mod tests {
         let forwarding = forwarding_plan.allocate().unwrap();
         let mut retained = Vec::new();
         for value in [42_u64, 100] {
-            let source_bindings = source.build();
-            let forwarding_bindings = forwarding.build();
+            let source_bindings = source.bind();
+            let forwarding_bindings = forwarding.bind();
             let mut source_publisher = source_bindings
                 .take_publisher(&source_publisher_key)
                 .unwrap();
@@ -197,9 +197,9 @@ mod tests {
         let source_storage = source_plan.allocate().unwrap();
         let middle_storage = middle_plan.allocate().unwrap();
         let last_storage = last_plan.allocate().unwrap();
-        let source_bindings = source_storage.build();
-        let middle_bindings = middle_storage.build();
-        let last_bindings = last_storage.build();
+        let source_bindings = source_storage.bind();
+        let middle_bindings = middle_storage.bind();
+        let last_bindings = last_storage.bind();
         let mut source_publisher = source_bindings
             .take_publisher(&source_publisher_key)
             .unwrap();
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(plan.publisher_capacity(&publisher_key).unwrap(), 7);
         let storage = plan.allocate().unwrap();
         assert_eq!(storage.publisher_capacity(&publisher_key).unwrap(), 7);
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
         let subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
         for value in [1, 2] {
@@ -300,7 +300,7 @@ mod tests {
         plan.reserve_retained(&publisher_key, 2).unwrap();
         let storage = plan.allocate().unwrap();
         let capacity = storage.publisher_capacity(&publisher_key).unwrap();
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
         let subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
         let mut retained = Vec::new();
@@ -311,7 +311,7 @@ mod tests {
             retained.push(subscriber.input_forwardable().pop().unwrap());
         }
         drop((publisher, subscriber, bindings));
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
         assert!(matches!(
             publisher.loan_uninit(),
@@ -361,14 +361,14 @@ mod tests {
         let publisher_key = plan.publisher(1);
         let storage = plan.allocate().unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let bindings = storage.build();
+            let bindings = storage.bind();
             let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
             publisher.publish(Counted(drops.clone())).unwrap();
             panic!("another node failed during graph construction");
         }));
         assert!(result.is_err());
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
         publisher.publish(Counted(drops.clone())).unwrap();
         drop(publisher);

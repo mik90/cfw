@@ -66,7 +66,7 @@ pub fn with_recording<R>(
     }
     let captures = GraphCapturePlan::declare(&mut plan, &options)?;
     let storage = plan.allocate()?;
-    let (graph, bindings) = storage.build_with_bindings()?;
+    let (graph, bindings) = storage.bind_and_build()?;
     let recorder = ExecutionRecorder::new(CAPACITY * 3);
     let graph = graph.with_recording(&recorder)?;
     let captures = captures.bind(&bindings)?;
@@ -139,7 +139,7 @@ pub fn with_replay_graph<R>(
     };
     let replay = GraphReplayPlan::declare(&mut plan, [channel], &ReplayOptions::new(CAPACITY))?;
     let storage = plan.allocate()?;
-    let (graph, bindings) = storage.build_with_bindings()?;
+    let (graph, bindings) = storage.bind_and_build()?;
     run(graph, replay.bind(&bindings)?, collected)
 }
 

@@ -10,7 +10,7 @@ fn rejected_batch_commit_cancels_outputs_before_single_callback_reuse() {
     let source = plan.publisher(1);
     let capture = plan.subscriber(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let capture = bindings.take_subscriber(&capture).unwrap();
     let mut callback = CallbackNode::new(
         (),

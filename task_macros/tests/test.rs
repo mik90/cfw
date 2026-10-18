@@ -34,8 +34,8 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
     let capture_key = output.subscriber(1);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
     let (mut graph, mut source, capture) = {
-        let input = storage.0.build();
-        let output = storage.1.build();
+        let input = storage.0.bind();
+        let output = storage.1.bind();
         let source = input.take_publisher(&source_key).unwrap();
         let capture = output.take_subscriber(&capture_key).unwrap();
         let mut builder = GraphBuilder::new();
@@ -127,8 +127,8 @@ fn arrival_after_input_snapshot_does_not_make_an_empty_required_view_ready() {
     let source_key = input.publisher(1);
     let capture_key = output.subscriber(1);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
-    let input = storage.0.build();
-    let output = storage.1.build();
+    let input = storage.0.bind();
+    let output = storage.1.bind();
     let mut source = input.take_publisher(&source_key).unwrap();
     let capture = output.take_subscriber(&capture_key).unwrap();
     let mut callback = LateArrival {
@@ -181,7 +181,7 @@ fn generated_pending_outputs_are_discarded_on_error_and_panic() {
         let declaration = Failure::declare(&mut output).unwrap();
         let capture_key = output.subscriber(1);
         let storage = output.allocate().unwrap();
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
         let mut callback = Failure {
             drops: drops.clone(),
@@ -282,8 +282,8 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
     let source_key = input.publisher(1);
     let capture_key = output.subscriber(3);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
-    let input = storage.0.build();
-    let output = storage.1.build();
+    let input = storage.0.bind();
+    let output = storage.1.bind();
     let mut source = input.take_publisher(&source_key).unwrap();
     let capture = output.take_subscriber(&capture_key).unwrap();
     let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
@@ -346,7 +346,7 @@ fn generated_span_outputs_cancel_sent_and_unsent_loans_on_failure() {
         let declaration = SpanFailure::declare(&mut plan).unwrap();
         let capture_key = plan.subscriber(3);
         let storage = plan.allocate().unwrap();
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
         let mut callback = SpanFailure {
             drops: drops.clone(),
@@ -392,7 +392,7 @@ fn generated_uninitialized_output_publishes_on_success() {
     let declaration = InPlace::declare(&mut plan).unwrap();
     let capture_key = plan.subscriber(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let capture = bindings.take_subscriber(&capture_key).unwrap();
     let mut callback = InPlace.bind(declaration, &bindings).unwrap();
     task::execute_callback(
@@ -439,8 +439,8 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
     source.reserve_retained(&input_key, 8).unwrap();
     let source_storage = source.allocate().unwrap();
     let destination_storage = destination.allocate().unwrap();
-    let source = source_storage.build();
-    let destination = destination_storage.build();
+    let source = source_storage.bind();
+    let destination = destination_storage.bind();
     let mut fixture = source.take_publisher(&input_key).unwrap();
     let capture = destination.take_subscriber(&capture_key).unwrap();
     let mut callback = Forward.bind(declaration, &source, &destination).unwrap();
@@ -562,7 +562,7 @@ fn explicit_keys_allow_input_and_output_on_the_same_channel() {
     let fixture_key = plan.publisher(1);
     let capture_key = plan.subscriber(2);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut fixture = bindings.take_publisher(&fixture_key).unwrap();
     let capture = bindings.take_subscriber(&capture_key).unwrap();
     let mut callback = Feedback.bind(declaration, &bindings, &bindings).unwrap();

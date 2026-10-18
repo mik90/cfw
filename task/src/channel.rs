@@ -350,7 +350,7 @@ impl<T> ChannelStorage<T> {
     /// let publisher_key = plan.publisher(1);
     /// let subscriber_key = plan.subscriber(1);
     /// let storage = plan.allocate().unwrap();
-    /// let bindings = storage.build();
+    /// let bindings = storage.bind();
     /// let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
     /// let subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
     /// publisher.publish(42).unwrap();
@@ -361,7 +361,7 @@ impl<T> ChannelStorage<T> {
     /// drop(storage);
     /// assert_eq!(message.message, 42);
     /// ```
-    pub fn build(&self) -> EndpointBindings<'_, T> {
+    pub fn bind(&self) -> ChannelBindings<'_, T> {
         let subscribers: Vec<_> = self
             .subscribers
             .iter()
@@ -393,7 +393,7 @@ impl<T> ChannelStorage<T> {
                 RefCell::new(Some(publisher))
             })
             .collect();
-        EndpointBindings {
+        ChannelBindings {
             channel: self.name.clone(),
             publishers,
             subscribers: subscribers
@@ -446,13 +446,13 @@ impl std::error::Error for EndpointError {}
 
 /// Temporary construction bindings. Taken endpoints borrow storage, not this
 /// table, so it can be dropped immediately after building callbacks and fixtures.
-pub struct EndpointBindings<'storage, T> {
+pub struct ChannelBindings<'storage, T> {
     channel: Arc<str>,
     publishers: Vec<RefCell<Option<Publisher<'storage, T>>>>,
     subscribers: Vec<RefCell<Option<Subscriber<'storage, T>>>>,
 }
 
-impl<'storage, T> EndpointBindings<'storage, T> {
+impl<'storage, T> ChannelBindings<'storage, T> {
     pub fn configure_publisher<R>(
         &self,
         key: &PublisherKey<T>,
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(plan.publisher_capacity(&pub_key).unwrap(), 6);
         plan.validate().unwrap();
         let storage = plan.allocate().unwrap();
-        let bindings = storage.build();
+        let bindings = storage.bind();
         assert!(matches!(
             bindings.take_publisher(&invalid_pub),
             Err(EndpointError::InvalidIndex(9))

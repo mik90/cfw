@@ -1,6 +1,6 @@
 use crate::BoxedLogError;
 use task::{
-    ChannelPlan, EndpointBindings, Subscriber, SubscriberKey, SubscriberPolicy, loggable::Loggable,
+    ChannelBindings, ChannelPlan, Subscriber, SubscriberKey, SubscriberPolicy, loggable::Loggable,
     message::MessageHeader,
 };
 
@@ -22,7 +22,7 @@ impl<T> CapturePlan<T> {
     }
     pub fn bind<'a>(
         self,
-        bindings: &EndpointBindings<'a, T>,
+        bindings: &ChannelBindings<'a, T>,
     ) -> Result<Capture<'a>, task::EndpointError>
     where
         T: Loggable + Send + Sync + 'a,

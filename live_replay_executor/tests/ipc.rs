@@ -68,9 +68,9 @@ fn eof_drain_waits_for_computed_ipc_notifications_and_downstream_callbacks() {
         middle.allocate().unwrap(),
         output.allocate().unwrap(),
     );
-    let input = storage.0.build();
-    let middle = storage.1.build().unwrap();
-    let output = storage.2.build();
+    let input = storage.0.bind();
+    let middle = storage.1.bind().unwrap();
+    let output = storage.2.bind();
     let trace: Trace = Default::default();
     let mut graph = GraphBuilder::new();
     graph.add_callback("producer", || Ok(Producer.bind(a, &input, &middle)?));
@@ -113,8 +113,8 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
         ReceiveDeclaration::from_keys(input.events(4), input.subscriber(1), output.publisher(1));
     let source = input.publisher(1);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
-    let input = storage.0.build().unwrap();
-    let output = storage.1.build();
+    let input = storage.0.bind().unwrap();
+    let output = storage.1.bind();
     let trace: Trace = Default::default();
     let mut graph = GraphBuilder::new();
     graph.add_callback("b", || {

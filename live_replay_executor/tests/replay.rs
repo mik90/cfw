@@ -95,9 +95,9 @@ fn pause_resume_and_eof_drain_preserve_the_entire_native_pipeline() {
         middle.allocate().unwrap(),
         output.allocate().unwrap(),
     );
-    let input = storage.0.build();
-    let middle = storage.1.build();
-    let output = storage.2.build();
+    let input = storage.0.bind();
+    let middle = storage.1.bind();
+    let output = storage.2.bind();
     let calls = Arc::new(AtomicUsize::new(0));
     let mut graph = GraphBuilder::new();
     graph.add_callback("a", || {
@@ -150,7 +150,7 @@ fn stopping_a_paused_replay_and_controller_panic_join_all_threads() {
         let mut plan = ChannelPlan::<u64>::new("input");
         let source = ReplaySourcePlan::declare(&mut plan, 1);
         let storage = plan.allocate().unwrap();
-        let bindings = storage.build();
+        let bindings = storage.bind();
         let reader =
             SortedLogStreamReader::from_entries(vec![row(0, b"1")], HashMap::new()).unwrap();
         let replay = LiveReplayExecutor::new(
@@ -186,7 +186,7 @@ fn malformed_payload_reports_input_failure_and_empty_logs_complete() {
     let mut plan = ChannelPlan::<u64>::new("input");
     let source = ReplaySourcePlan::declare(&mut plan, 1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let reader = SortedLogStreamReader::from_entries(vec![row(0, b"bad")], HashMap::new()).unwrap();
     let replay = LiveReplayExecutor::new(
         GraphBuilder::new().build().unwrap(),
@@ -230,8 +230,8 @@ fn configured_tail_allows_periodic_consumers_before_quiescing_timers() {
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let capture = CapturePlan::declare(&mut output, 2);
     let storage = (input.allocate().unwrap(), output.allocate().unwrap());
-    let input = storage.0.build();
-    let output = storage.1.build();
+    let input = storage.0.bind();
+    let output = storage.1.bind();
     let mut graph = GraphBuilder::new();
     graph.add_scheduled_callback(
         "poll",
@@ -282,7 +282,7 @@ fn drain_timeout_and_worker_failure_are_not_successful_completion() {
     let mut plan = ChannelPlan::new("feedback");
     let declaration = FeedbackDeclaration::from_keys(plan.subscriber(1), plan.publisher(1));
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut graph = GraphBuilder::new();
     graph.add_scheduled_callback("feedback", task_graph::CallbackSchedule::on_start(), || {
         Ok(Feedback.bind(declaration, &bindings, &bindings)?)
@@ -304,7 +304,7 @@ fn drain_timeout_and_worker_failure_are_not_successful_completion() {
     let declaration = Panics::declare(&mut input).unwrap();
     let source = ReplaySourcePlan::declare(&mut input, 1);
     let storage = input.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let mut graph = GraphBuilder::new();
     graph.add_callback("panic", || Ok(Panics.bind(declaration, &bindings)?));
     let reader = SortedLogStreamReader::from_entries(vec![row(0, b"1")], HashMap::new()).unwrap();

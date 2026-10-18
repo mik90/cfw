@@ -14,7 +14,7 @@ fn incomplete_recordings_fail_before_any_replay_injection() {
     let mut plan = ChannelPlan::<u64>::new("input");
     let source = ReplaySourcePlan::declare(&mut plan, 1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let source = source
         .bind_with_decoder(&bindings, |_| -> Result<u64, logging::BoxedLogError> {
             panic!("incomplete log must never be decoded");
@@ -43,7 +43,7 @@ fn paused_batch_preserves_cursor_without_claiming_eof_or_duplicating_inputs() {
     let source = ReplaySourcePlan::declare(&mut plan, 1);
     let capture = CapturePlan::declare(&mut plan, 4);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build();
+    let bindings = storage.bind();
     let running = Arc::new(AtomicBool::new(true));
     let flag = running.clone();
     let source = source

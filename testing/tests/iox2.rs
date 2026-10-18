@@ -59,9 +59,9 @@ fn counted_events_survive_native_gating_and_capture_outlives_executor() {
         output.allocate().unwrap(),
         gate.allocate().unwrap(),
     );
-    let input = storage.0.build().unwrap();
-    let output = storage.1.build().unwrap();
-    let gate = storage.2.build();
+    let input = storage.0.bind().unwrap();
+    let output = storage.1.bind().unwrap();
+    let gate = storage.2.bind();
     let observations = Arc::new(Mutex::new(Vec::new()));
     let mut graph =
         GraphBuilder::with_channel_names([storage.0.name(), storage.1.name(), storage.2.name()]);

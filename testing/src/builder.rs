@@ -435,7 +435,7 @@ impl UnitTestStorage {
             .take()
             .ok_or_else(|| BuildError("unit test storage has already been built".into()))?;
         let guard = SessionGuard(self.session.0.clone());
-        let (graph, bindings) = self.storage.build_with_bindings()?;
+        let (graph, bindings) = self.storage.bind_and_build()?;
         let start_time = definition.config.start_time;
         let mut executor = UnitTestExecutor::try_new_with_graph(graph, definition.config)
             .map_err(|e| BuildError(e.to_string()))?;

@@ -32,7 +32,7 @@ fn timestamped_data_and_counted_events_are_injected_without_duplicate_notificati
     let declaration = ObserveDeclaration::from_keys(plan.subscriber(1), plan.events(1));
     let publisher = plan.publisher(1);
     let storage = plan.allocate().unwrap();
-    let bindings = storage.build().unwrap();
+    let bindings = storage.bind().unwrap();
     let publisher = Arc::new(Mutex::new(bindings.take_publisher(&publisher).unwrap()));
     let samples = Arc::new(Mutex::new(Vec::new()));
     let mut builder = GraphBuilder::with_channel_names([storage.name()]);

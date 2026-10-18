@@ -360,7 +360,7 @@ mod tests {
         );
         let event = plan.events(1);
         let storage = plan.allocate().unwrap();
-        let bindings = storage.build().unwrap();
+        let bindings = storage.bind().unwrap();
         let mut builder = GraphBuilder::new();
         builder.add_callback("events", || Ok(EventCallback(bindings.take_event(&event)?)));
         let executor =
