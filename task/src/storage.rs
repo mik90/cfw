@@ -189,7 +189,9 @@ mod tests {
         source_plan
             .reserve_retained(
                 &source_publisher_key,
-                middle_plan.publisher_capacity(&middle_publisher_key).unwrap(),
+                middle_plan
+                    .publisher_capacity(&middle_publisher_key)
+                    .unwrap(),
             )
             .unwrap();
         let source_storage = source_plan.allocate().unwrap();
@@ -210,12 +212,8 @@ mod tests {
         let middle_subscriber = middle_bindings
             .take_subscriber(&middle_subscriber_key)
             .unwrap();
-        let mut last_publisher = last_bindings
-            .take_publisher(&last_publisher_key)
-            .unwrap();
-        let last_subscriber = last_bindings
-            .take_subscriber(&last_subscriber_key)
-            .unwrap();
+        let mut last_publisher = last_bindings.take_publisher(&last_publisher_key).unwrap();
+        let last_subscriber = last_bindings.take_subscriber(&last_subscriber_key).unwrap();
         source_publisher.publish(42_u64).unwrap();
         source_publisher.flush(timestamp());
         source_subscriber.update();
@@ -327,10 +325,7 @@ mod tests {
         publisher.flush(timestamp());
         let subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
         subscriber.update();
-        assert_eq!(
-            subscriber.input_forwardable().pop().unwrap().message,
-            100
-        );
+        assert_eq!(subscriber.input_forwardable().pop().unwrap().message, 100);
     }
 
     #[test]

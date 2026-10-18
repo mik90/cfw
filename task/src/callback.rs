@@ -216,9 +216,10 @@ mod tests {
 
     #[gtest]
     fn callback_transition() {
-        let mut fake_callback = FakeCallback::default();
-
-        fake_callback.required_inputs_ready = true;
+        let mut fake_callback = FakeCallback {
+            required_inputs_ready: true,
+            ..Default::default()
+        };
 
         let prepared_callback = {
             let prepared_callback = prepare_callback(&mut fake_callback);
@@ -227,8 +228,10 @@ mod tests {
         };
 
         let completed_callback = {
-            let mut context_builder = crate::context::testing::ContextBuilder::default();
-            context_builder.now = FrameworkTime::from_nanoseconds(42);
+            let context_builder = crate::context::testing::ContextBuilder {
+                now: FrameworkTime::from_nanoseconds(42),
+                ..Default::default()
+            };
 
             let completed_callback = prepared_callback.run(&context_builder.build());
 
