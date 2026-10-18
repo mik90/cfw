@@ -4,11 +4,13 @@ use std::cell::{RefCell, RefMut};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+#[derive(Debug)]
 pub(crate) struct Buffer<'arena, T> {
     pub storage: VecDeque<ArenaPtr<'arena, T>>,
     pub drops: usize,
 }
 
+#[derive(Debug)]
 pub struct WriteBufferHandle<'arena, T> {
     queue: Arc<MpscQueue<ArenaPtr<'arena, T>>>,
 }
@@ -94,6 +96,7 @@ impl<'a, 'arena, T> ReadBufferGuard<'a, 'arena, T> {
     }
 }
 
+#[derive(Debug)]
 pub struct DoubleBuffer<'arena, T> {
     write_queue: Arc<MpscQueue<ArenaPtr<'arena, T>>>,
     // No lock needed: read_buffer is only accessed during drain (before task runs)
@@ -122,6 +125,12 @@ impl<'arena, T> DoubleBuffer<'arena, T> {
         WriteBufferHandle {
             queue: self.write_queue.clone(),
         }
+    }
+
+    /// Capacity, same value for reader and writer sides
+    pub fn single_buffer_capacity(&self) -> usize {
+        // Both reader and writer should have the same capacity
+        self.write_queue.capacity()
     }
 
     pub fn read_buffer(&self) -> ReadBufferGuard<'_, 'arena, T> {

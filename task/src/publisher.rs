@@ -29,6 +29,19 @@ pub struct Publisher<'storage, MessageType> {
     observers: Vec<PublishObserver<'storage, MessageType>>,
 }
 
+impl<'storage, T> std::fmt::Debug for Publisher<'storage, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Publisher")
+            .field("allocator_capacity", &self.allocator.capacity())
+            .field("loan_capacity", &self.loan_capacity)
+            .field("pending_length", &self.pending.len())
+            .field("subscriber_writers", &self.subscribers)
+            .field("channel", &self.channel)
+            .field("publisher_index", &self.publisher_index)
+            .finish_non_exhaustive()
+    }
+}
+
 type PublishObserver<'a, T> = Box<dyn FnMut(&Message<T>) + Send + 'a>;
 
 impl<'storage, T> Publisher<'storage, T> {

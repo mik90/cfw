@@ -316,14 +316,67 @@ impl InputVisitorMut for Registrations {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         ChannelPlan, Publisher, Subscriber, SubscriberPolicy,
         callback::execute_callback,
         string_interner::{CallbackNameInterner, ChannelNameInterner},
     };
+    use googletest::prelude::*;
 
-    #[test]
+    #[gtest]
+    fn create_manual_node() {
+        let mut small_number_channel_plan = ChannelPlan::<u8>::new("small_numbers");
+        let small_number_subscriber_key = small_number_channel_plan.subscriber(5);
+
+        let mut big_number_channel_plans = ChannelPlan::<u64>::new("big_numbers");
+        let big_number_publisher_key = big_number_channel_plans.publisher(1);
+
+        let small_number_channel_storage = {
+            let storage = small_number_channel_plan.allocate();
+            assert_that!(storage, ok(anything()));
+            storage.unwrap()
+        };
+
+        let big_number_channel_storage = {
+            let storage = big_number_channel_plans.allocate();
+            assert_that!(storage, ok(anything()));
+            storage.unwrap()
+        };
+
+        let small_number_channel_bindings = small_number_channel_storage.build();
+
+        let small_number_subscriber = {
+            let subscriber =
+                small_number_channel_bindings.take_subscriber(&small_number_subscriber_key);
+            assert_that!(subscriber, ok(anything()));
+            subscriber.unwrap()
+        };
+
+        let big_number_channel_bindings = big_number_channel_storage.build();
+
+        let big_number_publisher = {
+            let publisher = big_number_channel_bindings.take_publisher(&big_number_publisher_key);
+            assert_that!(publisher, ok(anything()));
+            publisher.unwrap()
+        };
+
+        let required_subscriber = Required(small_number_subscriber);
+
+        let body = |inputs: &(Required<Subscriber<'_, u8>>),
+                    output: &mut Publisher<'_, u64>,
+                    _: &Context|
+         -> Result<(), LoanError> {
+            let number = inputs.0.input_readonly().value().copied();
+
+            output.publish(u64::from(number.unwrap()))?;
+            Ok(())
+        };
+
+        let callback_node = CallbackNode::new((required_subscriber), (big_number_publisher), body);
+    }
+    #[gtest]
     fn manual_node_preserves_readiness_recording_and_cancellation_across_heterogeneous_ports() {
         let mut numbers = ChannelPlan::<u32>::new("numbers");
         let number_out = numbers.publisher(1);

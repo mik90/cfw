@@ -67,6 +67,7 @@ struct PublisherSpec {
     retained_capacity: usize,
 }
 
+#[derive(Debug)]
 struct SubscriberSpec {
     capacity: usize,
     policy: crate::SubscriberPolicy,
@@ -317,6 +318,7 @@ impl<T> ChannelPlan<T> {
 }
 
 /// Fixed arenas and endpoint configuration for one channel.
+#[derive(Debug)]
 pub struct ChannelStorage<T> {
     name: Arc<str>,
     publishers: Vec<PublisherStorage<T>>,

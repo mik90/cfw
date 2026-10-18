@@ -94,6 +94,7 @@ impl<T> PublisherStoragePlan<T> {
 /// drop(storage);
 /// assert_eq!(message.message, 42);
 /// ```
+#[derive(Debug)]
 pub struct PublisherStorage<MessageType> {
     arena: Arena<Message<MessageType>>,
     loan_capacity: usize,

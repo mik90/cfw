@@ -6,6 +6,7 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicUsize;
 use std::vec::Vec;
 
+#[derive(Debug)]
 pub struct ArenaPtr<'arena, T> {
     /// Holds a given slot in the arena with pre-initialized data.
     ptr: &'arena ArenaSlot<T>,
@@ -204,6 +205,7 @@ impl<'arena, T> Deref for ArenaReaderPtr<'arena, T> {
 }
 
 /// A slot in the arena. Read/write access is controlled by the pub/sub framework.
+#[derive(Debug)]
 pub struct ArenaSlot<T> {
     /// How many references are alive, regardless of whether a publisher or subscriber owns a given slot
     ref_count: AtomicUsize,
@@ -244,6 +246,7 @@ impl<T> ArenaSlot<T> {
 /// arena.reallocate_slots();
 /// drop(message);
 /// ```
+#[derive(Debug)]
 pub struct Arena<T> {
     capacity: usize,
     // A vector of slots, where each slot can be updated but each value can be mutated too
@@ -258,6 +261,7 @@ pub struct Arena<T> {
 ///
 /// This handle exposes reservations, not direct access to the arena's slots or
 /// permission to reallocate storage. Each reservation exclusively owns a slot.
+#[derive(Debug)]
 pub struct ArenaAllocator<'arena, T> {
     arena: &'arena Arena<T>,
 }

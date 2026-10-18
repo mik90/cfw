@@ -13,6 +13,19 @@ pub struct Subscriber<'storage, MessageType> {
     policy: SubscriberPolicy,
 }
 
+impl<'storage, MessageType> std::fmt::Debug for Subscriber<'storage, MessageType> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Subscriber")
+            .field(
+                "each_buffer_capacity",
+                &self.buffer.single_buffer_capacity(),
+            )
+            .field("channel", &self.channel)
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SubscriberPolicy {
     pub trigger: bool,
@@ -128,6 +141,15 @@ pub(crate) struct SubscriberWriter<'storage, T> {
     queue: WriteBufferHandle<'storage, Message<T>>,
     wake: WakeRegistration,
     trigger: bool,
+}
+
+impl<'storage, T> std::fmt::Debug for SubscriberWriter<'storage, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubscriberWriter")
+            .field("queue_length", &self.queue.len())
+            .field("trigger", &self.trigger)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'storage, T> SubscriberWriter<'storage, T> {

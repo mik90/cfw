@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A bounded, lock-free MPSC queue backed by `crossbeam_queue::ArrayQueue`.
 /// When the queue is full, `push` displaces the oldest element (front) to make room.
+#[derive(Debug)]
 pub struct MpscQueue<T> {
     inner: ArrayQueue<T>,
     /// Cumulative count of elements displaced by `push` due to overflow.
@@ -25,6 +26,10 @@ impl<T> MpscQueue<T> {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
         !displaced
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
     }
 
     /// Cumulative number of elements ever displaced by `push` due to overflow.
