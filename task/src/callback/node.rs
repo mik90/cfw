@@ -324,16 +324,17 @@ mod tests {
         context::testing,
         string_interner::{CallbackNameInterner, ChannelNameInterner},
     };
-    use base::arena::ArenaPtr;
     use googletest::prelude::*;
 
     #[gtest]
     fn create_manual_node() {
         let mut small_number_channel_plan = ChannelPlan::<u8>::new("small_numbers");
         let small_number_subscriber_key = small_number_channel_plan.subscriber(5);
+        let small_number_publisher_key = small_number_channel_plan.publisher(1);
 
         let mut big_number_channel_plans = ChannelPlan::<u64>::new("big_numbers");
         let big_number_publisher_key = big_number_channel_plans.publisher(1);
+        let big_number_subscriber_key = big_number_channel_plans.subscriber(1);
 
         let small_number_channel_storage = {
             let storage = small_number_channel_plan.allocate();
@@ -349,6 +350,7 @@ mod tests {
 
         let small_number_channel_bindings = small_number_channel_storage.build();
 
+        // Callback will use this
         let small_number_subscriber = {
             let subscriber =
                 small_number_channel_bindings.take_subscriber(&small_number_subscriber_key);
@@ -356,12 +358,29 @@ mod tests {
             subscriber.unwrap()
         };
 
+        // For injecting via test
+        let mut small_number_publisher = {
+            let publisher =
+                small_number_channel_bindings.take_publisher(&small_number_publisher_key);
+            assert_that!(publisher, ok(anything()));
+            publisher.unwrap()
+        };
+
         let big_number_channel_bindings = big_number_channel_storage.build();
 
+        // Callback will use this
         let big_number_publisher = {
             let publisher = big_number_channel_bindings.take_publisher(&big_number_publisher_key);
             assert_that!(publisher, ok(anything()));
             publisher.unwrap()
+        };
+
+        // For listening to callback from test.
+        let big_number_subscriber = {
+            let subscriber =
+                big_number_channel_bindings.take_subscriber(&big_number_subscriber_key);
+            assert_that!(subscriber, ok(anything()));
+            subscriber.unwrap()
         };
 
         let required_subscriber = Required(small_number_subscriber);
@@ -379,9 +398,26 @@ mod tests {
 
         let mut callback_node = CallbackNode::new(required_subscriber, big_number_publisher, body);
 
-        let result = callback_node
-            .run(&testing::ContextBuilder::with_time(FrameworkTime::from_nanoseconds(42)).build());
-        assert_that!(result, ok(anything()));
+        let now = FrameworkTime::from_nanoseconds(42);
+        small_number_publisher.publish(7).unwrap();
+        small_number_publisher.flush(now);
+
+        let ran = execute_callback(
+            &mut callback_node,
+            &testing::ContextBuilder::with_time(now).build(),
+        )
+        .unwrap();
+        expect_true!(ran);
+
+        big_number_subscriber.update();
+        expect_that!(
+            big_number_subscriber
+                .input_forwardable()
+                .pop()
+                .unwrap()
+                .message,
+            eq(7)
+        );
     }
     #[gtest]
     fn manual_node_preserves_readiness_recording_and_cancellation_across_heterogeneous_ports() {
