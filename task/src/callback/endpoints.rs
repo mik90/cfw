@@ -32,7 +32,7 @@ pub trait InputEndpoint: Endpoint {
     fn visit_headers(&self, _visit: impl FnMut(MessageHeader)) {}
     fn visit_events(&self, _visit: impl FnMut(usize, u64)) {}
     fn stage_event(&mut self, _event_id: usize, _count: u64) -> Result<(), LoanError> {
-        Err(LoanError::Transport("unknown replay event port".into()))
+        Err(LoanError::Transport("unknown replay event endpoint".into()))
     }
     #[cfg(feature = "iceoryx2")]
     fn take_registration(&mut self) -> Option<crate::iox2::Iox2EventRegistration> {
@@ -50,16 +50,16 @@ pub trait OutputEndpoint: Endpoint {
 }
 
 pub trait InputVisitor {
-    fn visit(&mut self, port: &impl InputEndpoint);
+    fn visit(&mut self, endpoint: &impl InputEndpoint);
 }
 pub trait InputVisitorMut {
-    fn visit(&mut self, port: &mut impl InputEndpoint);
+    fn visit(&mut self, endpoint: &mut impl InputEndpoint);
 }
 pub trait OutputVisitor {
-    fn visit(&mut self, port: &impl OutputEndpoint);
+    fn visit(&mut self, endpoint: &impl OutputEndpoint);
 }
 pub trait OutputVisitorMut {
-    fn visit(&mut self, port: &mut impl OutputEndpoint);
+    fn visit(&mut self, endpoint: &mut impl OutputEndpoint);
 }
 
 /// Visit each input exactly once, in the same declaration order on every traversal.

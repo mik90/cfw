@@ -116,13 +116,17 @@ impl<T> ChannelPlan<T> {
             publishers: self
                 .publishers
                 .iter()
-                .map(|port| port.loan_capacity)
+                .map(|endpoint| endpoint.loan_capacity)
                 .collect(),
-            subscribers: self.subscribers.iter().map(|port| port.capacity).collect(),
+            subscribers: self
+                .subscribers
+                .iter()
+                .map(|endpoint| endpoint.capacity)
+                .collect(),
             sources: self
                 .subscribers
                 .iter()
-                .map(|port| port.sources.clone())
+                .map(|endpoint| endpoint.sources.clone())
                 .collect(),
         }
     }

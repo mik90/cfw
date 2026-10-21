@@ -68,7 +68,7 @@ pub struct EndpointDescriptor {
     pub direction: Direction,
     pub transport: Transport,
     pub payload_type: String,
-    /// Channel-local publisher storage index; absent on input/event ports.
+    /// Channel-local publisher storage index; absent on input/event endpoints.
     pub publisher_index: Option<u32>,
 }
 #[derive(Debug, Clone)]
@@ -320,7 +320,7 @@ impl Callback for Recorded<'_> {
         if self.mode != RecordingMode::Full {
             return registrations;
         }
-        let ports: Vec<_> = {
+        let endpoints: Vec<_> = {
             let state = self.recorder.0.lock().unwrap();
             state
                 .descriptor
@@ -329,26 +329,27 @@ impl Callback for Recorded<'_> {
                 .callbacks[self.index]
                 .endpoints
                 .iter()
-                .filter(|port| {
-                    port.direction == Direction::Received && port.transport == Transport::Event
+                .filter(|endpoint| {
+                    endpoint.direction == Direction::Received
+                        && endpoint.transport == Transport::Event
                 })
                 .cloned()
                 .collect()
         };
         assert_eq!(
-            ports.len(),
+            endpoints.len(),
             registrations.len(),
             "event registrations must match recording metadata"
         );
-        for (registration, port) in registrations.iter_mut().zip(ports) {
+        for (registration, endpoint) in registrations.iter_mut().zip(endpoints) {
             assert_eq!(
-                registration.channel, port.channel,
+                registration.channel, endpoint.channel,
                 "event registration order must match metadata"
             );
             let previous = registration.observer.take();
             let recorder = self.recorder.clone();
             let callback_id = self.callback_id;
-            let ordinal = port.ordinal;
+            let ordinal = endpoint.ordinal;
             registration.observer = Some(Arc::new(move |observed_at, event| {
                 if let Some(previous) = &previous {
                     previous(observed_at, event);

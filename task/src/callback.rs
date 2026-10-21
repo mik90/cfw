@@ -2,10 +2,10 @@ use std::fmt::Debug;
 
 use crate::time::FrameworkTime;
 use crate::{Context, LoanError};
+mod endpoints;
 mod node;
-mod ports;
+pub use endpoints::*;
 pub use node::CallbackNode;
-pub use ports::*;
 
 /// Callback body and IO lifecycle, shared by live and deterministic executors.
 /// Executors invoke `execute_callback` or `execute_callback_batch` rather than
@@ -27,7 +27,7 @@ pub trait Callback: Send {
         _event_id: usize,
         _count: u64,
     ) -> Result<(), LoanError> {
-        Err(LoanError::Transport("unknown replay event port".into()))
+        Err(LoanError::Transport("unknown replay event endpoint".into()))
     }
     fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
         None

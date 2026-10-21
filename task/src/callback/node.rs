@@ -1,4 +1,4 @@
-use super::{Callback, ports::*};
+use super::{Callback, endpoints::*};
 use crate::{
     Context, LoanError,
     recording::{Direction, EndpointDescriptor, LoggedEvent, LoggedMessage},
@@ -122,7 +122,7 @@ where
         self.inputs.visit_mut(&mut stage);
         stage
             .result
-            .unwrap_or_else(|| Err(LoanError::Transport("unknown replay event port".into())))
+            .unwrap_or_else(|| Err(LoanError::Transport("unknown replay event endpoint".into())))
     }
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
@@ -134,32 +134,32 @@ where
 
 struct Update;
 impl InputVisitorMut for Update {
-    fn visit(&mut self, port: &mut impl InputEndpoint) {
-        port.update();
+    fn visit(&mut self, endpoint: &mut impl InputEndpoint) {
+        endpoint.update();
     }
 }
 struct Finish;
 impl InputVisitorMut for Finish {
-    fn visit(&mut self, port: &mut impl InputEndpoint) {
-        port.finish();
+    fn visit(&mut self, endpoint: &mut impl InputEndpoint) {
+        endpoint.finish();
     }
 }
 struct Clear;
 impl InputVisitorMut for Clear {
-    fn visit(&mut self, port: &mut impl InputEndpoint) {
-        port.clear();
+    fn visit(&mut self, endpoint: &mut impl InputEndpoint) {
+        endpoint.clear();
     }
 }
 struct Wake(WakeHandle);
 impl InputVisitorMut for Wake {
-    fn visit(&mut self, port: &mut impl InputEndpoint) {
-        port.set_waker(self.0.clone());
+    fn visit(&mut self, endpoint: &mut impl InputEndpoint) {
+        endpoint.set_waker(self.0.clone());
     }
 }
 struct Pending(bool);
 impl InputVisitor for Pending {
-    fn visit(&mut self, port: &impl InputEndpoint) {
-        self.0 |= port.requests_execution();
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
+        self.0 |= endpoint.requests_execution();
     }
 }
 struct Readiness {
@@ -167,41 +167,41 @@ struct Readiness {
     ready: bool,
 }
 impl InputVisitor for Readiness {
-    fn visit(&mut self, port: &impl InputEndpoint) {
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
         self.ready &= if self.available {
-            port.required_available()
+            endpoint.required_available()
         } else {
-            port.required_ready()
+            endpoint.required_ready()
         };
     }
 }
 struct Flush(FrameworkTime);
 impl OutputVisitorMut for Flush {
-    fn visit(&mut self, port: &mut impl OutputEndpoint) {
-        port.flush(self.0);
+    fn visit(&mut self, endpoint: &mut impl OutputEndpoint) {
+        endpoint.flush(self.0);
     }
 }
 struct Discard;
 impl OutputVisitorMut for Discard {
-    fn visit(&mut self, port: &mut impl OutputEndpoint) {
-        port.discard();
+    fn visit(&mut self, endpoint: &mut impl OutputEndpoint) {
+        endpoint.discard();
     }
 }
 struct LocalOutputs(bool);
 impl OutputVisitor for LocalOutputs {
-    fn visit(&mut self, port: &impl OutputEndpoint) {
-        self.0 &= port.is_local();
+    fn visit(&mut self, endpoint: &impl OutputEndpoint) {
+        self.0 &= endpoint.is_local();
     }
 }
 struct Names<'a>(&'a mut dyn FnMut(&str));
 impl InputVisitor for Names<'_> {
-    fn visit(&mut self, port: &impl InputEndpoint) {
-        (self.0)(port.channel_name());
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
+        (self.0)(endpoint.channel_name());
     }
 }
 impl OutputVisitor for Names<'_> {
-    fn visit(&mut self, port: &impl OutputEndpoint) {
-        (self.0)(port.channel_name());
+    fn visit(&mut self, endpoint: &impl OutputEndpoint) {
+        (self.0)(endpoint.channel_name());
     }
 }
 struct Descriptors {
@@ -209,26 +209,26 @@ struct Descriptors {
     ordinal: usize,
 }
 impl Descriptors {
-    fn push<P: Endpoint>(&mut self, port: &P, direction: Direction) {
+    fn push<P: Endpoint>(&mut self, endpoint: &P, direction: Direction) {
         self.endpoints.push(EndpointDescriptor {
             ordinal: self.ordinal,
             direction,
-            channel: port.channel_name().into(),
-            transport: port.transport(),
+            channel: endpoint.channel_name().into(),
+            transport: endpoint.transport(),
             payload_type: std::any::type_name::<P::Payload>().into(),
-            publisher_index: port.publisher_index(),
+            publisher_index: endpoint.publisher_index(),
         });
         self.ordinal += 1;
     }
 }
 impl InputVisitor for Descriptors {
-    fn visit(&mut self, port: &impl InputEndpoint) {
-        self.push(port, Direction::Received);
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
+        self.push(endpoint, Direction::Received);
     }
 }
 impl OutputVisitor for Descriptors {
-    fn visit(&mut self, port: &impl OutputEndpoint) {
-        self.push(port, Direction::Published);
+    fn visit(&mut self, endpoint: &impl OutputEndpoint) {
+        self.push(endpoint, Direction::Published);
     }
 }
 struct Messages<'a> {
@@ -236,8 +236,8 @@ struct Messages<'a> {
     ordinal: usize,
 }
 impl InputVisitor for Messages<'_> {
-    fn visit(&mut self, port: &impl InputEndpoint) {
-        port.visit_headers(|header| {
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
+        endpoint.visit_headers(|header| {
             (self.visit)(LoggedMessage {
                 ordinal: self.ordinal,
                 header,
@@ -247,8 +247,8 @@ impl InputVisitor for Messages<'_> {
     }
 }
 impl OutputVisitor for Messages<'_> {
-    fn visit(&mut self, port: &impl OutputEndpoint) {
-        port.visit_headers(|header| {
+    fn visit(&mut self, endpoint: &impl OutputEndpoint) {
+        endpoint.visit_headers(|header| {
             (self.visit)(LoggedMessage {
                 ordinal: self.ordinal,
                 header,
@@ -262,8 +262,8 @@ struct Events<'a> {
     ordinal: usize,
 }
 impl InputVisitor for Events<'_> {
-    fn visit(&mut self, port: &impl InputEndpoint) {
-        port.visit_events(|event_id, count| {
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
+        endpoint.visit_events(|event_id, count| {
             (self.visit)(LoggedEvent {
                 ordinal: self.ordinal,
                 event_id,
@@ -274,8 +274,8 @@ impl InputVisitor for Events<'_> {
     }
 }
 impl OutputVisitor for Events<'_> {
-    fn visit(&mut self, port: &impl OutputEndpoint) {
-        port.visit_events(|event_id, count| {
+    fn visit(&mut self, endpoint: &impl OutputEndpoint) {
+        endpoint.visit_events(|event_id, count| {
             (self.visit)(LoggedEvent {
                 ordinal: self.ordinal,
                 event_id,
@@ -292,12 +292,12 @@ struct StageEvent {
     result: Option<Result<(), LoanError>>,
 }
 impl InputVisitorMut for StageEvent {
-    fn visit(&mut self, port: &mut impl InputEndpoint) {
+    fn visit(&mut self, endpoint: &mut impl InputEndpoint) {
         if self.result.is_some() {
             return;
         }
         if self.remaining == 0 {
-            self.result = Some(port.stage_event(self.event_id, self.count));
+            self.result = Some(endpoint.stage_event(self.event_id, self.count));
         } else {
             self.remaining -= 1;
         }
@@ -307,8 +307,8 @@ impl InputVisitorMut for StageEvent {
 struct Registrations(Vec<crate::iox2::Iox2EventRegistration>);
 #[cfg(feature = "iceoryx2")]
 impl InputVisitorMut for Registrations {
-    fn visit(&mut self, port: &mut impl InputEndpoint) {
-        if let Some(registration) = port.take_registration() {
+    fn visit(&mut self, endpoint: &mut impl InputEndpoint) {
+        if let Some(registration) = endpoint.take_registration() {
             self.0.push(registration);
         }
     }

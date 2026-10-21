@@ -33,7 +33,7 @@ use std::{
     },
 };
 
-/// Owns the graph's transport node. Ports and readiness registrations retain it.
+/// Owns the graph's transport node. Bound endpoints and readiness registrations retain it.
 pub struct Iox2Runtime {
     node: Node<ipc_threadsafe::Service>,
 }
@@ -1122,7 +1122,7 @@ impl Iox2EventRegistration {
     }
 }
 
-/// Match received event ports to registrations before executor-specific dispatch.
+/// Match received event endpoints to registrations before executor-specific dispatch.
 pub fn event_targets(
     events: &[Iox2EventRegistration],
     endpoints: Option<Vec<crate::recording::EndpointDescriptor>>,
@@ -1130,22 +1130,22 @@ pub fn event_targets(
     use crate::recording::{Direction, Transport};
     let mut targets = std::collections::BTreeMap::new();
     if let Some(endpoints) = endpoints {
-        let ports: Vec<_> = endpoints
+        let endpoints: Vec<_> = endpoints
             .into_iter()
-            .filter(|port| {
-                port.direction == Direction::Received && port.transport == Transport::Event
+            .filter(|endpoint| {
+                endpoint.direction == Direction::Received && endpoint.transport == Transport::Event
             })
             .collect();
-        if ports.len() != events.len()
-            || ports
+        if endpoints.len() != events.len()
+            || endpoints
                 .iter()
                 .zip(events)
-                .any(|(port, event)| port.channel != event.channel)
+                .any(|(endpoint, event)| endpoint.channel != event.channel)
         {
             return Err("event registrations do not match endpoint metadata".into());
         }
-        for (port, event) in ports.into_iter().zip(events) {
-            if targets.insert(port.ordinal, event.target()).is_some() {
+        for (endpoint, event) in endpoints.into_iter().zip(events) {
+            if targets.insert(endpoint.ordinal, event.target()).is_some() {
                 return Err("duplicate event ordinal".into());
             }
         }
