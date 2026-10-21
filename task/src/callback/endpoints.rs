@@ -8,9 +8,7 @@ pub trait Endpoint {
     type Payload;
     fn channel_name(&self) -> &str;
     fn transport(&self) -> Transport;
-    fn publisher_index(&self) -> Option<u32> {
-        None
-    }
+    fn publisher_index(&self) -> Option<u32>;
 }
 
 pub trait InputEndpoint: Endpoint {
@@ -125,6 +123,9 @@ impl<T> Endpoint for Subscriber<'_, T> {
     fn transport(&self) -> Transport {
         Transport::Native
     }
+    fn publisher_index(&self) -> Option<u32> {
+        None
+    }
 }
 impl<T> InputEndpoint for Subscriber<'_, T> {
     fn update(&mut self) {
@@ -156,6 +157,9 @@ impl<T> Endpoint for Required<Subscriber<'_, T>> {
     }
     fn transport(&self) -> Transport {
         Transport::Native
+    }
+    fn publisher_index(&self) -> Option<u32> {
+        None
     }
 }
 impl<T> InputEndpoint for Required<Subscriber<'_, T>> {
@@ -228,6 +232,9 @@ mod ipc {
         fn transport(&self) -> Transport {
             Transport::Ipc
         }
+        fn publisher_index(&self) -> Option<u32> {
+            None
+        }
     }
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> InputEndpoint for Iox2Subscriber<T> {
         fn update(&mut self) {
@@ -277,6 +284,9 @@ mod ipc {
         fn transport(&self) -> Transport {
             Transport::Event
         }
+        fn publisher_index(&self) -> Option<u32> {
+            None
+        }
     }
     impl InputEndpoint for Iox2EventSubscriber {
         fn update(&mut self) {
@@ -308,6 +318,9 @@ mod ipc {
         }
         fn transport(&self) -> Transport {
             Transport::Event
+        }
+        fn publisher_index(&self) -> Option<u32> {
+            None
         }
     }
     impl OutputEndpoint for Iox2Notifier {
