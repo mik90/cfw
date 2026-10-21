@@ -91,7 +91,7 @@ The `Callback` trait exposes an interface for callbacks to
 
 `task_graph::ApplicationBuilder` discovers channels from task declarations.
 Register each task instance with its schedule; matching channel names wire its
-typed ports together. Incompatible payload types are rejected during planning.
+typed endpoints together. Incompatible payload types are rejected during planning.
 
 ```rust,ignore
 let mut app = task_graph::ApplicationBuilder::new();

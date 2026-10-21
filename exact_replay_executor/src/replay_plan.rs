@@ -1,4 +1,4 @@
-//! Exact per-port bindings planned before allocating graph storage.
+//! Exact per-endpoint bindings planned before allocating graph storage.
 //!
 //! ```no_run
 //! use exact_replay_executor::{ExactReplayPlan, ExactReplayExecutor, ReplayLog};
@@ -21,19 +21,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use task::recording::{Direction, Transport};
 use task_graph::{GraphBindings, GraphPlan, capture::OutputBinding, replay::SourceBinding};
 
-enum PortBinding {
+enum EndpointBinding {
     Input(SourceBinding),
     Output(OutputBinding),
 }
 
-/// A caller-supplied port binding, omitted from inferred wiring.
+/// A caller-supplied endpoint binding, omitted from inferred wiring.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ExplicitReplayPort {
+pub struct ExplicitReplayEndpoint {
     callback: String,
     output: bool,
     ordinal: usize,
 }
-impl ExplicitReplayPort {
+impl ExplicitReplayEndpoint {
     pub fn input(callback: impl Into<String>, ordinal: usize) -> Self {
         Self {
             callback: callback.into(),
@@ -50,9 +50,9 @@ impl ExplicitReplayPort {
     }
 }
 
-/// Validates a recorded task layout and prepares isolated per-port replay wiring.
+/// Validates a recorded task layout and prepares isolated per-endpoint replay wiring.
 pub struct ExactReplayPlan {
-    ports: Vec<(String, usize, PortBinding)>,
+    endpoints: Vec<(String, usize, EndpointBinding)>,
     #[cfg(feature = "iceoryx2")]
     local_outputs: Vec<(String, usize, bool)>,
 }
@@ -60,12 +60,12 @@ impl ExactReplayPlan {
     pub fn declare(plan: &mut GraphPlan, log: &ReplayLog) -> Result<Self, ReplayError> {
         Self::declare_with_explicit(plan, log, &BTreeSet::new())
     }
-    /// Keep selected ports explicit for custom/contextual decoders. Add their
+    /// Keep selected endpoints explicit for custom/contextual decoders. Add their
     /// bindings to the returned ReplayBindings before constructing the executor.
     pub fn declare_with_explicit(
         plan: &mut GraphPlan,
         log: &ReplayLog,
-        ports: &std::collections::BTreeSet<ExplicitReplayPort>,
+        endpoints: &std::collections::BTreeSet<ExplicitReplayEndpoint>,
     ) -> Result<Self, ReplayError> {
         let descriptor = log.descriptor_ref();
         if plan.task_names().count() != descriptor.callbacks.len() {
@@ -76,7 +76,7 @@ impl ExactReplayPlan {
         let mut requests = Vec::new();
         #[cfg(feature = "iceoryx2")]
         let mut local_outputs = Vec::new();
-        let mut remaining = ports.clone();
+        let mut remaining = endpoints.clone();
         let mut names = BTreeSet::new();
         for callback in &descriptor.callbacks {
             if !names.insert(&callback.name) {
@@ -85,7 +85,7 @@ impl ExactReplayPlan {
                 ));
             }
             let actual = plan
-                .task_ports(&callback.name)
+                .task_endpoints(&callback.name)
                 .map_err(|e| ReplayError::Setup(e.to_string()))?;
             if actual.len() != callback.endpoints.len() {
                 return Err(ReplayError::Setup(format!(
@@ -95,22 +95,22 @@ impl ExactReplayPlan {
             }
             let mut ordinals = [0, 0];
             let mut mapped = BTreeMap::new();
-            for port in actual {
-                let direction = usize::from(port.output);
-                mapped.insert((port.output, ordinals[direction]), port);
+            for endpoint in actual {
+                let direction = usize::from(endpoint.output);
+                mapped.insert((endpoint.output, ordinals[direction]), endpoint);
                 ordinals[direction] += 1;
             }
             for expected in &callback.endpoints {
                 let output = expected.direction == Direction::Published;
-                let port = mapped.remove(&(output, expected.ordinal)).ok_or_else(|| {
+                let endpoint = mapped.remove(&(output, expected.ordinal)).ok_or_else(|| {
                     ReplayError::Setup(format!(
-                        "unknown/duplicate port for '{}' ordinal {}",
+                        "unknown/duplicate endpoint for '{}' ordinal {}",
                         callback.name, expected.ordinal
                     ))
                 })?;
-                if port.channel != expected.channel
-                    || port.payload_type != expected.payload_type
-                    || port.transport != expected.transport
+                if endpoint.channel != expected.channel
+                    || endpoint.payload_type != expected.payload_type
+                    || endpoint.transport != expected.transport
                 {
                     return Err(ReplayError::Setup(format!(
                         "endpoint layout differs for '{}' ordinal {}",
@@ -118,17 +118,17 @@ impl ExactReplayPlan {
                     )));
                 }
                 #[cfg(feature = "iceoryx2")]
-                if output && port.transport != Transport::Native {
+                if output && endpoint.transport != Transport::Native {
                     local_outputs.push((
-                        port.channel.clone(),
-                        port.index,
-                        port.transport == Transport::Event,
+                        endpoint.channel.clone(),
+                        endpoint.index,
+                        endpoint.transport == Transport::Event,
                     ));
                 }
-                if port.transport == Transport::Event {
+                if endpoint.transport == Transport::Event {
                     continue;
                 }
-                if remaining.remove(&ExplicitReplayPort {
+                if remaining.remove(&ExplicitReplayEndpoint {
                     callback: callback.name.clone(),
                     output,
                     ordinal: expected.ordinal,
@@ -143,8 +143,8 @@ impl ExactReplayPlan {
                 .map_err(|e| ReplayError::Setup(e.to_string()))?;
                 if !capable {
                     return Err(ReplayError::Setup(format!(
-                        "channel '{}': missing {} capability; use an explicit port binding",
-                        port.channel,
+                        "channel '{}': missing {} capability; use an explicit endpoint binding",
+                        endpoint.channel,
                         if output {
                             "serialization"
                         } else {
@@ -153,11 +153,11 @@ impl ExactReplayPlan {
                     )));
                 }
                 if plan
-                    .port_is_configured(&callback.name, expected.ordinal, output)
+                    .endpoint_is_configured(&callback.name, expected.ordinal, output)
                     .map_err(|e| ReplayError::Setup(e.to_string()))?
                 {
                     return Err(ReplayError::Setup(format!(
-                        "replay port '{}' ordinal {} already configured",
+                        "replay endpoint '{}' ordinal {} already configured",
                         callback.name, expected.ordinal
                     )));
                 }
@@ -166,22 +166,24 @@ impl ExactReplayPlan {
         }
         if !remaining.is_empty() {
             return Err(ReplayError::Setup(format!(
-                "explicit replay ports do not identify data endpoints: {remaining:?}"
+                "explicit replay endpoints do not identify data endpoints: {remaining:?}"
             )));
         }
         // Validate the complete descriptor before any endpoints are added or rewired.
-        let mut ports = Vec::new();
+        let mut endpoints = Vec::new();
         for (name, ordinal, output) in requests {
             let bind = if output {
-                plan.observe_output(&name, ordinal).map(PortBinding::Output)
+                plan.observe_output(&name, ordinal)
+                    .map(EndpointBinding::Output)
             } else {
-                plan.inject_input(&name, ordinal, 1).map(PortBinding::Input)
+                plan.inject_input(&name, ordinal, 1)
+                    .map(EndpointBinding::Input)
             }
             .map_err(|e| ReplayError::Setup(e.to_string()))?;
-            ports.push((name, ordinal, bind));
+            endpoints.push((name, ordinal, bind));
         }
         Ok(Self {
-            ports,
+            endpoints,
             #[cfg(feature = "iceoryx2")]
             local_outputs,
         })
@@ -202,14 +204,14 @@ impl ExactReplayPlan {
                 .map_err(|e| ReplayError::Setup(e.to_string()))?;
         }
         let mut replay = ReplayBindings::new();
-        for (name, ordinal, port) in self.ports {
-            match port {
-                PortBinding::Input(bind) => replay.add_input(
+        for (name, ordinal, endpoint) in self.endpoints {
+            match endpoint {
+                EndpointBinding::Input(bind) => replay.add_input(
                     name,
                     ordinal,
                     bind(bindings).map_err(|e| ReplayError::Setup(e.to_string()))?,
                 )?,
-                PortBinding::Output(bind) => replay.add_output(
+                EndpointBinding::Output(bind) => replay.add_output(
                     name,
                     ordinal,
                     bind(bindings).map_err(|e| ReplayError::Setup(e.to_string()))?,

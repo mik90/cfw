@@ -1,7 +1,7 @@
 use exact_replay_executor::{
     ExactReplayExecutor, ReplayBindings, ReplayInputPlan, ReplayLog, SourceCachePlan,
 };
-use logging::{CapturePlan, ExecutionRecorder, LogSession, PortCapture};
+use logging::{CapturePlan, EndpointCapture, ExecutionRecorder, LogSession};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -209,18 +209,18 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
     let result = storage.3.bind();
     let cache = cache.bind(&source).unwrap();
     let captured_indices = Arc::new(Mutex::new(Vec::new()));
-    let mut ports = ReplayBindings::new();
+    let mut endpoints = ReplayBindings::new();
     let loader = cache.clone();
-    ports
+    endpoints
         .add_cache("source", move |h, b| loader.load(h, b))
         .unwrap();
-    ports
+    endpoints
         .add_input("forward", 0, hydrate_f.bind(&source).unwrap())
         .unwrap();
-    ports
+    endpoints
         .add_input("observe", 0, hydrate_o.bind(&source).unwrap())
         .unwrap();
-    ports
+    endpoints
         .add_input(
             "consume",
             0,
@@ -233,7 +233,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         .unwrap();
     for (name, key) in [("a", a.output_key()), ("b", b.output_key())] {
         let indices = captured_indices.clone();
-        ports
+        endpoints
             .add_output(
                 name,
                 0,
@@ -245,36 +245,36 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
                                 .unwrap()
                                 .push((message.header.publisher_index, message.header.batch_index))
                         });
-                        PortCapture::native(p, 2)
+                        EndpointCapture::native(p, 2)
                     })
                     .unwrap(),
             )
             .unwrap();
     }
-    ports
+    endpoints
         .add_output(
             "forward",
             0,
             forward
-                .configure_publisher(f.output_key(), |p| PortCapture::native(p, 4))
+                .configure_publisher(f.output_key(), |p| EndpointCapture::native(p, 4))
                 .unwrap(),
         )
         .unwrap();
-    ports
+    endpoints
         .add_output(
             "observe",
             0,
             observed
-                .configure_publisher(o.output_key(), |p| PortCapture::native(p, 1))
+                .configure_publisher(o.output_key(), |p| EndpointCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
-    ports
+    endpoints
         .add_output(
             "consume",
             0,
             result
-                .configure_publisher(c.output_key(), |p| PortCapture::native(p, 1))
+                .configure_publisher(c.output_key(), |p| EndpointCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
@@ -289,7 +289,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
     graph.add_callback("forward", || Ok(Forward.bind(f, &source, &forward)?));
     graph.add_callback("b", || Ok(Source(20).bind(b, &source)?));
     graph.add_callback("a", || Ok(Source(10).bind(a, &source)?));
-    let report = ExactReplayExecutor::new(graph.build().unwrap(), log, ports)
+    let report = ExactReplayExecutor::new(graph.build().unwrap(), log, endpoints)
         .unwrap()
         .run()
         .unwrap();

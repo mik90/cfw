@@ -75,9 +75,11 @@ impl<'a> ReplayFeed<'a> {
                         format!("duplicate recorded callback name '{}'", callback.name).into(),
                     );
                 }
-                let mut ports = HashSet::new();
-                for port in &callback.endpoints {
-                    if !ports.insert((port.direction == Direction::Received, port.ordinal)) {
+                let mut endpoints = HashSet::new();
+                for endpoint in &callback.endpoints {
+                    if !endpoints
+                        .insert((endpoint.direction == Direction::Received, endpoint.ordinal))
+                    {
                         return Err(
                             format!("duplicate endpoint ordinal on '{}'", callback.name).into()
                         );
@@ -141,23 +143,23 @@ impl<'a> ReplayFeed<'a> {
                         .as_ref()
                         .and_then(|d| d.callbacks.get(event.callback_id.index()))
                         .ok_or("event record has no matching callback descriptor")?;
-                    let mut ports = callback.endpoints.iter().filter(|p| {
+                    let mut endpoints = callback.endpoints.iter().filter(|p| {
                         p.direction == Direction::Received && p.ordinal == event.event.ordinal
                     });
-                    let port = ports
+                    let endpoint = endpoints
                         .next()
                         .ok_or("event record has unknown subscriber ordinal")?;
-                    if ports.next().is_some() || port.transport != Transport::Event {
+                    if endpoints.next().is_some() || endpoint.transport != Transport::Event {
                         return Err(
                             "event record has ambiguous or non-event subscriber ordinal".into()
                         );
                     }
-                    if self.denied.contains(&port.channel) {
+                    if self.denied.contains(&endpoint.channel) {
                         continue;
                     }
                     self.pending = Some(Pending::Event {
                         callback: callback.name.clone(),
-                        channel: port.channel.clone(),
+                        channel: endpoint.channel.clone(),
                         event,
                     });
                     return Ok(());

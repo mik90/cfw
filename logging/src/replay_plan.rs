@@ -21,7 +21,7 @@ impl ReplayOptions {
 }
 
 /// Ordinary channel-wide replay. Register the intended workload first; this
-/// neither disables producer callbacks nor replaces exact per-port hydration.
+/// neither disables producer callbacks nor replaces exact per-endpoint hydration.
 /// Contextual decoders (including borrowed forwarding) use explicit sources.
 ///
 /// ```

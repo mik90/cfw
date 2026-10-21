@@ -157,7 +157,7 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[derive(Clone, Copy)]
-enum PortKind {
+enum EndpointKind {
     Input,
     Required,
     Output,
@@ -171,12 +171,12 @@ enum PortKind {
     IoxNotifier,
 }
 
-struct Port {
+struct Endpoint {
     forwardable: bool,
     forwards: Vec<(syn::Ident, syn::Ident)>,
     name: syn::Ident,
     payload: Type,
-    kind: PortKind,
+    kind: EndpointKind,
     channel: Option<syn::Expr>,
     capacity: syn::Expr,
     trigger: syn::Expr,
@@ -197,14 +197,14 @@ mod generate;
 struct TaskDefinition {
     item: ItemImpl,
     name: syn::Ident,
-    ports: Vec<Port>,
+    endpoints: Vec<Endpoint>,
     arguments: Vec<Option<usize>>,
     fallible: bool,
 }
 
 fn expand(item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let task = parse_task(item)?;
-    validate_ports(&task.ports)?;
+    validate_endpoints(&task.endpoints)?;
     Ok(generate::task(&task))
 }
 
@@ -252,7 +252,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
         ));
     }
 
-    let mut ports = Vec::new();
+    let mut endpoints = Vec::new();
     let mut arguments = Vec::new();
     for arg in run.sig.inputs.iter_mut().skip(1) {
         let FnArg::Typed(arg) = arg else {
@@ -278,7 +278,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
         let Type::Path(path) = ty else {
             return Err(syn::Error::new_spanned(
                 ty,
-                "expected a typed input or output port",
+                "expected a typed input or output endpoint",
             ));
         };
         let segment = path.path.segments.last().unwrap();
@@ -300,18 +300,18 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             continue;
         }
         let kind = match segment.ident.to_string().as_str() {
-            "Input" | "OptionalInput" | "InputSpan" if reference.is_none() => PortKind::Input,
-            "RequiredInput" if reference.is_none() => PortKind::Required,
-            "Output" if reference.is_none() => PortKind::Output,
-            "OutputSpan" if reference.is_none() => PortKind::OutputSpan,
-            "OutputUninit" if reference.is_none() => PortKind::Uninit,
-            "Iox2OptionalInput" if reference.is_none() => PortKind::IoxInput,
-            "Iox2SpanInput" if reference.is_none() => PortKind::IoxSpan,
-            "Iox2Output" if reference.is_none() => PortKind::IoxOutput,
-            "Iox2Event" if reference.is_none() => PortKind::IoxEvent,
-            "Iox2NotifyOutput" if reference.is_none() => PortKind::IoxNotifier,
+            "Input" | "OptionalInput" | "InputSpan" if reference.is_none() => EndpointKind::Input,
+            "RequiredInput" if reference.is_none() => EndpointKind::Required,
+            "Output" if reference.is_none() => EndpointKind::Output,
+            "OutputSpan" if reference.is_none() => EndpointKind::OutputSpan,
+            "OutputUninit" if reference.is_none() => EndpointKind::Uninit,
+            "Iox2OptionalInput" if reference.is_none() => EndpointKind::IoxInput,
+            "Iox2SpanInput" if reference.is_none() => EndpointKind::IoxSpan,
+            "Iox2Output" if reference.is_none() => EndpointKind::IoxOutput,
+            "Iox2Event" if reference.is_none() => EndpointKind::IoxEvent,
+            "Iox2NotifyOutput" if reference.is_none() => EndpointKind::IoxNotifier,
             "Publisher" if matches!(reference, Some(r) if r.mutability.is_some()) => {
-                PortKind::Publisher
+                EndpointKind::Publisher
             }
             _ => {
                 return Err(syn::Error::new_spanned(
@@ -321,7 +321,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             }
         };
         let mut forwardable = false;
-        let mut payload = if matches!(kind, PortKind::IoxEvent | PortKind::IoxNotifier) {
+        let mut payload = if matches!(kind, EndpointKind::IoxEvent | EndpointKind::IoxNotifier) {
             if let PathArguments::AngleBracketed(args) = &segment.arguments
                 && args
                     .args
@@ -330,7 +330,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             {
                 return Err(syn::Error::new_spanned(
                     &arg.ty,
-                    "event ports take no payload type",
+                    "event endpoints take no payload type",
                 ));
             }
             parse_quote!(())
@@ -349,7 +349,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
                     _ => None,
                 })
                 .collect();
-            if payloads.len() == 2 && matches!(kind, PortKind::Input | PortKind::Required) {
+            if payloads.len() == 2 && matches!(kind, EndpointKind::Input | EndpointKind::Required) {
                 match payloads[1] {
                     Type::Path(path)
                         if path.path.segments.last().unwrap().ident == "Forwardable" =>
@@ -424,7 +424,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             *destination = Some(attr.parse_args::<syn::Expr>()?);
         }
         if (trigger.is_some() || keep.is_some())
-            && !matches!(kind, PortKind::Input | PortKind::Required)
+            && !matches!(kind, EndpointKind::Input | EndpointKind::Required)
         {
             return Err(syn::Error::new_spanned(
                 &arg.ty,
@@ -452,8 +452,8 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
                 parse_quote!(1)
             }
         });
-        arguments.push(Some(ports.len()));
-        ports.push(Port {
+        arguments.push(Some(endpoints.len()));
+        endpoints.push(Endpoint {
             forwardable,
             forwards,
             name,
@@ -490,35 +490,38 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
     Ok(TaskDefinition {
         item,
         name: task_name,
-        ports,
+        endpoints,
         arguments,
         fallible,
     })
 }
 
-fn validate_ports(ports: &[Port]) -> syn::Result<()> {
-    for port in ports {
-        if !port.forwards.is_empty()
+fn validate_endpoints(endpoints: &[Endpoint]) -> syn::Result<()> {
+    for endpoint in endpoints {
+        if !endpoint.forwards.is_empty()
             && !matches!(
-                port.kind,
-                PortKind::Output | PortKind::Uninit | PortKind::Publisher | PortKind::OutputSpan
+                endpoint.kind,
+                EndpointKind::Output
+                    | EndpointKind::Uninit
+                    | EndpointKind::Publisher
+                    | EndpointKind::OutputSpan
             )
         {
             return Err(syn::Error::new_spanned(
-                &port.name,
+                &endpoint.name,
                 "forwarding mappings belong to native outputs",
             ));
         }
-        if !port.forwards.is_empty()
-            && !matches!(&port.payload,Type::Path(path) if path.path.segments.last().is_some_and(|s| s.ident == "Forwarded"))
+        if !endpoint.forwards.is_empty()
+            && !matches!(&endpoint.payload,Type::Path(path) if path.path.segments.last().is_some_and(|s| s.ident == "Forwarded"))
         {
             return Err(syn::Error::new_spanned(
-                &port.name,
+                &endpoint.name,
                 "forwarding mappings require a Forwarded output",
             ));
         }
-        for (_, input) in &port.forwards {
-            if !ports.iter().any(|p| p.name == *input && p.forwardable) {
+        for (_, input) in &endpoint.forwards {
+            if !endpoints.iter().any(|p| p.name == *input && p.forwardable) {
                 return Err(syn::Error::new_spanned(
                     input,
                     "forwarding source must name a Forwardable input",
@@ -532,7 +535,7 @@ fn validate_ports(ports: &[Port]) -> syn::Result<()> {
 fn generate_registration(
     task: &syn::Ident,
     declaration: &syn::Ident,
-    ports: &[Port],
+    endpoints: &[Endpoint],
 ) -> proc_macro2::TokenStream {
     fn forwarded(payload: &Type) -> Option<(Type, Type)> {
         let Type::Path(path) = payload else {
@@ -567,10 +570,10 @@ fn generate_registration(
             self.0 |= lifetime.ident != "static";
         }
     }
-    for port in ports {
-        let mut port_borrowed = Borrowed(false);
-        port_borrowed.visit_type_mut(&mut port.payload.clone());
-        if port_borrowed.0 && forwarded(&port.payload).is_none() {
+    for endpoint in endpoints {
+        let mut endpoint_borrowed = Borrowed(false);
+        endpoint_borrowed.visit_type_mut(&mut endpoint.payload.clone());
+        if endpoint_borrowed.0 && forwarded(&endpoint.payload).is_none() {
             return quote!();
         }
     }
@@ -581,81 +584,81 @@ fn generate_registration(
     let mut captures = Vec::new();
     let mut rebuilt_keys = Vec::new();
     let mut mappings = Vec::new();
-    for (index, port) in ports.iter().enumerate() {
-        let Port {
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        let Endpoint {
             name,
             payload,
             capacity,
             trigger,
             keep,
             ..
-        } = port;
-        let channel = port
+        } = endpoint;
+        let channel = endpoint
             .channel
             .as_ref()
             .map(|c| quote!(#c))
             .unwrap_or_else(|| quote!(stringify!(#name)));
         let direction = if matches!(
-            port.kind,
-            PortKind::Input
-                | PortKind::Required
-                | PortKind::IoxInput
-                | PortKind::IoxSpan
-                | PortKind::IoxEvent
+            endpoint.kind,
+            EndpointKind::Input
+                | EndpointKind::Required
+                | EndpointKind::IoxInput
+                | EndpointKind::IoxSpan
+                | EndpointKind::IoxEvent
         ) {
             quote!(Input)
         } else {
             quote!(Output)
         };
-        schema.push(quote!((stringify!(#name), ::task_graph::PortDirection::#direction)));
-        channel_names.push(quote!(__cfw_overrides.resolve(stringify!(#name), ::task_graph::PortDirection::#direction, || {
+        schema.push(quote!((stringify!(#name), ::task_graph::EndpointDirection::#direction)));
+        channel_names.push(quote!(__cfw_overrides.resolve(stringify!(#name), ::task_graph::EndpointDirection::#direction, || {
             let value = #channel;
             ::core::convert::AsRef::<str>::as_ref(&value).to_owned()
         })?));
         let family = forwarded(payload);
         let (key, binding) = if let Some((message, source)) = &family {
-            if !matches!(port.kind, PortKind::Input | PortKind::Required) {
-                let fields = port.forwards.iter().map(|(field,input)| {
-                    let (idx, input_port) = ports.iter().enumerate().find(|(_,p)| p.name == *input).unwrap();
-                    let ty = canonical_type(&input_port.payload);
+            if !matches!(endpoint.kind, EndpointKind::Input | EndpointKind::Required) {
+                let fields = endpoint.forwards.iter().map(|(field,input)| {
+                    let (idx, input_endpoint) = endpoints.iter().enumerate().find(|(_,p)| p.name == *input).unwrap();
+                    let ty = canonical_type(&input_endpoint.payload);
                     quote!((stringify!(#field),stringify!(#input),__cfw_names[#idx].as_str(),::std::any::TypeId::of::<#ty>()))
                 });
                 mappings.push(quote!(__cfw_plan.map_forwarding::<#source>(stringify!(#name),&__cfw_names[#index],&[#(#fields),*])?;));
             }
-            match port.kind {
-                PortKind::Input | PortKind::Required => (
+            match endpoint.kind {
+                EndpointKind::Input | EndpointKind::Required => (
                     quote!(__cfw_plan.bundle_subscriber::<#message,#source>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
                     quote!(__cfw_bindings.bundle::<#message,#source>(&__cfw_names[#index])?),
                 ),
-                PortKind::IoxInput
-                | PortKind::IoxSpan
-                | PortKind::IoxOutput
-                | PortKind::IoxEvent
-                | PortKind::IoxNotifier => return quote!(),
+                EndpointKind::IoxInput
+                | EndpointKind::IoxSpan
+                | EndpointKind::IoxOutput
+                | EndpointKind::IoxEvent
+                | EndpointKind::IoxNotifier => return quote!(),
                 _ => (
                     quote!(__cfw_plan.bundle_publisher::<#message,#source>(&__cfw_names[#index], #capacity)),
                     quote!(__cfw_bindings.bundle::<#message,#source>(&__cfw_names[#index])?),
                 ),
             }
         } else {
-            match port.kind {
-                PortKind::IoxInput | PortKind::IoxSpan => (
+            match endpoint.kind {
+                EndpointKind::IoxInput | EndpointKind::IoxSpan => (
                     quote!(__cfw_plan.ipc_subscriber::<#payload>(&__cfw_names[#index], #capacity)),
                     quote!(__cfw_bindings.ipc::<#payload>(&__cfw_names[#index])?),
                 ),
-                PortKind::IoxOutput => (
+                EndpointKind::IoxOutput => (
                     quote!(__cfw_plan.ipc_publisher::<#payload>(&__cfw_names[#index], #capacity)),
                     quote!(__cfw_bindings.ipc::<#payload>(&__cfw_names[#index])?),
                 ),
-                PortKind::IoxEvent => (
+                EndpointKind::IoxEvent => (
                     quote!(__cfw_plan.event(&__cfw_names[#index], #capacity)),
                     quote!(__cfw_bindings.events(&__cfw_names[#index])?),
                 ),
-                PortKind::IoxNotifier => (
+                EndpointKind::IoxNotifier => (
                     quote!(__cfw_plan.notifier(&__cfw_names[#index])),
                     quote!(__cfw_bindings.events(&__cfw_names[#index])?),
                 ),
-                PortKind::Input | PortKind::Required => (
+                EndpointKind::Input | EndpointKind::Required => (
                     quote!(__cfw_plan.subscriber::<#payload>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
                     quote!(__cfw_bindings.native::<#payload>(&__cfw_names[#index])?),
                 ),
@@ -666,7 +669,7 @@ fn generate_registration(
             }
         };
         if let Some((message, source)) = &family {
-            let retype = if matches!(port.kind, PortKind::Input | PortKind::Required) {
+            let retype = if matches!(endpoint.kind, EndpointKind::Input | EndpointKind::Required) {
                 quote!(subscriber_key)
             } else {
                 quote!(publisher_key)
@@ -677,16 +680,16 @@ fn generate_registration(
         } else {
             rebuilt_keys.push(quote!(__cfw_declaration.#name));
         }
-        let forwardable = port.forwardable;
+        let forwardable = endpoint.forwardable;
         keys.push(quote!({
-            let key = #key.map_err(|error| ::task_graph::BuildError(format!("port '{}': {}", stringify!(#name), error)))?;
-            __cfw_plan.annotate_last_port(stringify!(#name), #forwardable);
+            let key = #key.map_err(|error| ::task_graph::BuildError(format!("endpoint '{}': {}", stringify!(#name), error)))?;
+            __cfw_plan.annotate_last_endpoint(stringify!(#name), #forwardable);
             key
         }));
         bindings.push(binding);
-        let capture_method = match port.kind {
-            PortKind::IoxEvent | PortKind::IoxNotifier => None,
-            PortKind::IoxInput | PortKind::IoxSpan | PortKind::IoxOutput => {
+        let capture_method = match endpoint.kind {
+            EndpointKind::IoxEvent | EndpointKind::IoxNotifier => None,
+            EndpointKind::IoxInput | EndpointKind::IoxSpan | EndpointKind::IoxOutput => {
                 Some(quote!(register_ipc))
             }
             _ => Some(quote!(register_native)),
@@ -723,7 +726,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_unsupported_ports_and_duplicate_attributes() {
+    fn rejects_unsupported_endpoints_and_duplicate_attributes() {
         for source in [
             "impl Task { fn run(&mut self, input: Unsupported<u64>) {} }",
             "impl Task { fn run(&mut self, #[capacity(1)] #[capacity(2)] input: Input<u64>) {} }",

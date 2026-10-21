@@ -12,12 +12,12 @@ struct State {
     error: Option<String>,
     capacity: usize,
 }
-pub struct PortCapture {
+pub struct EndpointCapture {
     channel: String,
     payload_type: &'static str,
     state: Arc<Mutex<State>>,
 }
-impl PortCapture {
+impl EndpointCapture {
     fn create<T>(channel: &str, capacity: usize) -> Self {
         assert!(capacity > 0, "capture capacity must be positive");
         Self {

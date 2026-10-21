@@ -176,9 +176,9 @@ fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
     assert_eq!(limits[&name].max_borrowed_samples, 2048);
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
-    let ports = bindings.ipc::<u64>(&name).unwrap();
-    let publisher = ports.take_publisher(&publisher).unwrap();
-    let subscriber = ports.take_subscriber(&subscriber).unwrap();
+    let endpoints = bindings.ipc::<u64>(&name).unwrap();
+    let publisher = endpoints.take_publisher(&publisher).unwrap();
+    let subscriber = endpoints.take_subscriber(&subscriber).unwrap();
     for value in 0..1024 {
         publisher
             .publish_with_header(

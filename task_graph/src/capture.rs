@@ -101,28 +101,32 @@ pub(crate) type CaptureBinding = Box<
 
 /// A publisher observer attachment borrowing endpoints only while it is installed.
 pub type OutputBinding = Box<
-    dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<super::port_capture::PortCapture, BuildError>,
+    dyn for<'a> FnOnce(
+        &GraphBindings<'a>,
+    ) -> Result<super::endpoint_capture::EndpointCapture, BuildError>,
 >;
 
 #[derive(Clone, Copy)]
 pub(crate) struct CaptureDeclaration {
     pub declare_output:
-        fn(&mut GraphPlan, &super::ports::PlannedPort) -> Result<OutputBinding, BuildError>,
+        fn(&mut GraphPlan, &super::endpoints::PlannedEndpoint) -> Result<OutputBinding, BuildError>,
     pub declare: fn(&mut GraphPlan, &str, usize) -> Result<CaptureBinding, BuildError>,
 }
 
 fn native_output<T: Loggable + Send + Sync + 'static>(
     plan: &mut GraphPlan,
-    port: &super::ports::PlannedPort,
+    endpoint: &super::endpoints::PlannedEndpoint,
 ) -> Result<OutputBinding, BuildError> {
-    let publisher = plan.native::<T>(&port.channel)?.publisher_key(port.index);
-    let channel = port.channel.clone();
-    let capacity = port.capacity;
+    let publisher = plan
+        .native::<T>(&endpoint.channel)?
+        .publisher_key(endpoint.index);
+    let channel = endpoint.channel.clone();
+    let capacity = endpoint.capacity;
     Ok(Box::new(move |bindings| {
         Ok(bindings
             .native::<T>(&channel)?
             .configure_publisher(&publisher, |publisher| {
-                super::port_capture::PortCapture::native(publisher, capacity)
+                super::endpoint_capture::EndpointCapture::native(publisher, capacity)
             })?)
     }))
 }
@@ -286,16 +290,18 @@ mod ipc {
     }
     fn declare_output<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>(
         plan: &mut GraphPlan,
-        port: &super::super::ports::PlannedPort,
+        endpoint: &super::super::endpoints::PlannedEndpoint,
     ) -> Result<OutputBinding, BuildError> {
-        let publisher = plan.ipc::<T>(&port.channel)?.publisher_key(port.index);
-        let channel = port.channel.clone();
-        let capacity = port.capacity;
+        let publisher = plan
+            .ipc::<T>(&endpoint.channel)?
+            .publisher_key(endpoint.index);
+        let channel = endpoint.channel.clone();
+        let capacity = endpoint.capacity;
         Ok(Box::new(move |bindings| {
             Ok(bindings
                 .ipc::<T>(&channel)?
                 .configure_publisher(&publisher, |publisher| {
-                    super::super::port_capture::PortCapture::ipc(publisher, capacity)
+                    super::super::endpoint_capture::EndpointCapture::ipc(publisher, capacity)
                 })?)
         }))
     }

@@ -441,8 +441,8 @@ fn descriptor_artifacts(
     let mut tables = logging::InternTables::default();
     for callback in &descriptor.callbacks {
         tables.callbacks.intern(&callback.name);
-        for port in &callback.endpoints {
-            tables.channels.intern(&port.channel);
+        for endpoint in &callback.endpoints {
+            tables.channels.intern(&endpoint.channel);
         }
     }
     HashMap::from([

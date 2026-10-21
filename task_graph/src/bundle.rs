@@ -1,6 +1,6 @@
 //! Heterogeneous forwarding families and explicit retention dependencies.
 use crate::plan::{Binding, Channel, Plan, Stored};
-use crate::{BuildError, GraphBindings, GraphPlan, capture, port_capture, ports, topology};
+use crate::{BuildError, GraphBindings, GraphPlan, capture, endpoint_capture, endpoints, topology};
 use std::marker::PhantomData;
 use std::{
     any::{Any, TypeId},
@@ -85,10 +85,10 @@ impl GraphPlan {
         callback: &str,
         ordinal: usize,
     ) -> Result<SubscriberKey<Value<'static, M, S>>, BuildError> {
-        let port = self.port(callback, ordinal, false)?;
+        let endpoint = self.endpoint(callback, ordinal, false)?;
         Ok(self
-            .bundle::<M, S>(&port.channel)?
-            .subscriber_key(port.index))
+            .bundle::<M, S>(&endpoint.channel)?
+            .subscriber_key(endpoint.index))
     }
     pub fn bundle<M: Send + Sync + 'static, S: ForwardedSources>(
         &mut self,
@@ -126,8 +126,8 @@ impl GraphPlan {
         capacity: usize,
     ) -> Result<PublisherKey<Value<'static, M, S>>, BuildError> {
         let key = self.bundle::<M, S>(name)?.publisher(capacity);
-        self.ports
-            .push(ports::PlannedPort::new::<Value<'static, M, S>>(
+        self.endpoints
+            .push(endpoints::PlannedEndpoint::new::<Value<'static, M, S>>(
                 name,
                 true,
                 false,
@@ -147,8 +147,8 @@ impl GraphPlan {
         let key = self
             .bundle::<M, S>(name)?
             .subscriber_with_policy(capacity, policy);
-        self.ports
-            .push(ports::PlannedPort::new::<Value<'static, M, S>>(
+        self.endpoints
+            .push(endpoints::PlannedEndpoint::new::<Value<'static, M, S>>(
                 name,
                 false,
                 false,
@@ -326,21 +326,21 @@ where
 }
 fn declare_output<M: Send + Sync + 'static, S: ForwardedSources>(
     plan: &mut GraphPlan,
-    port: &ports::PlannedPort,
+    endpoint: &endpoints::PlannedEndpoint,
 ) -> Result<capture::OutputBinding, BuildError>
 where
     for<'a> Value<'a, M, S>: task::loggable::Loggable,
 {
     let key = plan
-        .bundle::<M, S>(&port.channel)?
-        .publisher_key(port.index);
-    let channel = port.channel.clone();
-    let capacity = port.capacity;
+        .bundle::<M, S>(&endpoint.channel)?
+        .publisher_key(endpoint.index);
+    let channel = endpoint.channel.clone();
+    let capacity = endpoint.capacity;
     Ok(Box::new(move |bindings| {
         Ok(bindings
             .bundle::<M, S>(&channel)?
             .configure_publisher(&publisher_key::<M, S>(key), |publisher| {
-                port_capture::PortCapture::native(publisher, capacity)
+                endpoint_capture::EndpointCapture::native(publisher, capacity)
             })?)
     }))
 }

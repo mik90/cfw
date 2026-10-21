@@ -79,7 +79,7 @@ struct PublisherIndices {
 }
 
 pub struct ExactReplayExecutor<'storage> {
-    detail_port: Option<(Direction, usize)>,
+    detail_endpoint: Option<(Direction, usize)>,
     detail_header: Option<task::message::MessageHeader>,
     callbacks: Vec<Box<dyn Callback + 'storage>>,
     mapping: Vec<usize>,
@@ -144,9 +144,9 @@ impl<'storage> ExactReplayExecutor<'storage> {
             expected.sort_by_key(|p| (p.direction == Direction::Published, p.ordinal));
             let mut publisher_indices = BTreeMap::new();
             // Only publisher storage indices may differ between endpoint layouts.
-            for (port, recorded) in actual.iter_mut().zip(&expected) {
+            for (endpoint, recorded) in actual.iter_mut().zip(&expected) {
                 if let (Some(current), Some(index)) =
-                    (port.publisher_index, recorded.publisher_index)
+                    (endpoint.publisher_index, recorded.publisher_index)
                 {
                     publisher_indices.insert(
                         recorded.ordinal,
@@ -155,7 +155,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                             recorded: index,
                         },
                     );
-                    port.publisher_index = Some(index);
+                    endpoint.publisher_index = Some(index);
                 }
             }
             if actual != expected {
@@ -164,18 +164,18 @@ impl<'storage> ExactReplayExecutor<'storage> {
                     descriptor.name
                 )));
             }
-            for port in &descriptor.endpoints {
-                let key = (descriptor.name.clone(), port.ordinal);
-                if port.transport == Transport::Event {
+            for endpoint in &descriptor.endpoints {
+                let key = (descriptor.name.clone(), endpoint.ordinal);
+                if endpoint.transport == Transport::Event {
                     continue;
                 }
-                match port.direction {
+                match endpoint.direction {
                     Direction::Received => {
                         let source = bindings.inputs.get(&key).ok_or_else(|| {
                             ReplayError::Setup(format!("missing hydration binding {key:?}"))
                         })?;
-                        if source.channel() != port.channel
-                            || source.payload_type() != port.payload_type
+                        if source.channel() != endpoint.channel
+                            || source.payload_type() != endpoint.payload_type
                         {
                             return Err(ReplayError::Setup(format!(
                                 "hydration type/channel mismatch for {key:?}"
@@ -187,8 +187,8 @@ impl<'storage> ExactReplayExecutor<'storage> {
                         let capture = bindings.outputs.get(&key).ok_or_else(|| {
                             ReplayError::Setup(format!("missing output capture {key:?}"))
                         })?;
-                        if capture.channel() != port.channel
-                            || capture.payload_type() != port.payload_type
+                        if capture.channel() != endpoint.channel
+                            || capture.payload_type() != endpoint.payload_type
                         {
                             return Err(ReplayError::Setup(format!(
                                 "capture type/channel mismatch for {key:?}"
@@ -221,7 +221,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         let mut report = ReplayReport::new(log.executions.len(), config.max_mismatch_details);
         report.set_intern_tables(log.intern_tables.clone());
         Ok(Self {
-            detail_port: None,
+            detail_endpoint: None,
             detail_header: None,
             callbacks: nodes.into_iter().map(|n| n.callback).collect(),
             mapping,
@@ -251,7 +251,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             return Ok(None);
         }
         let record = self.log.executions[self.cursor].clone();
-        self.detail_port = None;
+        self.detail_endpoint = None;
         self.detail_header = None;
         self.cursor += 1;
         self.report.mark_consumed();
@@ -333,11 +333,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
             capture.clear();
         }
         for message in &record.inputs {
-            self.detail_port = Some((Direction::Received, message.ordinal));
+            self.detail_endpoint = Some((Direction::Received, message.ordinal));
             self.detail_header = Some(message.header);
-            let port = endpoint(&descriptor.endpoints, Direction::Received, message.ordinal);
-            let identity = (port.channel.clone(), message.header);
-            let logged = self.log.logged.contains(&port.channel);
+            let endpoint = endpoint(&descriptor.endpoints, Direction::Received, message.ordinal);
+            let identity = (endpoint.channel.clone(), message.header);
+            let logged = self.log.logged.contains(&endpoint.channel);
             let bytes = if logged {
                 self.log.payloads.get(&identity).cloned()
             } else {
@@ -345,7 +345,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             };
             let Some(bytes) = bytes else {
                 self.gap(
-                    &port.channel,
+                    &endpoint.channel,
                     format!("missing input for '{name}': {:?}", message.header),
                 )?;
                 return Ok(skipped());
@@ -358,19 +358,19 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 .inject(message.header, &bytes)
             {
                 self.gap(
-                    &port.channel,
+                    &endpoint.channel,
                     format!("input '{name}' decoding/publication: {error}"),
                 )?;
                 return Ok(skipped());
             }
             if logged {
-                self.report.record_logged(&port.channel);
+                self.report.record_logged(&endpoint.channel);
             } else {
-                self.report.record_reproduced(&port.channel);
+                self.report.record_reproduced(&endpoint.channel);
             }
         }
         for event in &record.events {
-            self.detail_port = Some((Direction::Received, event.ordinal));
+            self.detail_endpoint = Some((Direction::Received, event.ordinal));
             self.detail_header = None;
             self.callbacks[index]
                 .stage_replay_event(event.ordinal, event.event_id, event.count)
@@ -380,7 +380,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 })?;
         }
         let mut hydration_error = None;
-        self.detail_port = None;
+        self.detail_endpoint = None;
         self.detail_header = None;
         let mut output_events = Vec::new();
         let mut checked = Checked {
@@ -392,10 +392,10 @@ impl<'storage> ExactReplayExecutor<'storage> {
         let executed =
             task::execute_callback(&mut checked, &self.metadata.context(record.execution_time));
         if let Some(ordinal) = hydration_error {
-            self.detail_port = Some((Direction::Received, ordinal));
-            let port = endpoint(&descriptor.endpoints, Direction::Received, ordinal);
+            self.detail_endpoint = Some((Direction::Received, ordinal));
+            let endpoint = endpoint(&descriptor.endpoints, Direction::Received, ordinal);
             self.gap(
-                &port.channel,
+                &endpoint.channel,
                 format!("prepared snapshot differs for '{name}' input {ordinal}"),
             )?;
             return Ok(skipped());
@@ -410,37 +410,37 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 format!("'{name}' output event counts/IDs differ"),
             )?;
         }
-        for port in descriptor
+        for endpoint in descriptor
             .endpoints
             .iter()
             .filter(|p| p.direction == Direction::Published && p.transport != Transport::Event)
         {
-            self.detail_port = Some((Direction::Published, port.ordinal));
+            self.detail_endpoint = Some((Direction::Published, endpoint.ordinal));
             self.detail_header = None;
             let mut actual = self
                 .bindings
                 .outputs
-                .get_mut(&(name.clone(), port.ordinal))
+                .get_mut(&(name.clone(), endpoint.ordinal))
                 .unwrap()
                 .take()
                 .map_err(|e| ReplayError::Callback {
                     callback: name.clone(),
                     reason: format!("capture: {e}"),
                 })?;
-            let indices = &self.publishers[record.callback_id.index()][&port.ordinal];
+            let indices = &self.publishers[record.callback_id.index()][&endpoint.ordinal];
             if let Some((header, _)) = actual
                 .iter()
                 .find(|(header, _)| header.publisher_index != indices.current)
             {
                 self.detail_header = Some(*header);
                 self.mismatch(
-                    &port.channel,
+                    &endpoint.channel,
                     format!(
                         "'{name}' publisher {} captured index {}, expected current index {}",
-                        port.ordinal, header.publisher_index, indices.current
+                        endpoint.ordinal, header.publisher_index, indices.current
                     ),
                 )?;
-                // A misattributed port cannot safely populate reproduced/source caches.
+                // A misattributed endpoint cannot safely populate reproduced/source caches.
                 continue;
             }
             for (header, _) in &mut actual {
@@ -449,21 +449,21 @@ impl<'storage> ExactReplayExecutor<'storage> {
             let expected: Vec<_> = record
                 .outputs
                 .iter()
-                .filter(|m| m.ordinal == port.ordinal)
+                .filter(|m| m.ordinal == endpoint.ordinal)
                 .collect();
             for (position, expected) in expected.iter().enumerate() {
                 self.detail_header = Some(expected.header);
-                let identity = (port.channel.clone(), expected.header);
-                let logged = self.log.logged.contains(&port.channel);
+                let identity = (endpoint.channel.clone(), expected.header);
+                let logged = self.log.logged.contains(&endpoint.channel);
                 let expected_body = if logged {
                     match self.log.payloads.get(&identity).cloned() {
                         Some(bytes) => {
-                            self.report.record_logged(&port.channel);
+                            self.report.record_logged(&endpoint.channel);
                             Some(bytes)
                         }
                         None => {
                             self.gap(
-                                &port.channel,
+                                &endpoint.channel,
                                 format!("missing expected output for '{name}'"),
                             )?;
                             None
@@ -471,12 +471,12 @@ impl<'storage> ExactReplayExecutor<'storage> {
                     }
                 } else {
                     if actual.get(position).is_some() {
-                        self.report.record_reproduced(&port.channel);
+                        self.report.record_reproduced(&endpoint.channel);
                     } else {
-                        self.report.record_gap(&port.channel);
+                        self.report.record_gap(&endpoint.channel);
                         self.detail(
                             crate::report::ReplayDetailKind::Gap,
-                            Some(&port.channel),
+                            Some(&endpoint.channel),
                             "output was not reproduced".into(),
                         );
                     }
@@ -484,10 +484,10 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 };
                 match actual.get(position) {
                     None => self.mismatch(
-                        &port.channel,
+                        &endpoint.channel,
                         format!(
                             "'{name}' publisher {} missing output {position}",
-                            port.ordinal
+                            endpoint.ordinal
                         ),
                     )?,
                     Some((header, body))
@@ -497,10 +497,10 @@ impl<'storage> ExactReplayExecutor<'storage> {
                                 .is_some_and(|expected| expected != body) =>
                     {
                         self.mismatch(
-                            &port.channel,
+                            &endpoint.channel,
                             format!(
                                 "'{name}' publisher {} output {position} differs",
-                                port.ordinal
+                                endpoint.ordinal
                             ),
                         )?
                     }
@@ -510,24 +510,24 @@ impl<'storage> ExactReplayExecutor<'storage> {
             for (position, (header, _)) in actual.iter().enumerate().skip(expected.len()) {
                 self.detail_header = Some(*header);
                 self.mismatch(
-                    &port.channel,
+                    &endpoint.channel,
                     format!(
                         "'{name}' publisher {} unexpected output {position}",
-                        port.ordinal
+                        endpoint.ordinal
                     ),
                 )?;
             }
             for (header, body) in actual {
                 self.detail_header = Some(header);
-                if !self.log.logged.contains(&port.channel) {
-                    let identity = (port.channel.clone(), header);
+                if !self.log.logged.contains(&endpoint.channel) {
+                    let identity = (endpoint.channel.clone(), header);
                     if self.reproduced.insert(identity, body.clone()).is_some() {
                         return Err(ReplayError::Callback {
                             callback: name.clone(),
                             reason: "ambiguous reproduced publication".into(),
                         });
                     }
-                    if let Some(load) = self.bindings.caches.get_mut(&port.channel) {
+                    if let Some(load) = self.bindings.caches.get_mut(&endpoint.channel) {
                         load(header, &body).map_err(|e| ReplayError::Callback {
                             callback: name.clone(),
                             reason: format!("source cache: {e}"),
@@ -550,12 +550,12 @@ impl<'storage> ExactReplayExecutor<'storage> {
     ) {
         let record = &self.log.executions[self.cursor - 1];
         let channel = channel.or_else(|| {
-            self.detail_port.and_then(|(direction, ordinal)| {
+            self.detail_endpoint.and_then(|(direction, ordinal)| {
                 self.log.descriptor.callbacks[record.callback_id.index()]
                     .endpoints
                     .iter()
-                    .find(|port| port.direction == direction && port.ordinal == ordinal)
-                    .map(|port| port.channel.as_str())
+                    .find(|endpoint| endpoint.direction == direction && endpoint.ordinal == ordinal)
+                    .map(|endpoint| endpoint.channel.as_str())
             })
         });
         self.report.detail(crate::report::ReplayDetail {
@@ -563,7 +563,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             callback: record.callback_id,
             channel: channel.and_then(|name| self.log.intern_tables.channels.lookup_by_value(name)),
             time: record.execution_time,
-            port: self.detail_port,
+            endpoint: self.detail_endpoint,
             publication: self.detail_header,
             reason,
             reason_truncated: false,
@@ -571,11 +571,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
     }
 }
 fn endpoint(
-    ports: &[EndpointDescriptor],
+    endpoints: &[EndpointDescriptor],
     direction: Direction,
     ordinal: usize,
 ) -> &EndpointDescriptor {
-    ports
+    endpoints
         .iter()
         .find(|p| p.direction == direction && p.ordinal == ordinal)
         .expect("validated endpoint")

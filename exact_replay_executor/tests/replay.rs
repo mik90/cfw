@@ -2,7 +2,7 @@ use exact_replay_executor::{
     DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, ReplayBindings, ReplayError,
     ReplayInputPlan, ReplayLog,
 };
-use logging::{CapturePlan, ExecutionRecorder, LogSession, PortCapture};
+use logging::{CapturePlan, EndpointCapture, ExecutionRecorder, LogSession};
 use std::{
     collections::HashMap,
     io::Write,
@@ -176,7 +176,7 @@ fn replay<R>(
             0,
             source
                 .configure_publisher(a.output_key(), |publisher| {
-                    PortCapture::native(publisher, 8)
+                    EndpointCapture::native(publisher, 8)
                 })
                 .unwrap(),
         )
@@ -187,7 +187,7 @@ fn replay<R>(
             0,
             output
                 .configure_publisher(b.output_key(), |publisher| {
-                    PortCapture::native(publisher, 8)
+                    EndpointCapture::native(publisher, 8)
                 })
                 .unwrap(),
         )
@@ -309,7 +309,7 @@ fn strict_stops_and_best_effort_collects_byte_count_and_missing_output_mismatche
                         .try_lookup_by_id(detail.channel.unwrap())
                         .is_some()
                 );
-                assert!(detail.port.is_some());
+                assert!(detail.endpoint.is_some());
                 assert!(detail.publication.is_some());
                 assert_eq!(report.omitted_details(), 1);
                 assert!(!report.is_exact());
@@ -358,8 +358,8 @@ fn log_from(
     let mut tables = InternTables::default();
     for callback in &descriptor.callbacks {
         tables.callbacks.intern(&callback.name);
-        for port in &callback.endpoints {
-            tables.channels.intern(&port.channel);
+        for endpoint in &callback.endpoints {
+            tables.channels.intern(&endpoint.channel);
         }
     }
     let mut entries: Vec<_> = payloads
@@ -684,19 +684,19 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
     let storage = (shared.allocate().unwrap(), result.allocate().unwrap());
     let shared = storage.0.bind();
     let result = storage.1.bind();
-    let mut ports = ReplayBindings::new();
-    ports
+    let mut endpoints = ReplayBindings::new();
+    endpoints
         .add_input("pair", 0, first.bind(&shared).unwrap())
         .unwrap();
-    ports
+    endpoints
         .add_input("pair", 1, second.bind(&shared).unwrap())
         .unwrap();
-    ports
+    endpoints
         .add_output(
             "pair",
             0,
             result
-                .configure_publisher(declaration.output_key(), |p| PortCapture::native(p, 1))
+                .configure_publisher(declaration.output_key(), |p| EndpointCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
@@ -705,7 +705,7 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
         Ok(TwoInputs.bind(declaration, &shared, &shared, &result)?)
     });
     assert!(
-        ExactReplayExecutor::new(graph.build().unwrap(), log, ports)
+        ExactReplayExecutor::new(graph.build().unwrap(), log, endpoints)
             .unwrap()
             .run()
             .unwrap()
@@ -772,22 +772,22 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
     let declaration = TwoOutputsDeclaration::from_keys(first, second);
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind();
-    let mut ports = ReplayBindings::new();
-    ports
+    let mut endpoints = ReplayBindings::new();
+    endpoints
         .add_output(
             "pair",
             0,
             bindings
-                .configure_publisher(declaration.first_key(), |p| PortCapture::native(p, 1))
+                .configure_publisher(declaration.first_key(), |p| EndpointCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
-    ports
+    endpoints
         .add_output(
             "pair",
             1,
             bindings
-                .configure_publisher(declaration.second_key(), |p| PortCapture::native(p, 1))
+                .configure_publisher(declaration.second_key(), |p| EndpointCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
@@ -798,7 +798,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
     let report = ExactReplayExecutor::with_config(
         graph.build().unwrap(),
         log,
-        ports,
+        endpoints,
         ExactReplayConfig {
             divergence_policy: DivergencePolicy::BestEffort,
             ..Default::default()
@@ -930,15 +930,15 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
             let forward = storage.1.bind();
             let result = storage.2.bind();
             let cache = cache.bind(&source).unwrap();
-            let mut ports = ReplayBindings::new();
+            let mut endpoints = ReplayBindings::new();
             let loader = cache.clone();
-            ports
+            endpoints
                 .add_cache("source", move |h, b| loader.load(h, b))
                 .unwrap();
-            ports
+            endpoints
                 .add_input("forward", 0, hydrate_b.bind(&source).unwrap())
                 .unwrap();
-            ports
+            endpoints
                 .add_input(
                     "consume",
                     0,
@@ -949,30 +949,30 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                         .unwrap(),
                 )
                 .unwrap();
-            ports
+            endpoints
                 .add_output(
                     "source",
                     0,
                     source
-                        .configure_publisher(a.output_key(), |p| PortCapture::native(p, 4))
+                        .configure_publisher(a.output_key(), |p| EndpointCapture::native(p, 4))
                         .unwrap(),
                 )
                 .unwrap();
-            ports
+            endpoints
                 .add_output(
                     "forward",
                     0,
                     forward
-                        .configure_publisher(b.output_key(), |p| PortCapture::native(p, 4))
+                        .configure_publisher(b.output_key(), |p| EndpointCapture::native(p, 4))
                         .unwrap(),
                 )
                 .unwrap();
-            ports
+            endpoints
                 .add_output(
                     "consume",
                     0,
                     result
-                        .configure_publisher(c.output_key(), |p| PortCapture::native(p, 4))
+                        .configure_publisher(c.output_key(), |p| EndpointCapture::native(p, 4))
                         .unwrap(),
                 )
                 .unwrap();
@@ -982,7 +982,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
             });
             graph.add_callback("forward", || Ok(Forward.bind(b, &source, &forward)?));
             graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
-            let report = ExactReplayExecutor::new(graph.build().unwrap(), log, ports)
+            let report = ExactReplayExecutor::new(graph.build().unwrap(), log, endpoints)
                 .unwrap()
                 .run()
                 .unwrap();

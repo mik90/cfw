@@ -164,8 +164,8 @@ fn mismatched_layout_is_rejected_before_hydration_publishers_are_declared() {
 }
 
 #[test]
-fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
-    use exact_replay_executor::{ExplicitReplayPort, ReplayInputPlan};
+fn explicit_custom_endpoints_can_be_combined_with_automatic_bindings() {
+    use exact_replay_executor::{ExplicitReplayEndpoint, ReplayInputPlan};
     let log = recorded(true);
     let mut plan = GraphPlan::default();
     source(&mut plan, "a", 10);
@@ -178,13 +178,13 @@ fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
         ExactReplayPlan::declare_with_explicit(
             &mut plan,
             &log,
-            &std::collections::BTreeSet::from([ExplicitReplayPort::input("missing", 0)])
+            &std::collections::BTreeSet::from([ExplicitReplayEndpoint::input("missing", 0)])
         )
         .is_err()
     );
     let explicit = std::collections::BTreeSet::from([
-        ExplicitReplayPort::input("sum", 1),
-        ExplicitReplayPort::output("a", 0),
+        ExplicitReplayEndpoint::input("sum", 1),
+        ExplicitReplayEndpoint::output("a", 0),
     ]);
     let manual =
         ReplayInputPlan::declare(plan.native::<Value>("shared").unwrap(), &input_key).unwrap();
@@ -211,7 +211,7 @@ fn explicit_custom_ports_can_be_combined_with_automatic_bindings() {
                 .native::<Value>("shared")
                 .unwrap()
                 .configure_publisher(&output_key, |publisher| {
-                    logging::PortCapture::native(publisher, 2)
+                    logging::EndpointCapture::native(publisher, 2)
                 })
                 .unwrap(),
         )
@@ -291,7 +291,7 @@ fn pair_tasks(plan: &mut GraphPlan, reverse: bool) {
 }
 #[test]
 fn heterogeneous_bundles_replay_logged_and_reproduced_sources() {
-    use exact_replay_executor::{BundleReplayInputPlan, ExplicitReplayPort};
+    use exact_replay_executor::{BundleReplayInputPlan, ExplicitReplayEndpoint};
     use task::loggable::Loggable;
     for logged in [false, true] {
         let bytes = Bytes::default();
@@ -353,7 +353,7 @@ fn heterogeneous_bundles_replay_logged_and_reproduced_sources() {
         let automatic = ExactReplayPlan::declare_with_explicit(
             &mut plan,
             &log,
-            &std::collections::BTreeSet::from([ExplicitReplayPort::input("sink", 0)]),
+            &std::collections::BTreeSet::from([ExplicitReplayEndpoint::input("sink", 0)]),
         )
         .unwrap();
         let storage = plan.allocate().unwrap();
@@ -451,7 +451,7 @@ fn forwarding_tasks(plan: &mut GraphPlan, reverse: bool) {
 }
 #[test]
 fn borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
-    use exact_replay_executor::{BundleReplayInputPlan, ExplicitReplayPort};
+    use exact_replay_executor::{BundleReplayInputPlan, ExplicitReplayEndpoint};
     for logged in [false, true] {
         let bytes = Bytes::default();
         {
@@ -512,7 +512,7 @@ fn borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
         let automatic = ExactReplayPlan::declare_with_explicit(
             &mut plan,
             &log,
-            &std::collections::BTreeSet::from([ExplicitReplayPort::input("sink", 0)]),
+            &std::collections::BTreeSet::from([ExplicitReplayEndpoint::input("sink", 0)]),
         )
         .unwrap();
         let storage = plan.allocate().unwrap();

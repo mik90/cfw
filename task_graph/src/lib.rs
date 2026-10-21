@@ -2,10 +2,10 @@
 mod application;
 pub mod bundle;
 pub mod capture;
+pub mod endpoint_capture;
+pub mod endpoints;
 pub mod graph;
 mod plan;
-pub mod port_capture;
-pub mod ports;
 pub mod replay;
 pub mod topology;
 
@@ -15,7 +15,7 @@ pub use graph::{
     ScheduledCallback, TimingError,
 };
 pub use plan::{
-    BuildError, ChannelOverrides, GraphBindings, GraphPlan, GraphStorage, PortDirection, Task,
+    BuildError, ChannelOverrides, EndpointDirection, GraphBindings, GraphPlan, GraphStorage, Task,
     TaskBinding, TaskRegistration,
 };
 pub use topology::Topology;

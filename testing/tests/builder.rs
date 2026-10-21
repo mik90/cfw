@@ -144,7 +144,7 @@ impl Narrow {
     }
 }
 #[test]
-fn topology_exposes_ports_capacities_and_conflicting_declarations() {
+fn topology_exposes_endpoints_capacities_and_conflicting_declarations() {
     let mut builder = UnitTestExecutorBuilder::new();
     builder
         .add_task("double\"quoted", Double, ns(1))
@@ -154,9 +154,9 @@ fn topology_exposes_ports_capacities_and_conflicting_declarations() {
     builder.add_test_subscriber::<u64>("loop");
     let setup = builder.allocate();
     let topology = setup.topology();
-    assert_eq!(topology.ports.len(), 2);
-    assert_eq!(topology.ports[0].port, "input");
-    assert_eq!(topology.ports[1].port, "output");
+    assert_eq!(topology.endpoints.len(), 2);
+    assert_eq!(topology.endpoints[0].name, "input");
+    assert_eq!(topology.endpoints[1].name, "output");
     assert_eq!(topology.channels[0].sources[1], Some(vec![0]));
     assert!(topology.to_string().contains("capacity="));
     assert!(topology.dot().contains("double\\\"quoted"));

@@ -72,24 +72,25 @@ impl ReplayLog {
             if !names.insert(&callback.name) {
                 return Err(ReplayError::InvalidLog("duplicate callback name".into()));
             }
-            let mut ports = HashSet::new();
-            for port in &callback.endpoints {
-                let data_output =
-                    port.direction == Direction::Published && port.transport != Transport::Event;
-                if data_output != port.publisher_index.is_some() {
+            let mut endpoints = HashSet::new();
+            for endpoint in &callback.endpoints {
+                let data_output = endpoint.direction == Direction::Published
+                    && endpoint.transport != Transport::Event;
+                if data_output != endpoint.publisher_index.is_some() {
                     return Err(ReplayError::InvalidLog(
-                        "publisher index must identify a data output port".into(),
+                        "publisher index must identify a data output endpoint".into(),
                     ));
                 }
-                if let Some(index) = port.publisher_index
-                    && !publishers.insert((port.channel.clone(), index))
+                if let Some(index) = endpoint.publisher_index
+                    && !publishers.insert((endpoint.channel.clone(), index))
                 {
                     return Err(ReplayError::InvalidLog(format!(
                         "duplicate publisher index on '{}'",
-                        port.channel
+                        endpoint.channel
                     )));
                 }
-                if !ports.insert((port.direction == Direction::Received, port.ordinal)) {
+                if !endpoints.insert((endpoint.direction == Direction::Received, endpoint.ordinal))
+                {
                     return Err(ReplayError::InvalidLog(format!(
                         "duplicate ordinal on '{}'",
                         callback.name
@@ -146,7 +147,7 @@ impl ReplayLog {
                     != Transport::Event
                 {
                     return Err(ReplayError::InvalidLog(
-                        "observed event is not addressed to an event port".into(),
+                        "observed event is not addressed to an event endpoint".into(),
                     ));
                 }
             }
@@ -189,7 +190,7 @@ impl ReplayLog {
             })
             .ok_or_else(|| {
                 ReplayError::InvalidLog(format!(
-                    "unknown {:?} port {ordinal} on callback {callback}",
+                    "unknown {:?} endpoint {ordinal} on callback {callback}",
                     direction
                 ))
             })
@@ -213,7 +214,7 @@ impl ReplayLog {
                 (Direction::Published, &record.outputs),
             ] {
                 for message in messages {
-                    let port = self.endpoint(
+                    let endpoint = self.endpoint(
                         record.callback_id.index(),
                         direction,
                         message.ordinal,
@@ -223,14 +224,14 @@ impl ReplayLog {
                         return Err(ReplayError::InvalidLog("invalid message reference".into()));
                     }
                     if direction == Direction::Published {
-                        if !produced.insert((port.channel.clone(), message.header)) {
+                        if !produced.insert((endpoint.channel.clone(), message.header)) {
                             return Err(ReplayError::InvalidLog(format!(
                                 "ambiguous publication identity on '{}': {:?}",
-                                port.channel, message.header
+                                endpoint.channel, message.header
                             )));
                         }
                         let next = batch_indices.entry(message.ordinal).or_default();
-                        if port.publisher_index != Some(message.header.publisher_index)
+                        if endpoint.publisher_index != Some(message.header.publisher_index)
                             || message.header.batch_index != *next
                             || message.header.published_at != record.execution_time
                         {
@@ -256,7 +257,7 @@ impl ReplayLog {
                     != Transport::Event
                 {
                     return Err(ReplayError::InvalidLog(
-                        "input event ordinal is not an event port".into(),
+                        "input event ordinal is not an event endpoint".into(),
                     ));
                 }
             }
@@ -292,7 +293,7 @@ impl ReplayLog {
                         output.ordinal,
                         false,
                     )
-                    .is_ok_and(|port| port.channel == channel)
+                    .is_ok_and(|endpoint| endpoint.channel == channel)
                 {
                     headers.insert(output.header);
                 }

@@ -252,7 +252,7 @@ fn output_fixture<T: Send + Sync + 'static>(
     })
 }
 
-/// Plans task ports and fixtures before allocating any native arenas.
+/// Plans task endpoints and fixtures before allocating any native arenas.
 /// Generated tasks supply their declarations through `task_graph::Task`.
 pub struct UnitTestExecutorBuilder {
     tasks: ApplicationBuilder,

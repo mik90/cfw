@@ -15,7 +15,7 @@ type Events = Mutex<Vec<(String, EventId, u64)>>;
 pub(super) type PendingEvents = Arc<Events>;
 
 /// Publishes real middleware samples without implicit event notifications.
-/// Bound fixture ports own their middleware resources independently of execution.
+/// Bound fixture endpoints own their middleware resources independently of execution.
 pub struct Iox2TestPublisher<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     publisher: Iox2Publisher<T>,
     time: Arc<TimeSource>,

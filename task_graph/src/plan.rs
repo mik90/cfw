@@ -1,6 +1,6 @@
 //! Graph planning for owned payloads and storage-borrowing Forwarded source bundles.
 //! Storage remains externally owned; only the construction metadata is erased.
-use crate::{BuiltGraph, ScheduledCallback, bundle, capture, ports, replay, topology};
+use crate::{BuiltGraph, ScheduledCallback, bundle, capture, endpoints, replay, topology};
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
@@ -89,11 +89,11 @@ pub type TaskBinding = Box<
 >;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PortDirection {
+pub enum EndpointDirection {
     Input,
     Output,
 }
-impl PortDirection {
+impl EndpointDirection {
     fn name(self) -> &'static str {
         match self {
             Self::Input => "input",
@@ -106,43 +106,45 @@ impl PortDirection {
 /// channel endpoint indices. Resolution precedes all endpoint registration.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelOverrides {
-    channels: BTreeMap<(PortDirection, String), String>,
+    channels: BTreeMap<(EndpointDirection, String), String>,
 }
 impl ChannelOverrides {
     pub fn input_channel(
         &mut self,
-        port: impl Into<String>,
+        endpoint: impl Into<String>,
         channel: impl Into<String>,
     ) -> &mut Self {
         self.channels
-            .insert((PortDirection::Input, port.into()), channel.into());
+            .insert((EndpointDirection::Input, endpoint.into()), channel.into());
         self
     }
     pub fn output_channel(
         &mut self,
-        port: impl Into<String>,
+        endpoint: impl Into<String>,
         channel: impl Into<String>,
     ) -> &mut Self {
         self.channels
-            .insert((PortDirection::Output, port.into()), channel.into());
+            .insert((EndpointDirection::Output, endpoint.into()), channel.into());
         self
     }
-    pub fn validate(&self, ports: &[(&str, PortDirection)]) -> Result<(), BuildError> {
+    pub fn validate(&self, endpoints: &[(&str, EndpointDirection)]) -> Result<(), BuildError> {
         for ((direction, name), channel) in &self.channels {
-            let (_, actual) = ports
+            let (_, actual) = endpoints
                 .iter()
-                .find(|(port, _)| *port == name)
-                .ok_or_else(|| BuildError(format!("unknown {} port '{name}'", direction.name())))?;
+                .find(|(endpoint, _)| *endpoint == name)
+                .ok_or_else(|| {
+                    BuildError(format!("unknown {} endpoint '{name}'", direction.name()))
+                })?;
             if actual != direction {
                 return Err(BuildError(format!(
-                    "port '{name}' is an {}, not an {}",
+                    "endpoint '{name}' is an {}, not an {}",
                     actual.name(),
                     direction.name()
                 )));
             }
             if channel.is_empty() {
                 return Err(BuildError(format!(
-                    "port '{name}' has an empty channel override"
+                    "endpoint '{name}' has an empty channel override"
                 )));
             }
         }
@@ -150,18 +152,18 @@ impl ChannelOverrides {
     }
     pub fn resolve(
         &self,
-        port: &str,
-        direction: PortDirection,
+        endpoint: &str,
+        direction: EndpointDirection,
         default: impl FnOnce() -> String,
     ) -> Result<String, BuildError> {
         let name = self
             .channels
-            .get(&(direction, port.into()))
+            .get(&(direction, endpoint.into()))
             .cloned()
             .unwrap_or_else(default);
         if name.is_empty() {
             return Err(BuildError(format!(
-                "port '{port}' has an empty channel name"
+                "endpoint '{endpoint}' has an empty channel name"
             )));
         }
         Ok(name)
@@ -191,25 +193,25 @@ impl TaskRegistration {
     }
     pub fn input_channel(
         &mut self,
-        port: impl Into<String>,
+        endpoint: impl Into<String>,
         channel: impl Into<String>,
     ) -> &mut Self {
-        self.channels.input_channel(port, channel);
+        self.channels.input_channel(endpoint, channel);
         self
     }
     pub fn output_channel(
         &mut self,
-        port: impl Into<String>,
+        endpoint: impl Into<String>,
         channel: impl Into<String>,
     ) -> &mut Self {
-        self.channels.output_channel(port, channel);
+        self.channels.output_channel(endpoint, channel);
         self
     }
     pub fn register(self, plan: &mut GraphPlan) -> Result<(), BuildError> {
         if plan.tasks.contains_key(&self.name) {
             return Err(BuildError(format!("duplicate task '{}'", self.name)));
         }
-        let start = plan.ports.len();
+        let start = plan.endpoints.len();
         plan.active_task = Some(self.name.clone());
         let binding = self
             .task
@@ -218,7 +220,7 @@ impl TaskRegistration {
         plan.active_task = None;
         let binding = binding?;
         plan.tasks
-            .insert(self.name.clone(), start..plan.ports.len());
+            .insert(self.name.clone(), start..plan.endpoints.len());
         plan.callbacks.push((self.name, self.schedule, binding));
         Ok(())
     }
@@ -324,7 +326,7 @@ pub struct GraphPlan {
     pub(crate) forwarding_edges: Vec<bundle::ForwardingEdge>,
     pub(crate) active_task: Option<String>,
     pub(crate) channels: BTreeMap<String, Channel>,
-    pub(crate) ports: Vec<ports::PlannedPort>,
+    pub(crate) endpoints: Vec<endpoints::PlannedEndpoint>,
     pub(crate) tasks: BTreeMap<String, Range<usize>>,
     callbacks: Vec<TaskDefinition>,
     #[cfg(feature = "iceoryx2")]
@@ -337,13 +339,13 @@ pub struct GraphPlan {
 impl GraphPlan {
     /// Generated registration annotates each endpoint after its checked declaration.
     #[doc(hidden)]
-    pub fn annotate_last_port(&mut self, name: &str, forwardable: bool) {
-        let port = self
-            .ports
+    pub fn annotate_last_endpoint(&mut self, name: &str, forwardable: bool) {
+        let endpoint = self
+            .endpoints
             .last_mut()
-            .expect("port must be declared before annotation");
-        port.name = Some(name.into());
-        port.forwardable = forwardable;
+            .expect("endpoint must be declared before annotation");
+        endpoint.name = Some(name.into());
+        endpoint.forwardable = forwardable;
     }
     pub fn topology(&self) -> Topology {
         let mut snapshot = Topology {
@@ -354,7 +356,7 @@ impl GraphPlan {
                 .values()
                 .map(|channel| channel.plan.topology())
                 .collect(),
-            ports: vec![],
+            endpoints: vec![],
         };
         #[cfg(feature = "iceoryx2")]
         for (name, (plan, _)) in &self.events {
@@ -365,22 +367,22 @@ impl GraphPlan {
             }
         }
         snapshot.channels.sort_by(|a, b| a.name.cmp(&b.name));
-        for (callback, ports) in &self.tasks {
+        for (callback, endpoints) in &self.tasks {
             let mut ordinals = [0, 0];
-            for port in &self.ports[ports.clone()] {
-                let ordinal = ordinals[usize::from(port.output)];
-                ordinals[usize::from(port.output)] += 1;
-                snapshot.ports.push(topology::PortTopology {
-                    forwardable: port.forwardable,
+            for endpoint in &self.endpoints[endpoints.clone()] {
+                let ordinal = ordinals[usize::from(endpoint.output)];
+                ordinals[usize::from(endpoint.output)] += 1;
+                snapshot.endpoints.push(topology::EndpointTopology {
+                    forwardable: endpoint.forwardable,
                     callback: callback.clone(),
-                    port: port.name.clone().unwrap_or_else(|| ordinal.to_string()),
+                    name: endpoint.name.clone().unwrap_or_else(|| ordinal.to_string()),
                     ordinal,
-                    output: port.output,
-                    channel: port.channel.clone(),
-                    transport: port.transport,
-                    payload_type: port.payload_type,
-                    capacity: port.capacity,
-                    endpoint_index: port.index,
+                    output: endpoint.output,
+                    channel: endpoint.channel.clone(),
+                    transport: endpoint.transport,
+                    payload_type: endpoint.payload_type,
+                    capacity: endpoint.capacity,
+                    endpoint_index: endpoint.index,
                 });
             }
         }
@@ -391,14 +393,14 @@ impl GraphPlan {
         name: &str,
     ) -> Result<Vec<task::PublisherKey<T>>, BuildError> {
         let indices: Vec<_> = self
-            .ports
+            .endpoints
             .iter()
-            .filter(|port| {
-                port.channel == name
-                    && port.output
-                    && port.transport == task::recording::Transport::Native
+            .filter(|endpoint| {
+                endpoint.channel == name
+                    && endpoint.output
+                    && endpoint.transport == task::recording::Transport::Native
             })
-            .map(|port| port.index)
+            .map(|endpoint| endpoint.index)
             .collect();
         let plan = self.native::<T>(name)?;
         Ok(indices
@@ -439,7 +441,7 @@ impl GraphPlan {
         capacity: usize,
     ) -> Result<task::PublisherKey<T>, BuildError> {
         let key = self.native::<T>(name)?.publisher(capacity);
-        self.ports.push(ports::PlannedPort::new::<T>(
+        self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
             name,
             true,
             false,
@@ -460,7 +462,7 @@ impl GraphPlan {
             .native::<T>(name)?
             .subscriber_with_policy(capacity, policy);
         self.channels.get_mut(name).unwrap().subscribers += 1;
-        self.ports.push(ports::PlannedPort::new::<T>(
+        self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
             name,
             false,
             false,
@@ -716,14 +718,14 @@ mod ipc {
             name: &str,
         ) -> Result<Vec<Iox2PublisherKey<T>>, BuildError> {
             let indices: Vec<_> = self
-                .ports
+                .endpoints
                 .iter()
-                .filter(|port| {
-                    port.channel == name
-                        && port.output
-                        && port.transport == task::recording::Transport::Ipc
+                .filter(|endpoint| {
+                    endpoint.channel == name
+                        && endpoint.output
+                        && endpoint.transport == task::recording::Transport::Ipc
                 })
-                .map(|port| port.index)
+                .map(|endpoint| endpoint.index)
                 .collect();
             let plan = self.ipc::<T>(name)?;
             Ok(indices
@@ -827,7 +829,7 @@ mod ipc {
             capacity: usize,
         ) -> Result<Iox2PublisherKey<T>, BuildError> {
             let key = self.ipc::<T>(name)?.publisher(capacity);
-            self.ports.push(ports::PlannedPort::new::<T>(
+            self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
                 true,
                 true,
@@ -844,7 +846,7 @@ mod ipc {
             capacity: usize,
         ) -> Result<Iox2SubscriberKey<T>, BuildError> {
             let key = self.ipc::<T>(name)?.subscriber(capacity);
-            self.ports.push(ports::PlannedPort::new::<T>(
+            self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
                 false,
                 true,
@@ -874,7 +876,7 @@ mod ipc {
             let entry = self.event_plan(name)?;
             entry.1 += 1;
             let key = entry.0.events(capacity);
-            self.ports.push(ports::PlannedPort::new::<()>(
+            self.endpoints.push(endpoints::PlannedEndpoint::new::<()>(
                 name,
                 false,
                 true,
@@ -886,7 +888,7 @@ mod ipc {
         }
         pub fn notifier(&mut self, name: &str) -> Result<Iox2NotifierKey, BuildError> {
             let key = self.event_plan(name)?.0.notifier();
-            self.ports.push(ports::PlannedPort::new::<()>(
+            self.endpoints.push(endpoints::PlannedEndpoint::new::<()>(
                 name,
                 true,
                 true,

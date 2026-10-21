@@ -1,5 +1,5 @@
 use crate::ReplayError;
-use logging::{BoxedLogError, PortCapture, ReplaySource};
+use logging::{BoxedLogError, EndpointCapture, ReplaySource};
 use std::collections::BTreeMap;
 use task::{
     ChannelBindings, ChannelPlan, PublisherKey, StorageError, SubscriberKey, loggable::Loggable,
@@ -153,7 +153,7 @@ impl<T> ReplayInputPlan<T> {
         ))
     }
 }
-pub(crate) type Port = (String, usize);
+pub(crate) type Endpoint = (String, usize);
 /// Isolated contextual hydration for a heterogeneous source bundle.
 pub struct BundleReplayInputPlan<M, S: task::ForwardedSources> {
     plan: ReplayInputPlan<task::Forwarded<M, S::Bound<'static>>>,
@@ -180,11 +180,11 @@ impl<M: Send + Sync + 'static, S: task::ForwardedSources> BundleReplayInputPlan<
 }
 pub(crate) type CacheLoader<'a> =
     Box<dyn FnMut(MessageHeader, &[u8]) -> Result<(), BoxedLogError> + Send + 'a>;
-/// Bindings use callback names and callback port ordinals, not channel indices.
+/// Bindings use callback names and callback endpoint ordinals, not channel indices.
 #[derive(Default)]
 pub struct ReplayBindings<'a> {
-    pub(crate) inputs: BTreeMap<Port, ReplaySource<'a>>,
-    pub(crate) outputs: BTreeMap<Port, PortCapture>,
+    pub(crate) inputs: BTreeMap<Endpoint, ReplaySource<'a>>,
+    pub(crate) outputs: BTreeMap<Endpoint, EndpointCapture>,
     pub(crate) caches: BTreeMap<String, CacheLoader<'a>>,
 }
 impl<'a> ReplayBindings<'a> {
@@ -210,7 +210,7 @@ impl<'a> ReplayBindings<'a> {
         &mut self,
         callback: impl Into<String>,
         ordinal: usize,
-        capture: PortCapture,
+        capture: EndpointCapture,
     ) -> Result<(), ReplayError> {
         let key = (callback.into(), ordinal);
         if self.outputs.contains_key(&key) {

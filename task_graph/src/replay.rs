@@ -1,5 +1,5 @@
 //! Replay decoding capabilities and preallocated injection endpoints.
-use crate::{BuildError, GraphBindings, GraphPlan, ports::PlannedPort};
+use crate::{BuildError, GraphBindings, GraphPlan, endpoints::PlannedEndpoint};
 use std::{collections::BTreeSet, marker::PhantomData};
 use task::{Publisher, loggable::Loggable, message::MessageHeader};
 
@@ -84,7 +84,8 @@ pub type SourceBinding =
 #[derive(Clone, Copy)]
 pub(crate) struct SourceDeclaration {
     pub declare: fn(&mut GraphPlan, &str, usize) -> Result<SourceBinding, BuildError>,
-    pub inject_input: fn(&mut GraphPlan, &PlannedPort, usize) -> Result<SourceBinding, BuildError>,
+    pub inject_input:
+        fn(&mut GraphPlan, &PlannedEndpoint, usize) -> Result<SourceBinding, BuildError>,
 }
 
 fn native<T>(
@@ -106,18 +107,18 @@ where
 }
 fn native_input<T>(
     plan: &mut GraphPlan,
-    port: &PlannedPort,
+    endpoint: &PlannedEndpoint,
     capacity: usize,
 ) -> Result<SourceBinding, BuildError>
 where
     T: Send + Sync + 'static,
     for<'ctx> T: Loggable<Context<'ctx> = ()>,
 {
-    let channel = plan.native::<T>(&port.channel)?;
-    let subscriber = channel.subscriber_key(port.index);
+    let channel = plan.native::<T>(&endpoint.channel)?;
+    let subscriber = channel.subscriber_key(endpoint.index);
     let publisher = channel.publisher(capacity);
     channel.restrict_subscriber_sources(&subscriber, std::slice::from_ref(&publisher))?;
-    let channel = port.channel.clone();
+    let channel = endpoint.channel.clone();
     Ok(Box::new(move |bindings| {
         Ok(ReplaySource::native(
             bindings.native::<T>(&channel)?.take_publisher(&publisher)?,
@@ -260,15 +261,17 @@ mod ipc {
     }
     fn inject_input<T>(
         plan: &mut GraphPlan,
-        port: &PlannedPort,
+        endpoint: &PlannedEndpoint,
         _capacity: usize,
     ) -> Result<SourceBinding, BuildError>
     where
         T: Debug + ZeroCopySend + Send + Sync + 'static,
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
     {
-        let subscriber = plan.ipc::<T>(&port.channel)?.subscriber_key(port.index);
-        let channel = port.channel.clone();
+        let subscriber = plan
+            .ipc::<T>(&endpoint.channel)?
+            .subscriber_key(endpoint.index);
+        let channel = endpoint.channel.clone();
         Ok(Box::new(move |bindings| {
             Ok(ReplaySource::ipc_input(
                 bindings.ipc::<T>(&channel)?.replay_input(&subscriber)?,

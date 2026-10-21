@@ -1,5 +1,5 @@
 //! Typed declarations, endpoint collections, and method invocation adapters.
-use super::{Port, PortKind, TaskDefinition, generate_registration};
+use super::{Endpoint, EndpointKind, TaskDefinition, generate_registration};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -9,9 +9,9 @@ pub(super) fn task(task: &TaskDefinition) -> TokenStream {
     let inputs_name = format_ident!("{}Inputs", task.name);
     let outputs_name = format_ident!("{}Outputs", task.name);
     let declaration = declaration(task, &declaration_name);
-    let registration = generate_registration(&task.name, &declaration_name, &task.ports);
-    let inputs = collection(&task.ports, &inputs_name, true);
-    let outputs = collection(&task.ports, &outputs_name, false);
+    let registration = generate_registration(&task.name, &declaration_name, &task.endpoints);
+    let inputs = collection(&task.endpoints, &inputs_name, true);
+    let outputs = collection(&task.endpoints, &outputs_name, false);
     let binding = binding(task, &declaration_name, &inputs_name, &outputs_name);
     quote! { #item #declaration #registration #inputs #outputs #binding }
 }
@@ -27,7 +27,7 @@ fn arity(count: usize) -> TokenStream {
 fn declaration(task: &TaskDefinition, declaration: &syn::Ident) -> TokenStream {
     let task_name = &task.name;
     let fields: Vec<_> = task
-        .ports
+        .endpoints
         .iter()
         .map(|p| {
             let name = &p.name;
@@ -35,19 +35,19 @@ fn declaration(task: &TaskDefinition, declaration: &syn::Ident) -> TokenStream {
             quote!(#name: #key)
         })
         .collect();
-    let accessors = task.ports.iter().map(|p| {
+    let accessors = task.endpoints.iter().map(|p| {
         let name = &p.name;
         let accessor = format_ident!("{}_key", name);
         let key = p.key_type();
         quote!(#[cfg(test)] pub(crate) fn #accessor(&self) -> &#key { &self.#name })
     });
-    let names = task.ports.iter().map(|p| &p.name);
-    let params = task.ports.iter().map(|p| {
+    let names = task.endpoints.iter().map(|p| &p.name);
+    let params = task.endpoints.iter().map(|p| {
         let name = &p.name;
         let plan = p.plan_type();
         quote!(#name: #plan)
     });
-    let validation = task.ports.iter().filter_map(|p| {
+    let validation = task.endpoints.iter().filter_map(|p| {
         let channel = p.channel.as_ref()?;
         let name = &p.name;
         Some(quote! {
@@ -60,8 +60,8 @@ fn declaration(task: &TaskDefinition, declaration: &syn::Ident) -> TokenStream {
             }
         })
     });
-    let endpoints = task.ports.iter().map(Port::declare);
-    let arity = arity(task.ports.len());
+    let endpoints = task.endpoints.iter().map(Endpoint::declare);
+    let arity = arity(task.endpoints.len());
     quote! {
         pub(crate) struct #declaration<'storage> {
             #(#fields,)*
@@ -87,14 +87,14 @@ fn declaration(task: &TaskDefinition, declaration: &syn::Ident) -> TokenStream {
     }
 }
 
-fn collection(ports: &[Port], name: &syn::Ident, input: bool) -> TokenStream {
-    let ports: Vec<_> = ports.iter().filter(|p| p.is_input() == input).collect();
-    let fields = ports.iter().map(|p| {
+fn collection(endpoints: &[Endpoint], name: &syn::Ident, input: bool) -> TokenStream {
+    let endpoints: Vec<_> = endpoints.iter().filter(|p| p.is_input() == input).collect();
+    let fields = endpoints.iter().map(|p| {
         let name = &p.name;
         let endpoint = p.endpoint_type();
         quote!(#name: #endpoint)
     });
-    let names: Vec<_> = ports.iter().map(|p| &p.name).collect();
+    let names: Vec<_> = endpoints.iter().map(|p| &p.name).collect();
     let (set, visitor, visitor_mut) = if input {
         (
             quote!(Inputs),
@@ -131,15 +131,23 @@ fn binding(
     outputs: &syn::Ident,
 ) -> TokenStream {
     let task_name = &task.name;
-    let params = task.ports.iter().map(|p| {
+    let params = task.endpoints.iter().map(|p| {
         let name = &p.name;
         let bindings = p.bindings_type();
         quote!(#name: #bindings)
     });
-    let input_fields = task.ports.iter().filter(|p| p.is_input()).map(Port::bind);
-    let output_fields = task.ports.iter().filter(|p| !p.is_input()).map(Port::bind);
+    let input_fields = task
+        .endpoints
+        .iter()
+        .filter(|p| p.is_input())
+        .map(Endpoint::bind);
+    let output_fields = task
+        .endpoints
+        .iter()
+        .filter(|p| !p.is_input())
+        .map(Endpoint::bind);
     let invocation = invocation(task);
-    let arity = arity(task.ports.len() + 2);
+    let arity = arity(task.endpoints.len() + 2);
     quote! {
         impl #task_name {
             #arity
@@ -160,7 +168,7 @@ fn binding(
 
 fn invocation(task: &TaskDefinition) -> TokenStream {
     let arguments = task.arguments.iter().map(|arg| match arg {
-        Some(index) => task.ports[*index].argument(),
+        Some(index) => task.endpoints[*index].argument(),
         None => quote!(__cfw_context),
     });
     if task.fallible {
@@ -170,37 +178,37 @@ fn invocation(task: &TaskDefinition) -> TokenStream {
     }
 }
 
-impl Port {
+impl Endpoint {
     pub(super) fn is_input(&self) -> bool {
         matches!(
             self.kind,
-            PortKind::Input
-                | PortKind::Required
-                | PortKind::IoxInput
-                | PortKind::IoxSpan
-                | PortKind::IoxEvent
+            EndpointKind::Input
+                | EndpointKind::Required
+                | EndpointKind::IoxInput
+                | EndpointKind::IoxSpan
+                | EndpointKind::IoxEvent
         )
     }
     fn key_type(&self) -> TokenStream {
         let payload = &self.payload;
         match self.kind {
-            PortKind::IoxInput | PortKind::IoxSpan => {
+            EndpointKind::IoxInput | EndpointKind::IoxSpan => {
                 quote!(::task::iox2::Iox2SubscriberKey<#payload>)
             }
-            PortKind::IoxOutput => quote!(::task::iox2::Iox2PublisherKey<#payload>),
-            PortKind::IoxEvent => quote!(::task::iox2::Iox2EventKey),
-            PortKind::IoxNotifier => quote!(::task::iox2::Iox2NotifierKey),
-            PortKind::Input | PortKind::Required => quote!(::task::SubscriberKey<#payload>),
+            EndpointKind::IoxOutput => quote!(::task::iox2::Iox2PublisherKey<#payload>),
+            EndpointKind::IoxEvent => quote!(::task::iox2::Iox2EventKey),
+            EndpointKind::IoxNotifier => quote!(::task::iox2::Iox2NotifierKey),
+            EndpointKind::Input | EndpointKind::Required => quote!(::task::SubscriberKey<#payload>),
             _ => quote!(::task::PublisherKey<#payload>),
         }
     }
     fn plan_type(&self) -> TokenStream {
         let payload = &self.payload;
         match self.kind {
-            PortKind::IoxInput | PortKind::IoxSpan | PortKind::IoxOutput => {
+            EndpointKind::IoxInput | EndpointKind::IoxSpan | EndpointKind::IoxOutput => {
                 quote!(&mut ::task::iox2::Iox2ChannelPlan<#payload>)
             }
-            PortKind::IoxEvent | PortKind::IoxNotifier => {
+            EndpointKind::IoxEvent | EndpointKind::IoxNotifier => {
                 quote!(&mut dyn ::task::iox2::Iox2EventPlan)
             }
             _ => quote!(&mut ::task::ChannelPlan<#payload>),
@@ -209,10 +217,10 @@ impl Port {
     fn bindings_type(&self) -> TokenStream {
         let payload = &self.payload;
         match self.kind {
-            PortKind::IoxInput | PortKind::IoxSpan | PortKind::IoxOutput => {
+            EndpointKind::IoxInput | EndpointKind::IoxSpan | EndpointKind::IoxOutput => {
                 quote!(&::task::iox2::Iox2Bindings<#payload>)
             }
-            PortKind::IoxEvent | PortKind::IoxNotifier => {
+            EndpointKind::IoxEvent | EndpointKind::IoxNotifier => {
                 quote!(&dyn ::task::iox2::Iox2EventBindings)
             }
             _ => quote!(&::task::ChannelBindings<'storage, #payload>),
@@ -221,16 +229,16 @@ impl Port {
     fn endpoint_type(&self) -> TokenStream {
         let payload = &self.payload;
         match self.kind {
-            PortKind::Input => quote!(::task::Subscriber<'storage, #payload>),
-            PortKind::Required => {
+            EndpointKind::Input => quote!(::task::Subscriber<'storage, #payload>),
+            EndpointKind::Required => {
                 quote!(::task::callback::Required<::task::Subscriber<'storage, #payload>>)
             }
-            PortKind::IoxInput | PortKind::IoxSpan => {
+            EndpointKind::IoxInput | EndpointKind::IoxSpan => {
                 quote!(::task::iox2::Iox2Subscriber<#payload>)
             }
-            PortKind::IoxOutput => quote!(::task::iox2::Iox2Publisher<#payload>),
-            PortKind::IoxEvent => quote!(::task::iox2::Iox2EventSubscriber),
-            PortKind::IoxNotifier => quote!(::task::iox2::Iox2Notifier),
+            EndpointKind::IoxOutput => quote!(::task::iox2::Iox2Publisher<#payload>),
+            EndpointKind::IoxEvent => quote!(::task::iox2::Iox2EventSubscriber),
+            EndpointKind::IoxNotifier => quote!(::task::iox2::Iox2Notifier),
             _ => quote!(::task::Publisher<'storage, #payload>),
         }
     }
@@ -243,10 +251,10 @@ impl Port {
             ..
         } = self;
         let expression = match self.kind {
-            PortKind::IoxEvent => quote!(#name.events(#capacity)),
-            PortKind::IoxNotifier => quote!(#name.notifier()),
-            PortKind::IoxInput | PortKind::IoxSpan => quote!(#name.subscriber(#capacity)),
-            PortKind::Input | PortKind::Required => {
+            EndpointKind::IoxEvent => quote!(#name.events(#capacity)),
+            EndpointKind::IoxNotifier => quote!(#name.notifier()),
+            EndpointKind::IoxInput | EndpointKind::IoxSpan => quote!(#name.subscriber(#capacity)),
+            EndpointKind::Input | EndpointKind::Required => {
                 quote!(#name.subscriber_with_policy(#capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep }))
             }
             _ => quote!(#name.publisher(#capacity)),
@@ -256,13 +264,13 @@ impl Port {
     fn bind(&self) -> TokenStream {
         let name = &self.name;
         let take = match self.kind {
-            PortKind::IoxEvent => quote!(take_event),
-            PortKind::IoxNotifier => quote!(take_notifier),
+            EndpointKind::IoxEvent => quote!(take_event),
+            EndpointKind::IoxNotifier => quote!(take_notifier),
             _ if self.is_input() => quote!(take_subscriber),
             _ => quote!(take_publisher),
         };
         let endpoint = quote!(#name.#take(&__cfw_declaration.#name)?);
-        if matches!(self.kind, PortKind::Required) {
+        if matches!(self.kind, EndpointKind::Required) {
             quote!(#name: ::task::callback::Required(#endpoint))
         } else {
             quote!(#name: #endpoint)
@@ -271,25 +279,29 @@ impl Port {
     fn argument(&self) -> TokenStream {
         let name = &self.name;
         match self.kind {
-            PortKind::Input if self.forwardable => quote!(__cfw_inputs.#name.input_forwardable()),
-            PortKind::Input => quote!(__cfw_inputs.#name.input_readonly()),
-            PortKind::Required if self.forwardable => {
+            EndpointKind::Input if self.forwardable => {
+                quote!(__cfw_inputs.#name.input_forwardable())
+            }
+            EndpointKind::Input => quote!(__cfw_inputs.#name.input_readonly()),
+            EndpointKind::Required if self.forwardable => {
                 quote!(::task::RequiredInput::new_forwardable(&__cfw_inputs.#name.0))
             }
-            PortKind::Required => quote!(::task::RequiredInput::new(&__cfw_inputs.#name.0)),
-            PortKind::Output => {
+            EndpointKind::Required => quote!(::task::RequiredInput::new(&__cfw_inputs.#name.0)),
+            EndpointKind::Output => {
                 quote!(__cfw_outputs.#name.loan(::core::default::Default::default())?)
             }
-            PortKind::OutputSpan => quote!(__cfw_outputs.#name.span()),
-            PortKind::Uninit => quote!(__cfw_outputs.#name.loan_uninit()?),
-            PortKind::Publisher => quote!(&mut __cfw_outputs.#name),
-            PortKind::IoxInput => quote!(::task::iox2::Iox2OptionalInput::new(&__cfw_inputs.#name)),
-            PortKind::IoxSpan => quote!(::task::iox2::Iox2SpanInput::new(&__cfw_inputs.#name)),
-            PortKind::IoxEvent => quote!(::task::iox2::Iox2Event::new(&__cfw_inputs.#name)),
-            PortKind::IoxOutput => {
+            EndpointKind::OutputSpan => quote!(__cfw_outputs.#name.span()),
+            EndpointKind::Uninit => quote!(__cfw_outputs.#name.loan_uninit()?),
+            EndpointKind::Publisher => quote!(&mut __cfw_outputs.#name),
+            EndpointKind::IoxInput => {
+                quote!(::task::iox2::Iox2OptionalInput::new(&__cfw_inputs.#name))
+            }
+            EndpointKind::IoxSpan => quote!(::task::iox2::Iox2SpanInput::new(&__cfw_inputs.#name)),
+            EndpointKind::IoxEvent => quote!(::task::iox2::Iox2Event::new(&__cfw_inputs.#name)),
+            EndpointKind::IoxOutput => {
                 quote!(::task::iox2::Iox2Output::new_default(&mut __cfw_outputs.#name)?)
             }
-            PortKind::IoxNotifier => {
+            EndpointKind::IoxNotifier => {
                 quote!(::task::iox2::Iox2NotifyOutput::new(&mut __cfw_outputs.#name))
             }
         }

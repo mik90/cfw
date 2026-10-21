@@ -3,10 +3,10 @@ use task::recording::Transport;
 
 pub use task::channel::ChannelTopology;
 #[derive(Clone, Debug)]
-pub struct PortTopology {
+pub struct EndpointTopology {
     pub forwardable: bool,
     pub callback: String,
-    pub port: String,
+    pub name: String,
     pub ordinal: usize,
     pub output: bool,
     pub channel: String,
@@ -20,7 +20,7 @@ pub struct Topology {
     pub forwarding: Vec<crate::bundle::ForwardingEdge>,
     pub callbacks: Vec<String>,
     pub channels: Vec<ChannelTopology>,
-    pub ports: Vec<PortTopology>,
+    pub endpoints: Vec<EndpointTopology>,
 }
 impl std::fmt::Display for Topology {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -56,19 +56,19 @@ impl std::fmt::Display for Topology {
                 channel.forwarding_retention_per_publisher
             )?;
         }
-        for port in &self.ports {
+        for endpoint in &self.endpoints {
             writeln!(
                 f,
                 "  {}.{} [{} {}] {} {:?}, capacity={}, endpoint={}, forwardable={}",
-                port.callback,
-                port.port,
-                if port.output { "output" } else { "input" },
-                port.ordinal,
-                if port.output { "->" } else { "<-" },
-                port.channel,
-                port.capacity,
-                port.endpoint_index,
-                port.forwardable
+                endpoint.callback,
+                endpoint.name,
+                if endpoint.output { "output" } else { "input" },
+                endpoint.ordinal,
+                if endpoint.output { "->" } else { "<-" },
+                endpoint.channel,
+                endpoint.capacity,
+                endpoint.endpoint_index,
+                endpoint.forwardable
             )?;
         }
         Ok(())
@@ -109,10 +109,10 @@ impl Topology {
             )
             .unwrap();
         }
-        for port in &self.ports {
-            let task = format!("task:{}", port.callback);
-            let channel = format!("channel:{}", port.channel);
-            let (from, to) = if port.output {
+        for endpoint in &self.endpoints {
+            let task = format!("task:{}", endpoint.callback);
+            let channel = format!("channel:{}", endpoint.channel);
+            let (from, to) = if endpoint.output {
                 (&task, &channel)
             } else {
                 (&channel, &task)
@@ -122,7 +122,7 @@ impl Topology {
                 "  {from:?} -> {to:?} [label={:?}];",
                 format!(
                     "{} [{}] capacity={} forwardable={}",
-                    port.port, port.ordinal, port.capacity, port.forwardable
+                    endpoint.name, endpoint.ordinal, endpoint.capacity, endpoint.forwardable
                 )
             )
             .unwrap();

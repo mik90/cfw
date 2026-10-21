@@ -1,9 +1,9 @@
-//! Registered port metadata and endpoint wiring.
+//! Registered endpoint metadata and wiring.
 use crate::{BuildError, GraphPlan};
 use task::recording::Transport;
 
 #[derive(Clone)]
-pub struct PlannedPort {
+pub struct PlannedEndpoint {
     configured: bool,
     pub forwardable: bool,
     pub name: Option<String>,
@@ -14,7 +14,7 @@ pub struct PlannedPort {
     pub index: usize,
     pub capacity: usize,
 }
-impl PlannedPort {
+impl PlannedEndpoint {
     pub fn new<T>(
         channel: &str,
         output: bool,
@@ -43,30 +43,30 @@ impl PlannedPort {
     }
 }
 impl GraphPlan {
-    /// Registered task names, including tasks without ports.
+    /// Registered task names, including tasks without endpoints.
     pub fn task_names(&self) -> impl Iterator<Item = &str> {
         self.tasks.keys().map(String::as_str)
     }
 
-    /// Ports in declaration order for a registered task.
-    pub fn task_ports(&self, callback: &str) -> Result<&[PlannedPort], BuildError> {
+    /// Endpoints in declaration order for a registered task.
+    pub fn task_endpoints(&self, callback: &str) -> Result<&[PlannedEndpoint], BuildError> {
         self.tasks
             .get(callback)
-            .map(|range| &self.ports[range.clone()])
+            .map(|range| &self.endpoints[range.clone()])
             .ok_or_else(|| BuildError(format!("unknown task '{callback}'")))
     }
 
-    /// Whether this port already has an exclusive external wiring attachment.
-    pub fn port_is_configured(
+    /// Whether this endpoint already has an exclusive external wiring attachment.
+    pub fn endpoint_is_configured(
         &self,
         callback: &str,
         ordinal: usize,
         output: bool,
     ) -> Result<bool, BuildError> {
-        Ok(self.port(callback, ordinal, output)?.configured)
+        Ok(self.endpoint(callback, ordinal, output)?.configured)
     }
 
-    fn claim_port(
+    fn claim_endpoint(
         &mut self,
         callback: &str,
         ordinal: usize,
@@ -77,33 +77,35 @@ impl GraphPlan {
             .get(callback)
             .ok_or_else(|| BuildError(format!("unknown task '{callback}'")))?
             .clone();
-        let port = self.ports[range]
+        let endpoint = self.endpoints[range]
             .iter_mut()
-            .filter(|port| port.output == output)
+            .filter(|endpoint| endpoint.output == output)
             .nth(ordinal)
-            .ok_or_else(|| BuildError(format!("unknown port '{callback}' ordinal {ordinal}")))?;
-        if port.configured {
+            .ok_or_else(|| {
+                BuildError(format!("unknown endpoint '{callback}' ordinal {ordinal}"))
+            })?;
+        if endpoint.configured {
             return Err(BuildError(format!(
-                "port '{callback}' ordinal {ordinal} already configured"
+                "endpoint '{callback}' ordinal {ordinal} already configured"
             )));
         }
-        port.configured = true;
+        endpoint.configured = true;
         Ok(())
     }
 
     pub fn can_inject_input(&self, callback: &str, ordinal: usize) -> Result<bool, BuildError> {
-        let port = self.port(callback, ordinal, false)?;
+        let endpoint = self.endpoint(callback, ordinal, false)?;
         Ok(self
             .channels
-            .get(&port.channel)
+            .get(&endpoint.channel)
             .is_some_and(|channel| channel.replay.is_some()))
     }
 
     pub fn can_observe_output(&self, callback: &str, ordinal: usize) -> Result<bool, BuildError> {
-        let port = self.port(callback, ordinal, true)?;
+        let endpoint = self.endpoint(callback, ordinal, true)?;
         Ok(self
             .channels
-            .get(&port.channel)
+            .get(&endpoint.channel)
             .is_some_and(|channel| channel.capture.is_some()))
     }
 
@@ -120,25 +122,25 @@ impl GraphPlan {
                 "injection capacity must be in 1..=u32::MAX".into(),
             ));
         }
-        let port = self.port(callback, ordinal, false)?;
+        let endpoint = self.endpoint(callback, ordinal, false)?;
         let declare = self
             .channels
-            .get(&port.channel)
+            .get(&endpoint.channel)
             .and_then(|channel| channel.replay)
             .ok_or_else(|| {
                 BuildError(format!(
                     "channel '{}': no context-free decoder",
-                    port.channel
+                    endpoint.channel
                 ))
             })?
             .inject_input;
-        if port.configured {
+        if endpoint.configured {
             return Err(BuildError(format!(
-                "port '{callback}' ordinal {ordinal} already configured"
+                "endpoint '{callback}' ordinal {ordinal} already configured"
             )));
         }
-        let binding = declare(self, &port, capacity)?;
-        self.claim_port(callback, ordinal, false)?;
+        let binding = declare(self, &endpoint, capacity)?;
+        self.claim_endpoint(callback, ordinal, false)?;
         Ok(binding)
     }
 
@@ -148,66 +150,70 @@ impl GraphPlan {
         callback: &str,
         ordinal: usize,
     ) -> Result<super::capture::OutputBinding, BuildError> {
-        let port = self.port(callback, ordinal, true)?;
+        let endpoint = self.endpoint(callback, ordinal, true)?;
         let declare = self
             .channels
-            .get(&port.channel)
+            .get(&endpoint.channel)
             .and_then(|channel| channel.capture)
-            .ok_or_else(|| BuildError(format!("channel '{}': no serializer", port.channel)))?
+            .ok_or_else(|| BuildError(format!("channel '{}': no serializer", endpoint.channel)))?
             .declare_output;
-        if port.configured {
+        if endpoint.configured {
             return Err(BuildError(format!(
-                "port '{callback}' ordinal {ordinal} already configured"
+                "endpoint '{callback}' ordinal {ordinal} already configured"
             )));
         }
-        let binding = declare(self, &port)?;
-        self.claim_port(callback, ordinal, true)?;
+        let binding = declare(self, &endpoint)?;
+        self.claim_endpoint(callback, ordinal, true)?;
         Ok(binding)
     }
 
-    pub fn port(
+    pub fn endpoint(
         &self,
         callback: &str,
         ordinal: usize,
         output: bool,
-    ) -> Result<PlannedPort, BuildError> {
+    ) -> Result<PlannedEndpoint, BuildError> {
         self.tasks
             .get(callback)
-            .and_then(|ports| {
-                self.ports[ports.clone()]
+            .and_then(|endpoints| {
+                self.endpoints[endpoints.clone()]
                     .iter()
-                    .filter(|port| port.output == output)
+                    .filter(|endpoint| endpoint.output == output)
                     .nth(ordinal)
             })
             .cloned()
             .ok_or_else(|| {
                 BuildError(format!(
-                    "unknown registered port '{callback}' ordinal {ordinal}"
+                    "unknown registered endpoint '{callback}' ordinal {ordinal}"
                 ))
             })
     }
-    /// Typed key access for explicit per-port configuration alongside automatic planning.
+    /// Typed key access for explicit per-endpoint configuration alongside automatic planning.
     pub fn native_input_key<T: Send + Sync + 'static>(
         &mut self,
         callback: &str,
         ordinal: usize,
     ) -> Result<task::SubscriberKey<T>, BuildError> {
-        let port = self.port(callback, ordinal, false)?;
-        if port.transport != Transport::Native {
+        let endpoint = self.endpoint(callback, ordinal, false)?;
+        if endpoint.transport != Transport::Native {
             return Err(BuildError("expected native data input".into()));
         }
-        Ok(self.native::<T>(&port.channel)?.subscriber_key(port.index))
+        Ok(self
+            .native::<T>(&endpoint.channel)?
+            .subscriber_key(endpoint.index))
     }
     pub fn native_output_key<T: Send + Sync + 'static>(
         &mut self,
         callback: &str,
         ordinal: usize,
     ) -> Result<task::PublisherKey<T>, BuildError> {
-        let port = self.port(callback, ordinal, true)?;
-        if port.transport != Transport::Native {
+        let endpoint = self.endpoint(callback, ordinal, true)?;
+        if endpoint.transport != Transport::Native {
             return Err(BuildError("expected native data output".into()));
         }
-        Ok(self.native::<T>(&port.channel)?.publisher_key(port.index))
+        Ok(self
+            .native::<T>(&endpoint.channel)?
+            .publisher_key(endpoint.index))
     }
     #[cfg(feature = "iceoryx2")]
     pub fn ipc_input_key<
@@ -217,11 +223,13 @@ impl GraphPlan {
         callback: &str,
         ordinal: usize,
     ) -> Result<task::iox2::Iox2SubscriberKey<T>, BuildError> {
-        let port = self.port(callback, ordinal, false)?;
-        if port.transport != Transport::Ipc {
+        let endpoint = self.endpoint(callback, ordinal, false)?;
+        if endpoint.transport != Transport::Ipc {
             return Err(BuildError("expected IPC data input".into()));
         }
-        Ok(self.ipc::<T>(&port.channel)?.subscriber_key(port.index))
+        Ok(self
+            .ipc::<T>(&endpoint.channel)?
+            .subscriber_key(endpoint.index))
     }
     #[cfg(feature = "iceoryx2")]
     pub fn ipc_output_key<
@@ -231,11 +239,13 @@ impl GraphPlan {
         callback: &str,
         ordinal: usize,
     ) -> Result<task::iox2::Iox2PublisherKey<T>, BuildError> {
-        let port = self.port(callback, ordinal, true)?;
-        if port.transport != Transport::Ipc {
+        let endpoint = self.endpoint(callback, ordinal, true)?;
+        if endpoint.transport != Transport::Ipc {
             return Err(BuildError("expected IPC data output".into()));
         }
-        Ok(self.ipc::<T>(&port.channel)?.publisher_key(port.index))
+        Ok(self
+            .ipc::<T>(&endpoint.channel)?
+            .publisher_key(endpoint.index))
     }
 }
 
@@ -265,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn input_injection_is_port_local_and_can_only_be_attached_once() {
+    fn input_injection_is_endpoint_local_and_can_only_be_attached_once() {
         let mut plan = GraphPlan::default();
         let publisher = plan.native::<Value>("data").unwrap().publisher(1);
         let first = plan
@@ -277,7 +287,7 @@ mod tests {
         plan.tasks.insert("reader".into(), 0..2);
         plan.register_replay_native::<Value>("data").unwrap();
         assert!(plan.inject_input("reader", 0, 0).is_err());
-        assert!(!plan.port_is_configured("reader", 0, false).unwrap());
+        assert!(!plan.endpoint_is_configured("reader", 0, false).unwrap());
         let source = plan.inject_input("reader", 0, 2).unwrap();
         let publisher_count = plan.topology().channels[0].publishers.len();
         assert!(plan.inject_input("reader", 0, 2).is_err());

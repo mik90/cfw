@@ -153,7 +153,11 @@ impl<T> Iox2ChannelPlan<T> {
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),
             transport: crate::recording::Transport::Ipc,
-            publishers: self.publishers.iter().map(|port| port.capacity).collect(),
+            publishers: self
+                .publishers
+                .iter()
+                .map(|endpoint| endpoint.capacity)
+                .collect(),
             subscribers: self.subscribers.clone(),
             sources: self
                 .subscriber_sources

@@ -1,7 +1,9 @@
 #![cfg(feature = "iceoryx2")]
 use exact_replay_executor::{ExactReplayExecutor, ReplayBindings, ReplayLog};
 use iceoryx2::prelude::ZeroCopySend;
-use logging::{Capture, ExecutionRecorder, LogFileWriter, LogSession, PortCapture, ReplaySource};
+use logging::{
+    Capture, EndpointCapture, ExecutionRecorder, LogFileWriter, LogSession, ReplaySource,
+};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -73,7 +75,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
     {
         let mut input = Iox2ChannelPlan::new(&input_name, &runtime);
         let mut output = Iox2ChannelPlan::new(&output_name, &runtime);
-        output.publisher(1); // Unused storage precedes the recorded output port.
+        output.publisher(1); // Unused storage precedes the recorded output endpoint.
         let mut notify =
             Iox2ChannelPlan::<()>::new(&notify_name, &runtime).with_config(Iox2ChannelConfig {
                 event_id_max_value: 17,
@@ -199,27 +201,27 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         .bind_with_delivery(task::iox2::OutputDelivery::Local)
         .unwrap();
     let probe = output.take_subscriber(&probe).unwrap();
-    let mut ports = ReplayBindings::new();
-    ports
+    let mut endpoints = ReplayBindings::new();
+    endpoints
         .add_input(
             "observe",
             0,
             ReplaySource::ipc_input(input.replay_input(declaration.first_key()).unwrap()),
         )
         .unwrap();
-    ports
+    endpoints
         .add_input(
             "observe",
             1,
             ReplaySource::ipc_input(input.replay_input(declaration.second_key()).unwrap()),
         )
         .unwrap();
-    ports
+    endpoints
         .add_output(
             "observe",
             0,
             output
-                .configure_publisher(declaration.output_key(), |p| PortCapture::ipc(p, 2))
+                .configure_publisher(declaration.output_key(), |p| EndpointCapture::ipc(p, 2))
                 .unwrap(),
         )
         .unwrap();
@@ -229,7 +231,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         Ok(Observe.bind(declaration, &input, &input, &input, &output, &notify)?)
     });
     assert!(
-        ExactReplayExecutor::new(graph.build().unwrap(), log, ports)
+        ExactReplayExecutor::new(graph.build().unwrap(), log, endpoints)
             .unwrap()
             .run()
             .unwrap()

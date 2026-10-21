@@ -3,10 +3,10 @@ pub mod capture_plan;
 pub mod replay_plan;
 pub use capture_plan::{CaptureOptions, GraphCapturePlan};
 pub use replay_plan::{GraphReplayPlan, ReplayOptions};
+pub mod endpoint_capture;
 #[cfg(feature = "serde")]
 pub mod incompleteness;
-pub mod port_capture;
-pub use port_capture::PortCapture;
+pub use endpoint_capture::EndpointCapture;
 pub mod log_file;
 #[cfg(feature = "serde")]
 pub mod log_file_json;

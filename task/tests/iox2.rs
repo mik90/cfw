@@ -28,7 +28,7 @@ fn unsent_and_cancelled_loans_release_capacity_and_success_stamps_headers() {
     let mut publisher = bindings.take_publisher(&pub_key).unwrap();
     let subscriber = bindings.take_subscriber(&sub_key).unwrap();
     drop(bindings);
-    drop(storage); // Ports retain the node and service resources independently.
+    drop(storage); // Endpoints retain the node and service resources independently.
     drop(runtime);
     drop(publisher.loan(1).unwrap());
     publisher.loan(2).unwrap().send();

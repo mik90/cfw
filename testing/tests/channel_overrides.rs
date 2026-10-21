@@ -101,20 +101,20 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
         Default::default(),
     );
     let descriptor = recorder.descriptor().unwrap();
-    let ports = &descriptor.callbacks[0].endpoints;
+    let endpoints = &descriptor.callbacks[0].endpoints;
     assert_eq!(
         (
-            ports[0].ordinal,
-            ports[0].channel.as_str(),
-            ports[0].direction
+            endpoints[0].ordinal,
+            endpoints[0].channel.as_str(),
+            endpoints[0].direction
         ),
         (0, "chosen", Direction::Received)
     );
     assert_eq!(
         (
-            ports[1].ordinal,
-            ports[1].channel.as_str(),
-            ports[1].direction
+            endpoints[1].ordinal,
+            endpoints[1].channel.as_str(),
+            endpoints[1].direction
         ),
         (0, "answer", Direction::Published)
     );
@@ -144,13 +144,13 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
 }
 
 #[test]
-fn invalid_port_overrides_fail_before_defaults_or_registration() {
-    for (port, output) in [("typo", false), ("input", true), ("output", false)] {
+fn invalid_endpoint_overrides_fail_before_defaults_or_registration() {
+    for (endpoint, output) in [("typo", false), ("input", true), ("output", false)] {
         let mut overrides = task_graph::ChannelOverrides::default();
         if output {
-            overrides.output_channel(port, "chosen");
+            overrides.output_channel(endpoint, "chosen");
         } else {
-            overrides.input_channel(port, "chosen");
+            overrides.input_channel(endpoint, "chosen");
         }
         let mut plan = GraphPlan::default();
         let error = Box::new(Lazy)
@@ -158,7 +158,7 @@ fn invalid_port_overrides_fail_before_defaults_or_registration() {
             .err()
             .unwrap()
             .to_string();
-        assert!(error.contains(port));
+        assert!(error.contains(endpoint));
         assert!(plan.require("output", true).is_err());
     }
     let mut builder = UnitTestExecutorBuilder::new();

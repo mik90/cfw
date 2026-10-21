@@ -57,7 +57,7 @@ fn sink(plan: &mut GraphPlan, data: &str, output: &str, event: &str) {
 }
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
-fn automatic_ipc_hydration_is_port_local_and_preserves_event_ordinals() {
+fn automatic_ipc_hydration_is_endpoint_local_and_preserves_event_ordinals() {
     let prefix = format!("cfw_auto_exact_{}", std::process::id());
     let data = format!("{prefix}_data");
     let output = format!("{prefix}_output");

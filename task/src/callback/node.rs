@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[gtest]
-    fn replay_events_are_rejected_on_ports_without_event_support() {
+    fn replay_events_are_rejected_on_endpoints_without_event_support() {
         let mut numbers = ChannelPlan::<u32>::new("numbers");
         let number_in = numbers.subscriber(1);
         let numbers = numbers.allocate().unwrap();
