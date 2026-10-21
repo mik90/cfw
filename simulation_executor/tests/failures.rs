@@ -88,6 +88,9 @@ fn body_error_panic_and_post_execution_timing_failure_cancel_the_whole_batch() {
 fn panic_during_commit_preserves_already_published_messages_and_cancels_remaining_loans() {
     struct CommitPanic<'a>(Publisher<'a, Counted>, Arc<AtomicUsize>);
     impl task::Callback for CommitPanic<'_> {
+        fn outputs_are_local(&self) -> bool {
+            true
+        }
         fn run(&mut self, _: &task::Context) -> Result<(), LoanError> {
             self.0.publish(Counted(self.1.clone()))
         }

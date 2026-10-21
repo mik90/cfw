@@ -352,6 +352,9 @@ struct LogTask<'scope, 'storage> {
     trigger: Option<FlushTrigger<'storage>>,
 }
 impl Callback for LogTask<'_, '_> {
+    fn outputs_are_local(&self) -> bool {
+        true
+    }
     fn set_waker(&mut self, wake: task::wake::WakeHandle) {
         if let Some(trigger) = &mut self.trigger {
             trigger.set_waker(wake);

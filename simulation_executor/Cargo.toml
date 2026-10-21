@@ -16,6 +16,7 @@ iceoryx2 = ["task/iceoryx2", "task_graph/iceoryx2", "dep:iceoryx2", "logging?/ic
 log_simulation = ["dep:logging", "dep:serde_json"]
 
 [dev-dependencies]
+task = { path = "../task", features = ["testing"] }
 task_macros = { path = "../task_macros" }
 
 [lints]

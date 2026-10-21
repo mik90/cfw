@@ -11,15 +11,15 @@ fn timestamp() -> FrameworkTime {
 
 #[test]
 fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names() {
-    struct Infrastructure;
-    impl task::Callback for Infrastructure {
-        fn visit_channel_names(&self, visit: &mut dyn FnMut(&str)) {
-            visit("flush");
-        }
-        fn run(&mut self, context: &task::Context) -> Result<(), LoanError> {
-            assert!(context.channel_names().lookup_by_value("flush").is_some());
-            assert!(context.callback_names().lookup_by_value("logger").is_some());
-            Ok(())
+    fn infrastructure() -> task::testing::FakeCallback {
+        task::testing::FakeCallback {
+            channel_names: vec!["flush".into()],
+            run_hook: Box::new(|context| {
+                assert!(context.channel_names().lookup_by_value("flush").is_some());
+                assert!(context.callback_names().lookup_by_value("logger").is_some());
+                Ok(())
+            }),
+            ..Default::default()
         }
     }
     let mut builder = GraphBuilder::new();
@@ -33,7 +33,7 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
     let mut graph = graph
         .append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
-            callback: Box::new(Infrastructure),
+            callback: Box::new(infrastructure()),
             schedule: task_graph::CallbackSchedule::default(),
         }])
         .unwrap();
@@ -59,12 +59,12 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
     .run_until_idle(8)
     .unwrap();
     let mut builder = GraphBuilder::new();
-    builder.add_callback("logger", || Ok(Infrastructure));
+    builder.add_callback("logger", || Ok(infrastructure()));
     let graph = builder.build().unwrap();
     assert!(matches!(
         graph.append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
-            callback: Box::new(Infrastructure),
+            callback: Box::new(infrastructure()),
             schedule: task_graph::CallbackSchedule::default(),
         }]),
         Err(GraphBuildError::DuplicateCallback(_))
@@ -75,7 +75,7 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
             .unwrap()
             .append_callbacks([task_graph::ScheduledCallback {
                 name: "logger".into(),
-                callback: Box::new(Infrastructure),
+                callback: Box::new(infrastructure()),
                 schedule: task_graph::CallbackSchedule::periodic(std::time::Duration::ZERO),
             }]),
         Err(GraphBuildError::ZeroPeriod(_))

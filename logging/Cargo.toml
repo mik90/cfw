@@ -21,6 +21,7 @@ testing = []
 
 [dev-dependencies]
 testing = { path = "../testing", default-features = false }
+task = { path = "../task", features = ["testing"] }
 task_macros = { path = "../task_macros" }
 simulation_executor = { path = "../simulation_executor" }
 live_executor = { path = "../live_executor" }

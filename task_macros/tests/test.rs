@@ -98,6 +98,9 @@ fn arrival_after_input_snapshot_does_not_make_an_empty_required_view_ready() {
         publish: F,
     }
     impl<C: task::Callback, F: FnMut() + Send> task::Callback for LateArrival<C, F> {
+        fn outputs_are_local(&self) -> bool {
+            self.inner.outputs_are_local()
+        }
         fn update_inputs(&mut self) {
             self.inner.update_inputs();
             (self.publish)();

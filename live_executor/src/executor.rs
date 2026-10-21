@@ -343,6 +343,9 @@ mod tests {
         use task::iox2::{Iox2ChannelPlan, Iox2EventBindings, Iox2EventSubscriber, Iox2Runtime};
         struct EventCallback(Iox2EventSubscriber);
         impl task::Callback for EventCallback {
+            fn outputs_are_local(&self) -> bool {
+                true
+            }
             fn set_waker(&mut self, wake: task::wake::WakeHandle) {
                 self.0.set_waker(wake);
             }

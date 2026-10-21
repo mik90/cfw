@@ -98,18 +98,14 @@ fn recording_modes_preserve_execution_and_select_metadata() {
 #[test]
 fn reduced_recording_does_not_visit_payloads_and_retains_failure_outcomes() {
     use task::recording::{RecordingMode, RecordingOptions};
-    struct Bare;
-    impl task::Callback for Bare {
-        fn run(&mut self, _: &task::Context) -> Result<(), LoanError> {
-            Err(LoanError::LoanCapacityReached)
-        }
-        fn visit_prepared_messages(&self, _: &mut dyn FnMut(task::recording::LoggedMessage)) {
-            panic!("payload visitation disabled");
-        }
-    }
+    let bare = || task::testing::FakeCallback {
+        run_hook: Box::new(|_| Err(LoanError::LoanCapacityReached)),
+        panic_on_prepared_visit: true,
+        ..Default::default()
+    };
     for mode in [RecordingMode::Off, RecordingMode::DurationOnly] {
         let mut graph = GraphBuilder::new();
-        graph.add_callback("bare", || Ok(Bare));
+        graph.add_callback("bare", || Ok(bare()));
         let recorder = ExecutionRecorder::new(1);
         let mut graph = graph
             .build()
@@ -474,6 +470,9 @@ fn failed_batches_and_timing_rejection_do_not_record_successful_publications() {
 fn commit_panic_is_marked_indeterminate_and_payload_capture_retains_prefix() {
     struct Broken<'a>(Publisher<'a, u64>);
     impl task::Callback for Broken<'_> {
+        fn outputs_are_local(&self) -> bool {
+            true
+        }
         fn recording_endpoints(&self) -> Option<Vec<task::recording::EndpointDescriptor>> {
             Some(vec![])
         }
@@ -798,6 +797,9 @@ fn serialization_failure_is_marked_on_session_drop() {
 fn metadata_panic_before_commit_cannot_leave_outputs_on_a_cancelled_record() {
     struct MetadataFailure;
     impl task::Callback for MetadataFailure {
+        fn outputs_are_local(&self) -> bool {
+            true
+        }
         fn recording_endpoints(&self) -> Option<Vec<task::recording::EndpointDescriptor>> {
             Some(vec![])
         }

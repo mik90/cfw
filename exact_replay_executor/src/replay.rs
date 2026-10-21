@@ -597,6 +597,9 @@ struct Checked<'a> {
     output_events: &'a mut Vec<LoggedEvent>,
 }
 impl Callback for Checked<'_> {
+    fn outputs_are_local(&self) -> bool {
+        self.callback.outputs_are_local()
+    }
     fn update_inputs(&mut self) {
         self.callback.update_inputs();
     }

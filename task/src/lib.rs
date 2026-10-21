@@ -15,6 +15,8 @@ pub mod replay_publisher;
 pub mod storage;
 pub mod string_interner;
 pub mod subscriber;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 #[cfg(feature = "testing")]
 pub mod testing_subscriber;
 #[cfg(feature = "testing")]

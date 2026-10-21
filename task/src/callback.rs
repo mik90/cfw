@@ -67,6 +67,52 @@ where
     fn run(&mut self, context: &Context) -> Result<(), LoanError> {
         self(context.now())
     }
+    /// Whether all outputs are known to avoid external transport delivery.
+    fn outputs_are_local(&self) -> bool {
+        false
+    }
+    /// Clear prepared and incoming snapshots before exact-replay hydration.
+    fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
+        Err(LoanError::Transport(
+            "callback does not support replay input reset".into(),
+        ))
+    }
+    fn stage_replay_event(
+        &mut self,
+        _ordinal: usize,
+        _event_id: usize,
+        _count: u64,
+    ) -> Result<(), LoanError> {
+        Err(LoanError::Transport("unknown replay event endpoint".into()))
+    }
+    fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
+        None
+    }
+    fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
+    fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
+    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
+    fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
+    #[cfg(feature = "iceoryx2")]
+    fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
+        Vec::new()
+    }
+    fn set_waker(&mut self, _wake: crate::wake::WakeHandle) {}
+    fn has_pending_inputs(&self) -> bool {
+        false
+    }
+    fn visit_channel_names(&self, _visit: &mut dyn FnMut(&str)) {}
+    fn update_inputs(&mut self) {}
+    /// Preflight readiness may include incoming queues. It must not consume them.
+    fn required_inputs_available(&self) -> bool {
+        self.required_inputs_ready()
+    }
+    /// Readiness of the prepared read buffers, excluding later publications.
+    fn required_inputs_ready(&self) -> bool {
+        true
+    }
+    fn finish_inputs(&mut self) {}
+    fn flush_outputs(&mut self, _timestamp: FrameworkTime) {}
+    fn discard_outputs(&mut self) {}
 }
 
 /// Update inputs, check required inputs, execute, and publish successful outputs.
@@ -148,71 +194,8 @@ impl CompletedCallback<'_> {
 mod tests {
 
     use super::*;
+    use crate::testing::FakeCallback;
     use googletest::prelude::*;
-    #[derive(Default)]
-    struct FakeCallback {
-        has_pending_inputs: bool,
-        outputs_are_local: bool,
-        required_inputs_available: bool,
-        required_inputs_ready: bool,
-        output_flush_timestamps: Vec<FrameworkTime>,
-    }
-
-    impl Callback for FakeCallback {
-        fn run(&mut self, _context: &Context) -> Result<(), LoanError> {
-            Ok(())
-        }
-
-        fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
-            todo!()
-        }
-
-        fn discard_outputs(&mut self) {}
-        fn finish_inputs(&mut self) {}
-        fn flush_outputs(&mut self, timestamp: FrameworkTime) {
-            self.output_flush_timestamps.push(timestamp);
-        }
-
-        fn has_pending_inputs(&self) -> bool {
-            self.has_pending_inputs
-        }
-        fn outputs_are_local(&self) -> bool {
-            self.outputs_are_local
-        }
-
-        fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
-            None
-        }
-
-        fn required_inputs_available(&self) -> bool {
-            self.required_inputs_available
-        }
-
-        fn required_inputs_ready(&self) -> bool {
-            self.required_inputs_ready
-        }
-
-        fn set_waker(&mut self, _wake: crate::wake::WakeHandle) {}
-        fn stage_replay_event(
-            &mut self,
-            _ordinal: usize,
-            _event_id: usize,
-            _count: u64,
-        ) -> Result<(), LoanError> {
-            Ok(())
-        }
-        #[cfg(feature = "iceoryx2")]
-        fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
-            vec![]
-        }
-        fn update_inputs(&mut self) {}
-        fn visit_channel_names(&self, _visit: &mut dyn FnMut(&str)) {}
-        fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
-        fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-        fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
-        fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {
-        }
-    }
 
     #[gtest]
     fn callback_transition() {

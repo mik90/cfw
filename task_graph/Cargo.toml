@@ -14,6 +14,7 @@ iceoryx2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 testing = { path = "../testing", default-features = false }
+task = { path = "../task", features = ["testing"] }
 
 [lints]
 workspace = true

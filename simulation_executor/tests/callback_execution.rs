@@ -47,16 +47,11 @@ fn rejected_batch_commit_cancels_outputs_before_single_callback_reuse() {
 
 #[test]
 fn batch_failure_reports_the_supplied_id_after_skipping_unready_callbacks() {
-    struct Gated;
-    impl Callback for Gated {
-        fn required_inputs_ready(&self) -> bool {
-            false
-        }
-        fn run(&mut self, _: &Context) -> Result<(), LoanError> {
-            panic!("gated body must not run")
-        }
-    }
-    let mut gated = Gated;
+    let mut gated = task::testing::FakeCallback {
+        required_inputs_ready: false,
+        run_hook: Box::new(|_| panic!("gated body must not run")),
+        ..Default::default()
+    };
     let mut failing = |_| Err(LoanError::ArenaExhausted);
     let channels = Default::default();
     let callbacks = Default::default();
