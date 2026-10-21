@@ -419,6 +419,7 @@ mod tests {
             eq(7)
         );
     }
+
     #[gtest]
     fn manual_node_preserves_readiness_recording_and_cancellation_across_heterogeneous_ports() {
         let mut numbers = ChannelPlan::<u32>::new("numbers");
@@ -445,71 +446,75 @@ mod tests {
         let mut number_out = numbers.take_publisher(&number_out).unwrap();
         let mut label_out = labels.take_publisher(&label_out).unwrap();
         let result_in = results.take_subscriber(&result_in).unwrap();
-        let mut fail = true;
+        let mut should_fail = true;
+
+        let callback_inputs = (
+            Required(numbers.take_subscriber(&number_in).unwrap()),
+            labels.take_subscriber(&label_in).unwrap(),
+        );
+        let callback_outputs = results.take_publisher(&result_out).unwrap();
         let mut node = CallbackNode::new(
-            (
-                Required(numbers.take_subscriber(&number_in).unwrap()),
-                labels.take_subscriber(&label_in).unwrap(),
-            ),
-            results.take_publisher(&result_out).unwrap(),
+            callback_inputs,
+            callback_outputs,
             move |inputs: &(Required<Subscriber<'_, u32>>, Subscriber<'_, String>),
                   output: &mut Publisher<'_, u64>,
                   _: &Context| {
                 let number = inputs.0.0.input_readonly().value().copied().unwrap();
                 output.publish(u64::from(number))?;
-                if std::mem::take(&mut fail) {
+                if std::mem::take(&mut should_fail) {
                     return Err(LoanError::LoanCapacityReached);
                 }
                 Ok(())
             },
         );
         let descriptors = node.recording_endpoints().unwrap();
-        assert_eq!(
+        assert_that!(
             descriptors
                 .iter()
                 .map(|p| (p.channel.as_str(), p.ordinal))
                 .collect::<Vec<_>>(),
-            [("numbers", 0), ("labels", 1), ("results", 0)]
+            container_eq([("numbers", 0), ("labels", 1), ("results", 0)])
         );
-        assert_eq!(descriptors[0].payload_type, std::any::type_name::<u32>());
-        assert_eq!(descriptors[1].payload_type, std::any::type_name::<String>());
-        assert_eq!(descriptors[2].direction, Direction::Published);
-        assert!(node.outputs_are_local());
-        assert!(node.stage_replay_event(0, 1, 1).is_err());
+        expect_eq!(descriptors[0].payload_type, std::any::type_name::<u32>());
+        expect_eq!(descriptors[1].payload_type, std::any::type_name::<String>());
+        expect_eq!(descriptors[2].direction, Direction::Published);
+
+        assert_true!(node.outputs_are_local());
+        assert_true!(node.stage_replay_event(0, 1, 1).is_err());
         let now = FrameworkTime::from_nanoseconds(10);
         node.update_inputs();
         number_out.publish(42).unwrap();
         number_out.flush(now);
         label_out.publish("label".into()).unwrap();
         label_out.flush(now);
-        assert!(node.required_inputs_available());
-        assert!(!node.required_inputs_ready());
+        assert_true!(node.required_inputs_available());
+        assert_true!(!node.required_inputs_ready());
         node.update_inputs();
         let mut records = Vec::new();
         node.visit_prepared_messages(&mut |record| records.push(record));
-        assert_eq!(
+        assert_that!(
             records.iter().map(|r| r.ordinal).collect::<Vec<_>>(),
-            [0, 1]
+            container_eq([0, 1])
         );
-        assert!(records.iter().all(|r| r.header.published_at == now));
+        assert_true!(records.iter().all(|r| r.header.published_at == now));
         node.clear_replay_inputs().unwrap();
-        assert!(!node.required_inputs_available());
-        assert!(!node.required_inputs_ready());
+        assert_true!(!node.required_inputs_available());
+        assert_true!(!node.required_inputs_ready());
         let names = ChannelNameInterner::new();
         let callbacks = CallbackNameInterner::new();
         let context = Context::new(now, &names, &callbacks);
-        assert!(!execute_callback(&mut node, &context).unwrap());
+        assert_true!(!execute_callback(&mut node, &context).unwrap());
         number_out.publish(7).unwrap();
         number_out.flush(now);
-        assert!(execute_callback(&mut node, &context).is_err());
+        assert_true!(execute_callback(&mut node, &context).is_err());
         result_in.update();
-        assert!(result_in.is_empty());
-        assert!(!node.required_inputs_ready());
+        assert_true!(result_in.is_empty());
+        assert_true!(!node.required_inputs_ready());
         node.visit_pending_messages(&mut |_| panic!("failed invocation retained an output"));
         number_out.publish(9).unwrap();
         number_out.flush(now);
-        assert!(execute_callback(&mut node, &context).unwrap());
+        assert_true!(execute_callback(&mut node, &context).unwrap());
         result_in.update();
-        assert_eq!(result_in.input_forwardable().pop().unwrap().message, 9);
+        assert_that!(result_in.input_forwardable().pop().unwrap().message, eq(9));
     }
 }
