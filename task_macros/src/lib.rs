@@ -372,14 +372,19 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
     let kind = match (input, segment.ident.to_string().as_str()) {
         (true, "Input" | "OptionalInput" | "InputSpan") => EndpointKind::Input,
         (true, "RequiredInput") => EndpointKind::Required,
+        (true, "Iox2OptionalInput") => EndpointKind::IoxInput,
+        (true, "Iox2SpanInput") => EndpointKind::IoxSpan,
+        (true, "Iox2Event") => EndpointKind::IoxEvent,
         (false, "Output") => EndpointKind::Output,
         (false, "OutputSpan") => EndpointKind::OutputSpan,
         (false, "OutputUninit") => EndpointKind::Uninit,
         (false, "Publisher") => EndpointKind::Publisher,
+        (false, "Iox2Output") => EndpointKind::IoxOutput,
+        (false, "Iox2NotifyOutput") => EndpointKind::IoxNotifier,
         _ => {
             return Err(syn::Error::new_spanned(
                 &ty,
-                "expected Input, OptionalInput, InputSpan, RequiredInput, Output, OutputSpan, OutputUninit, or Publisher",
+                "expected Input, OptionalInput, InputSpan, RequiredInput, Output, OutputSpan, OutputUninit, Publisher, Iox2OptionalInput, Iox2SpanInput, Iox2Output, Iox2Event, or Iox2NotifyOutput",
             ));
         }
     };
@@ -398,29 +403,45 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
             "trigger and keep_across_runs apply to native inputs only",
         ));
     }
-    let PathArguments::AngleBracketed(generics) = &segment.arguments else {
-        return Err(syn::Error::new_spanned(
-            &ty,
-            "endpoint requires one payload type",
-        ));
+    let payload = if matches!(kind, EndpointKind::IoxEvent | EndpointKind::IoxNotifier) {
+        if let PathArguments::AngleBracketed(generics) = &segment.arguments
+            && generics
+                .args
+                .iter()
+                .any(|argument| matches!(argument, GenericArgument::Type(_)))
+        {
+            return Err(syn::Error::new_spanned(
+                &ty,
+                "event endpoints take no payload type",
+            ));
+        }
+        parse_quote!(())
+    } else {
+        let PathArguments::AngleBracketed(generics) = &segment.arguments else {
+            return Err(syn::Error::new_spanned(
+                &ty,
+                "endpoint requires one payload type",
+            ));
+        };
+        let payloads: Vec<_> = generics
+            .args
+            .iter()
+            .filter_map(|argument| match argument {
+                GenericArgument::Type(ty) => Some(ty.clone()),
+                _ => None,
+            })
+            .collect();
+        if payloads.len() != 1 {
+            return Err(syn::Error::new_spanned(
+                &ty,
+                "endpoint requires exactly one payload type",
+            ));
+        }
+        payloads[0].clone()
     };
-    let payloads: Vec<_> = generics
-        .args
-        .iter()
-        .filter_map(|argument| match argument {
-            GenericArgument::Type(ty) => Some(ty.clone()),
-            _ => None,
-        })
-        .collect();
-    if payloads.len() != 1 {
-        return Err(syn::Error::new_spanned(
-            &ty,
-            "endpoint requires exactly one payload type",
-        ));
-    }
     let span = matches!(
         segment.ident.to_string().as_str(),
-        "InputSpan" | "OutputSpan"
+        "InputSpan" | "OutputSpan" | "Iox2SpanInput"
     );
     let capacity = capacity
         .map(|literal| parse_quote!(#literal))
@@ -441,7 +462,7 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
         forwardable: false,
         forwards: Vec::new(),
         name,
-        payload: payloads[0].clone(),
+        payload,
         kind,
         channel: channel.map(|literal| parse_quote!(#literal)),
         capacity,

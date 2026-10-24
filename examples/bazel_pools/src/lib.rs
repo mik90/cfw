@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use messages::Value;
+use messages::{Iox2, Value};
 use task::Context;
 use task_graph::CallbackSchedule;
 
@@ -23,9 +23,10 @@ impl counter_api::Run for Counter {
         mut outputs: counter_api::Outputs<'_, '_>,
         _context: &Context,
     ) {
-        *outputs.output = Value(self.next);
+        *outputs.output = Iox2(self.next);
         self.next += 1;
         outputs.output.send();
+        outputs.notify.send();
     }
 }
 
@@ -41,7 +42,10 @@ impl doubler_api::Run for Doubler {
         mut outputs: doubler_api::Outputs<'_, '_>,
         _context: &Context,
     ) {
-        *outputs.output = Value(inputs.input.0 * 2);
+        let Some(value) = inputs.input.value() else {
+            return;
+        };
+        *outputs.output = Value(value.0 * 2);
         outputs.output.send();
     }
 }
@@ -63,3 +67,19 @@ impl printer_api::Run for Printer {
 }
 
 printer_api::impl_task!(Printer);
+
+#[derive(Default)]
+pub struct Pulse;
+
+impl pulse_api::Run for Pulse {
+    fn run(
+        &mut self,
+        inputs: pulse_api::Inputs<'_, '_>,
+        _outputs: pulse_api::Outputs<'_, '_>,
+        _context: &Context,
+    ) {
+        println!("pulse {}", inputs.event.count());
+    }
+}
+
+pulse_api::impl_task!(Pulse);

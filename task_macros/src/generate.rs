@@ -60,7 +60,7 @@ pub(super) fn bazel_api(
         quote!(pub use #crate_ident as #field;)
     });
     let impl_body = bazel_impl(task, api);
-    let use_module = if task.endpoints.is_empty() {
+    let use_module = if payloads.is_empty() {
         quote!()
     } else {
         quote!(use #api::#payloads_module as #payloads_module;)
@@ -412,11 +412,19 @@ impl Endpoint {
             EndpointKind::Publisher => {
                 quote!(&#lifetime mut ::task::Publisher<'storage, #payload>)
             }
-            EndpointKind::IoxInput => quote!(::task::iox2::Iox2OptionalInput<#payload>),
-            EndpointKind::IoxSpan => quote!(::task::iox2::Iox2SpanInput<#payload>),
-            EndpointKind::IoxOutput => quote!(::task::iox2::Iox2Output<#payload>),
-            EndpointKind::IoxEvent => quote!(::task::iox2::Iox2Event),
-            EndpointKind::IoxNotifier => quote!(::task::iox2::Iox2NotifyOutput),
+            EndpointKind::IoxInput => {
+                quote!(::task::iox2::Iox2OptionalInput<#lifetime, #payload>)
+            }
+            EndpointKind::IoxSpan => {
+                quote!(::task::iox2::Iox2SpanInput<#lifetime, #payload>)
+            }
+            EndpointKind::IoxOutput => {
+                quote!(::task::iox2::Iox2Output<#lifetime, #payload>)
+            }
+            EndpointKind::IoxEvent => quote!(::task::iox2::Iox2Event<#lifetime>),
+            EndpointKind::IoxNotifier => {
+                quote!(::task::iox2::Iox2NotifyOutput<#lifetime>)
+            }
         }
     }
     fn declare(&self) -> TokenStream {

@@ -46,6 +46,9 @@ def _wrapper_type(kind, input):
             "required": "RequiredInput",
             "optional": "Input",
             "span": "InputSpan",
+            "iox2_input": "Iox2OptionalInput",
+            "iox2_span": "Iox2SpanInput",
+            "iox2_event": "Iox2Event",
         }
     else:
         wrappers = {
@@ -53,6 +56,8 @@ def _wrapper_type(kind, input):
             "output_span": "OutputSpan",
             "uninit": "OutputUninit",
             "publisher": "Publisher",
+            "iox2_output": "Iox2Output",
+            "iox2_notifier": "Iox2NotifyOutput",
         }
     if kind not in wrappers:
         fail("unknown %s endpoint kind '%s'" % ("subscriber" if input else "publisher", kind))
@@ -78,37 +83,52 @@ def _task_api_src_impl(ctx):
 
     subscriber_lines = []
     for endpoint in subscribers:
-        payload = "%s::%s::Payload" % (ctx.attr.payloads_module, endpoint.field)
-        subscriber_lines.extend([
-            "        %s: %s<%s> {" % (
+        wrapper = _wrapper_type(endpoint.kind, True)
+        if endpoint.has_payload:
+            type_expr = "%s<%s::%s::Payload>" % (
+                wrapper,
+                ctx.attr.payloads_module,
                 endpoint.field,
-                _wrapper_type(endpoint.kind, True),
-                payload,
-            ),
+            )
+        else:
+            type_expr = wrapper
+        lines = [
+            "        %s: %s {" % (endpoint.field, type_expr),
             '            channel: "%s",' % endpoint.channel_name,
             "            capacity: %d," % endpoint.capacity,
-            "            trigger: %s," % _bool_literal(endpoint.trigger),
-            "            keep_across_runs: %s," % _bool_literal(endpoint.keep_across_runs),
-            "        },",
-        ])
+        ]
+        if not endpoint.kind.startswith("iox2_"):
+            lines.extend([
+                "            trigger: %s," % _bool_literal(endpoint.trigger),
+                "            keep_across_runs: %s," % _bool_literal(endpoint.keep_across_runs),
+            ])
+        lines.append("        },")
+        subscriber_lines.extend(lines)
 
     publisher_lines = []
     for endpoint in publishers:
-        payload = "%s::%s::Payload" % (ctx.attr.payloads_module, endpoint.field)
-        publisher_lines.extend([
-            "        %s: %s<%s> {" % (
+        wrapper = _wrapper_type(endpoint.kind, False)
+        if endpoint.has_payload:
+            type_expr = "%s<%s::%s::Payload>" % (
+                wrapper,
+                ctx.attr.payloads_module,
                 endpoint.field,
-                _wrapper_type(endpoint.kind, False),
-                payload,
-            ),
+            )
+        else:
+            type_expr = wrapper
+        lines = [
+            "        %s: %s {" % (endpoint.field, type_expr),
             '            channel: "%s",' % endpoint.channel_name,
-            "            capacity: %d," % endpoint.capacity,
-            "        },",
-        ])
+        ]
+        if endpoint.kind != "iox2_notifier":
+            lines.append("            capacity: %d," % endpoint.capacity)
+        lines.append("        },")
+        publisher_lines.extend(lines)
 
     payload_lines = [
         "        %s: %s::Payload," % (endpoint.field, endpoint.crate_name)
         for endpoint in subscribers + publishers
+        if endpoint.has_payload
     ]
 
     content = """::task_macros::define_task! {

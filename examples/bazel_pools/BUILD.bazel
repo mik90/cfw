@@ -16,6 +16,7 @@ rust_library(
         ":counter_api",
         ":doubler_api",
         ":printer_api",
+        ":pulse_api",
         "//examples/bazel_pools/messages",
         "//task",
         "//task_graph",
@@ -25,7 +26,8 @@ rust_library(
 channel(
     name = "counter_channel",
     channel_name = "counter",
-    payload = "messages::Value",
+    payload = "messages::Iox2",
+    transport = "iceoryx2",
     deps = ["//examples/bazel_pools/messages"],
 )
 
@@ -36,20 +38,42 @@ channel(
     deps = ["//examples/bazel_pools/messages"],
 )
 
+channel(
+    name = "counter_event",
+    channel_name = "counter_event",
+    kind = "event",
+    transport = "iceoryx2",
+)
+
 publisher(
     name = "counter_output",
     channel = ":counter_channel",
     field = "output",
+    kind = "iox2_output",
     queue_capacity = 8,
+)
+
+publisher(
+    name = "counter_notify",
+    channel = ":counter_event",
+    field = "notify",
+    kind = "iox2_notifier",
 )
 
 subscriber(
     name = "doubler_input",
     channel = ":counter_channel",
     field = "input",
-    keep_across_runs = True,
-    queue_capacity = 1,
-    trigger = True,
+    kind = "iox2_input",
+    queue_capacity = 8,
+)
+
+subscriber(
+    name = "doubler_event",
+    channel = ":counter_channel",
+    field = "_event",
+    kind = "iox2_event",
+    queue_capacity = 8,
 )
 
 publisher(
@@ -68,9 +92,20 @@ subscriber(
     trigger = True,
 )
 
+subscriber(
+    name = "pulse_input",
+    channel = ":counter_event",
+    field = "event",
+    kind = "iox2_event",
+    queue_capacity = 8,
+)
+
 task(
     name = "counter",
-    publishers = [":counter_output"],
+    publishers = [
+        ":counter_output",
+        ":counter_notify",
+    ],
     rust_type = "task_impls::Counter",
     schedule = "::task_impls::Counter::schedule()",
     implementation = ":task_impls",
@@ -80,7 +115,10 @@ task(
     name = "doubler",
     publishers = [":doubler_output"],
     rust_type = "task_impls::Doubler",
-    subscribers = [":doubler_input"],
+    subscribers = [
+        ":doubler_input",
+        ":doubler_event",
+    ],
     implementation = ":task_impls",
 )
 
@@ -91,12 +129,20 @@ task(
     implementation = ":task_impls",
 )
 
+task(
+    name = "pulse",
+    rust_type = "task_impls::Pulse",
+    subscribers = [":pulse_input"],
+    implementation = ":task_impls",
+)
+
 pool(
     name = "control",
     tasks = [
         ":counter",
         ":doubler",
         ":printer",
+        ":pulse",
     ],
     threads = 2,
     deps = [":task_impls"],

@@ -11,7 +11,9 @@ CfwChannelInfo = provider(
     doc = "A CFW channel payload type.",
     fields = {
         "channel_name": "Framework channel name.",
-        "payload_type": "Rust payload type path.",
+        "event": "Whether this is an IPC event channel.",
+        "payload_type": "Rust payload type path. Empty for event channels.",
+        "transport": "Transport name: native or iceoryx2.",
     },
 )
 
@@ -22,6 +24,7 @@ CfwSubscriberInfo = provider(
         "channel_name": "Framework channel name.",
         "crate_name": "Rust crate that re-exports Payload.",
         "field": "Task input field name.",
+        "has_payload": "Whether the endpoint carries a payload type.",
         "keep_across_runs": "Whether the input is retained across runs.",
         "kind": "Endpoint kind.",
         "trigger": "Whether the input triggers execution.",
@@ -35,6 +38,7 @@ CfwPublisherInfo = provider(
         "channel_name": "Framework channel name.",
         "crate_name": "Rust crate that re-exports Payload.",
         "field": "Task output field name.",
+        "has_payload": "Whether the endpoint carries a payload type.",
         "kind": "Endpoint kind.",
     },
 )
@@ -55,7 +59,7 @@ def _default_capacity(kind, queue_capacity):
         fail("queue_capacity must be positive or zero")
     if queue_capacity > 0:
         return queue_capacity
-    return 4 if kind in ["span", "output_span"] else 1
+    return 4 if kind in ["span", "output_span", "iox2_span"] else 1
 
 def _reexport_src_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".rs")
@@ -73,7 +77,9 @@ def _channel_info_impl(ctx):
     return [
         CfwChannelInfo(
             channel_name = ctx.attr.channel_name,
+            event = ctx.attr.event,
             payload_type = ctx.attr.payload_type,
+            transport = ctx.attr.transport,
         ),
     ]
 
@@ -81,18 +87,54 @@ _channel_info = rule(
     implementation = _channel_info_impl,
     attrs = {
         "channel_name": attr.string(mandatory = True),
-        "payload_type": attr.string(mandatory = True),
+        "event": attr.bool(mandatory = True),
+        "payload_type": attr.string(default = ""),
+        "transport": attr.string(mandatory = True),
     },
 )
 
+def _validate_transport(label, kind, channel):
+    ipc = kind.startswith("iox2_")
+    event_endpoint = kind in ["iox2_event", "iox2_notifier"]
+    if not ipc:
+        if channel.transport != "native":
+            fail(
+                "%s kind '%s' requires a native channel, got '%s'" % (
+                    label,
+                    kind,
+                    channel.transport,
+                ),
+            )
+        if channel.event:
+            fail("%s kind '%s' cannot use an event channel" % (label, kind))
+        if not channel.payload_type:
+            fail("%s kind '%s' requires a data channel with a payload" % (label, kind))
+        return
+
+    if channel.transport != "iceoryx2":
+        fail(
+            "%s kind '%s' requires an iceoryx2 channel, got '%s'" % (
+                label,
+                kind,
+                channel.transport,
+            ),
+        )
+    if not event_endpoint:
+        if channel.event:
+            fail("%s kind '%s' requires a data channel" % (label, kind))
+        if not channel.payload_type:
+            fail("%s kind '%s' requires a data channel with a payload" % (label, kind))
+
 def _subscriber_info_impl(ctx):
     channel = ctx.attr.channel[CfwChannelInfo]
+    _validate_transport(ctx.label.name, ctx.attr.kind, channel)
     return [
         CfwSubscriberInfo(
             capacity = ctx.attr.capacity,
             channel_name = channel.channel_name,
             crate_name = ctx.attr.crate_name,
             field = ctx.attr.field,
+            has_payload = ctx.attr.kind != "iox2_event",
             keep_across_runs = ctx.attr.keep_across_runs,
             kind = ctx.attr.kind,
             trigger = ctx.attr.trigger,
@@ -117,12 +159,14 @@ _subscriber_info = rule(
 
 def _publisher_info_impl(ctx):
     channel = ctx.attr.channel[CfwChannelInfo]
+    _validate_transport(ctx.label.name, ctx.attr.kind, channel)
     return [
         CfwPublisherInfo(
             capacity = ctx.attr.capacity,
             channel_name = channel.channel_name,
             crate_name = ctx.attr.crate_name,
             field = ctx.attr.field,
+            has_payload = ctx.attr.kind != "iox2_notifier",
             kind = ctx.attr.kind,
         ),
     ]
@@ -141,10 +185,36 @@ _publisher_info = rule(
     },
 )
 
-def _channel_impl(name, visibility, payload, deps, channel_name, **kwargs):
+def _channel_impl(
+        name,
+        visibility,
+        payload,
+        deps,
+        channel_name,
+        kind,
+        transport,
+        **kwargs):
+    if kind == "event":
+        if transport != "iceoryx2":
+            fail("channel '%s': event channels require iceoryx2 transport" % name)
+        if payload:
+            fail("channel '%s': event channels do not take a payload" % name)
+        content = ""
+        event = True
+    elif kind == "data":
+        if not payload:
+            fail("channel '%s': data channels require a payload" % name)
+        content = "pub type Payload = %s;" % payload
+        event = False
+    else:
+        fail("channel '%s': kind must be data or event" % name)
+
+    if transport == "iceoryx2":
+        deps = deps + ["@crates//:iceoryx2"]
+
     _reexport_src(
         name = name + "_src",
-        content = "pub type Payload = %s;" % payload,
+        content = content,
     )
     rust_library(
         name = name,
@@ -156,14 +226,16 @@ def _channel_impl(name, visibility, payload, deps, channel_name, **kwargs):
     _channel_info(
         name = name + "_info",
         channel_name = channel_name or name,
+        event = event,
         payload_type = payload,
+        transport = transport,
         visibility = visibility,
     )
 
 channel = macro(
     attrs = {
         "payload": attr.string(
-            mandatory = True,
+            default = "",
             configurable = False,
             doc = "Rust payload type path, e.g. 'my_messages::Value'.",
         ),
@@ -176,6 +248,18 @@ channel = macro(
             default = "",
             configurable = False,
             doc = "Framework channel name. Defaults to the target name.",
+        ),
+        "kind": attr.string(
+            default = "data",
+            values = ["data", "event"],
+            configurable = False,
+            doc = "Data channel or IPC event channel.",
+        ),
+        "transport": attr.string(
+            default = "native",
+            values = ["native", "iceoryx2"],
+            configurable = False,
+            doc = "Channel transport.",
         ),
     },
     implementation = _channel_impl,
@@ -192,11 +276,25 @@ def _subscriber_impl(
         trigger,
         keep_across_runs,
         **kwargs):
-    if kind not in ["required", "optional", "span"]:
-        fail("subscriber kind must be required, optional, or span")
+    if kind not in [
+        "required",
+        "optional",
+        "span",
+        "iox2_input",
+        "iox2_span",
+        "iox2_event",
+    ]:
+        fail(
+            "subscriber '%s': kind must be required, optional, span, iox2_input, iox2_span, or iox2_event" % name,
+        )
+    if kind.startswith("iox2_") and (not trigger or not keep_across_runs):
+        fail(
+            "subscriber '%s': trigger and keep_across_runs apply to native subscribers only" % name,
+        )
+    event = kind == "iox2_event"
     _reexport_src(
         name = name + "_src",
-        content = "pub type Payload = %s::Payload;" % _crate_name(channel),
+        content = "" if event else "pub type Payload = %s::Payload;" % _crate_name(channel),
     )
     rust_library(
         name = name,
@@ -231,7 +329,14 @@ subscriber = macro(
         ),
         "kind": attr.string(
             default = "required",
-            values = ["required", "optional", "span"],
+            values = [
+                "required",
+                "optional",
+                "span",
+                "iox2_input",
+                "iox2_span",
+                "iox2_event",
+            ],
             configurable = False,
             doc = "Subscriber endpoint kind.",
         ),
@@ -243,12 +348,12 @@ subscriber = macro(
         "trigger": attr.bool(
             default = True,
             configurable = False,
-            doc = "Whether input arrival triggers execution.",
+            doc = "Whether input arrival triggers execution. Native only.",
         ),
         "keep_across_runs": attr.bool(
             default = True,
             configurable = False,
-            doc = "Whether the input is retained across runs.",
+            doc = "Whether the input is retained across runs. Native only.",
         ),
     },
     implementation = _subscriber_impl,
@@ -256,11 +361,21 @@ subscriber = macro(
 )
 
 def _publisher_impl(name, visibility, channel, field, kind, queue_capacity, **kwargs):
-    if kind not in ["output", "output_span", "uninit", "publisher"]:
-        fail("publisher kind must be output, output_span, uninit, or publisher")
+    if kind not in [
+        "output",
+        "output_span",
+        "uninit",
+        "publisher",
+        "iox2_output",
+        "iox2_notifier",
+    ]:
+        fail(
+            "publisher '%s': kind must be output, output_span, uninit, publisher, iox2_output, or iox2_notifier" % name,
+        )
+    event = kind == "iox2_notifier"
     _reexport_src(
         name = name + "_src",
-        content = "pub type Payload = %s::Payload;" % _crate_name(channel),
+        content = "" if event else "pub type Payload = %s::Payload;" % _crate_name(channel),
     )
     rust_library(
         name = name,
@@ -293,7 +408,14 @@ publisher = macro(
         ),
         "kind": attr.string(
             default = "output",
-            values = ["output", "output_span", "uninit", "publisher"],
+            values = [
+                "output",
+                "output_span",
+                "uninit",
+                "publisher",
+                "iox2_output",
+                "iox2_notifier",
+            ],
             configurable = False,
             doc = "Publisher endpoint kind.",
         ),
