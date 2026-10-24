@@ -29,4 +29,4 @@ no-features:
 bazel-lint:
     #!/usr/bin/env bash
     set -euo pipefail
-    buldifier -r .
+    buildifier -r --lint=fix .

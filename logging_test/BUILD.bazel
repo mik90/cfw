@@ -1,5 +1,5 @@
-load("//bazel:rust.bzl", "miri_test", "rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel:rust.bzl", "miri_test", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
