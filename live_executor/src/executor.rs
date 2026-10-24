@@ -57,6 +57,15 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
                 ),
             });
         }
+        #[cfg(not(feature = "iceoryx2"))]
+        if let Some(node) = nodes.iter().find(|node| node.callback.has_ipc_endpoints()) {
+            return Err(LiveExecutorStartError {
+                reason: format!(
+                    "callback '{}' uses iceoryx2 endpoints but live_executor was built without the iceoryx2 feature",
+                    node.name
+                ),
+            });
+        }
         let schedules: Vec<_> = nodes.iter().map(|node| node.schedule.clone()).collect();
         let scheduler = Scheduler::new(&schedules, &workers);
         Ok(Self {
@@ -334,6 +343,28 @@ mod tests {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    #[cfg(not(feature = "iceoryx2"))]
+    fn rejects_ipc_endpoints_without_iceoryx2_feature() {
+        struct IpcCallback;
+        impl task::Callback for IpcCallback {
+            fn has_ipc_endpoints(&self) -> bool {
+                true
+            }
+            fn run(&mut self, _: &task::Context) -> Result<(), task::LoanError> {
+                Ok(())
+            }
+        }
+
+        let mut builder = GraphBuilder::new();
+        builder.add_callback("ipc", || Ok(IpcCallback));
+        let error =
+            LiveExecutor::new_multi_pool_with_time(vec![1], builder.build().unwrap(), Clock)
+                .err()
+                .expect("IPC graph should be rejected without iceoryx2");
+        assert!(error.reason.contains("iceoryx2"));
     }
 
     #[test]

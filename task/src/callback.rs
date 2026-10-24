@@ -29,6 +29,10 @@ pub trait Callback: Send {
     ) -> Result<(), LoanError> {
         Err(LoanError::Transport("unknown replay event endpoint".into()))
     }
+    /// Whether this callback has endpoints on a non-native transport.
+    fn has_ipc_endpoints(&self) -> bool {
+        false
+    }
     fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
         None
     }
@@ -84,6 +88,10 @@ where
         _count: u64,
     ) -> Result<(), LoanError> {
         Err(LoanError::Transport("unknown replay event endpoint".into()))
+    }
+    /// Whether this callback has endpoints on a non-native transport.
+    fn has_ipc_endpoints(&self) -> bool {
+        false
     }
     fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
         None

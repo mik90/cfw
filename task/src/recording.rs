@@ -281,6 +281,9 @@ impl Callback for Recorded<'_> {
     fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
         self.callback.recording_endpoints()
     }
+    fn has_ipc_endpoints(&self) -> bool {
+        self.callback.has_ipc_endpoints()
+    }
     fn visit_prepared_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
         self.callback.visit_prepared_messages(visit);
     }

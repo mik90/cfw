@@ -242,3 +242,53 @@ fn notification_plan_checks_ids_keys_and_only_budgets_enabled_notifiers() {
     let storage = plan.allocate().unwrap();
     let _bindings = storage.bind().unwrap();
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
+fn split_data_and_event_plans_share_service_notifications() {
+    struct NoWake;
+    impl task::wake::Wake for NoWake {
+        fn wake(&self) {}
+    }
+
+    let runtime = Iox2Runtime::new().unwrap();
+    let channel = name();
+    let config = Iox2ChannelConfig {
+        buffer_capacity: 2,
+        max_borrowed_samples: 4,
+        max_publishers: 1,
+        max_subscribers: 1,
+        max_nodes: 1,
+        max_listeners: 1,
+        max_notifiers: 1,
+        event_id_max_value: 0,
+    };
+    let mut data_plan = Iox2ChannelPlan::<u64>::new(channel.clone(), &runtime);
+    data_plan.set_config(config.clone());
+    let publisher_key = data_plan.publisher(2);
+    let subscriber_key = data_plan.subscriber(2);
+    let mut event_plan = Iox2ChannelPlan::<()>::new(channel, &runtime);
+    event_plan.set_config(config);
+    let event_key = event_plan.events(2);
+
+    let data_storage = data_plan.allocate().unwrap();
+    let event_storage = event_plan.allocate().unwrap();
+    let data_bindings = data_storage.bind().unwrap();
+    let event_bindings = event_storage.bind().unwrap();
+    let mut publisher = data_bindings.take_publisher(&publisher_key).unwrap();
+    let subscriber = data_bindings.take_subscriber(&subscriber_key).unwrap();
+    let mut events = event_bindings.take_event(&event_key).unwrap();
+    events.set_waker(std::sync::Arc::new(NoWake));
+    let registration = events.take_registration().unwrap();
+
+    publisher.loan(42).unwrap().send();
+    publisher.flush(FrameworkTime::from_nanoseconds(1));
+    let mut ids = Vec::new();
+    registration
+        .listener
+        .try_wait(|event| ids.push(event.id.as_value()))
+        .unwrap();
+    assert_eq!(ids, [0]);
+    subscriber.update();
+    assert_eq!(Iox2OptionalInput::new(&subscriber).value(), Some(&42));
+}

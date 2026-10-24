@@ -1,7 +1,7 @@
 use super::{Callback, endpoints::*};
 use crate::{
     Context, LoanError,
-    recording::{Direction, EndpointDescriptor, LoggedEvent, LoggedMessage},
+    recording::{Direction, EndpointDescriptor, LoggedEvent, LoggedMessage, Transport},
     time::FrameworkTime,
     wake::WakeHandle,
 };
@@ -52,6 +52,12 @@ where
         let mut pending = Pending(false);
         self.inputs.visit(&mut pending);
         pending.0
+    }
+    fn has_ipc_endpoints(&self) -> bool {
+        let mut visitor = HasIpc(false);
+        self.inputs.visit(&mut visitor);
+        self.outputs.visit(&mut visitor);
+        visitor.0
     }
     fn required_inputs_ready(&self) -> bool {
         let mut readiness = Readiness {
@@ -191,6 +197,17 @@ struct LocalOutputs(bool);
 impl OutputVisitor for LocalOutputs {
     fn visit(&mut self, endpoint: &impl OutputEndpoint) {
         self.0 &= endpoint.is_local();
+    }
+}
+struct HasIpc(bool);
+impl InputVisitor for HasIpc {
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
+        self.0 |= !matches!(endpoint.transport(), Transport::Native);
+    }
+}
+impl OutputVisitor for HasIpc {
+    fn visit(&mut self, endpoint: &impl OutputEndpoint) {
+        self.0 |= !matches!(endpoint.transport(), Transport::Native);
     }
 }
 struct Names<'a>(&'a mut dyn FnMut(&str));
