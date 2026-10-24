@@ -25,3 +25,8 @@ no-features:
     set -euo pipefail
     export RUSTFLAGS="-D warnings"
     cargo check --no-default-features
+
+bazel-lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    buldifier -r .

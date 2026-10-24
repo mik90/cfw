@@ -34,11 +34,19 @@ rust_test(
     name = "forwarding_test",
     srcs = ["tests/forwarding.rs"],
     proc_macro_deps = [":task_macros"],
-    deps = all_crate_deps(normal = True, normal_dev = True),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
 )
 
 miri_test(
     name = "forwarding_miri",
     srcs = ["tests/forwarding.rs"],
-    deps = [":task_macros", "//task", "//task_graph", "//testing"],
+    deps = [
+        ":task_macros",
+        "//task",
+        "//task_graph",
+        "//testing",
+    ],
 )

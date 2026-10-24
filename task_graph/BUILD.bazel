@@ -22,19 +22,28 @@ rust_test(
 rust_test(
     name = "dynamic_graph_test",
     srcs = ["tests/dynamic_graph.rs"],
-    deps = [":task_graph"] + all_crate_deps(normal = True, normal_dev = True),
+    deps = [":task_graph"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
 )
 
 rust_test(
     name = "pub_sub_test",
     srcs = ["tests/pub_sub_test.rs"],
-    deps = [":task_graph"] + all_crate_deps(normal = True, normal_dev = True),
+    deps = [":task_graph"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
 )
 
 rust_test(
     name = "recording_test",
     srcs = ["tests/recording.rs"],
-    deps = [":task_graph"] + all_crate_deps(normal = True, normal_dev = True),
+    deps = [":task_graph"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
 )
 
 miri_test(
