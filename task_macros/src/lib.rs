@@ -1,9 +1,10 @@
 use proc_macro::TokenStream;
 use quote::quote;
+use syn::parse::{Parse, ParseStream};
 use syn::visit_mut::VisitMut;
 use syn::{
-    FnArg, GenericArgument, ItemImpl, Pat, PathArguments, ReturnType, Type, parse_macro_input,
-    parse_quote,
+    FnArg, GenericArgument, Ident, ItemImpl, LitStr, Pat, PathArguments, ReturnType, Token, Type,
+    braced, parse_macro_input, parse_quote,
 };
 
 /// Derive a lifetime-indexed bundle of named ArenaReaderPtr<Message<T>> fields.
@@ -156,6 +157,17 @@ pub fn task_callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
+/// Generate a Bazel-facing task API crate: user-facing `Inputs`/`Outputs`,
+/// a `Run` trait, and an exported `impl_task!` macro that implements
+/// `task_graph::Task` for the user's concrete task type.
+#[proc_macro]
+pub fn define_task(input: TokenStream) -> TokenStream {
+    let spec = parse_macro_input!(input as DeclaredTask);
+    expand_declared(spec)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
 #[derive(Clone, Copy)]
 enum EndpointKind {
     Input,
@@ -195,8 +207,9 @@ impl VisitMut for StorageLifetimes {
 mod generate;
 
 struct TaskDefinition {
-    item: ItemImpl,
+    item: Option<ItemImpl>,
     name: syn::Ident,
+    self_ty: proc_macro2::TokenStream,
     endpoints: Vec<Endpoint>,
     arguments: Vec<Option<usize>>,
     fallible: bool,
@@ -206,6 +219,167 @@ fn expand(item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let task = parse_task(item)?;
     validate_endpoints(&task.endpoints)?;
     Ok(generate::task(&task))
+}
+
+struct EndpointSpec {
+    name: Ident,
+    ty: Type,
+    channel: LitStr,
+}
+
+struct DeclaredTask {
+    api: syn::Path,
+    name: Ident,
+    inputs: Vec<EndpointSpec>,
+    outputs: Vec<EndpointSpec>,
+}
+
+impl Parse for DeclaredTask {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let api = parse_key::<syn::Path>(input, "api")?;
+        input.parse::<Token![,]>()?;
+        let name = parse_key::<Ident>(input, "name")?;
+        input.parse::<Token![,]>()?;
+        let inputs = parse_endpoint_block(input, "inputs")?;
+        input.parse::<Token![,]>()?;
+        let outputs = parse_endpoint_block(input, "outputs")?;
+        let _ = input.parse::<Token![,]>();
+        if !input.is_empty() {
+            return Err(input.error("unexpected tokens after task definition"));
+        }
+        Ok(Self {
+            api,
+            name,
+            inputs,
+            outputs,
+        })
+    }
+}
+
+fn parse_key<T: Parse>(input: ParseStream, key: &str) -> syn::Result<T> {
+    let ident: Ident = input.parse()?;
+    if ident != key {
+        return Err(syn::Error::new_spanned(ident, format!("expected '{key}'")));
+    }
+    input.parse::<Token![:]>()?;
+    input.parse()
+}
+
+fn parse_endpoint_block(input: ParseStream, key: &str) -> syn::Result<Vec<EndpointSpec>> {
+    let ident: Ident = input.parse()?;
+    if ident != key {
+        return Err(syn::Error::new_spanned(ident, format!("expected '{key}'")));
+    }
+    input.parse::<Token![:]>()?;
+    let content;
+    braced!(content in input);
+    let mut endpoints = Vec::new();
+    while !content.is_empty() {
+        let name: Ident = content.parse()?;
+        content.parse::<Token![:]>()?;
+        let ty: Type = content.parse()?;
+        content.parse::<Token![=]>()?;
+        let channel: LitStr = content.parse()?;
+        endpoints.push(EndpointSpec { name, ty, channel });
+        if content.peek(Token![,]) {
+            content.parse::<Token![,]>()?;
+        } else {
+            break;
+        }
+    }
+    Ok(endpoints)
+}
+
+fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
+    let EndpointSpec { name, ty, channel } = spec;
+    let Type::Path(path) = &ty else {
+        return Err(syn::Error::new_spanned(ty, "expected a typed endpoint"));
+    };
+    let segment = path.path.segments.last().unwrap();
+    let kind = match (input, segment.ident.to_string().as_str()) {
+        (true, "Input" | "OptionalInput" | "InputSpan") => EndpointKind::Input,
+        (true, "RequiredInput") => EndpointKind::Required,
+        (false, "Output") => EndpointKind::Output,
+        (false, "OutputSpan") => EndpointKind::OutputSpan,
+        (false, "OutputUninit") => EndpointKind::Uninit,
+        (false, "Publisher") => EndpointKind::Publisher,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &ty,
+                "expected Input, OptionalInput, InputSpan, RequiredInput, Output, OutputSpan, OutputUninit, or Publisher",
+            ));
+        }
+    };
+    let PathArguments::AngleBracketed(generics) = &segment.arguments else {
+        return Err(syn::Error::new_spanned(
+            &ty,
+            "endpoint requires one payload type",
+        ));
+    };
+    let payloads: Vec<_> = generics
+        .args
+        .iter()
+        .filter_map(|argument| match argument {
+            GenericArgument::Type(ty) => Some(ty.clone()),
+            _ => None,
+        })
+        .collect();
+    if payloads.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            &ty,
+            "endpoint requires exactly one payload type",
+        ));
+    }
+    let capacity = if matches!(kind, EndpointKind::Input | EndpointKind::OutputSpan)
+        && matches!(
+            segment.ident.to_string().as_str(),
+            "InputSpan" | "OutputSpan"
+        ) {
+        parse_quote!(4)
+    } else {
+        parse_quote!(1)
+    };
+    Ok(Endpoint {
+        forwardable: false,
+        forwards: Vec::new(),
+        name,
+        payload: payloads[0].clone(),
+        kind,
+        channel: Some(parse_quote!(#channel)),
+        capacity,
+        trigger: parse_quote!(true),
+        keep: parse_quote!(true),
+    })
+}
+
+fn expand_declared(spec: DeclaredTask) -> syn::Result<proc_macro2::TokenStream> {
+    let mut endpoints = Vec::new();
+    for input in spec.inputs {
+        endpoints.push(declared_endpoint(input, true)?);
+    }
+    for output in spec.outputs {
+        endpoints.push(declared_endpoint(output, false)?);
+    }
+    validate_endpoints(&endpoints)?;
+    let task = TaskDefinition {
+        item: None,
+        name: spec.name,
+        self_ty: dollar_ty(),
+        endpoints,
+        arguments: Vec::new(),
+        fallible: false,
+    };
+    Ok(generate::bazel_api(&task, &spec.api))
+}
+
+fn dollar_ty() -> proc_macro2::TokenStream {
+    use proc_macro2::{Punct, Spacing, TokenTree};
+    [
+        TokenTree::Punct(Punct::new('$', Spacing::Alone)),
+        TokenTree::Ident(Ident::new("ty", proc_macro2::Span::call_site())),
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
@@ -488,8 +662,9 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
     };
 
     Ok(TaskDefinition {
-        item,
-        name: task_name,
+        item: Some(item),
+        name: task_name.clone(),
+        self_ty: quote!(#task_name),
         endpoints,
         arguments,
         fallible,
@@ -533,7 +708,7 @@ fn validate_endpoints(endpoints: &[Endpoint]) -> syn::Result<()> {
 }
 
 fn generate_registration(
-    task: &syn::Ident,
+    self_ty: &proc_macro2::TokenStream,
     declaration: &syn::Ident,
     endpoints: &[Endpoint],
 ) -> proc_macro2::TokenStream {
@@ -702,7 +877,7 @@ fn generate_registration(
         }
     }
     quote! {
-        impl ::task_graph::Task for #task {
+        impl ::task_graph::Task for #self_ty {
             fn register(self: Box<Self>, __cfw_plan: &mut ::task_graph::GraphPlan, __cfw_overrides: &::task_graph::ChannelOverrides) -> Result<::task_graph::TaskBinding, ::task_graph::BuildError> {
                 __cfw_overrides.validate(&[#(#schema),*])?;
                 let __cfw_names: Vec<String> = vec![#(#channel_names),*];

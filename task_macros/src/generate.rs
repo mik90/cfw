@@ -4,16 +4,135 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 pub(super) fn task(task: &TaskDefinition) -> TokenStream {
-    let item = &task.item;
+    let item = task
+        .item
+        .as_ref()
+        .expect("task_callback always has an impl item");
     let declaration_name = format_ident!("{}Declaration", task.name);
     let inputs_name = format_ident!("{}Inputs", task.name);
     let outputs_name = format_ident!("{}Outputs", task.name);
     let declaration = declaration(task, &declaration_name);
-    let registration = generate_registration(&task.name, &declaration_name, &task.endpoints);
+    let registration = generate_registration(&task.self_ty, &declaration_name, &task.endpoints);
     let inputs = collection(&task.endpoints, &inputs_name, true);
     let outputs = collection(&task.endpoints, &outputs_name, false);
-    let binding = binding(task, &declaration_name, &inputs_name, &outputs_name);
+    let invocation = invocation(task);
+    let binding = binding(
+        task,
+        &declaration_name,
+        &inputs_name,
+        &outputs_name,
+        &invocation,
+    );
     quote! { #item #declaration #registration #inputs #outputs #binding }
+}
+
+pub(super) fn bazel_api(task: &TaskDefinition, api: &syn::Path) -> TokenStream {
+    let input_fields = task
+        .endpoints
+        .iter()
+        .filter(|endpoint| endpoint.is_input())
+        .map(|endpoint| {
+            let name = &endpoint.name;
+            let ty = endpoint.user_arg_type(true);
+            quote!(pub #name: #ty)
+        });
+    let output_fields = task
+        .endpoints
+        .iter()
+        .filter(|endpoint| !endpoint.is_input())
+        .map(|endpoint| {
+            let name = &endpoint.name;
+            let ty = endpoint.user_arg_type(false);
+            quote!(pub #name: #ty)
+        });
+    let impl_body = bazel_impl(task, api);
+    quote! {
+        pub struct Inputs<'input, 'storage> {
+            #(#input_fields,)*
+            #[doc(hidden)]
+            pub __lifetime: ::core::marker::PhantomData<(&'input (), &'storage ())>,
+        }
+
+        pub struct Outputs<'output, 'storage> {
+            #(#output_fields,)*
+            #[doc(hidden)]
+            pub __lifetime: ::core::marker::PhantomData<(&'output (), &'storage ())>,
+        }
+
+        pub trait Run: ::core::default::Default + 'static {
+            fn run(
+                &mut self,
+                inputs: Inputs<'_, '_>,
+                outputs: Outputs<'_, '_>,
+                context: &::task::Context,
+            );
+        }
+
+        #[macro_export]
+        macro_rules! impl_task {
+            ($ty:ty) => {
+                #impl_body
+            };
+        }
+    }
+}
+
+fn bazel_impl(task: &TaskDefinition, api: &syn::Path) -> TokenStream {
+    let declaration_name = format_ident!("{}Declaration", task.name);
+    let inputs_name = format_ident!("{}Inputs", task.name);
+    let outputs_name = format_ident!("{}Outputs", task.name);
+    let declaration = declaration(task, &declaration_name);
+    let registration = generate_registration(&task.self_ty, &declaration_name, &task.endpoints);
+    let inputs = collection(&task.endpoints, &inputs_name, true);
+    let outputs = collection(&task.endpoints, &outputs_name, false);
+    let invocation = bazel_invocation(task, api);
+    let binding = binding(
+        task,
+        &declaration_name,
+        &inputs_name,
+        &outputs_name,
+        &invocation,
+    );
+    quote! { #declaration #registration #inputs #outputs #binding }
+}
+
+fn bazel_invocation(task: &TaskDefinition, api: &syn::Path) -> TokenStream {
+    let input_fields = task
+        .endpoints
+        .iter()
+        .filter(|endpoint| endpoint.is_input())
+        .map(|endpoint| {
+            let name = &endpoint.name;
+            let argument = endpoint.argument();
+            quote!(#name: #argument)
+        });
+    let output_fields = task
+        .endpoints
+        .iter()
+        .filter(|endpoint| !endpoint.is_input())
+        .map(|endpoint| {
+            let name = &endpoint.name;
+            let argument = endpoint.argument();
+            quote!(#name: #argument)
+        });
+    let self_ty = &task.self_ty;
+    quote! {
+        let __cfw_user_inputs = #api::Inputs {
+            #(#input_fields,)*
+            __lifetime: ::core::marker::PhantomData,
+        };
+        let __cfw_user_outputs = #api::Outputs {
+            #(#output_fields,)*
+            __lifetime: ::core::marker::PhantomData,
+        };
+        <#self_ty as #api::Run>::run(
+            &mut __cfw_user,
+            __cfw_user_inputs,
+            __cfw_user_outputs,
+            __cfw_context,
+        );
+        ::core::result::Result::Ok(())
+    }
 }
 
 fn arity(count: usize) -> TokenStream {
@@ -25,7 +144,7 @@ fn arity(count: usize) -> TokenStream {
 }
 
 fn declaration(task: &TaskDefinition, declaration: &syn::Ident) -> TokenStream {
-    let task_name = &task.name;
+    let self_ty = &task.self_ty;
     let fields: Vec<_> = task
         .endpoints
         .iter()
@@ -75,7 +194,7 @@ fn declaration(task: &TaskDefinition, declaration: &syn::Ident) -> TokenStream {
                 Self { #(#names,)* __cfw_lifetime: ::core::marker::PhantomData }
             }
         }
-        impl #task_name {
+        impl #self_ty {
             #[cfg(test)]
             #[allow(dead_code)]
             #arity
@@ -129,8 +248,9 @@ fn binding(
     declaration: &syn::Ident,
     inputs: &syn::Ident,
     outputs: &syn::Ident,
+    invocation: &TokenStream,
 ) -> TokenStream {
-    let task_name = &task.name;
+    let self_ty = &task.self_ty;
     let params = task.endpoints.iter().map(|p| {
         let name = &p.name;
         let bindings = p.bindings_type();
@@ -146,10 +266,9 @@ fn binding(
         .iter()
         .filter(|p| !p.is_input())
         .map(Endpoint::bind);
-    let invocation = invocation(task);
     let arity = arity(task.endpoints.len() + 2);
     quote! {
-        impl #task_name {
+        impl #self_ty {
             #arity
             pub(crate) fn bind<'storage>(self, __cfw_declaration: #declaration<'storage>, #(#params),*) -> Result<impl ::task::Callback + 'storage, ::task::EndpointError> {
                 let __cfw_inputs = #inputs { #(#input_fields,)* __cfw_lifetime: ::core::marker::PhantomData };
@@ -240,6 +359,39 @@ impl Endpoint {
             EndpointKind::IoxEvent => quote!(::task::iox2::Iox2EventSubscriber),
             EndpointKind::IoxNotifier => quote!(::task::iox2::Iox2Notifier),
             _ => quote!(::task::Publisher<'storage, #payload>),
+        }
+    }
+    fn user_arg_type(&self, input: bool) -> TokenStream {
+        let payload = &self.payload;
+        let lifetime = if input {
+            quote!('input)
+        } else {
+            quote!('output)
+        };
+        match self.kind {
+            EndpointKind::Input => {
+                quote!(::task::Input<#lifetime, 'storage, #payload>)
+            }
+            EndpointKind::Required => {
+                quote!(::task::RequiredInput<#lifetime, 'storage, #payload>)
+            }
+            EndpointKind::Output => {
+                quote!(::task::Output<#lifetime, 'storage, #payload>)
+            }
+            EndpointKind::OutputSpan => {
+                quote!(::task::OutputSpan<#lifetime, 'storage, #payload>)
+            }
+            EndpointKind::Uninit => {
+                quote!(::task::OutputUninit<#lifetime, 'storage, #payload>)
+            }
+            EndpointKind::Publisher => {
+                quote!(&#lifetime mut ::task::Publisher<'storage, #payload>)
+            }
+            EndpointKind::IoxInput => quote!(::task::iox2::Iox2OptionalInput<#payload>),
+            EndpointKind::IoxSpan => quote!(::task::iox2::Iox2SpanInput<#payload>),
+            EndpointKind::IoxOutput => quote!(::task::iox2::Iox2Output<#payload>),
+            EndpointKind::IoxEvent => quote!(::task::iox2::Iox2Event),
+            EndpointKind::IoxNotifier => quote!(::task::iox2::Iox2NotifyOutput),
         }
     }
     fn declare(&self) -> TokenStream {

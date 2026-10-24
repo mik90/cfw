@@ -1,0 +1,83 @@
+# Bazel-only example: task API crates are generated into bazel-out, so this
+# package is not a Cargo workspace member.
+
+load("//bazel:rust.bzl", "rust_library")
+load("//bazel_task_graph:live_executor.bzl", "live_application")
+load("//bazel_task_graph:pools.bzl", "pool")
+load("//bazel_task_graph:task.bzl", "endpoint", "task")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "task_impls",
+    srcs = ["src/lib.rs"],
+    deps = [
+        ":counter_api",
+        ":doubler_api",
+        ":printer_api",
+        "//task",
+        "//task_graph",
+    ],
+)
+
+task(
+    name = "counter",
+    outputs = {
+        "output": endpoint(
+            "u64",
+            channel = "counter",
+        ),
+    },
+    rust_type = "task_impls::Counter",
+    schedule = "::task_impls::Counter::schedule()",
+    implementation = ":task_impls",
+)
+
+task(
+    name = "doubler",
+    input_channels = {"input": "counter"},
+    inputs = {
+        "input": endpoint(
+            "u64",
+            channel = "counter",
+            kind = "required",
+        ),
+    },
+    outputs = {
+        "output": endpoint(
+            "u64",
+            channel = "doubled",
+        ),
+    },
+    rust_type = "task_impls::Doubler",
+    implementation = ":task_impls",
+)
+
+task(
+    name = "printer",
+    inputs = {
+        "input": endpoint(
+            "u64",
+            channel = "doubled",
+            kind = "required",
+        ),
+    },
+    rust_type = "task_impls::Printer",
+    implementation = ":task_impls",
+)
+
+pool(
+    name = "control",
+    tasks = [
+        ":counter",
+        ":doubler",
+        ":printer",
+    ],
+    threads = 2,
+    deps = [":task_impls"],
+)
+
+live_application(
+    name = "live",
+    pools = [":control"],
+)
