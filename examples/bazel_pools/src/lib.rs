@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use messages::Value;
 use task::Context;
 use task_graph::CallbackSchedule;
 
@@ -22,7 +23,7 @@ impl counter_api::Run for Counter {
         mut outputs: counter_api::Outputs<'_, '_>,
         _context: &Context,
     ) {
-        *outputs.output = self.next;
+        *outputs.output = Value(self.next);
         self.next += 1;
         outputs.output.send();
     }
@@ -40,7 +41,7 @@ impl doubler_api::Run for Doubler {
         mut outputs: doubler_api::Outputs<'_, '_>,
         _context: &Context,
     ) {
-        *outputs.output = *inputs.input * 2;
+        *outputs.output = Value(inputs.input.0 * 2);
         outputs.output.send();
     }
 }
@@ -57,7 +58,7 @@ impl printer_api::Run for Printer {
         _outputs: printer_api::Outputs<'_, '_>,
         _context: &Context,
     ) {
-        println!("{}", *inputs.input);
+        println!("{}", inputs.input.0);
     }
 }
 

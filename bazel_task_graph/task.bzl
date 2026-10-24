@@ -10,6 +10,11 @@ structure differs.
 """
 
 load("//bazel:rust.bzl", "rust_library")
+load(
+    "//bazel_task_graph:endpoint.bzl",
+    "CfwPublisherInfo",
+    "CfwSubscriberInfo",
+)
 
 CfwTaskInfo = provider(
     doc = "Composition metadata for a CFW task.",
@@ -23,93 +28,110 @@ CfwTaskInfo = provider(
     },
 )
 
-def endpoint(rust_type, kind = None, channel = None):
-    """Describe one task endpoint.
-
-    Symbolic macro attributes cannot hold Starlark structs, so this returns an
-    encoded descriptor string for task().
-
-    Args:
-        rust_type: Rust payload type, e.g. "u64" or "String".
-        kind: One of required, optional, input, span, output, output_span,
-            uninit, publisher. Defaults to required for inputs and output for
-            outputs.
-        channel: Default channel name. Defaults to the endpoint field name.
-
-    Returns:
-        An encoded endpoint descriptor.
-    """
-    return "%s|%s|%s" % (kind or "", rust_type, channel or "")
-
 def _rust_ident(name):
     parts = [part for part in name.replace("-", "_").split("_") if part]
     return "".join([part[:1].upper() + part[1:] for part in parts])
 
-def _parse_endpoint(value, field):
-    parts = value.split("|")
-    if len(parts) != 3 or not parts[1]:
-        fail(
-            "endpoint '%s' has an invalid descriptor; use endpoint()" % field,
-        )
-    return struct(
-        channel = parts[2] or field,
-        kind = parts[0] or None,
-        rust_type = parts[1],
-    )
+def _field_name(name):
+    return name.replace("-", "_")
 
-def _endpoint_type(endpoint, input):
-    kind = endpoint.kind
-    if kind == None:
-        kind = "required" if input else "output"
-    if kind == "input":
-        kind = "optional"
+def _info_label(label):
+    label = str(label)
+    package, target = label.rsplit(":", 1)
+    return package + ":" + target + "_info"
 
-    wrappers = {
-        "required": "RequiredInput",
-        "optional": "Input",
-        "span": "InputSpan" if input else "OutputSpan",
-        "output": "Output",
-        "output_span": "OutputSpan",
-        "uninit": "OutputUninit",
-        "publisher": "Publisher",
-    }
+def _wrapper_type(kind, input):
+    if input:
+        wrappers = {
+            "required": "RequiredInput",
+            "optional": "Input",
+            "span": "InputSpan",
+        }
+    else:
+        wrappers = {
+            "output": "Output",
+            "output_span": "OutputSpan",
+            "uninit": "OutputUninit",
+            "publisher": "Publisher",
+        }
     if kind not in wrappers:
-        fail("unknown endpoint kind '%s'" % kind)
-    if not input and kind in ["required", "optional", "span"]:
-        fail("input endpoint kind '%s' cannot be used for an output" % kind)
-    if input and kind in ["output", "output_span", "uninit", "publisher"]:
-        fail("output endpoint kind '%s' cannot be used for an input" % kind)
-    return "%s<%s>" % (wrappers[kind], endpoint.rust_type)
+        fail("unknown %s endpoint kind '%s'" % ("subscriber" if input else "publisher", kind))
+    return wrappers[kind]
 
-def _render_endpoints(endpoints, input):
-    lines = []
-    for field, descriptor in endpoints.items():
-        endpoint = _parse_endpoint(descriptor, field)
-        lines.append(
-            '        %s: %s = "%s",' % (
-                field,
-                _endpoint_type(endpoint, input),
-                endpoint.channel,
-            ),
-        )
-    return "\n".join(lines)
+def _bool_literal(value):
+    return "true" if value else "false"
 
 def _task_api_src_impl(ctx):
+    subscribers = [subscriber[CfwSubscriberInfo] for subscriber in ctx.attr.subscribers]
+    publishers = [publisher[CfwPublisherInfo] for publisher in ctx.attr.publishers]
+
+    seen = {}
+    for endpoint in subscribers + publishers:
+        if endpoint.field in seen:
+            fail(
+                "task '%s' declares endpoint '%s' more than once" % (
+                    ctx.attr.task_name,
+                    endpoint.field,
+                ),
+            )
+        seen[endpoint.field] = True
+
+    subscriber_lines = []
+    for endpoint in subscribers:
+        payload = "%s::%s::Payload" % (ctx.attr.payloads_module, endpoint.field)
+        subscriber_lines.extend([
+            "        %s: %s<%s> {" % (
+                endpoint.field,
+                _wrapper_type(endpoint.kind, True),
+                payload,
+            ),
+            '            channel: "%s",' % endpoint.channel_name,
+            "            capacity: %d," % endpoint.capacity,
+            "            trigger: %s," % _bool_literal(endpoint.trigger),
+            "            keep_across_runs: %s," % _bool_literal(endpoint.keep_across_runs),
+            "        },",
+        ])
+
+    publisher_lines = []
+    for endpoint in publishers:
+        payload = "%s::%s::Payload" % (ctx.attr.payloads_module, endpoint.field)
+        publisher_lines.extend([
+            "        %s: %s<%s> {" % (
+                endpoint.field,
+                _wrapper_type(endpoint.kind, False),
+                payload,
+            ),
+            '            channel: "%s",' % endpoint.channel_name,
+            "            capacity: %d," % endpoint.capacity,
+            "        },",
+        ])
+
+    payload_lines = [
+        "        %s: %s::Payload," % (endpoint.field, endpoint.crate_name)
+        for endpoint in subscribers + publishers
+    ]
+
     content = """::task_macros::define_task! {
     api: %s,
     name: %s,
-    inputs: {
+    payloads_module: %s,
+    subscribers: {
 %s
     },
-    outputs: {
+    publishers: {
+%s
+    },
+    payloads: {
 %s
     },
 }
 """ % (
         ctx.attr.api_crate,
         ctx.attr.task_name,
-        ctx.attr.inputs,
-        ctx.attr.outputs,
+        ctx.attr.payloads_module,
+        "\n".join(subscriber_lines),
+        "\n".join(publisher_lines),
+        "\n".join(payload_lines),
     )
     output = ctx.actions.declare_file(ctx.label.name + ".rs")
     ctx.actions.write(output, content)
@@ -119,8 +141,15 @@ _task_api_src = rule(
     implementation = _task_api_src_impl,
     attrs = {
         "api_crate": attr.string(mandatory = True),
-        "inputs": attr.string(default = ""),
-        "outputs": attr.string(default = ""),
+        "payloads_module": attr.string(mandatory = True),
+        "publishers": attr.label_list(
+            default = [],
+            providers = [CfwPublisherInfo],
+        ),
+        "subscribers": attr.label_list(
+            default = [],
+            providers = [CfwSubscriberInfo],
+        ),
         "task_name": attr.string(mandatory = True),
     },
 )
@@ -154,36 +183,30 @@ def _task_impl(
         visibility,
         implementation,
         rust_type,
-        inputs,
-        outputs,
+        subscribers,
+        publishers,
         schedule,
         input_channels,
         output_channels,
         callback_name,
         **kwargs):
     api_crate = name.replace("-", "_") + "_api"
-    seen_endpoints = {}
-    for endpoint_name in list(inputs.keys()) + list(outputs.keys()):
-        if endpoint_name in seen_endpoints:
-            fail(
-                "task '%s' declares endpoint '%s' more than once" % (
-                    name,
-                    endpoint_name,
-                ),
-            )
-        seen_endpoints[endpoint_name] = True
+    payloads_module = "__cfw_payloads_" + _field_name(name)
+    subscriber_info = [_info_label(subscriber) for subscriber in subscribers]
+    publisher_info = [_info_label(publisher) for publisher in publishers]
 
     _task_api_src(
         name = name + "_api_src",
         api_crate = api_crate,
-        inputs = _render_endpoints(inputs, True),
-        outputs = _render_endpoints(outputs, False),
+        payloads_module = payloads_module,
+        publishers = publisher_info,
+        subscribers = subscriber_info,
         task_name = _rust_ident(name),
     )
     rust_library(
         name = name + "_api",
         srcs = [":" + name + "_api_src"],
-        deps = ["//task:task"],
+        deps = subscribers + publishers + ["//task:task"],
         proc_macro_deps = ["//task_macros:task_macros"],
         visibility = visibility,
         **kwargs
@@ -211,15 +234,15 @@ task = macro(
             configurable = False,
             doc = "Fully qualified Rust type, e.g. 'task_impls::Counter'.",
         ),
-        "inputs": attr.string_dict(
-            default = {},
+        "subscribers": attr.label_list(
+            default = [],
             configurable = False,
-            doc = "Dict of endpoint name to endpoint().",
+            doc = "Subscriber targets produced by subscriber().",
         ),
-        "outputs": attr.string_dict(
-            default = {},
+        "publishers": attr.label_list(
+            default = [],
             configurable = False,
-            doc = "Dict of endpoint name to endpoint().",
+            doc = "Publisher targets produced by publisher().",
         ),
         "schedule": attr.string(
             default = "",

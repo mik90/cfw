@@ -26,7 +26,12 @@ pub(super) fn task(task: &TaskDefinition) -> TokenStream {
     quote! { #item #declaration #registration #inputs #outputs #binding }
 }
 
-pub(super) fn bazel_api(task: &TaskDefinition, api: &syn::Path) -> TokenStream {
+pub(super) fn bazel_api(
+    task: &TaskDefinition,
+    api: &syn::Path,
+    payloads_module: &syn::Ident,
+    payloads: &[(syn::Ident, syn::Path)],
+) -> TokenStream {
     let input_fields = task
         .endpoints
         .iter()
@@ -45,8 +50,27 @@ pub(super) fn bazel_api(task: &TaskDefinition, api: &syn::Path) -> TokenStream {
             let ty = endpoint.user_arg_type(false);
             quote!(pub #name: #ty)
         });
+    let payload_aliases = payloads.iter().map(|(field, path)| {
+        let crate_ident = path
+            .segments
+            .first()
+            .expect("payload path must start with a crate")
+            .ident
+            .clone();
+        quote!(pub use #crate_ident as #field;)
+    });
     let impl_body = bazel_impl(task, api);
+    let use_module = if task.endpoints.is_empty() {
+        quote!()
+    } else {
+        quote!(use #api::#payloads_module as #payloads_module;)
+    };
     quote! {
+        #[doc(hidden)]
+        pub mod #payloads_module {
+            #(#payload_aliases)*
+        }
+
         pub struct Inputs<'input, 'storage> {
             #(#input_fields,)*
             #[doc(hidden)]
@@ -71,6 +95,7 @@ pub(super) fn bazel_api(task: &TaskDefinition, api: &syn::Path) -> TokenStream {
         #[macro_export]
         macro_rules! impl_task {
             ($ty:ty) => {
+                #use_module
                 #impl_body
             };
         }

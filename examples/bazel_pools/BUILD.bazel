@@ -2,9 +2,10 @@
 # package is not a Cargo workspace member.
 
 load("//bazel:rust.bzl", "rust_library")
+load("//bazel_task_graph:endpoint.bzl", "channel", "publisher", "subscriber")
 load("//bazel_task_graph:live_executor.bzl", "live_application")
 load("//bazel_task_graph:pools.bzl", "pool")
-load("//bazel_task_graph:task.bzl", "endpoint", "task")
+load("//bazel_task_graph:task.bzl", "task")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -15,19 +16,61 @@ rust_library(
         ":counter_api",
         ":doubler_api",
         ":printer_api",
+        "//examples/bazel_pools/messages",
         "//task",
         "//task_graph",
     ],
 )
 
+channel(
+    name = "counter_channel",
+    channel_name = "counter",
+    payload = "messages::Value",
+    deps = ["//examples/bazel_pools/messages"],
+)
+
+channel(
+    name = "doubled_channel",
+    channel_name = "doubled",
+    payload = "messages::Value",
+    deps = ["//examples/bazel_pools/messages"],
+)
+
+publisher(
+    name = "counter_output",
+    channel = ":counter_channel",
+    field = "output",
+    queue_capacity = 8,
+)
+
+subscriber(
+    name = "doubler_input",
+    channel = ":counter_channel",
+    field = "input",
+    keep_across_runs = True,
+    queue_capacity = 1,
+    trigger = True,
+)
+
+publisher(
+    name = "doubler_output",
+    channel = ":doubled_channel",
+    field = "output",
+    queue_capacity = 8,
+)
+
+subscriber(
+    name = "printer_input",
+    channel = ":doubled_channel",
+    field = "input",
+    keep_across_runs = True,
+    queue_capacity = 1,
+    trigger = True,
+)
+
 task(
     name = "counter",
-    outputs = {
-        "output": endpoint(
-            "u64",
-            channel = "counter",
-        ),
-    },
+    publishers = [":counter_output"],
     rust_type = "task_impls::Counter",
     schedule = "::task_impls::Counter::schedule()",
     implementation = ":task_impls",
@@ -35,34 +78,16 @@ task(
 
 task(
     name = "doubler",
-    input_channels = {"input": "counter"},
-    inputs = {
-        "input": endpoint(
-            "u64",
-            channel = "counter",
-            kind = "required",
-        ),
-    },
-    outputs = {
-        "output": endpoint(
-            "u64",
-            channel = "doubled",
-        ),
-    },
+    publishers = [":doubler_output"],
     rust_type = "task_impls::Doubler",
+    subscribers = [":doubler_input"],
     implementation = ":task_impls",
 )
 
 task(
     name = "printer",
-    inputs = {
-        "input": endpoint(
-            "u64",
-            channel = "doubled",
-            kind = "required",
-        ),
-    },
     rust_type = "task_impls::Printer",
+    subscribers = [":printer_input"],
     implementation = ":task_impls",
 )
 

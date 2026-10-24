@@ -3,8 +3,8 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::visit_mut::VisitMut;
 use syn::{
-    FnArg, GenericArgument, Ident, ItemImpl, LitStr, Pat, PathArguments, ReturnType, Token, Type,
-    braced, parse_macro_input, parse_quote,
+    FnArg, GenericArgument, Ident, ItemImpl, LitBool, LitInt, LitStr, Pat, PathArguments,
+    ReturnType, Token, Type, braced, parse_macro_input, parse_quote,
 };
 
 /// Derive a lifetime-indexed bundle of named ArenaReaderPtr<Message<T>> fields.
@@ -224,14 +224,19 @@ fn expand(item: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
 struct EndpointSpec {
     name: Ident,
     ty: Type,
-    channel: LitStr,
+    channel: Option<LitStr>,
+    capacity: Option<LitInt>,
+    trigger: Option<LitBool>,
+    keep_across_runs: Option<LitBool>,
 }
 
 struct DeclaredTask {
     api: syn::Path,
     name: Ident,
-    inputs: Vec<EndpointSpec>,
-    outputs: Vec<EndpointSpec>,
+    payloads_module: Ident,
+    subscribers: Vec<EndpointSpec>,
+    publishers: Vec<EndpointSpec>,
+    payloads: Vec<(Ident, syn::Path)>,
 }
 
 impl Parse for DeclaredTask {
@@ -240,9 +245,13 @@ impl Parse for DeclaredTask {
         input.parse::<Token![,]>()?;
         let name = parse_key::<Ident>(input, "name")?;
         input.parse::<Token![,]>()?;
-        let inputs = parse_endpoint_block(input, "inputs")?;
+        let payloads_module = parse_key::<Ident>(input, "payloads_module")?;
         input.parse::<Token![,]>()?;
-        let outputs = parse_endpoint_block(input, "outputs")?;
+        let subscribers = parse_endpoint_block(input, "subscribers")?;
+        input.parse::<Token![,]>()?;
+        let publishers = parse_endpoint_block(input, "publishers")?;
+        input.parse::<Token![,]>()?;
+        let payloads = parse_payload_block(input, "payloads")?;
         let _ = input.parse::<Token![,]>();
         if !input.is_empty() {
             return Err(input.error("unexpected tokens after task definition"));
@@ -250,8 +259,10 @@ impl Parse for DeclaredTask {
         Ok(Self {
             api,
             name,
-            inputs,
-            outputs,
+            payloads_module,
+            subscribers,
+            publishers,
+            payloads,
         })
     }
 }
@@ -278,9 +289,41 @@ fn parse_endpoint_block(input: ParseStream, key: &str) -> syn::Result<Vec<Endpoi
         let name: Ident = content.parse()?;
         content.parse::<Token![:]>()?;
         let ty: Type = content.parse()?;
-        content.parse::<Token![=]>()?;
-        let channel: LitStr = content.parse()?;
-        endpoints.push(EndpointSpec { name, ty, channel });
+        let policy;
+        braced!(policy in content);
+        let mut channel = None;
+        let mut capacity = None;
+        let mut trigger = None;
+        let mut keep_across_runs = None;
+        while !policy.is_empty() {
+            let key: Ident = policy.parse()?;
+            policy.parse::<Token![:]>()?;
+            match key.to_string().as_str() {
+                "channel" => channel = Some(policy.parse::<LitStr>()?),
+                "capacity" => capacity = Some(policy.parse::<LitInt>()?),
+                "trigger" => trigger = Some(policy.parse::<LitBool>()?),
+                "keep_across_runs" => keep_across_runs = Some(policy.parse::<LitBool>()?),
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        key,
+                        "expected channel, capacity, trigger, or keep_across_runs",
+                    ));
+                }
+            }
+            if policy.peek(Token![,]) {
+                policy.parse::<Token![,]>()?;
+            } else {
+                break;
+            }
+        }
+        endpoints.push(EndpointSpec {
+            name,
+            ty,
+            channel,
+            capacity,
+            trigger,
+            keep_across_runs,
+        });
         if content.peek(Token![,]) {
             content.parse::<Token![,]>()?;
         } else {
@@ -290,8 +333,38 @@ fn parse_endpoint_block(input: ParseStream, key: &str) -> syn::Result<Vec<Endpoi
     Ok(endpoints)
 }
 
+fn parse_payload_block(input: ParseStream, key: &str) -> syn::Result<Vec<(Ident, syn::Path)>> {
+    let ident: Ident = input.parse()?;
+    if ident != key {
+        return Err(syn::Error::new_spanned(ident, format!("expected '{key}'")));
+    }
+    input.parse::<Token![:]>()?;
+    let content;
+    braced!(content in input);
+    let mut payloads = Vec::new();
+    while !content.is_empty() {
+        let field: Ident = content.parse()?;
+        content.parse::<Token![:]>()?;
+        let path: syn::Path = content.parse()?;
+        payloads.push((field, path));
+        if content.peek(Token![,]) {
+            content.parse::<Token![,]>()?;
+        } else {
+            break;
+        }
+    }
+    Ok(payloads)
+}
+
 fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
-    let EndpointSpec { name, ty, channel } = spec;
+    let EndpointSpec {
+        name,
+        ty,
+        channel,
+        capacity,
+        trigger,
+        keep_across_runs,
+    } = spec;
     let Type::Path(path) = &ty else {
         return Err(syn::Error::new_spanned(ty, "expected a typed endpoint"));
     };
@@ -310,6 +383,21 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
             ));
         }
     };
+    if !input && (trigger.is_some() || keep_across_runs.is_some()) {
+        return Err(syn::Error::new_spanned(
+            &ty,
+            "trigger and keep_across_runs apply to subscribers only",
+        ));
+    }
+    if input
+        && (trigger.is_some() || keep_across_runs.is_some())
+        && !matches!(kind, EndpointKind::Input | EndpointKind::Required)
+    {
+        return Err(syn::Error::new_spanned(
+            &ty,
+            "trigger and keep_across_runs apply to native inputs only",
+        ));
+    }
     let PathArguments::AngleBracketed(generics) = &segment.arguments else {
         return Err(syn::Error::new_spanned(
             &ty,
@@ -330,46 +418,69 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
             "endpoint requires exactly one payload type",
         ));
     }
-    let capacity = if matches!(kind, EndpointKind::Input | EndpointKind::OutputSpan)
-        && matches!(
-            segment.ident.to_string().as_str(),
-            "InputSpan" | "OutputSpan"
-        ) {
-        parse_quote!(4)
-    } else {
-        parse_quote!(1)
-    };
+    let span = matches!(
+        segment.ident.to_string().as_str(),
+        "InputSpan" | "OutputSpan"
+    );
+    let capacity = capacity
+        .map(|literal| parse_quote!(#literal))
+        .unwrap_or_else(|| {
+            if span {
+                parse_quote!(4)
+            } else {
+                parse_quote!(1)
+            }
+        });
+    let trigger = trigger
+        .map(|literal| parse_quote!(#literal))
+        .unwrap_or_else(|| parse_quote!(true));
+    let keep = keep_across_runs
+        .map(|literal| parse_quote!(#literal))
+        .unwrap_or_else(|| parse_quote!(true));
     Ok(Endpoint {
         forwardable: false,
         forwards: Vec::new(),
         name,
         payload: payloads[0].clone(),
         kind,
-        channel: Some(parse_quote!(#channel)),
+        channel: channel.map(|literal| parse_quote!(#literal)),
         capacity,
-        trigger: parse_quote!(true),
-        keep: parse_quote!(true),
+        trigger,
+        keep,
     })
 }
 
 fn expand_declared(spec: DeclaredTask) -> syn::Result<proc_macro2::TokenStream> {
+    let DeclaredTask {
+        api,
+        name,
+        payloads_module,
+        subscribers,
+        publishers,
+        payloads,
+    } = spec;
     let mut endpoints = Vec::new();
-    for input in spec.inputs {
-        endpoints.push(declared_endpoint(input, true)?);
+    for subscriber in subscribers {
+        endpoints.push(declared_endpoint(subscriber, true)?);
     }
-    for output in spec.outputs {
-        endpoints.push(declared_endpoint(output, false)?);
+    for publisher in publishers {
+        endpoints.push(declared_endpoint(publisher, false)?);
     }
     validate_endpoints(&endpoints)?;
     let task = TaskDefinition {
         item: None,
-        name: spec.name,
+        name,
         self_ty: dollar_ty(),
         endpoints,
         arguments: Vec::new(),
         fallible: false,
     };
-    Ok(generate::bazel_api(&task, &spec.api))
+    Ok(generate::bazel_api(
+        &task,
+        &api,
+        &payloads_module,
+        &payloads,
+    ))
 }
 
 fn dollar_ty() -> proc_macro2::TokenStream {
