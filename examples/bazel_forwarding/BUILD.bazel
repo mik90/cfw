@@ -1,0 +1,139 @@
+load("//bazel:rust.bzl", "rust_library")
+load(
+    "//bazel_task_graph:defs.bzl",
+    "cfw_channel",
+    "cfw_fixed_schedule",
+    "cfw_live_application",
+    "cfw_pool",
+    "cfw_publisher",
+    "cfw_subscriber",
+    "cfw_task",
+)
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "task_impls",
+    srcs = ["src/lib.rs"],
+    deps = [
+        ":consume_api",
+        ":forward_api",
+        ":produce_api",
+        "//examples/bazel_forwarding/types",
+        "//task",
+        "//task_graph",
+    ],
+)
+
+cfw_channel(
+    name = "raw",
+    payload = "types::Value",
+    deps = ["//examples/bazel_forwarding/types"],
+)
+
+cfw_channel(
+    name = "forwarded",
+    kind = "forwarded",
+    payload = "types::Value",
+    sources = "types::Sources<'static>",
+    deps = ["//examples/bazel_forwarding/types"],
+)
+
+cfw_channel(
+    name = "result",
+    payload = "types::Value",
+    deps = ["//examples/bazel_forwarding/types"],
+)
+
+cfw_publisher(
+    name = "produce_output",
+    channel = ":raw",
+    field = "output",
+    queue_capacity = 1,
+)
+
+cfw_subscriber(
+    name = "forward_input",
+    channel = ":raw",
+    field = "input",
+    forwardable = True,
+    kind = "required",
+    trigger = True,
+)
+
+cfw_publisher(
+    name = "forward_output",
+    channel = ":forwarded",
+    field = "output",
+    forwards = {"source": "input"},
+    kind = "uninit",
+    queue_capacity = 4,
+)
+
+cfw_subscriber(
+    name = "consume_input",
+    channel = ":forwarded",
+    field = "input",
+    kind = "required",
+    trigger = True,
+)
+
+cfw_publisher(
+    name = "consume_output",
+    channel = ":result",
+    field = "output",
+    queue_capacity = 1,
+)
+
+cfw_fixed_schedule(
+    name = "producer_periodic",
+    execution_duration = "1us",
+    periodic = "100us",
+)
+
+cfw_fixed_schedule(
+    name = "on_input",
+    execution_duration = "1us",
+)
+
+cfw_task(
+    name = "produce",
+    publishers = [":produce_output"],
+    rust_type = "task_impls::Produce",
+    schedule = ":producer_periodic",
+    implementation = ":task_impls",
+)
+
+cfw_task(
+    name = "forward",
+    publishers = [":forward_output"],
+    rust_type = "task_impls::Forward",
+    schedule = ":on_input",
+    subscribers = [":forward_input"],
+    implementation = ":task_impls",
+)
+
+cfw_task(
+    name = "consume",
+    publishers = [":consume_output"],
+    rust_type = "task_impls::Consume",
+    schedule = ":on_input",
+    subscribers = [":consume_input"],
+    implementation = ":task_impls",
+)
+
+cfw_pool(
+    name = "forwarding_pool",
+    tasks = [
+        ":produce",
+        ":forward",
+        ":consume",
+    ],
+    threads = 1,
+    deps = [":task_impls"],
+)
+
+cfw_live_application(
+    name = "live",
+    pools = [":forwarding_pool"],
+)

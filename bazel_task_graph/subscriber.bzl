@@ -5,14 +5,13 @@ through the Bazel dependency graph.
 """
 
 load("//bazel:rust.bzl", "rust_library")
-load("//bazel_task_graph:channel.bzl", "CfwChannelInfo")
+load("//bazel_task_graph:channel.bzl", "CfwChannelInfo", "payload_alias_src")
 load(
     "//bazel_task_graph:endpoint_common.bzl",
     "endpoint_default_capacity",
-    "endpoint_reexport_src",
     "validate_endpoint_transport",
 )
-load("//bazel_task_graph:labels.bzl", "crate_name", "field_name", "info_label")
+load("//bazel_task_graph:labels.bzl", "field_name", "info_label")
 
 CfwSubscriberInfo = provider(
     doc = "A configured cfw subscriber endpoint.",
@@ -21,6 +20,8 @@ CfwSubscriberInfo = provider(
         "channel_name": "Framework channel name.",
         "crate_name": "Rust crate that re-exports Payload.",
         "field": "Task input field name.",
+        "forwardable": "Whether the input supports forwarding.",
+        "forwarded": "Whether the endpoint carries a forwarded payload.",
         "has_payload": "Whether the endpoint carries a payload type.",
         "keep_across_runs": "Whether the input is retained across runs.",
         "kind": "Endpoint kind.",
@@ -31,12 +32,18 @@ CfwSubscriberInfo = provider(
 def _subscriber_info_impl(ctx):
     channel = ctx.attr.channel[CfwChannelInfo]
     validate_endpoint_transport(ctx.label.name, ctx.attr.kind, channel)
+    if ctx.attr.forwardable and ctx.attr.kind not in ["required", "optional"]:
+        fail(
+            "%s: forwardable applies to required or optional inputs only" % ctx.label.name,
+        )
     return [
         CfwSubscriberInfo(
             capacity = ctx.attr.capacity,
             channel_name = channel.channel_name,
             crate_name = ctx.attr.crate_name,
             field = ctx.attr.field,
+            forwardable = ctx.attr.forwardable,
+            forwarded = channel.kind == "forwarded",
             has_payload = ctx.attr.kind != "iox2_event",
             keep_across_runs = ctx.attr.keep_across_runs,
             kind = ctx.attr.kind,
@@ -54,6 +61,7 @@ _subscriber_info = rule(
         ),
         "crate_name": attr.string(mandatory = True),
         "field": attr.string(mandatory = True),
+        "forwardable": attr.bool(mandatory = True),
         "keep_across_runs": attr.bool(mandatory = True),
         "kind": attr.string(mandatory = True),
         "trigger": attr.bool(mandatory = True),
@@ -69,6 +77,7 @@ def _subscriber_impl(
         queue_capacity,
         trigger,
         keep_across_runs,
+        forwardable,
         **kwargs):
     if kind not in [
         "required",
@@ -81,10 +90,13 @@ def _subscriber_impl(
         fail(
             "subscriber '%s': kind must be required, optional, span, iox2_input, iox2_span, or iox2_event" % name,
         )
-    event = kind == "iox2_event"
-    endpoint_reexport_src(
+    if forwardable and kind not in ["required", "optional"]:
+        fail(
+            "subscriber '%s': forwardable applies to required or optional inputs only" % name,
+        )
+    payload_alias_src(
         name = name + "_src",
-        content = "" if event else "pub type Payload = %s::Payload;" % crate_name(channel),
+        channel = info_label(channel),
     )
     rust_library(
         name = name,
@@ -99,6 +111,7 @@ def _subscriber_impl(
         channel = info_label(channel),
         crate_name = field_name(name),
         field = field or field_name(name),
+        forwardable = forwardable,
         keep_across_runs = keep_across_runs,
         kind = kind,
         trigger = trigger,
@@ -144,6 +157,11 @@ cfw_subscriber = macro(
             default = True,
             configurable = False,
             doc = "Whether the input is retained across runs. Native and Iox2 data only.",
+        ),
+        "forwardable": attr.bool(
+            default = False,
+            configurable = False,
+            doc = "Whether the input can be claimed as a forwarding source. Native only.",
         ),
     },
     implementation = _subscriber_impl,

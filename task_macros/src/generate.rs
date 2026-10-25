@@ -84,10 +84,10 @@ pub(super) fn bazel_api(
         }
 
         pub trait Run: ::core::default::Default + 'static {
-            fn run(
+            fn run<'storage>(
                 &mut self,
-                inputs: Inputs<'_, '_>,
-                outputs: Outputs<'_, '_>,
+                inputs: Inputs<'_, 'storage>,
+                outputs: Outputs<'_, 'storage>,
                 context: &::task::Context,
             );
         }
@@ -394,8 +394,14 @@ impl Endpoint {
             quote!('output)
         };
         match self.kind {
+            EndpointKind::Input if self.forwardable => {
+                quote!(::task::Input<#lifetime, 'storage, #payload, ::task::Forwardable>)
+            }
             EndpointKind::Input => {
                 quote!(::task::Input<#lifetime, 'storage, #payload>)
+            }
+            EndpointKind::Required if self.forwardable => {
+                quote!(::task::RequiredInput<#lifetime, 'storage, #payload, ::task::Forwardable>)
             }
             EndpointKind::Required => {
                 quote!(::task::RequiredInput<#lifetime, 'storage, #payload>)

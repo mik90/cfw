@@ -1,0 +1,10 @@
+load("//bazel:rust.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "types",
+    srcs = ["src/lib.rs"],
+    proc_macro_deps = ["//task_macros:task_macros"],
+    deps = ["//task"],
+)

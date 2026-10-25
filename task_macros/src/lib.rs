@@ -183,9 +183,16 @@ enum EndpointKind {
     IoxNotifier,
 }
 
+#[derive(Clone)]
+struct ForwardedFamily {
+    message: Type,
+    sources: Type,
+}
+
 struct Endpoint {
     forwardable: bool,
     forwards: Vec<(syn::Ident, syn::Ident)>,
+    forwarded: Option<ForwardedFamily>,
     name: syn::Ident,
     payload: Type,
     kind: EndpointKind,
@@ -228,6 +235,9 @@ struct EndpointSpec {
     capacity: Option<LitInt>,
     trigger: Option<LitBool>,
     keep_across_runs: Option<LitBool>,
+    forwardable: Option<LitBool>,
+    forwards: Vec<(Ident, Ident)>,
+    forwarded: Option<ForwardedFamily>,
 }
 
 struct DeclaredTask {
@@ -276,6 +286,24 @@ fn parse_key<T: Parse>(input: ParseStream, key: &str) -> syn::Result<T> {
     input.parse()
 }
 
+fn parse_forward_mappings(input: ParseStream) -> syn::Result<Vec<(Ident, Ident)>> {
+    let content;
+    braced!(content in input);
+    let mut mappings = Vec::new();
+    while !content.is_empty() {
+        let field: Ident = content.parse()?;
+        content.parse::<Token![:]>()?;
+        let source: Ident = content.parse()?;
+        mappings.push((field, source));
+        if content.peek(Token![,]) {
+            content.parse::<Token![,]>()?;
+        } else {
+            break;
+        }
+    }
+    Ok(mappings)
+}
+
 fn parse_endpoint_block(input: ParseStream, key: &str) -> syn::Result<Vec<EndpointSpec>> {
     let ident: Ident = input.parse()?;
     if ident != key {
@@ -295,6 +323,10 @@ fn parse_endpoint_block(input: ParseStream, key: &str) -> syn::Result<Vec<Endpoi
         let mut capacity = None;
         let mut trigger = None;
         let mut keep_across_runs = None;
+        let mut forwardable = None;
+        let mut forwards = Vec::new();
+        let mut forwarded_message = None;
+        let mut forwarded_sources = None;
         while !policy.is_empty() {
             let key: Ident = policy.parse()?;
             policy.parse::<Token![:]>()?;
@@ -303,10 +335,14 @@ fn parse_endpoint_block(input: ParseStream, key: &str) -> syn::Result<Vec<Endpoi
                 "capacity" => capacity = Some(policy.parse::<LitInt>()?),
                 "trigger" => trigger = Some(policy.parse::<LitBool>()?),
                 "keep_across_runs" => keep_across_runs = Some(policy.parse::<LitBool>()?),
+                "forwardable" => forwardable = Some(policy.parse::<LitBool>()?),
+                "forwards" => forwards = parse_forward_mappings(&policy)?,
+                "forwarded_message" => forwarded_message = Some(policy.parse::<Type>()?),
+                "forwarded_sources" => forwarded_sources = Some(policy.parse::<Type>()?),
                 _ => {
                     return Err(syn::Error::new_spanned(
                         key,
-                        "expected channel, capacity, trigger, or keep_across_runs",
+                        "expected channel, capacity, trigger, keep_across_runs, forwardable, forwards, forwarded_message, or forwarded_sources",
                     ));
                 }
             }
@@ -316,6 +352,16 @@ fn parse_endpoint_block(input: ParseStream, key: &str) -> syn::Result<Vec<Endpoi
                 break;
             }
         }
+        let forwarded = match (forwarded_message, forwarded_sources) {
+            (Some(message), Some(sources)) => Some(ForwardedFamily { message, sources }),
+            (None, None) => None,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &ty,
+                    "forwarded_message and forwarded_sources must be provided together",
+                ));
+            }
+        };
         endpoints.push(EndpointSpec {
             name,
             ty,
@@ -323,6 +369,9 @@ fn parse_endpoint_block(input: ParseStream, key: &str) -> syn::Result<Vec<Endpoi
             capacity,
             trigger,
             keep_across_runs,
+            forwardable,
+            forwards,
+            forwarded,
         });
         if content.peek(Token![,]) {
             content.parse::<Token![,]>()?;
@@ -400,6 +449,9 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
         capacity,
         trigger,
         keep_across_runs,
+        forwardable,
+        forwards,
+        forwarded,
     } = spec;
     let Type::Path(path) = &ty else {
         return Err(syn::Error::new_spanned(ty, "expected a typed endpoint"));
@@ -431,6 +483,48 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
         ));
     }
     validate_endpoint_policies(kind, trigger.is_some(), keep_across_runs.is_some(), &ty)?;
+    let forwardable = forwardable.map(|value| value.value).unwrap_or(false);
+    if forwardable && !matches!(kind, EndpointKind::Input | EndpointKind::Required) {
+        return Err(syn::Error::new_spanned(
+            &ty,
+            "forwardable applies to native inputs only",
+        ));
+    }
+    if !forwards.is_empty()
+        && !matches!(
+            kind,
+            EndpointKind::Output
+                | EndpointKind::OutputSpan
+                | EndpointKind::Uninit
+                | EndpointKind::Publisher
+        )
+    {
+        return Err(syn::Error::new_spanned(
+            &ty,
+            "forwards applies to native outputs only",
+        ));
+    }
+    if forwarded.is_some()
+        && matches!(
+            kind,
+            EndpointKind::IoxInput
+                | EndpointKind::IoxSpan
+                | EndpointKind::IoxOutput
+                | EndpointKind::IoxEvent
+                | EndpointKind::IoxNotifier
+        )
+    {
+        return Err(syn::Error::new_spanned(
+            &ty,
+            "forwarded endpoints are native only",
+        ));
+    }
+    if !forwards.is_empty() && forwarded.is_none() {
+        return Err(syn::Error::new_spanned(
+            &ty,
+            "forwards requires a forwarded channel",
+        ));
+    }
     let payload = if matches!(kind, EndpointKind::IoxEvent | EndpointKind::IoxNotifier) {
         if let PathArguments::AngleBracketed(generics) = &segment.arguments
             && generics
@@ -485,8 +579,9 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
         .map(|literal| parse_quote!(#literal))
         .unwrap_or_else(|| parse_quote!(true));
     Ok(Endpoint {
-        forwardable: false,
-        forwards: Vec::new(),
+        forwardable,
+        forwards,
+        forwarded,
         name,
         payload,
         kind,
@@ -782,6 +877,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
         endpoints.push(Endpoint {
             forwardable,
             forwards,
+            forwarded: None,
             name,
             payload,
             kind,
@@ -840,6 +936,7 @@ fn validate_endpoints(endpoints: &[Endpoint]) -> syn::Result<()> {
             ));
         }
         if !endpoint.forwards.is_empty()
+            && endpoint.forwarded.is_none()
             && !matches!(&endpoint.payload,Type::Path(path) if path.path.segments.last().is_some_and(|s| s.ident == "Forwarded"))
         {
             return Err(syn::Error::new_spanned(
@@ -859,48 +956,53 @@ fn validate_endpoints(endpoints: &[Endpoint]) -> syn::Result<()> {
     Ok(())
 }
 
+struct Borrowed(bool);
+impl VisitMut for Borrowed {
+    fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+        self.0 |= lifetime.ident != "static";
+    }
+}
+
+fn forwarded_family(payload: &Type) -> Option<ForwardedFamily> {
+    let Type::Path(path) = payload else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Forwarded" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let types: Vec<_> = args
+        .args
+        .iter()
+        .filter_map(|arg| {
+            if let syn::GenericArgument::Type(ty) = arg {
+                Some(ty.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    (types.len() == 2).then(|| ForwardedFamily {
+        message: types[0].clone(),
+        sources: canonical_type(&types[1]),
+    })
+}
+
 fn generate_registration(
     self_ty: &proc_macro2::TokenStream,
     declaration: &syn::Ident,
     endpoints: &[Endpoint],
 ) -> proc_macro2::TokenStream {
-    fn forwarded(payload: &Type) -> Option<(Type, Type)> {
-        let Type::Path(path) = payload else {
-            return None;
-        };
-        let segment = path.path.segments.last()?;
-        if segment.ident != "Forwarded" {
-            return None;
-        }
-        let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-            return None;
-        };
-        let types: Vec<_> = args
-            .args
-            .iter()
-            .filter_map(|arg| {
-                if let syn::GenericArgument::Type(ty) = arg {
-                    Some(ty.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        (types.len() == 2).then(|| {
-            let source = canonical_type(&types[1]);
-            (types[0].clone(), source)
-        })
-    }
-    struct Borrowed(bool);
-    impl VisitMut for Borrowed {
-        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
-            self.0 |= lifetime.ident != "static";
-        }
-    }
     for endpoint in endpoints {
         let mut endpoint_borrowed = Borrowed(false);
         endpoint_borrowed.visit_type_mut(&mut endpoint.payload.clone());
-        if endpoint_borrowed.0 && forwarded(&endpoint.payload).is_none() {
+        if endpoint_borrowed.0
+            && endpoint.forwarded.is_none()
+            && forwarded_family(&endpoint.payload).is_none()
+        {
             return quote!();
         }
     }
@@ -942,20 +1044,23 @@ fn generate_registration(
             let value = #channel;
             ::core::convert::AsRef::<str>::as_ref(&value).to_owned()
         })?));
-        let family = forwarded(payload);
-        let (key, binding) = if let Some((message, source)) = &family {
+        let family = endpoint
+            .forwarded
+            .clone()
+            .or_else(|| forwarded_family(payload));
+        let (key, binding) = if let Some(ForwardedFamily { message, sources }) = &family {
             if !matches!(endpoint.kind, EndpointKind::Input | EndpointKind::Required) {
                 let fields = endpoint.forwards.iter().map(|(field,input)| {
                     let (idx, input_endpoint) = endpoints.iter().enumerate().find(|(_,p)| p.name == *input).unwrap();
                     let ty = canonical_type(&input_endpoint.payload);
                     quote!((stringify!(#field),stringify!(#input),__cfw_names[#idx].as_str(),::std::any::TypeId::of::<#ty>()))
                 });
-                mappings.push(quote!(__cfw_plan.map_forwarding::<#source>(stringify!(#name),&__cfw_names[#index],&[#(#fields),*])?;));
+                mappings.push(quote!(__cfw_plan.map_forwarding::<#sources>(stringify!(#name),&__cfw_names[#index],&[#(#fields),*])?;));
             }
             match endpoint.kind {
                 EndpointKind::Input | EndpointKind::Required => (
-                    quote!(__cfw_plan.bundle_subscriber::<#message,#source>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
-                    quote!(__cfw_bindings.bundle::<#message,#source>(&__cfw_names[#index])?),
+                    quote!(__cfw_plan.bundle_subscriber::<#message,#sources>(&__cfw_names[#index], #capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep })),
+                    quote!(__cfw_bindings.bundle::<#message,#sources>(&__cfw_names[#index])?),
                 ),
                 EndpointKind::IoxInput
                 | EndpointKind::IoxSpan
@@ -963,8 +1068,8 @@ fn generate_registration(
                 | EndpointKind::IoxEvent
                 | EndpointKind::IoxNotifier => return quote!(),
                 _ => (
-                    quote!(__cfw_plan.bundle_publisher::<#message,#source>(&__cfw_names[#index], #capacity)),
-                    quote!(__cfw_bindings.bundle::<#message,#source>(&__cfw_names[#index])?),
+                    quote!(__cfw_plan.bundle_publisher::<#message,#sources>(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_bindings.bundle::<#message,#sources>(&__cfw_names[#index])?),
                 ),
             }
         } else {
@@ -995,14 +1100,14 @@ fn generate_registration(
                 ),
             }
         };
-        if let Some((message, source)) = &family {
+        if let Some(ForwardedFamily { message, sources }) = &family {
             let retype = if matches!(endpoint.kind, EndpointKind::Input | EndpointKind::Required) {
                 quote!(subscriber_key)
             } else {
                 quote!(publisher_key)
             };
             rebuilt_keys.push(
-                quote!(::task_graph::bundle::#retype::<#message,#source>(__cfw_declaration.#name)),
+                quote!(::task_graph::bundle::#retype::<#message,#sources>(__cfw_declaration.#name)),
             );
         } else {
             rebuilt_keys.push(quote!(__cfw_declaration.#name));
@@ -1021,8 +1126,8 @@ fn generate_registration(
             }
             _ => Some(quote!(register_native)),
         };
-        if let Some((message, source)) = family {
-            captures.push(quote!(::task_graph::bundle::CaptureProbe::<#message,#source>::default().register(__cfw_plan, &__cfw_names[#index])?;));
+        if let Some(ForwardedFamily { message, sources }) = family {
+            captures.push(quote!(::task_graph::bundle::CaptureProbe::<#message,#sources>::default().register(__cfw_plan, &__cfw_names[#index])?;));
         } else if let Some(method) = capture_method {
             captures.push(quote!(::task_graph::capture::CaptureProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));
             captures.push(quote!(::task_graph::replay::DecodeProbe::<#payload>::default().#method(__cfw_plan, &__cfw_names[#index])?;));

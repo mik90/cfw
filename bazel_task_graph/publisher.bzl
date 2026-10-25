@@ -5,14 +5,13 @@ through the Bazel dependency graph.
 """
 
 load("//bazel:rust.bzl", "rust_library")
-load("//bazel_task_graph:channel.bzl", "CfwChannelInfo")
+load("//bazel_task_graph:channel.bzl", "CfwChannelInfo", "payload_alias_src")
 load(
     "//bazel_task_graph:endpoint_common.bzl",
     "endpoint_default_capacity",
-    "endpoint_reexport_src",
     "validate_endpoint_transport",
 )
-load("//bazel_task_graph:labels.bzl", "crate_name", "field_name", "info_label")
+load("//bazel_task_graph:labels.bzl", "field_name", "info_label")
 
 CfwPublisherInfo = provider(
     doc = "A configured cfw publisher endpoint.",
@@ -21,6 +20,8 @@ CfwPublisherInfo = provider(
         "channel_name": "Framework channel name.",
         "crate_name": "Rust crate that re-exports Payload.",
         "field": "Task output field name.",
+        "forwarded": "Whether the endpoint carries a forwarded payload.",
+        "forwards": "Forwarded source field to task input field mapping.",
         "has_payload": "Whether the endpoint carries a payload type.",
         "kind": "Endpoint kind.",
     },
@@ -29,12 +30,18 @@ CfwPublisherInfo = provider(
 def _publisher_info_impl(ctx):
     channel = ctx.attr.channel[CfwChannelInfo]
     validate_endpoint_transport(ctx.label.name, ctx.attr.kind, channel)
+    if ctx.attr.forwards and channel.kind != "forwarded":
+        fail(
+            "%s: forwards requires a forwarded channel" % ctx.label.name,
+        )
     return [
         CfwPublisherInfo(
             capacity = ctx.attr.capacity,
             channel_name = channel.channel_name,
             crate_name = ctx.attr.crate_name,
             field = ctx.attr.field,
+            forwarded = channel.kind == "forwarded",
+            forwards = ctx.attr.forwards,
             has_payload = ctx.attr.kind != "iox2_notifier",
             kind = ctx.attr.kind,
         ),
@@ -50,11 +57,12 @@ _publisher_info = rule(
         ),
         "crate_name": attr.string(mandatory = True),
         "field": attr.string(mandatory = True),
+        "forwards": attr.string_dict(),
         "kind": attr.string(mandatory = True),
     },
 )
 
-def _publisher_impl(name, visibility, channel, field, kind, queue_capacity, **kwargs):
+def _publisher_impl(name, visibility, channel, field, kind, queue_capacity, forwards, **kwargs):
     if kind not in [
         "output",
         "output_span",
@@ -66,10 +74,18 @@ def _publisher_impl(name, visibility, channel, field, kind, queue_capacity, **kw
         fail(
             "publisher '%s': kind must be output, output_span, uninit, publisher, iox2_output, or iox2_notifier" % name,
         )
-    event = kind == "iox2_notifier"
-    endpoint_reexport_src(
+    if forwards and kind not in [
+        "output",
+        "output_span",
+        "uninit",
+        "publisher",
+    ]:
+        fail(
+            "publisher '%s': forwards applies to native outputs only" % name,
+        )
+    payload_alias_src(
         name = name + "_src",
-        content = "" if event else "pub type Payload = %s::Payload;" % crate_name(channel),
+        channel = info_label(channel),
     )
     rust_library(
         name = name,
@@ -84,6 +100,7 @@ def _publisher_impl(name, visibility, channel, field, kind, queue_capacity, **kw
         channel = info_label(channel),
         crate_name = field_name(name),
         field = field or field_name(name),
+        forwards = forwards,
         kind = kind,
         visibility = visibility,
     )
@@ -117,6 +134,11 @@ cfw_publisher = macro(
             default = 0,
             configurable = False,
             doc = "Queue capacity. Required for span kinds; zero uses the default for other kinds.",
+        ),
+        "forwards": attr.string_dict(
+            default = {},
+            configurable = False,
+            doc = "Forwarded source field to task input field mapping.",
         ),
     },
     implementation = _publisher_impl,

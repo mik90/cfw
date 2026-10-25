@@ -77,11 +77,10 @@ def _task_api_src_impl(ctx):
     for endpoint in subscribers:
         wrapper = _wrapper_type(endpoint.kind, True)
         if endpoint.has_payload:
-            type_expr = "%s<%s::%s::Payload>" % (
-                wrapper,
-                ctx.attr.payloads_module,
-                endpoint.field,
-            )
+            alias = "%s::%s::Payload" % (ctx.attr.payloads_module, endpoint.field)
+            if endpoint.forwarded:
+                alias += "<'storage>"
+            type_expr = "%s<%s>" % (wrapper, alias)
         else:
             type_expr = wrapper
         lines = [
@@ -95,6 +94,19 @@ def _task_api_src_impl(ctx):
             lines.append(
                 "            keep_across_runs: %s," % _bool_literal(endpoint.keep_across_runs),
             )
+        if endpoint.forwarded:
+            lines.extend([
+                "            forwarded_message: %s::%s::Message," % (
+                    ctx.attr.payloads_module,
+                    endpoint.field,
+                ),
+                "            forwarded_sources: %s::%s::Sources," % (
+                    ctx.attr.payloads_module,
+                    endpoint.field,
+                ),
+            ])
+        if endpoint.forwardable:
+            lines.append("            forwardable: true,")
         lines.append("        },")
         subscriber_lines.extend(lines)
 
@@ -102,11 +114,10 @@ def _task_api_src_impl(ctx):
     for endpoint in publishers:
         wrapper = _wrapper_type(endpoint.kind, False)
         if endpoint.has_payload:
-            type_expr = "%s<%s::%s::Payload>" % (
-                wrapper,
-                ctx.attr.payloads_module,
-                endpoint.field,
-            )
+            alias = "%s::%s::Payload" % (ctx.attr.payloads_module, endpoint.field)
+            if endpoint.forwarded:
+                alias += "<'storage>"
+            type_expr = "%s<%s>" % (wrapper, alias)
         else:
             type_expr = wrapper
         lines = [
@@ -115,6 +126,23 @@ def _task_api_src_impl(ctx):
         ]
         if endpoint.kind != "iox2_notifier":
             lines.append("            capacity: %d," % endpoint.capacity)
+        if endpoint.forwarded:
+            lines.extend([
+                "            forwarded_message: %s::%s::Message," % (
+                    ctx.attr.payloads_module,
+                    endpoint.field,
+                ),
+                "            forwarded_sources: %s::%s::Sources," % (
+                    ctx.attr.payloads_module,
+                    endpoint.field,
+                ),
+            ])
+        if endpoint.forwards:
+            mappings = ", ".join([
+                "%s: %s" % (source, input)
+                for source, input in sorted(endpoint.forwards.items())
+            ])
+            lines.append("            forwards: { %s }," % mappings)
         lines.append("        },")
         publisher_lines.extend(lines)
 
