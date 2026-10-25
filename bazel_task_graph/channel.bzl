@@ -86,7 +86,7 @@ def _channel_impl(
         visibility = visibility,
     )
 
-channel = macro(
+cfw_channel = macro(
     attrs = {
         "payload": attr.string(
             default = "",

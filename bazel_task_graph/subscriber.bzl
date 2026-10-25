@@ -105,12 +105,12 @@ def _subscriber_impl(
         visibility = visibility,
     )
 
-subscriber = macro(
+cfw_subscriber = macro(
     attrs = {
         "channel": attr.label(
             mandatory = True,
             configurable = False,
-            doc = "Channel target produced by channel().",
+            doc = "Channel target produced by cfw_channel().",
         ),
         "field": attr.string(
             default = "",

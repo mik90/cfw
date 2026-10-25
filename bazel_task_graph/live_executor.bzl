@@ -69,12 +69,12 @@ def _live_application_impl(name, visibility, pools, **kwargs):
         **kwargs
     )
 
-live_application = macro(
+cfw_live_application = macro(
     attrs = {
         "pools": attr.label_list(
             mandatory = True,
             configurable = False,
-            doc = "Pool targets produced by pool().",
+            doc = "Pool targets produced by cfw_pool().",
         ),
     },
     implementation = _live_application_impl,

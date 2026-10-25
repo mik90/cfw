@@ -73,10 +73,10 @@ def _fixed_schedule_impl(name, visibility, execution_duration, periodic, **kwarg
     if periodic:
         period_nanos = duration_nanos("periodic", periodic)
         if period_nanos == 0:
-            fail("fixed_schedule '%s' periodic must be greater than zero" % name)
+            fail("cfw_fixed_schedule '%s' periodic must be greater than zero" % name)
         base = "::task_graph::CallbackSchedule::periodic(%s)" % duration_expression(period_nanos)
 
-    content = """/// Schedule selected by a Bazel fixed_schedule declaration.
+    content = """/// Schedule selected by a Bazel cfw_fixed_schedule declaration.
 pub fn __cfw_schedule() -> ::task_graph::CallbackSchedule {
     %s.with_execution_duration(%s)
 }
@@ -91,7 +91,7 @@ pub fn __cfw_schedule() -> ::task_graph::CallbackSchedule {
         **kwargs
     )
 
-fixed_schedule = macro(
+cfw_fixed_schedule = macro(
     attrs = {
         "execution_duration": attr.string(
             mandatory = True,
@@ -111,9 +111,9 @@ fixed_schedule = macro(
 def _custom_schedule_impl(name, visibility, crate, function, **kwargs):
     function = function or "schedule"
     if function.startswith("::"):
-        fail("custom_schedule '%s' function must be relative to its crate" % name)
+        fail("cfw_custom_schedule '%s' function must be relative to its crate" % name)
 
-    content = """/// Schedule selected by a Bazel custom_schedule declaration.
+    content = """/// Schedule selected by a Bazel cfw_custom_schedule declaration.
 pub fn __cfw_schedule() -> ::task_graph::CallbackSchedule {
     ::%s::%s()
 }
@@ -128,7 +128,7 @@ pub fn __cfw_schedule() -> ::task_graph::CallbackSchedule {
         **kwargs
     )
 
-custom_schedule = macro(
+cfw_custom_schedule = macro(
     attrs = {
         "crate": attr.label(
             mandatory = True,

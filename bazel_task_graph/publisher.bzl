@@ -88,12 +88,12 @@ def _publisher_impl(name, visibility, channel, field, kind, queue_capacity, **kw
         visibility = visibility,
     )
 
-publisher = macro(
+cfw_publisher = macro(
     attrs = {
         "channel": attr.label(
             mandatory = True,
             configurable = False,
-            doc = "Channel target produced by channel().",
+            doc = "Channel target produced by cfw_channel().",
         ),
         "field": attr.string(
             default = "",

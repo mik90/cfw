@@ -4,14 +4,14 @@
 load("//bazel:rust.bzl", "rust_library")
 load(
     "//bazel_task_graph:defs.bzl",
-    "channel",
-    "custom_schedule",
-    "fixed_schedule",
-    "live_application",
-    "pool",
-    "publisher",
-    "subscriber",
-    "task",
+    "cfw_channel",
+    "cfw_custom_schedule",
+    "cfw_fixed_schedule",
+    "cfw_live_application",
+    "cfw_pool",
+    "cfw_publisher",
+    "cfw_subscriber",
+    "cfw_task",
 )
 
 package(default_visibility = ["//visibility:public"])
@@ -36,7 +36,7 @@ rust_library(
     deps = ["//task_graph"],
 )
 
-channel(
+cfw_channel(
     name = "counter_channel",
     channel_name = "counter",
     payload = "messages::Iox2",
@@ -44,21 +44,21 @@ channel(
     deps = ["//examples/bazel_pools/messages"],
 )
 
-channel(
+cfw_channel(
     name = "doubled_channel",
     channel_name = "doubled",
     payload = "messages::Value",
     deps = ["//examples/bazel_pools/messages"],
 )
 
-channel(
+cfw_channel(
     name = "counter_event",
     channel_name = "counter_event",
     kind = "iox2_event",
     transport = "iceoryx2",
 )
 
-publisher(
+cfw_publisher(
     name = "counter_output",
     channel = ":counter_channel",
     field = "output",
@@ -66,14 +66,14 @@ publisher(
     queue_capacity = 8,
 )
 
-publisher(
+cfw_publisher(
     name = "counter_notify",
     channel = ":counter_event",
     field = "notify",
     kind = "iox2_notifier",
 )
 
-subscriber(
+cfw_subscriber(
     name = "doubler_input",
     channel = ":counter_channel",
     field = "input",
@@ -82,7 +82,7 @@ subscriber(
     queue_capacity = 8,
 )
 
-subscriber(
+cfw_subscriber(
     name = "doubler_event",
     channel = ":counter_channel",
     field = "_event",
@@ -90,14 +90,14 @@ subscriber(
     queue_capacity = 8,
 )
 
-publisher(
+cfw_publisher(
     name = "doubler_output",
     channel = ":doubled_channel",
     field = "output",
     queue_capacity = 8,
 )
 
-subscriber(
+cfw_subscriber(
     name = "printer_input",
     channel = ":doubled_channel",
     field = "input",
@@ -106,7 +106,7 @@ subscriber(
     trigger = True,
 )
 
-subscriber(
+cfw_subscriber(
     name = "pulse_input",
     channel = ":counter_event",
     field = "event",
@@ -114,19 +114,19 @@ subscriber(
     queue_capacity = 8,
 )
 
-fixed_schedule(
+cfw_fixed_schedule(
     name = "counter_periodic",
     execution_duration = "1ms",
     periodic = "100ms",
 )
 
-custom_schedule(
+cfw_custom_schedule(
     name = "doubler_interval",
     crate = ":schedules",
     function = "doubler",
 )
 
-task(
+cfw_task(
     name = "counter",
     publishers = [
         ":counter_output",
@@ -137,7 +137,7 @@ task(
     implementation = ":task_impls",
 )
 
-task(
+cfw_task(
     name = "doubler",
     publishers = [":doubler_output"],
     rust_type = "task_impls::Doubler",
@@ -149,21 +149,21 @@ task(
     implementation = ":task_impls",
 )
 
-task(
+cfw_task(
     name = "printer",
     rust_type = "task_impls::Printer",
     subscribers = [":printer_input"],
     implementation = ":task_impls",
 )
 
-task(
+cfw_task(
     name = "pulse",
     rust_type = "task_impls::Pulse",
     subscribers = [":pulse_input"],
     implementation = ":task_impls",
 )
 
-pool(
+cfw_pool(
     name = "control",
     tasks = [
         ":counter",
@@ -175,7 +175,7 @@ pool(
     deps = [":task_impls"],
 )
 
-live_application(
+cfw_live_application(
     name = "live",
     pools = [":control"],
 )

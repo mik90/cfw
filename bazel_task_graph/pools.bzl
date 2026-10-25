@@ -120,13 +120,13 @@ def _pool_impl(name, visibility, tasks, threads, deps, **kwargs):
         **kwargs
     )
 
-pool = macro(
+cfw_pool = macro(
     attrs = {
         "tasks": attr.label_list(
             mandatory = True,
             providers = [CfwTaskInfo],
             configurable = False,
-            doc = "Task targets produced by task().",
+            doc = "Task targets produced by cfw_task().",
         ),
         "threads": attr.int(
             default = 1,

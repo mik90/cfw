@@ -3,7 +3,7 @@
 The generated API crate contains the user-facing `Inputs`/`Outputs` types, the
 `Run` trait, and an exported `impl_task!` macro. The implementation crate
 implements `Run` and invokes `impl_task!` for each task type. A bridge crate
-forwards the schedule selected by `fixed_schedule()` or `custom_schedule()`.
+forwards the schedule selected by `cfw_fixed_schedule()` or `cfw_custom_schedule()`.
 
 One Rust type may back one task definition. Reuse the same type in multiple
 pools with per-instance channel overrides; use a newtype if the endpoint
@@ -90,11 +90,8 @@ def _task_api_src_impl(ctx):
             "            capacity: %d," % endpoint.capacity,
         ]
         if not endpoint.kind.startswith("iox2_"):
-            lines.extend([
-                "            trigger: %s," % _bool_literal(endpoint.trigger),
-                "            keep_across_runs: %s," % _bool_literal(endpoint.keep_across_runs),
-            ])
-        elif endpoint.kind in ["iox2_input", "iox2_span"]:
+            lines.append("            trigger: %s," % _bool_literal(endpoint.trigger))
+        if endpoint.kind != "iox2_event":
             lines.append(
                 "            keep_across_runs: %s," % _bool_literal(endpoint.keep_across_runs),
             )
@@ -277,7 +274,7 @@ def _task_impl(
         visibility = visibility,
     )
 
-task = macro(
+cfw_task = macro(
     attrs = {
         "implementation": attr.label(
             mandatory = True,
@@ -292,18 +289,18 @@ task = macro(
         "subscribers": attr.label_list(
             default = [],
             configurable = False,
-            doc = "Subscriber targets produced by subscriber().",
+            doc = "Subscriber targets produced by cfw_subscriber().",
         ),
         "publishers": attr.label_list(
             default = [],
             configurable = False,
-            doc = "Publisher targets produced by publisher().",
+            doc = "Publisher targets produced by cfw_publisher().",
         ),
         "schedule": attr.label(
             default = None,
             providers = [CfwCallbackScheduleInfo],
             configurable = False,
-            doc = "Schedule target produced by fixed_schedule() or custom_schedule().",
+            doc = "Schedule target produced by cfw_fixed_schedule() or cfw_custom_schedule().",
         ),
         "input_channels": attr.string_dict(
             default = {},
