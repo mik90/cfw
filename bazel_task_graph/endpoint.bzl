@@ -6,6 +6,7 @@ on every task.
 """
 
 load("//bazel:rust.bzl", "rust_library")
+load("//bazel_task_graph:labels.bzl", "crate_name", "field_name", "info_label")
 
 _CHANNEL_KINDS = ["data", "iox2_event"]
 _TRANSPORT_KINDS = ["native", "iceoryx2"]
@@ -45,17 +46,6 @@ CfwPublisherInfo = provider(
         "kind": "Endpoint kind.",
     },
 )
-
-def _crate_name(label):
-    return label.name.replace("-", "_")
-
-def _field_name(name):
-    return name.replace("-", "_")
-
-def _info_label(label):
-    label = str(label)
-    package, target = label.rsplit(":", 1)
-    return package + ":" + target + "_info"
 
 def _default_capacity(kind, queue_capacity):
     if queue_capacity < 0:
@@ -295,7 +285,7 @@ def _subscriber_impl(
     event = kind == "iox2_event"
     _reexport_src(
         name = name + "_src",
-        content = "" if event else "pub type Payload = %s::Payload;" % _crate_name(channel),
+        content = "" if event else "pub type Payload = %s::Payload;" % crate_name(channel),
     )
     rust_library(
         name = name,
@@ -307,9 +297,9 @@ def _subscriber_impl(
     _subscriber_info(
         name = name + "_info",
         capacity = _default_capacity(kind, queue_capacity),
-        channel = _info_label(channel),
-        crate_name = _field_name(name),
-        field = field or _field_name(name),
+        channel = info_label(channel),
+        crate_name = field_name(name),
+        field = field or field_name(name),
         keep_across_runs = keep_across_runs,
         kind = kind,
         trigger = trigger,
@@ -376,7 +366,7 @@ def _publisher_impl(name, visibility, channel, field, kind, queue_capacity, **kw
     event = kind == "iox2_notifier"
     _reexport_src(
         name = name + "_src",
-        content = "" if event else "pub type Payload = %s::Payload;" % _crate_name(channel),
+        content = "" if event else "pub type Payload = %s::Payload;" % crate_name(channel),
     )
     rust_library(
         name = name,
@@ -388,9 +378,9 @@ def _publisher_impl(name, visibility, channel, field, kind, queue_capacity, **kw
     _publisher_info(
         name = name + "_info",
         capacity = _default_capacity(kind, queue_capacity),
-        channel = _info_label(channel),
-        crate_name = _field_name(name),
-        field = field or _field_name(name),
+        channel = info_label(channel),
+        crate_name = field_name(name),
+        field = field or field_name(name),
         kind = kind,
         visibility = visibility,
     )

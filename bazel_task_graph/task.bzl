@@ -15,6 +15,7 @@ load(
     "CfwPublisherInfo",
     "CfwSubscriberInfo",
 )
+load("//bazel_task_graph:labels.bzl", "field_name", "info_label")
 
 CfwTaskInfo = provider(
     doc = "Composition metadata for a cfw task.",
@@ -31,14 +32,6 @@ CfwTaskInfo = provider(
 def _rust_ident(name):
     parts = [part for part in name.replace("-", "_").split("_") if part]
     return "".join([part[:1].upper() + part[1:] for part in parts])
-
-def _field_name(name):
-    return name.replace("-", "_")
-
-def _info_label(label):
-    label = str(label)
-    package, target = label.rsplit(":", 1)
-    return package + ":" + target + "_info"
 
 def _wrapper_type(kind, input):
     if input:
@@ -211,9 +204,9 @@ def _task_impl(
         callback_name,
         **kwargs):
     api_crate = name.replace("-", "_") + "_api"
-    payloads_module = "__cfw_payloads_" + _field_name(name)
-    subscriber_info = [_info_label(subscriber) for subscriber in subscribers]
-    publisher_info = [_info_label(publisher) for publisher in publishers]
+    payloads_module = "__cfw_payloads_" + field_name(name)
+    subscriber_info = [info_label(subscriber) for subscriber in subscribers]
+    publisher_info = [info_label(publisher) for publisher in publishers]
 
     _task_api_src(
         name = name + "_api_src",
