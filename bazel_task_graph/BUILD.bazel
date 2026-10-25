@@ -1,9 +1,14 @@
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
-    "endpoint.bzl",
+    "channel.bzl",
+    "defs.bzl",
+    "endpoint_common.bzl",
     "live_executor.bzl",
     "pools.bzl",
+    "publisher.bzl",
     "schedule.bzl",
+    "subscriber.bzl",
     "task.bzl",
+    "time.bzl",
 ])

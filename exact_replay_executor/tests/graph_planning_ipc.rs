@@ -35,7 +35,12 @@ impl Source {
 struct Sink;
 #[task_callback]
 impl Sink {
-    fn run(&self, event: Iox2Event, input: Iox2SpanInput<u64>, mut output: Iox2Output<u64>) {
+    fn run(
+        &self,
+        event: Iox2Event,
+        #[capacity(4)] input: Iox2SpanInput<u64>,
+        mut output: Iox2Output<u64>,
+    ) {
         let _ = event;
         *output = input.inputs().map(|message| message.message).sum();
         output.send();

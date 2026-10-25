@@ -96,7 +96,9 @@ impl Iox2MacroDemo {
     fn run(
         &self,
         #[channel("macro_sensor")] sensor: task::iox2::Iox2OptionalInput<u64>,
-        #[channel("macro_history")] history: task::iox2::Iox2SpanInput<u64>,
+        #[channel("macro_history")]
+        #[capacity(4)]
+        history: task::iox2::Iox2SpanInput<u64>,
         #[channel("macro_events")] events: task::iox2::Iox2Event,
         #[channel("macro_output")] mut output: task::iox2::Iox2Output<u64>,
         #[channel("macro_signal")] signal: task::iox2::Iox2NotifyOutput,

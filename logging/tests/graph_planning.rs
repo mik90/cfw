@@ -260,9 +260,9 @@ fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publ
     impl Consumer {
         fn run(
             &self,
-            input: InputSpan<Value>,
-            opaque: InputSpan<Hidden>,
-            contextual: InputSpan<Contextual>,
+            #[capacity(4)] input: InputSpan<Value>,
+            #[capacity(4)] opaque: InputSpan<Hidden>,
+            #[capacity(4)] contextual: InputSpan<Contextual>,
         ) {
             let _ = (input, opaque, contextual);
         }

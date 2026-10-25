@@ -2,11 +2,17 @@
 # package is not a Cargo workspace member.
 
 load("//bazel:rust.bzl", "rust_library")
-load("//bazel_task_graph:endpoint.bzl", "channel", "publisher", "subscriber")
-load("//bazel_task_graph:live_executor.bzl", "live_application")
-load("//bazel_task_graph:pools.bzl", "pool")
-load("//bazel_task_graph:schedule.bzl", "custom_schedule", "fixed_schedule")
-load("//bazel_task_graph:task.bzl", "task")
+load(
+    "//bazel_task_graph:defs.bzl",
+    "channel",
+    "custom_schedule",
+    "fixed_schedule",
+    "live_application",
+    "pool",
+    "publisher",
+    "subscriber",
+    "task",
+)
 
 package(default_visibility = ["//visibility:public"])
 

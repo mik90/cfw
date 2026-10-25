@@ -6,7 +6,11 @@ use task_macros::task_callback;
 struct Sum;
 #[task_callback]
 impl Sum {
-    fn run(&self, input: InputSpan<u64>, output: &mut Publisher<u64>) -> Result<(), LoanError> {
+    fn run(
+        &self,
+        #[capacity(4)] input: InputSpan<u64>,
+        output: &mut Publisher<u64>,
+    ) -> Result<(), LoanError> {
         output.publish(input.inputs().map(|message| message.message).sum())
     }
 }

@@ -119,7 +119,9 @@ pub struct MetricsRecorder {
 impl MetricsRecorder {
     fn run(
         &mut self,
-        #[channel(RESULT_CHANNEL)] mut results: InputSpan<String>,
+        #[channel(RESULT_CHANNEL)]
+        #[capacity(4)]
+        mut results: InputSpan<String>,
         #[channel(METRICS_CHANNEL)] mut snapshot: Output<Metrics>,
     ) {
         let mut changed = false;

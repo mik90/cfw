@@ -356,6 +356,13 @@ fn parse_payload_block(input: ParseStream, key: &str) -> syn::Result<Vec<(Ident,
     Ok(payloads)
 }
 
+fn span_endpoint(segment: &syn::PathSegment) -> bool {
+    matches!(
+        segment.ident.to_string().as_str(),
+        "InputSpan" | "OutputSpan" | "Iox2SpanInput"
+    )
+}
+
 fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
     let EndpointSpec {
         name,
@@ -439,19 +446,17 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
         }
         payloads[0].clone()
     };
-    let span = matches!(
-        segment.ident.to_string().as_str(),
-        "InputSpan" | "OutputSpan" | "Iox2SpanInput"
-    );
-    let capacity = capacity
-        .map(|literal| parse_quote!(#literal))
-        .unwrap_or_else(|| {
-            if span {
-                parse_quote!(4)
-            } else {
-                parse_quote!(1)
-            }
-        });
+    let span = span_endpoint(segment);
+    let capacity = match capacity {
+        Some(literal) => parse_quote!(#literal),
+        None if span => {
+            return Err(syn::Error::new_spanned(
+                &ty,
+                "span endpoints require an explicit #[capacity(...)]",
+            ));
+        }
+        None => parse_quote!(1),
+    };
     let trigger = trigger
         .map(|literal| parse_quote!(#literal))
         .unwrap_or_else(|| parse_quote!(true));
@@ -748,16 +753,17 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             .iter()
             .any(|name| a.path().is_ident(name))
         });
-        let capacity = capacity.unwrap_or_else(|| {
-            if segment.ident == "InputSpan"
-                || segment.ident == "Iox2SpanInput"
-                || segment.ident == "OutputSpan"
-            {
-                parse_quote!(4)
-            } else {
-                parse_quote!(1)
+        let span = span_endpoint(segment);
+        let capacity = match capacity {
+            Some(capacity) => capacity,
+            None if span => {
+                return Err(syn::Error::new_spanned(
+                    &arg.ty,
+                    "span endpoints require an explicit #[capacity(...)]",
+                ));
             }
-        });
+            None => parse_quote!(1),
+        };
         arguments.push(Some(endpoints.len()));
         endpoints.push(Endpoint {
             forwardable,
@@ -1043,6 +1049,9 @@ mod tests {
             "impl Task { fn run(&self, input: Input<u64>, #[forwards(source = input)] output: Output<u64>) {} }",
             "impl Task { fn run(&self, input: Input<u64,Forwardable>, #[forwards(source = missing)] output: Output<u64>) {} }",
             "impl Task { fn run(&self, input: Input<u64,Forwardable>, #[forwards(source = input)] output: Output<u64>) {} }",
+            "impl Task { fn run(&mut self, input: InputSpan<u64>) {} }",
+            "impl Task { fn run(&mut self, output: OutputSpan<u64>) {} }",
+            "impl Task { fn run(&mut self, input: Iox2SpanInput<u64>) {} }",
         ] {
             assert!(expand(syn::parse_str(source).unwrap()).is_err());
         }

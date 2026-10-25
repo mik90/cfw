@@ -11,13 +11,10 @@ structure differs.
 """
 
 load("//bazel:rust.bzl", "rust_library")
-load(
-    "//bazel_task_graph:endpoint.bzl",
-    "CfwPublisherInfo",
-    "CfwSubscriberInfo",
-)
 load("//bazel_task_graph:labels.bzl", "crate_name", "field_name", "info_label")
+load("//bazel_task_graph:publisher.bzl", "CfwPublisherInfo")
 load("//bazel_task_graph:schedule.bzl", "CfwCallbackScheduleInfo")
+load("//bazel_task_graph:subscriber.bzl", "CfwSubscriberInfo")
 
 CfwTaskInfo = provider(
     doc = "Composition metadata for a cfw task.",
