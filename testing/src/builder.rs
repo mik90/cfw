@@ -305,7 +305,7 @@ impl UnitTestExecutorBuilder {
         task: impl Task + 'static,
         duration: impl Into<ExecutionDuration>,
     ) -> &mut task_graph::TaskRegistration {
-        self.add_scheduled_task(name, task, duration, CallbackSchedule::default())
+        self.add_scheduled_task(name, task, duration, CallbackSchedule::input_triggered())
     }
     /// Register timing/pool policies. The required duration argument determines
     /// modeled occupancy, overriding any duration on `schedule`.

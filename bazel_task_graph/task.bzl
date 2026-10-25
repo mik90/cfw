@@ -2,7 +2,8 @@
 
 The generated API crate contains the user-facing `Inputs`/`Outputs` types, the
 `Run` trait, and an exported `impl_task!` macro. The implementation crate
-implements `Run` and invokes `impl_task!` for each task type.
+implements `Run` and invokes `impl_task!` for each task type. A bridge crate
+forwards the schedule selected by `fixed_schedule()` or `custom_schedule()`.
 
 One Rust type may back one task definition. Reuse the same type in multiple
 pools with per-instance channel overrides; use a newtype if the endpoint
@@ -15,7 +16,8 @@ load(
     "CfwPublisherInfo",
     "CfwSubscriberInfo",
 )
-load("//bazel_task_graph:labels.bzl", "field_name", "info_label")
+load("//bazel_task_graph:labels.bzl", "crate_name", "field_name", "info_label")
+load("//bazel_task_graph:schedule.bzl", "CfwCallbackScheduleInfo")
 
 CfwTaskInfo = provider(
     doc = "Composition metadata for a cfw task.",
@@ -167,6 +169,32 @@ _task_api_src = rule(
     },
 )
 
+def _task_schedule_src_impl(ctx):
+    if ctx.attr.schedule:
+        schedule = ctx.attr.schedule[CfwCallbackScheduleInfo]
+        expression = "::%s::__cfw_schedule()" % crate_name(schedule.crate)
+    else:
+        expression = "::task_graph::CallbackSchedule::input_triggered()"
+
+    content = """/// Schedule selected by the Bazel task declaration.
+pub fn __cfw_schedule() -> ::task_graph::CallbackSchedule {
+    %s
+}
+""" % expression
+    output = ctx.actions.declare_file(ctx.label.name + ".rs")
+    ctx.actions.write(output, content)
+    return [DefaultInfo(files = depset([output]))]
+
+_task_schedule_src = rule(
+    implementation = _task_schedule_src_impl,
+    attrs = {
+        "schedule": attr.label(
+            default = None,
+            providers = [CfwCallbackScheduleInfo],
+        ),
+    },
+)
+
 def _task_meta_impl(ctx):
     return [
         CfwTaskInfo(
@@ -207,6 +235,8 @@ def _task_impl(
     payloads_module = "__cfw_payloads_" + field_name(name)
     subscriber_info = [info_label(subscriber) for subscriber in subscribers]
     publisher_info = [info_label(publisher) for publisher in publishers]
+    schedule_info = info_label(schedule) if schedule else None
+    schedule_expression = "::%s::__cfw_schedule()" % field_name(name + "_schedule_bridge")
 
     _task_api_src(
         name = name + "_api_src",
@@ -224,6 +254,17 @@ def _task_impl(
         visibility = visibility,
         **kwargs
     )
+    _task_schedule_src(
+        name = name + "_schedule_src",
+        schedule = schedule_info,
+    )
+    rust_library(
+        name = name + "_schedule_bridge",
+        srcs = [":" + name + "_schedule_src"],
+        deps = ([schedule] if schedule else []) + ["//task_graph:task_graph"],
+        visibility = visibility,
+        **kwargs
+    )
     _task_meta(
         name = name,
         callback_name = callback_name or name,
@@ -231,7 +272,7 @@ def _task_impl(
         input_channels = input_channels,
         output_channels = output_channels,
         rust_type = rust_type,
-        schedule = schedule or "::task_graph::CallbackSchedule::default()",
+        schedule = schedule_expression,
         visibility = visibility,
     )
 
@@ -257,10 +298,11 @@ task = macro(
             configurable = False,
             doc = "Publisher targets produced by publisher().",
         ),
-        "schedule": attr.string(
-            default = "",
+        "schedule": attr.label(
+            default = None,
+            providers = [CfwCallbackScheduleInfo],
             configurable = False,
-            doc = "Rust expression producing a CallbackSchedule.",
+            doc = "Schedule target produced by fixed_schedule() or custom_schedule().",
         ),
         "input_channels": attr.string_dict(
             default = {},

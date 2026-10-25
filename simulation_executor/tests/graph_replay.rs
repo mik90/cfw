@@ -16,7 +16,7 @@ fn automatic_sources_drive_log_simulation_through_overridden_input_names() {
     let mut registration = TaskRegistration::new(
         "sum",
         Sum,
-        CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
+        CallbackSchedule::input_triggered().with_execution_duration(std::time::Duration::ZERO),
     );
     registration.input_channel("input", "wire");
     registration.register(&mut plan).unwrap();

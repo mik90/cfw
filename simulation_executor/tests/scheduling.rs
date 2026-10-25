@@ -233,7 +233,7 @@ fn startup_flag_and_custom_timing_use_completion_time() {
         let calls = Arc::new(AtomicUsize::new(0));
         let times = Arc::new(Mutex::new(Vec::new()));
         let count = calls.clone();
-        let mut schedule = CallbackSchedule::default()
+        let mut schedule = CallbackSchedule::input_triggered()
             .with_execution_duration_callback(|| ns(2))
             .with_next_execution_time_callback(move |now| {
                 (count.load(Ordering::Acquire) < 2)
@@ -267,7 +267,8 @@ fn startup_flag_and_custom_timing_use_completion_time() {
 }
 
 #[test]
-fn periodic_startup_is_explicit_instead_of_implicit() {
+fn periodic_startup_defaults_on_but_can_be_overridden() {
+    assert!(CallbackSchedule::periodic(ns(5)).run_on_start);
     for startup in [false, true] {
         let times = Arc::new(Mutex::new(Vec::new()));
         let observed = times.clone();
@@ -332,7 +333,7 @@ fn nontrigger_input_resumes_pending_request_and_input_retention_is_respected() {
     let mut builder = GraphBuilder::new();
     builder.add_scheduled_callback(
         "gated",
-        CallbackSchedule::default().with_execution_duration(ns(0)),
+        CallbackSchedule::input_triggered().with_execution_duration(ns(0)),
         || {
             Ok(Gated {
                 trace: trace.clone(),
@@ -412,7 +413,7 @@ fn oldest_ready_callback_wins_when_a_virtual_pool_becomes_free() {
     );
     builder.add_scheduled_callback(
         "b",
-        CallbackSchedule::default().with_execution_duration(ns(5)),
+        CallbackSchedule::input_triggered().with_execution_duration(ns(5)),
         || {
             Ok(Observe {
                 observations: trace.clone(),
@@ -422,7 +423,7 @@ fn oldest_ready_callback_wins_when_a_virtual_pool_becomes_free() {
     );
     builder.add_scheduled_callback(
         "c",
-        CallbackSchedule::default().with_execution_duration(ns(5)),
+        CallbackSchedule::input_triggered().with_execution_duration(ns(5)),
         || {
             Ok(Observe {
                 observations: trace.clone(),

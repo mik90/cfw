@@ -67,7 +67,8 @@ fn counted_events_survive_native_gating_and_capture_outlives_executor() {
         GraphBuilder::with_channel_names([storage.0.name(), storage.1.name(), storage.2.name()]);
     graph.add_scheduled_callback(
         "observe",
-        task_graph::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
+        task_graph::CallbackSchedule::input_triggered()
+            .with_execution_duration(std::time::Duration::ZERO),
         || {
             Ok(Observe {
                 observations: observations.clone(),

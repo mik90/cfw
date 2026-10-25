@@ -426,7 +426,7 @@ mod tests {
             let schedule = if periodic {
                 CallbackSchedule::periodic(Duration::from_secs(3600))
             } else {
-                CallbackSchedule::default()
+                CallbackSchedule::input_triggered()
             };
             builder.add_scheduled_callback("probe", schedule, || {
                 Ok(move |_| {

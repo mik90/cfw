@@ -5,6 +5,7 @@ load("//bazel:rust.bzl", "rust_library")
 load("//bazel_task_graph:endpoint.bzl", "channel", "publisher", "subscriber")
 load("//bazel_task_graph:live_executor.bzl", "live_application")
 load("//bazel_task_graph:pools.bzl", "pool")
+load("//bazel_task_graph:schedule.bzl", "custom_schedule", "fixed_schedule")
 load("//bazel_task_graph:task.bzl", "task")
 
 package(default_visibility = ["//visibility:public"])
@@ -21,6 +22,12 @@ rust_library(
         "//task",
         "//task_graph",
     ],
+)
+
+rust_library(
+    name = "schedules",
+    srcs = ["schedules.rs"],
+    deps = ["//task_graph"],
 )
 
 channel(
@@ -100,6 +107,18 @@ subscriber(
     queue_capacity = 8,
 )
 
+fixed_schedule(
+    name = "counter_periodic",
+    execution_duration = "1ms",
+    periodic = "100ms",
+)
+
+custom_schedule(
+    name = "doubler_interval",
+    crate = ":schedules",
+    function = "doubler",
+)
+
 task(
     name = "counter",
     publishers = [
@@ -107,7 +126,7 @@ task(
         ":counter_notify",
     ],
     rust_type = "task_impls::Counter",
-    schedule = "::task_impls::Counter::schedule()",
+    schedule = ":counter_periodic",
     implementation = ":task_impls",
 )
 
@@ -115,6 +134,7 @@ task(
     name = "doubler",
     publishers = [":doubler_output"],
     rust_type = "task_impls::Doubler",
+    schedule = ":doubler_interval",
     subscribers = [
         ":doubler_input",
         ":doubler_event",

@@ -82,7 +82,7 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     let task = app.add_task(
         "lazy",
         Lazy,
-        CallbackSchedule::default().with_execution_duration(Duration::from_nanos(1)),
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(1)),
     );
     task.input_channel("input", "unused")
         .input_channel("input", "chosen")

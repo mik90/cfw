@@ -67,13 +67,13 @@ impl Sum {
 #[test]
 fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusions() {
     let mut plan = GraphPlan::default();
-    let mut a = TaskRegistration::new("a", Source(10), CallbackSchedule::default());
+    let mut a = TaskRegistration::new("a", Source(10), CallbackSchedule::input_triggered());
     a.output_channel("output", "wire");
     a.register(&mut plan).unwrap();
-    let mut b = TaskRegistration::new("b", Source(20), CallbackSchedule::default());
+    let mut b = TaskRegistration::new("b", Source(20), CallbackSchedule::input_triggered());
     b.output_channel("output", "wire");
     b.register(&mut plan).unwrap();
-    let mut sum = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
+    let mut sum = TaskRegistration::new("sum", Sum, CallbackSchedule::input_triggered());
     sum.input_channel("input", "wire")
         .output_channel("summary", "totals");
     sum.register(&mut plan).unwrap();
@@ -172,7 +172,7 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
         }
     }
     let mut plan = GraphPlan::default();
-    TaskRegistration::new("hidden", Task, CallbackSchedule::default())
+    TaskRegistration::new("hidden", Task, CallbackSchedule::input_triggered())
         .register(&mut plan)
         .unwrap();
     let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
@@ -193,7 +193,7 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
 fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
     let mut plan = GraphPlan::default();
     for name in ["first", "second"] {
-        let mut task = TaskRegistration::new(name, Sum, CallbackSchedule::default());
+        let mut task = TaskRegistration::new(name, Sum, CallbackSchedule::input_triggered());
         task.input_channel("input", "wire")
             .output_channel("summary", format!("{name}_result"));
         task.register(&mut plan).unwrap();
@@ -268,7 +268,7 @@ fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publ
         }
     }
     let mut plan = GraphPlan::default();
-    TaskRegistration::new("consumer", Consumer, CallbackSchedule::default())
+    TaskRegistration::new("consumer", Consumer, CallbackSchedule::input_triggered())
         .register(&mut plan)
         .unwrap();
     assert_eq!(plan.replayable_channels().collect::<Vec<_>>(), ["input"]);
@@ -308,7 +308,7 @@ fn log_driven_source_selection_carries_exclusions_into_replay_feed() {
     use logging::{OwnedLogEntry, SortedLogStreamReader};
     use std::collections::HashMap;
     let mut plan = GraphPlan::default();
-    TaskRegistration::new("sum", Sum, CallbackSchedule::default())
+    TaskRegistration::new("sum", Sum, CallbackSchedule::input_triggered())
         .register(&mut plan)
         .unwrap();
     let header = task::message::MessageHeader {
@@ -384,7 +384,7 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
         }
     }
     let mut plan = GraphPlan::default();
-    TaskRegistration::new("serde", SerdeSource, CallbackSchedule::default())
+    TaskRegistration::new("serde", SerdeSource, CallbackSchedule::input_triggered())
         .register(&mut plan)
         .unwrap();
     let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
@@ -423,7 +423,7 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
     }
     for capacity in [1, 2] {
         let mut plan = GraphPlan::default();
-        TaskRegistration::new("source", Source(5), CallbackSchedule::default())
+        TaskRegistration::new("source", Source(5), CallbackSchedule::input_triggered())
             .register(&mut plan)
             .unwrap();
         let captures =

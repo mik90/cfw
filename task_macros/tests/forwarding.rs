@@ -57,7 +57,7 @@ fn bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
     for shared in [false, true] {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut plan = GraphPlan::default();
-        let mut task = TaskRegistration::new("merge", Merge, CallbackSchedule::default());
+        let mut task = TaskRegistration::new("merge", Merge, CallbackSchedule::input_triggered());
         if shared {
             task.input_channel("b", "a");
         }
@@ -129,7 +129,7 @@ fn bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
             .unwrap();
         let mut graph = storage.build_with(&bindings).unwrap();
         graph.configure_schedules(|_, schedule| {
-            *schedule = CallbackSchedule::default()
+            *schedule = CallbackSchedule::input_triggered()
                 .with_execution_duration(std::time::Duration::from_nanos(1));
         });
         let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
@@ -295,10 +295,10 @@ impl Relay {
 #[test]
 fn nested_bundle_retention_propagates_to_original_sources() {
     let mut plan = GraphPlan::default();
-    TaskRegistration::new("merge", Merge, CallbackSchedule::default())
+    TaskRegistration::new("merge", Merge, CallbackSchedule::input_triggered())
         .register(&mut plan)
         .unwrap();
-    TaskRegistration::new("relay", Relay, CallbackSchedule::default())
+    TaskRegistration::new("relay", Relay, CallbackSchedule::input_triggered())
         .register(&mut plan)
         .unwrap();
     let a = plan.native::<Tracked>("a").unwrap().publisher(1);
@@ -342,7 +342,8 @@ fn nested_bundle_retention_propagates_to_original_sources() {
         .unwrap();
     let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
-        *schedule = CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO);
+        *schedule =
+            CallbackSchedule::input_triggered().with_execution_duration(std::time::Duration::ZERO);
     });
     let mut executor = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
     let drops = Arc::new(AtomicUsize::new(0));

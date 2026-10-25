@@ -42,7 +42,7 @@ fn recording_modes_preserve_execution_and_select_metadata() {
             task_graph::TaskRegistration::new(
                 name,
                 Source { fail: 0 },
-                CallbackSchedule::default(),
+                CallbackSchedule::input_triggered(),
             )
             .register(&mut plan)
             .unwrap();
@@ -221,7 +221,7 @@ fn planned_capture_replay_and_execution_records_round_trip_through_json() {
         let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
         graph.add_scheduled_callback(
             "double",
-            CallbackSchedule::default().with_execution_duration(Duration::from_nanos(3)),
+            CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(3)),
             || Ok(Double.bind(task, &input, &output)?),
         );
         let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
@@ -287,8 +287,11 @@ fn startup_tables_are_shared_by_shards_and_resolve_diagnostics_after_graph_drop(
     {
         let mut plan = GraphPlan::default();
         for name in ["z", "a"] {
-            let mut task =
-                TaskRegistration::new(name, Source { fail: 0 }, CallbackSchedule::default());
+            let mut task = TaskRegistration::new(
+                name,
+                Source { fail: 0 },
+                CallbackSchedule::input_triggered(),
+            );
             task.output_channel("output", format!("{name}-output"));
             task.register(&mut plan).unwrap();
         }

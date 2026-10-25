@@ -68,7 +68,7 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
         F: FnOnce() -> Result<C, FactoryError> + 'build,
         C: Callback + 'storage,
     {
-        self.add_scheduled_callback(name, CallbackSchedule::default(), factory);
+        self.add_scheduled_callback(name, CallbackSchedule::input_triggered(), factory);
     }
 
     pub fn add_scheduled_callback<F, C>(
@@ -273,7 +273,7 @@ impl<'storage> BuiltGraph<'storage> {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct CallbackSchedule {
     pub pool: usize,
     pub run_on_start: bool,
@@ -365,17 +365,29 @@ impl CallbackSchedule {
         }
         Ok(next)
     }
+    /// Runs only when inputs are pending or another task wakes it.
+    pub fn input_triggered() -> Self {
+        Self {
+            pool: 0,
+            run_on_start: false,
+            period: None,
+            execution_duration: None,
+            execution_duration_callback: None,
+            next_execution_time_callback: None,
+        }
+    }
+    /// Runs once at start, then only when triggered.
     pub fn on_start() -> Self {
         Self {
             run_on_start: true,
-            ..Self::default()
+            ..Self::input_triggered()
         }
     }
-    /// First periodic execution is requested after one period.
+    /// Runs at start, then again after each period.
     pub fn periodic(period: Duration) -> Self {
         Self {
             period: Some(period),
-            ..Self::default()
+            ..Self::on_start()
         }
     }
     pub fn in_pool(mut self, pool: usize) -> Self {

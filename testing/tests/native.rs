@@ -35,7 +35,7 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
     let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
-        CallbackSchedule::default().with_execution_duration(Duration::ZERO),
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::ZERO),
         || Ok(Double.bind(declaration, &input, &output)?),
     );
     let mut executor = UnitTestExecutor::new_with_graph(
@@ -198,10 +198,12 @@ fn failed_step_cancels_capture_and_poisons_executor() {
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind();
     let mut graph = GraphBuilder::with_channel_names([storage.name()]);
+    let mut schedule = CallbackSchedule::periodic(Duration::from_nanos(10))
+        .with_execution_duration(Duration::ZERO);
+    schedule.run_on_start = false;
     graph.add_scheduled_callback(
         "fails",
-        CallbackSchedule::periodic(Duration::from_nanos(10))
-            .with_execution_duration(Duration::ZERO),
+        schedule,
         || Ok(Fails.bind(declaration, &bindings)?),
     );
     let mut executor = UnitTestExecutor::new_with_graph(graph.build().unwrap(), Default::default());

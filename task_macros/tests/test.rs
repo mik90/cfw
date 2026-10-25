@@ -468,8 +468,11 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
 fn forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     use task_graph::{GraphPlan, TaskRegistration};
     let mut plan = GraphPlan::default();
-    let mut registration =
-        TaskRegistration::new("forward", Forward, task_graph::CallbackSchedule::default());
+    let mut registration = TaskRegistration::new(
+        "forward",
+        Forward,
+        task_graph::CallbackSchedule::input_triggered(),
+    );
     registration
         .input_channel("input", "source")
         .output_channel("output", "forwarded");
@@ -513,7 +516,7 @@ fn forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
         .unwrap();
     let mut graph = storage.build_with(&bindings).unwrap();
     graph.configure_schedules(|_, schedule| {
-        *schedule = task_graph::CallbackSchedule::default()
+        *schedule = task_graph::CallbackSchedule::input_triggered()
             .with_execution_duration(std::time::Duration::from_nanos(1));
     });
     let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());

@@ -22,7 +22,8 @@ fn automatic_ipc_replay_injects_full_headers_without_notifications() {
     }
     let (data, event) = names();
     let mut plan = GraphPlan::default();
-    let mut registration = TaskRegistration::new("ipc", Source, CallbackSchedule::default());
+    let mut registration =
+        TaskRegistration::new("ipc", Source, CallbackSchedule::input_triggered());
     registration
         .output_channel("output", &data)
         .output_channel("notify", &event);
@@ -104,7 +105,8 @@ fn names() -> (String, String) {
 fn ipc_data_is_discovered_and_captured_without_capturing_notifier_endpoints() {
     let (data, event) = names();
     let mut plan = GraphPlan::default();
-    let mut registration = TaskRegistration::new("ipc", Source, CallbackSchedule::default());
+    let mut registration =
+        TaskRegistration::new("ipc", Source, CallbackSchedule::input_triggered());
     registration
         .output_channel("output", &data)
         .output_channel("notify", &event);

@@ -133,7 +133,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
                     ..task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(9))
                 }
             } else {
-                task_graph::CallbackSchedule::default().in_pool(1)
+                task_graph::CallbackSchedule::input_triggered().in_pool(1)
             }
             .with_execution_duration(std::time::Duration::from_nanos(1));
         });

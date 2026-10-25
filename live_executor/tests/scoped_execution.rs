@@ -58,9 +58,11 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
     let (done, completed) = channel::unbounded();
     let mut builder =
         GraphBuilder::with_channel_names([storage.0.name(), storage.1.name(), "fixture-only"]);
-    builder.add_scheduled_callback("increment", CallbackSchedule::default().in_pool(1), || {
-        Ok(Increment { done }.bind(declaration, &input, &output)?)
-    });
+    builder.add_scheduled_callback(
+        "increment",
+        CallbackSchedule::input_triggered().in_pool(1),
+        || Ok(Increment { done }.bind(declaration, &input, &output)?),
+    );
     let graph = builder.build().unwrap();
     assert!(
         graph
@@ -295,10 +297,11 @@ fn periodic_callbacks_run_until_controller_requests_stop() {
 fn custom_deadline_uses_injected_clock_and_can_disable_its_timer() {
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
-    let schedule = CallbackSchedule::default().with_next_execution_time_callback(move |now| {
-        assert_eq!(now, FrameworkTime::from_nanoseconds(1234));
-        (count.load(Ordering::Acquire) == 0).then_some(now)
-    });
+    let schedule =
+        CallbackSchedule::input_triggered().with_next_execution_time_callback(move |now| {
+            assert_eq!(now, FrameworkTime::from_nanoseconds(1234));
+            (count.load(Ordering::Acquire) == 0).then_some(now)
+        });
     let (done, completed) = channel::bounded(1);
     let count = calls.clone();
     let mut builder = GraphBuilder::new();

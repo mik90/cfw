@@ -4,5 +4,6 @@ exports_files([
     "endpoint.bzl",
     "live_executor.bzl",
     "pools.bzl",
+    "schedule.bzl",
     "task.bzl",
 ])

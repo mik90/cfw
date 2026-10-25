@@ -51,12 +51,13 @@ impl Sum {
     }
 }
 fn source(plan: &mut GraphPlan, name: &str, value: u64) {
-    let mut registration = TaskRegistration::new(name, Source(value), CallbackSchedule::default());
+    let mut registration =
+        TaskRegistration::new(name, Source(value), CallbackSchedule::input_triggered());
     registration.output_channel("output", "shared");
     registration.register(plan).unwrap()
 }
 fn sum(plan: &mut GraphPlan) {
-    let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
+    let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::input_triggered());
     registration
         .input_channel("first", "shared")
         .input_channel("second", "shared");
@@ -143,7 +144,7 @@ fn mismatched_layout_is_rejected_before_hydration_publishers_are_declared() {
     let mut plan = GraphPlan::default();
     source(&mut plan, "a", 10);
     source(&mut plan, "b", 20);
-    let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::default());
+    let mut registration = TaskRegistration::new("sum", Sum, CallbackSchedule::input_triggered());
     registration
         .input_channel("first", "shared")
         .input_channel("second", "wrong");
@@ -278,9 +279,13 @@ impl PairSink {
 }
 fn pair_tasks(plan: &mut GraphPlan, reverse: bool) {
     let mut tasks = vec![
-        TaskRegistration::new("producer", PairProducer, CallbackSchedule::default()),
-        TaskRegistration::new("forward", PairForward, CallbackSchedule::default()),
-        TaskRegistration::new("sink", PairSink, CallbackSchedule::default()),
+        TaskRegistration::new(
+            "producer",
+            PairProducer,
+            CallbackSchedule::input_triggered(),
+        ),
+        TaskRegistration::new("forward", PairForward, CallbackSchedule::input_triggered()),
+        TaskRegistration::new("sink", PairSink, CallbackSchedule::input_triggered()),
     ];
     if reverse {
         tasks.reverse();
@@ -430,14 +435,18 @@ impl ForwardSink {
     }
 }
 fn forwarding_tasks(plan: &mut GraphPlan, reverse: bool) {
-    let mut source =
-        TaskRegistration::new("source", ForwardSource(10), CallbackSchedule::default());
+    let mut source = TaskRegistration::new(
+        "source",
+        ForwardSource(10),
+        CallbackSchedule::input_triggered(),
+    );
     source.output_channel("output", "source-values");
-    let mut forward = TaskRegistration::new("forward", ForwardTask, CallbackSchedule::default());
+    let mut forward =
+        TaskRegistration::new("forward", ForwardTask, CallbackSchedule::input_triggered());
     forward
         .input_channel("input", "source-values")
         .output_channel("output", "forwarded");
-    let mut sink = TaskRegistration::new("sink", ForwardSink, CallbackSchedule::default());
+    let mut sink = TaskRegistration::new("sink", ForwardSink, CallbackSchedule::input_triggered());
     sink.input_channel("input", "forwarded")
         .output_channel("output", "result");
     let tasks = if reverse {
@@ -574,9 +583,13 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
     let bytes = Bytes::default();
     {
         let mut plan = GraphPlan::default();
-        TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
-            .register(&mut plan)
-            .unwrap();
+        TaskRegistration::new(
+            "source",
+            ContextualSource,
+            CallbackSchedule::input_triggered(),
+        )
+        .register(&mut plan)
+        .unwrap();
         assert!(plan.replayable_channels().next().is_none());
         let capture = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(1)).unwrap();
         let storage = plan.allocate().unwrap();
@@ -607,9 +620,13 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
     )
     .unwrap();
     let mut plan = GraphPlan::default();
-    TaskRegistration::new("source", ContextualSource, CallbackSchedule::default())
-        .register(&mut plan)
-        .unwrap();
+    TaskRegistration::new(
+        "source",
+        ContextualSource,
+        CallbackSchedule::input_triggered(),
+    )
+    .register(&mut plan)
+    .unwrap();
     let replay = ExactReplayPlan::declare(&mut plan, &log).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();

@@ -265,9 +265,13 @@ impl<'storage> LoggingScope<'storage> {
         if period.is_zero() {
             return Err("logging period must be nonzero".into());
         }
+        let mut schedule = CallbackSchedule::periodic(period);
+        // Loggers flush captured data, so wait one period instead of emitting an
+        // empty flush at startup.
+        schedule.run_on_start = false;
         self.attach(
             graph,
-            CallbackSchedule::periodic(period),
+            schedule,
             (0..self.shard_count()).map(|_| None).collect(),
         )
     }
@@ -285,7 +289,7 @@ impl<'storage> LoggingScope<'storage> {
         }
         self.attach(
             graph,
-            CallbackSchedule::default(),
+            CallbackSchedule::input_triggered(),
             triggers.into_iter().map(Some).collect(),
         )
     }

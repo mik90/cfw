@@ -1,6 +1,7 @@
 """Compose cfw tasks into a scheduling pool."""
 
 load("//bazel:rust.bzl", "rust_library", "rust_test")
+load("//bazel_task_graph:labels.bzl", "related_label")
 load("//bazel_task_graph:task.bzl", "CfwTaskInfo")
 
 CfwPoolInfo = provider(
@@ -89,6 +90,7 @@ def _pool_impl(name, visibility, tasks, threads, deps, **kwargs):
     if threads < 1:
         fail("pool '%s' must have at least one thread" % name)
     crate_name = name.replace("-", "_")
+    pool_deps = deps + [related_label(task, "_schedule_bridge") for task in tasks] + ["//task_graph:task_graph"]
     _pool_src(
         name = name + "_info",
         crate_name = crate_name,
@@ -99,14 +101,14 @@ def _pool_impl(name, visibility, tasks, threads, deps, **kwargs):
     rust_library(
         name = name,
         srcs = [":" + name + "_info"],
-        deps = deps + ["//task_graph:task_graph"],
+        deps = pool_deps,
         visibility = visibility,
         **kwargs
     )
     rust_test(
         name = name + "_test",
         srcs = [":" + name + "_info"],
-        deps = deps + ["//task_graph:task_graph"],
+        deps = pool_deps,
         visibility = visibility,
         **kwargs
     )

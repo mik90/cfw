@@ -77,7 +77,7 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     ]);
     graph.add_scheduled_callback(
         "observe",
-        CallbackSchedule::default().with_execution_duration(Duration::from_nanos(2)),
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(2)),
         || Ok(Observe.bind(declaration, &input, &input, &gate, &output, &events)?),
     );
     let recorder = ExecutionRecorder::new(2);

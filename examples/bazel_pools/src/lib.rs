@@ -1,19 +1,9 @@
-use std::time::Duration;
-
 use messages::{Iox2, Value};
 use task::Context;
-use task_graph::CallbackSchedule;
 
 #[derive(Default)]
 pub struct Counter {
     next: u64,
-}
-
-impl Counter {
-    pub fn schedule() -> CallbackSchedule {
-        CallbackSchedule::periodic(Duration::from_millis(100))
-            .with_execution_duration(Duration::from_millis(1))
-    }
 }
 
 impl counter_api::Run for Counter {

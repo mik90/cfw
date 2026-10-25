@@ -52,7 +52,7 @@ fn streaming_deadlines_prevent_skipping_inputs_and_eof_drains_downstream_work() 
     let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
-        CallbackSchedule::default().with_execution_duration(Duration::from_nanos(100)),
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(100)),
         || Ok(Double.bind(declaration, &input, &output)?),
     );
     let options = LogSimulationOptions {
@@ -253,13 +253,13 @@ fn eof_drain_finishes_inflight_work_and_bounds_feedback_cycles() {
     .unwrap();
     let completion = replay.run_until(20, || true).unwrap();
     assert_eq!(completion.reason, CompletionReason::TailDrained);
-    assert_eq!(completion.at, at(25));
+    assert_eq!(completion.at, at(20));
 
     let mut plan = task_graph::GraphPlan::default();
     let mut task = task_graph::TaskRegistration::new(
         "feedback",
         Double,
-        CallbackSchedule::default().with_execution_duration(Duration::from_nanos(1)),
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(1)),
     );
     task.input_channel("input", "loop")
         .output_channel("output", "loop");
@@ -311,7 +311,7 @@ fn with_graph<R>(
     let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
     graph.add_scheduled_callback(
         "double",
-        CallbackSchedule::default().with_execution_duration(Duration::from_nanos(3)),
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(3)),
         || Ok(Double.bind(declaration, &input, &output)?),
     );
     run(
@@ -548,7 +548,7 @@ mod ipc {
         // Current graph indices differ from the log: resolve by callback name.
         graph.add_scheduled_callback(
             "b",
-            CallbackSchedule::default().with_execution_duration(Duration::from_nanos(2)),
+            CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(2)),
             || {
                 Ok(Observe {
                     name: "b",
@@ -559,7 +559,7 @@ mod ipc {
         );
         graph.add_scheduled_callback(
             "a",
-            CallbackSchedule::default().with_execution_duration(Duration::from_nanos(2)),
+            CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(2)),
             || {
                 Ok(Observe {
                     name: "a",

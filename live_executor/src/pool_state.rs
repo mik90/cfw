@@ -343,7 +343,7 @@ mod tests {
     use super::*;
     #[test]
     fn readiness_changes_resume_only_an_outstanding_trigger() {
-        let scheduler = Scheduler::new(&[CallbackSchedule::default()], &[1]);
+        let scheduler = Scheduler::new(&[CallbackSchedule::input_triggered()], &[1]);
         let wake = scheduler.waker(0);
         wake.readiness_changed();
         assert!(scheduler.pools[0].work_rx.is_empty());
@@ -368,7 +368,7 @@ mod tests {
     }
     #[test]
     fn repeated_triggers_coalesce_without_hot_path_allocation() {
-        let scheduler = Scheduler::new(&[CallbackSchedule::default()], &[2]);
+        let scheduler = Scheduler::new(&[CallbackSchedule::input_triggered()], &[2]);
         let wake = scheduler.waker(0);
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..100 {

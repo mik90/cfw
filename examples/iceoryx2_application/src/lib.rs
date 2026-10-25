@@ -218,7 +218,7 @@ pub fn with_buzzer_graph<R>(
     app.add_task(
         "calculator",
         Calculator { last_value: 0 },
-        CallbackSchedule::default(),
+        CallbackSchedule::input_triggered(),
     )
     .input_channel("integer", channel)
     .input_channel("_event", channel)
@@ -228,14 +228,18 @@ pub fn with_buzzer_graph<R>(
         MetricsRecorder {
             metrics: Metrics::default(),
         },
-        CallbackSchedule::default(),
+        CallbackSchedule::input_triggered(),
     );
     app.add_task(
         "summary",
         MetricsSummary { count, complete },
-        CallbackSchedule::default(),
+        CallbackSchedule::input_triggered(),
     );
-    app.add_task("printer", Printer { printed }, CallbackSchedule::default());
+    app.add_task(
+        "printer",
+        Printer { printed },
+        CallbackSchedule::input_triggered(),
+    );
     let storage = app.allocate()?;
     Ok(run(storage.build()?))
 }

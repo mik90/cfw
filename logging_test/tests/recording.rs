@@ -77,10 +77,7 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
             .collect();
         assert_eq!(records.len(), 4);
         for (index, record) in records.iter().enumerate() {
-            assert_eq!(
-                record.execution_time.to_nanoseconds(),
-                10 + index as i64 * 12
-            );
+            assert_eq!(record.execution_time.to_nanoseconds(), index as i64 * 12);
             assert_eq!(record.outputs.len(), 1);
             assert_eq!(record.outcome, task::recording::Outcome::Committed);
             if capture_payload {

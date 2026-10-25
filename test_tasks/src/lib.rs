@@ -49,7 +49,7 @@ impl FizzBuzzCalculator {
     }
 
     pub fn schedule() -> CallbackSchedule {
-        CallbackSchedule::default().with_execution_duration(Duration::from_millis(5))
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::from_millis(5))
     }
 }
 
@@ -77,7 +77,7 @@ impl StringCollector {
     }
 
     pub fn schedule() -> CallbackSchedule {
-        CallbackSchedule::default().with_execution_duration(Duration::from_millis(2))
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::from_millis(2))
     }
 }
 

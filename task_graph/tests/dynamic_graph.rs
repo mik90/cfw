@@ -34,7 +34,7 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
         .append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
             callback: Box::new(infrastructure()),
-            schedule: task_graph::CallbackSchedule::default(),
+            schedule: task_graph::CallbackSchedule::input_triggered(),
         }])
         .unwrap();
     assert_eq!(
@@ -65,7 +65,7 @@ fn appending_callbacks_preserves_existing_ids_and_registers_infrastructure_names
         graph.append_callbacks([task_graph::ScheduledCallback {
             name: "logger".into(),
             callback: Box::new(infrastructure()),
-            schedule: task_graph::CallbackSchedule::default(),
+            schedule: task_graph::CallbackSchedule::input_triggered(),
         }]),
         Err(GraphBuildError::DuplicateCallback(_))
     ));
@@ -381,4 +381,16 @@ fn step_error_preserves_published_messages_and_skips_later_callbacks() {
     drop((graph, bindings));
     fixture.update();
     assert_eq!(fixture.input_forwardable().pop().unwrap().message, 7);
+}
+
+#[test]
+fn schedule_constructors_have_explicit_trigger_defaults() {
+    use std::time::Duration;
+    use task_graph::CallbackSchedule;
+
+    assert!(!CallbackSchedule::input_triggered().run_on_start);
+    assert!(CallbackSchedule::on_start().run_on_start);
+    let periodic = CallbackSchedule::periodic(Duration::from_nanos(5));
+    assert!(periodic.run_on_start);
+    assert_eq!(periodic.period, Some(Duration::from_nanos(5)));
 }

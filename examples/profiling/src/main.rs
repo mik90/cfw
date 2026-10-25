@@ -132,7 +132,7 @@ fn main() {
         app.add_task(
             format!("calculator_{set}"),
             FizzBuzzCalculator,
-            CallbackSchedule::default(),
+            CallbackSchedule::input_triggered(),
         )
         .input_channel("integer", integer_channel);
     }
@@ -141,7 +141,7 @@ fn main() {
         StringCollector {
             counter: counter.clone(),
         },
-        CallbackSchedule::default(),
+        CallbackSchedule::input_triggered(),
     );
     let storage = app.allocate().expect("allocate profiling graph");
     let graph = storage.build().expect("build profiling graph");

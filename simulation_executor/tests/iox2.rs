@@ -38,7 +38,8 @@ fn timestamped_data_and_counted_events_are_injected_without_duplicate_notificati
     let mut builder = GraphBuilder::with_channel_names([storage.name()]);
     builder.add_scheduled_callback(
         "observe",
-        task_graph::CallbackSchedule::default().with_execution_duration(std::time::Duration::ZERO),
+        task_graph::CallbackSchedule::input_triggered()
+            .with_execution_duration(std::time::Duration::ZERO),
         || {
             Ok(Observe {
                 samples: samples.clone(),

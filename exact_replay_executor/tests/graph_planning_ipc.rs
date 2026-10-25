@@ -42,14 +42,14 @@ impl Sink {
     }
 }
 fn source(plan: &mut GraphPlan, data: &str, event: &str) {
-    let mut task = TaskRegistration::new("source", Source, CallbackSchedule::default());
+    let mut task = TaskRegistration::new("source", Source, CallbackSchedule::input_triggered());
     task.output_channel("output", data);
     task.output_channel("first", event)
         .output_channel("second", event);
     task.register(plan).unwrap()
 }
 fn sink(plan: &mut GraphPlan, data: &str, output: &str, event: &str) {
-    let mut task = TaskRegistration::new("sink", Sink, CallbackSchedule::default());
+    let mut task = TaskRegistration::new("sink", Sink, CallbackSchedule::input_triggered());
     task.input_channel("event", event)
         .input_channel("input", data)
         .output_channel("output", output);
