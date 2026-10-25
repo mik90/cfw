@@ -7,13 +7,16 @@ on every task.
 
 load("//bazel:rust.bzl", "rust_library")
 
+_CHANNEL_KINDS = ["data", "iox2_event"]
+_TRANSPORT_KINDS = ["native", "iceoryx2"]
+
 CfwChannelInfo = provider(
     doc = "A cfw channel payload type.",
     fields = {
         "channel_name": "Framework channel name.",
-        "is_iox2_event": "Whether this is an iox2 event channel.",
+        "kind": "Type of this channel. Must be one of: %s" % _CHANNEL_KINDS,
         "payload_type": "Rust payload type path. Empty for iox2 event channels.",
-        "transport": "Transport name: native or iceoryx2.",
+        "transport": "Transport name. Must be one of: %s" % _TRANSPORT_KINDS,
     },
 )
 
@@ -77,7 +80,7 @@ def _channel_info_impl(ctx):
     return [
         CfwChannelInfo(
             channel_name = ctx.attr.channel_name,
-            is_iox2_event = ctx.attr.is_iox2_event,
+            kind = ctx.attr.kind,
             payload_type = ctx.attr.payload_type,
             transport = ctx.attr.transport,
         ),
@@ -87,7 +90,7 @@ _channel_info = rule(
     implementation = _channel_info_impl,
     attrs = {
         "channel_name": attr.string(mandatory = True),
-        "is_iox2_event": attr.bool(mandatory = True),
+        "kind": attr.string(mandatory = True, values = _CHANNEL_KINDS),
         "payload_type": attr.string(),
         "transport": attr.string(mandatory = True),
     },
@@ -105,7 +108,7 @@ def _validate_transport(label, kind, channel):
                     channel.transport,
                 ),
             )
-        if channel.is_iox2_event:
+        if channel.kind == "iox2_event":
             fail("%s kind '%s' cannot use an event channel" % (label, kind))
         if not channel.payload_type:
             fail("%s kind '%s' requires a data channel with a payload" % (label, kind))
@@ -120,7 +123,7 @@ def _validate_transport(label, kind, channel):
             ),
         )
     if not event_endpoint:
-        if channel.is_iox2_event:
+        if channel.kind != "data":
             fail("%s kind '%s' requires a data channel" % (label, kind))
         if not channel.payload_type:
             fail("%s kind '%s' requires a data channel with a payload" % (label, kind))
@@ -200,12 +203,10 @@ def _channel_impl(
         if payload:
             fail("channel '%s': event channels do not take a payload" % name)
         content = ""
-        is_iox2_event = True
     elif kind == "data":
         if not payload:
             fail("channel '%s': data channels require a payload" % name)
         content = "pub type Payload = %s;" % payload
-        is_iox2_event = False
     else:
         fail("channel '%s': kind must be data or event" % name)
 
@@ -226,7 +227,7 @@ def _channel_impl(
     _channel_info(
         name = name + "_info",
         channel_name = channel_name or name,
-        is_iox2_event = is_iox2_event,
+        kind = kind,
         payload_type = payload,
         transport = transport,
         visibility = visibility,
@@ -251,13 +252,13 @@ channel = macro(
         ),
         "kind": attr.string(
             default = "data",
-            values = ["data", "iox2_event"],
+            values = _CHANNEL_KINDS,
             configurable = False,
             doc = "Data channel or iox2 event channel.",
         ),
         "transport": attr.string(
             default = "native",
-            values = ["native", "iceoryx2"],
+            values = _TRANSPORT_KINDS,
             configurable = False,
             doc = "Channel transport.",
         ),
