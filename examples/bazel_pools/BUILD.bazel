@@ -41,7 +41,7 @@ channel(
 channel(
     name = "counter_event",
     channel_name = "counter_event",
-    kind = "event",
+    kind = "iox2_event",
     transport = "iceoryx2",
 )
 
