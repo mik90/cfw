@@ -26,7 +26,12 @@ struct Increment {
 }
 #[task_callback]
 impl Increment {
-    fn run(&mut self, mut input: RequiredInput<u64>, mut output: Output<u64>, ctx: &Context) {
+    fn run(
+        &mut self,
+        #[trigger(true)] mut input: RequiredInput<u64>,
+        mut output: Output<u64>,
+        ctx: &Context,
+    ) {
         let channels = ctx.channel_names();
         for name in ["input", "output", "fixture-only"] {
             let id = channels.lookup_by_value(name).unwrap();
@@ -113,7 +118,7 @@ struct Blocking {
 }
 #[task_callback]
 impl Blocking {
-    fn run(&mut self, mut input: RequiredInput<u64>) {
+    fn run(&mut self, #[trigger(true)] mut input: RequiredInput<u64>) {
         assert_eq!(self.active.fetch_add(1, Ordering::SeqCst), 0);
         let value = *input;
         input.clear();
@@ -191,7 +196,7 @@ struct Failing {
 impl Failing {
     fn run(
         &mut self,
-        _input: RequiredInput<Counted>,
+        #[trigger(true)] _input: RequiredInput<Counted>,
         output: &mut Publisher<Counted>,
     ) -> Result<(), LoanError> {
         output.publish(Counted(self.drops.clone()))?;

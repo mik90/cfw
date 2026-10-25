@@ -20,7 +20,11 @@ fn at(n: i64) -> FrameworkTime {
 struct Double;
 #[task_callback]
 impl Double {
-    fn run(&self, input: RequiredInput<u64>, output: &mut Publisher<u64>) -> Result<(), LoanError> {
+    fn run(
+        &self,
+        #[trigger(true)] input: RequiredInput<u64>,
+        output: &mut Publisher<u64>,
+    ) -> Result<(), LoanError> {
         output.publish(*input * 2)
     }
 }
@@ -66,7 +70,9 @@ struct ScheduledBatch;
 impl ScheduledBatch {
     fn run(
         &self,
-        #[capacity(4)] mut input: InputSpan<u64>,
+        #[trigger(true)]
+        #[capacity(4)]
+        mut input: InputSpan<u64>,
         output: &mut Publisher<Vec<u64>>,
     ) -> Result<(), LoanError> {
         output.publish(input.drain().map(|message| message.message).collect())
@@ -139,7 +145,7 @@ fn scheduled_inputs_wait_for_their_deadline_and_respect_virtual_pool_capacity() 
 
 #[task_callback]
 impl Narrow {
-    fn run(&self, input: RequiredInput<u32>) {
+    fn run(&self, #[trigger(true)] input: RequiredInput<u32>) {
         let _ = input;
     }
 }
@@ -248,7 +254,7 @@ type BorrowedSourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Bor
 impl BorrowingForward {
     fn run<'storage>(
         &self,
-        mut input: task::Input<'_, 'storage, BorrowedSource, task::Forwardable>,
+        #[trigger(true)] mut input: task::Input<'_, 'storage, BorrowedSource, task::Forwardable>,
         #[forwards(source = input)] output: &mut Publisher<
             'storage,
             task::Forwarded<bool, BorrowedSourcePtr<'storage>>,
@@ -267,6 +273,7 @@ impl RetainForwarded {
         &self,
         #[capacity(32)]
         #[keep_across_runs(true)]
+        #[trigger(true)]
         input: InputSpan<'_, 'storage, task::Forwarded<bool, BorrowedSourcePtr<'storage>>>,
     ) {
         let sum = input
@@ -308,7 +315,9 @@ fn borrowed_tasks_budget_nonclone_sources_and_destroy_retained_values() {
 impl Batch {
     fn run(
         &self,
-        #[capacity(32)] mut input: InputSpan<u64>,
+        #[trigger(true)]
+        #[capacity(32)]
+        mut input: InputSpan<u64>,
         #[capacity(32)] output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         for m in input.drain() {
@@ -350,7 +359,9 @@ struct Bridge;
 impl Bridge {
     fn run(
         &self,
-        #[channel("output")] input: RequiredInput<u64>,
+        #[trigger(true)]
+        #[channel("output")]
+        input: RequiredInput<u64>,
         result: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         result.publish(*input + 1)
@@ -394,7 +405,9 @@ struct NonClone;
 impl NonClone {
     fn run(
         &self,
-        #[keep_across_runs(false)] input: RequiredInput<Counted>,
+        #[trigger(true)]
+        #[keep_across_runs(false)]
+        input: RequiredInput<Counted>,
         output: &mut Publisher<Counted>,
     ) -> Result<(), LoanError> {
         output.publish(Counted {
@@ -632,7 +645,11 @@ fn explicit_fixed_dynamic_durations_pools_and_completion_deadlines() {
 struct Fails;
 #[task_callback]
 impl Fails {
-    fn run(&self, input: RequiredInput<u64>, output: &mut Publisher<u64>) -> Result<(), LoanError> {
+    fn run(
+        &self,
+        #[trigger(true)] input: RequiredInput<u64>,
+        output: &mut Publisher<u64>,
+    ) -> Result<(), LoanError> {
         output.publish(*input)?;
         Err(LoanError::LoanCapacityReached)
     }

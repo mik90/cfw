@@ -284,6 +284,9 @@ impl Callback for Recorded<'_> {
     fn has_ipc_endpoints(&self) -> bool {
         self.callback.has_ipc_endpoints()
     }
+    fn has_triggering_inputs(&self) -> bool {
+        self.callback.has_triggering_inputs()
+    }
     fn visit_prepared_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
         self.callback.visit_prepared_messages(visit);
     }

@@ -600,6 +600,9 @@ impl Callback for Checked<'_> {
     fn outputs_are_local(&self) -> bool {
         self.callback.outputs_are_local()
     }
+    fn has_triggering_inputs(&self) -> bool {
+        self.callback.has_triggering_inputs()
+    }
     fn update_inputs(&mut self) {
         self.callback.update_inputs();
     }

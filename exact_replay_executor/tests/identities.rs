@@ -45,7 +45,9 @@ struct Forward;
 impl Forward {
     fn run<'storage>(
         &self,
-        #[capacity(8)] mut input: Input<'_, 'storage, Value, task::Forwardable>,
+        #[trigger(true)]
+        #[capacity(8)]
+        mut input: Input<'_, 'storage, Value, task::Forwardable>,
         #[forwards(source = input)]
         #[capacity(4)]
         output: &mut Publisher<'storage, Forwarded<bool, SourcePtr<'storage>>>,
@@ -61,7 +63,9 @@ struct Observe;
 impl Observe {
     fn run(
         &self,
-        #[capacity(8)] input: InputSpan<Value>,
+        #[trigger(true)]
+        #[capacity(8)]
+        input: InputSpan<Value>,
         output: &mut Publisher<Vec<u64>>,
     ) -> Result<(), LoanError> {
         output.publish(input.inputs().map(|m| m.message.0).collect())
@@ -72,7 +76,9 @@ struct Consume;
 impl Consume {
     fn run(
         &self,
-        #[capacity(8)] input: InputSpan<Forwarded<bool, SourcePtr<'_>>>,
+        #[trigger(true)]
+        #[capacity(8)]
+        input: InputSpan<Forwarded<bool, SourcePtr<'_>>>,
         output: &mut Publisher<Vec<u64>>,
     ) -> Result<(), LoanError> {
         output.publish(

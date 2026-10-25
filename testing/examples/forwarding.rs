@@ -34,8 +34,8 @@ struct Detect;
 impl Detect {
     fn run<'storage>(
         &self,
-        mut images: RequiredInput<'_, 'storage, Image, Forwardable>,
-        mut calibration: RequiredInput<'_, 'storage, Calibration, Forwardable>,
+        #[trigger(true)] mut images: RequiredInput<'_, 'storage, Image, Forwardable>,
+        #[trigger(true)] mut calibration: RequiredInput<'_, 'storage, Calibration, Forwardable>,
         #[forwards(image = images, calibration = calibration)] detections: OutputUninit<
             '_,
             'storage,
@@ -62,6 +62,7 @@ impl Retain {
         &self,
         #[capacity(32)]
         #[keep_across_runs(true)]
+        #[trigger(true)]
         detections: InputSpan<
             '_,
             'storage,

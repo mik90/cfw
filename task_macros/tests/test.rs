@@ -14,7 +14,9 @@ struct Increment;
 impl Increment {
     fn run(
         &self,
-        #[channel("in")] mut input: RequiredInput<i32>,
+        #[channel("in")]
+        #[trigger(true)]
+        mut input: RequiredInput<i32>,
         #[channel("out")] mut output: Output<i32>,
         ctx: &Context,
     ) {
@@ -100,6 +102,9 @@ fn arrival_after_input_snapshot_does_not_make_an_empty_required_view_ready() {
     impl<C: task::Callback, F: FnMut() + Send> task::Callback for LateArrival<C, F> {
         fn outputs_are_local(&self) -> bool {
             self.inner.outputs_are_local()
+        }
+        fn has_triggering_inputs(&self) -> bool {
+            self.inner.has_triggering_inputs()
         }
         fn update_inputs(&mut self) {
             self.inner.update_inputs();
@@ -238,6 +243,7 @@ impl SpanTransform {
         &mut self,
         #[channel("span_in")]
         #[capacity(3)]
+        #[trigger(true)]
         mut input: InputSpan<SpanValue>,
         #[channel("span_out")]
         #[capacity(3)]
@@ -420,7 +426,9 @@ type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<u64>>;
 impl Forward {
     fn run<'storage>(
         &mut self,
-        #[capacity(2)] mut input: Input<'_, 'storage, u64, task::Forwardable>,
+        #[capacity(2)]
+        #[trigger(true)]
+        mut input: Input<'_, 'storage, u64, task::Forwardable>,
         #[forwards(source = input)]
         #[capacity(2)]
         output: &mut Publisher<'storage, task::Forwarded<bool, SourcePtr<'storage>>>,
@@ -553,7 +561,11 @@ fn forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
 struct Feedback;
 #[task_callback]
 impl Feedback {
-    fn run(&self, mut input: Input<u64>, output: &mut Publisher<u64>) -> Result<(), LoanError> {
+    fn run(
+        &self,
+        #[trigger(true)] mut input: Input<u64>,
+        output: &mut Publisher<u64>,
+    ) -> Result<(), LoanError> {
         if let Some(message) = input.pop() {
             output.publish(message.message + 1)?;
         }

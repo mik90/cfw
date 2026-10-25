@@ -98,7 +98,7 @@ struct Transform {
 impl Transform {
     fn run(
         &self,
-        input: RequiredInput<Value>,
+        #[trigger(true)] input: RequiredInput<Value>,
         output: &mut Publisher<Value>,
     ) -> Result<(), LoanError> {
         output.publish(Value(input.0 * self.factor))
@@ -604,8 +604,8 @@ struct TwoInputs;
 impl TwoInputs {
     fn run(
         &self,
-        first: RequiredInput<u64>,
-        second: RequiredInput<u64>,
+        #[trigger(true)] first: RequiredInput<u64>,
+        #[trigger(true)] second: RequiredInput<u64>,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         output.publish(*first * 10 + *second)
@@ -817,7 +817,7 @@ type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Value>>;
 impl Forward {
     fn run<'storage>(
         &self,
-        mut input: task::Input<'_, 'storage, Value, task::Forwardable>,
+        #[trigger(true)] mut input: task::Input<'_, 'storage, Value, task::Forwardable>,
         #[forwards(source = input)] output: &mut Publisher<
             'storage,
             task::Forwarded<bool, SourcePtr<'storage>>,
@@ -834,7 +834,7 @@ struct Consume;
 impl Consume {
     fn run(
         &self,
-        input: RequiredInput<task::Forwarded<bool, SourcePtr<'_>>>,
+        #[trigger(true)] input: RequiredInput<task::Forwarded<bool, SourcePtr<'_>>>,
         output: &mut Publisher<Value>,
     ) -> Result<(), LoanError> {
         output.publish(Value(

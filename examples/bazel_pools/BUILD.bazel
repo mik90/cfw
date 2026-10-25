@@ -77,6 +77,7 @@ subscriber(
     name = "doubler_input",
     channel = ":counter_channel",
     field = "input",
+    keep_across_runs = False,
     kind = "iox2_input",
     queue_capacity = 8,
 )

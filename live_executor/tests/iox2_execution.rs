@@ -165,7 +165,7 @@ struct Gated {
 }
 #[task_callback]
 impl Gated {
-    fn run(&self, mut required: task::RequiredInput<u64>, event: Iox2Event) {
+    fn run(&self, #[trigger(true)] mut required: task::RequiredInput<u64>, event: Iox2Event) {
         required.clear();
         self.sent.send(event.count()).unwrap();
     }

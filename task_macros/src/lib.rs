@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::visit_mut::VisitMut;
 use syn::{
@@ -363,6 +363,35 @@ fn span_endpoint(segment: &syn::PathSegment) -> bool {
     )
 }
 
+fn validate_endpoint_policies(
+    kind: EndpointKind,
+    has_trigger: bool,
+    has_keep: bool,
+    tokens: impl ToTokens,
+) -> syn::Result<()> {
+    if has_trigger && !matches!(kind, EndpointKind::Input | EndpointKind::Required) {
+        return Err(syn::Error::new_spanned(
+            tokens,
+            "trigger applies to native inputs only",
+        ));
+    }
+    if has_keep
+        && !matches!(
+            kind,
+            EndpointKind::Input
+                | EndpointKind::Required
+                | EndpointKind::IoxInput
+                | EndpointKind::IoxSpan
+        )
+    {
+        return Err(syn::Error::new_spanned(
+            tokens,
+            "keep_across_runs applies to native or iox2 data inputs only",
+        ));
+    }
+    Ok(())
+}
+
 fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
     let EndpointSpec {
         name,
@@ -401,15 +430,7 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
             "trigger and keep_across_runs apply to subscribers only",
         ));
     }
-    if input
-        && (trigger.is_some() || keep_across_runs.is_some())
-        && !matches!(kind, EndpointKind::Input | EndpointKind::Required)
-    {
-        return Err(syn::Error::new_spanned(
-            &ty,
-            "trigger and keep_across_runs apply to native inputs only",
-        ));
-    }
+    validate_endpoint_policies(kind, trigger.is_some(), keep_across_runs.is_some(), &ty)?;
     let payload = if matches!(kind, EndpointKind::IoxEvent | EndpointKind::IoxNotifier) {
         if let PathArguments::AngleBracketed(generics) = &segment.arguments
             && generics
@@ -459,7 +480,7 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
     };
     let trigger = trigger
         .map(|literal| parse_quote!(#literal))
-        .unwrap_or_else(|| parse_quote!(true));
+        .unwrap_or_else(|| parse_quote!(false));
     let keep = keep_across_runs
         .map(|literal| parse_quote!(#literal))
         .unwrap_or_else(|| parse_quote!(true));
@@ -734,14 +755,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             }
             *destination = Some(attr.parse_args::<syn::Expr>()?);
         }
-        if (trigger.is_some() || keep.is_some())
-            && !matches!(kind, EndpointKind::Input | EndpointKind::Required)
-        {
-            return Err(syn::Error::new_spanned(
-                &arg.ty,
-                "input policies apply to native inputs only",
-            ));
-        }
+        validate_endpoint_policies(kind, trigger.is_some(), keep.is_some(), &arg.ty)?;
         arg.attrs.retain(|a| {
             ![
                 "channel",
@@ -773,7 +787,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             kind,
             channel,
             capacity,
-            trigger: trigger.unwrap_or_else(|| parse_quote!(true)),
+            trigger: trigger.unwrap_or_else(|| parse_quote!(false)),
             keep: keep.unwrap_or_else(|| parse_quote!(true)),
         });
     }
@@ -956,7 +970,7 @@ fn generate_registration(
         } else {
             match endpoint.kind {
                 EndpointKind::IoxInput | EndpointKind::IoxSpan => (
-                    quote!(__cfw_plan.ipc_subscriber::<#payload>(&__cfw_names[#index], #capacity)),
+                    quote!(__cfw_plan.ipc_subscriber_with_keep::<#payload>(&__cfw_names[#index], #capacity, #keep)),
                     quote!(__cfw_bindings.ipc::<#payload>(&__cfw_names[#index])?),
                 ),
                 EndpointKind::IoxOutput => (

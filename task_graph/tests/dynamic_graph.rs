@@ -384,6 +384,34 @@ fn step_error_preserves_published_messages_and_skips_later_callbacks() {
 }
 
 #[test]
+fn callbacks_without_triggers_or_timers_are_not_runnable() {
+    use std::time::Duration;
+    use task_graph::CallbackSchedule;
+
+    let mut builder = GraphBuilder::new();
+    builder.add_callback("dead", || Ok(|_: FrameworkTime| Ok(())));
+    let dead = builder.build().unwrap();
+    assert!(matches!(
+        dead.validate_runnable(),
+        Err(GraphBuildError::NeverRuns(name)) if name == "dead"
+    ));
+
+    let mut builder = GraphBuilder::new();
+    builder.add_scheduled_callback("start", CallbackSchedule::on_start(), || {
+        Ok(|_: FrameworkTime| Ok(()))
+    });
+    assert!(builder.build().unwrap().validate_runnable().is_ok());
+
+    let mut builder = GraphBuilder::new();
+    builder.add_scheduled_callback(
+        "periodic",
+        CallbackSchedule::periodic(Duration::from_nanos(1)),
+        || Ok(|_: FrameworkTime| Ok(())),
+    );
+    assert!(builder.build().unwrap().validate_runnable().is_ok());
+}
+
+#[test]
 fn schedule_constructors_have_explicit_trigger_defaults() {
     use std::time::Duration;
     use task_graph::CallbackSchedule;

@@ -40,8 +40,12 @@ struct Sum;
 impl Sum {
     fn run(
         &self,
-        #[capacity(4)] first: InputSpan<Value>,
-        #[capacity(2)] second: InputSpan<Value>,
+        #[trigger(true)]
+        #[capacity(4)]
+        first: InputSpan<Value>,
+        #[trigger(true)]
+        #[capacity(2)]
+        second: InputSpan<Value>,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         output.publish(
@@ -246,8 +250,8 @@ struct PairForward;
 impl PairForward {
     fn run<'s>(
         &self,
-        mut left: task::RequiredInput<'_, 's, u64, task::Forwardable>,
-        mut right: task::RequiredInput<'_, 's, u32, task::Forwardable>,
+        #[trigger(true)] mut left: task::RequiredInput<'_, 's, u64, task::Forwardable>,
+        #[trigger(true)] mut right: task::RequiredInput<'_, 's, u32, task::Forwardable>,
         #[forwards(left = left, right = right)] pair: task::OutputUninit<
             '_,
             's,
@@ -269,7 +273,7 @@ struct PairSink;
 impl PairSink {
     fn run<'s>(
         &self,
-        pair: task::RequiredInput<'_, 's, task::Forwarded<bool, PairSources<'s>>>,
+        #[trigger(true)] pair: task::RequiredInput<'_, 's, task::Forwarded<bool, PairSources<'s>>>,
         result: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         result.publish(
@@ -408,7 +412,7 @@ struct ForwardTask;
 impl ForwardTask {
     fn run<'storage>(
         &self,
-        mut input: task::Input<'_, 'storage, u64, task::Forwardable>,
+        #[trigger(true)] mut input: task::Input<'_, 'storage, u64, task::Forwardable>,
         #[forwards(source = input)] output: &mut Publisher<
             'storage,
             task::Forwarded<bool, SourcePtr<'storage, u64>>,
@@ -425,7 +429,11 @@ struct ForwardSink;
 impl ForwardSink {
     fn run<'storage>(
         &self,
-        mut input: task::Input<'_, 'storage, task::Forwarded<bool, SourcePtr<'storage, u64>>>,
+        #[trigger(true)] mut input: task::Input<
+            '_,
+            'storage,
+            task::Forwarded<bool, SourcePtr<'storage, u64>>,
+        >,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         for forwarded in input.drain() {

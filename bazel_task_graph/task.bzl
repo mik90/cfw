@@ -94,6 +94,10 @@ def _task_api_src_impl(ctx):
                 "            trigger: %s," % _bool_literal(endpoint.trigger),
                 "            keep_across_runs: %s," % _bool_literal(endpoint.keep_across_runs),
             ])
+        elif endpoint.kind in ["iox2_input", "iox2_span"]:
+            lines.append(
+                "            keep_across_runs: %s," % _bool_literal(endpoint.keep_across_runs),
+            )
         lines.append("        },")
         subscriber_lines.extend(lines)
 

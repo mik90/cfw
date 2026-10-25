@@ -15,11 +15,32 @@ type Factory<'build, 'storage> =
 pub enum GraphBuildError {
     DuplicateCallback(String),
     ZeroPeriod(String),
+    NeverRuns(String),
     Factory {
         callback: String,
         source: FactoryError,
     },
 }
+
+impl std::fmt::Display for GraphBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateCallback(name) => {
+                write!(f, "callback '{name}' is declared more than once")
+            }
+            Self::ZeroPeriod(name) => write!(f, "callback '{name}' has a zero period"),
+            Self::NeverRuns(name) => write!(
+                f,
+                "callback '{name}' has no triggering inputs and no time-based execution"
+            ),
+            Self::Factory { callback, source } => {
+                write!(f, "callback '{callback}' failed to construct: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GraphBuildError {}
 
 /// Deferred callback construction after storage and typed bindings exist.
 /// Factories can borrow temporary bindings for `'build`; returned callbacks only
@@ -169,6 +190,18 @@ impl<'storage> BuiltGraph<'storage> {
             });
         }
         self.callbacks.extend(callbacks);
+    }
+    /// Reject callbacks with no triggering input, timer, or startup invocation.
+    pub fn validate_runnable(&self) -> Result<(), GraphBuildError> {
+        for node in &self.callbacks {
+            if !node
+                .schedule
+                .is_ever_runnable(node.callback.has_triggering_inputs())
+            {
+                return Err(GraphBuildError::NeverRuns(node.name.clone()));
+            }
+        }
+        Ok(())
     }
     /// Attach full execution recording to this graph.
     pub fn with_recording(
@@ -345,6 +378,12 @@ impl CallbackSchedule {
     }
     pub fn is_timed(&self) -> bool {
         self.period.is_some() || self.next_execution_time_callback.is_some()
+    }
+    /// Whether this schedule can ever invoke a callback, given whether any input
+    /// can trigger it. A startup-only schedule is ever-runnable even though it
+    /// executes only once.
+    pub fn is_ever_runnable(&self, has_triggering_inputs: bool) -> bool {
+        has_triggering_inputs || self.run_on_start || self.is_timed()
     }
     /// Compute a deadline from completion time, or from start time for the first
     /// invocation. A custom callback returning None disables its timer until an

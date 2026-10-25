@@ -359,6 +359,9 @@ impl Callback for LogTask<'_, '_> {
     fn outputs_are_local(&self) -> bool {
         true
     }
+    fn has_triggering_inputs(&self) -> bool {
+        self.trigger.is_some()
+    }
     fn set_waker(&mut self, wake: task::wake::WakeHandle) {
         if let Some(trigger) = &mut self.trigger {
             trigger.set_waker(wake);

@@ -8,7 +8,9 @@ struct Sum;
 impl Sum {
     fn run(
         &self,
-        #[capacity(4)] input: InputSpan<u64>,
+        #[trigger(true)]
+        #[capacity(4)]
+        input: InputSpan<u64>,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         output.publish(input.inputs().map(|message| message.message).sum())

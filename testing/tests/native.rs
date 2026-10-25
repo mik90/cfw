@@ -16,7 +16,11 @@ fn at(n: i64) -> FrameworkTime {
 struct Double;
 #[task_callback]
 impl Double {
-    fn run(&self, input: RequiredInput<u64>, output: &mut Publisher<u64>) -> Result<(), LoanError> {
+    fn run(
+        &self,
+        #[trigger(true)] input: RequiredInput<u64>,
+        output: &mut Publisher<u64>,
+    ) -> Result<(), LoanError> {
         output.publish(*input * 2)
     }
 }

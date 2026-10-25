@@ -438,7 +438,9 @@ impl Endpoint {
         let expression = match self.kind {
             EndpointKind::IoxEvent => quote!(#name.events(#capacity)),
             EndpointKind::IoxNotifier => quote!(#name.notifier()),
-            EndpointKind::IoxInput | EndpointKind::IoxSpan => quote!(#name.subscriber(#capacity)),
+            EndpointKind::IoxInput | EndpointKind::IoxSpan => {
+                quote!(#name.subscriber_with_keep(#capacity, #keep))
+            }
             EndpointKind::Input | EndpointKind::Required => {
                 quote!(#name.subscriber_with_policy(#capacity, ::task::SubscriberPolicy { trigger: #trigger, keep_across_runs: #keep }))
             }

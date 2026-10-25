@@ -24,7 +24,7 @@ CfwSubscriberInfo = provider(
         "has_payload": "Whether the endpoint carries a payload type.",
         "keep_across_runs": "Whether the input is retained across runs.",
         "kind": "Endpoint kind.",
-        "trigger": "Whether the input triggers execution.",
+        "trigger": "Whether the input triggers execution. Native only.",
     },
 )
 
@@ -81,10 +81,6 @@ def _subscriber_impl(
         fail(
             "subscriber '%s': kind must be required, optional, span, iox2_input, iox2_span, or iox2_event" % name,
         )
-    if kind.startswith("iox2_") and (not trigger or not keep_across_runs):
-        fail(
-            "subscriber '%s': trigger and keep_across_runs apply to native subscribers only" % name,
-        )
     event = kind == "iox2_event"
     endpoint_reexport_src(
         name = name + "_src",
@@ -140,14 +136,14 @@ subscriber = macro(
             doc = "Queue capacity. Required for span kinds; zero uses the default for other kinds.",
         ),
         "trigger": attr.bool(
-            default = True,
+            default = False,
             configurable = False,
             doc = "Whether input arrival triggers execution. Native only.",
         ),
         "keep_across_runs": attr.bool(
             default = True,
             configurable = False,
-            doc = "Whether the input is retained across runs. Native only.",
+            doc = "Whether the input is retained across runs. Native and Iox2 data only.",
         ),
     },
     implementation = _subscriber_impl,

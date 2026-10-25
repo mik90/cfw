@@ -59,6 +59,11 @@ where
         self.outputs.visit(&mut visitor);
         visitor.0
     }
+    fn has_triggering_inputs(&self) -> bool {
+        let mut visitor = Triggers(false);
+        self.inputs.visit(&mut visitor);
+        visitor.0
+    }
     fn required_inputs_ready(&self) -> bool {
         let mut readiness = Readiness {
             available: false,
@@ -203,6 +208,12 @@ struct HasIpc(bool);
 impl InputVisitor for HasIpc {
     fn visit(&mut self, endpoint: &impl InputEndpoint) {
         self.0 |= !matches!(endpoint.transport(), Transport::Native);
+    }
+}
+struct Triggers(bool);
+impl InputVisitor for Triggers {
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
+        self.0 |= endpoint.triggers_execution();
     }
 }
 impl OutputVisitor for HasIpc {

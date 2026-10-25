@@ -17,7 +17,7 @@ use task_macros::task_callback;
 struct Producer;
 #[task_callback]
 impl Producer {
-    fn run(&self, input: RequiredInput<u64>, mut output: Iox2Output<u64>) {
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, mut output: Iox2Output<u64>) {
         std::thread::sleep(Duration::from_millis(5));
         *output = *input * 2;
         output.send();

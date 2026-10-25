@@ -19,6 +19,28 @@ fn ns(n: u64) -> Duration {
 }
 
 #[test]
+fn simulation_rejects_callbacks_that_cannot_run() {
+    let mut graph = GraphBuilder::new();
+    graph.add_scheduled_callback(
+        "dead",
+        CallbackSchedule::input_triggered().with_execution_duration(Duration::ZERO),
+        || Ok(|_| Ok(())),
+    );
+    assert!(matches!(
+        SimulationState::new(graph.build().unwrap()),
+        Err(StepError::InvalidConfig(message)) if message.contains("no triggering inputs")
+    ));
+
+    let mut graph = GraphBuilder::new();
+    graph.add_scheduled_callback(
+        "start",
+        CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
+        || Ok(|_| Ok(())),
+    );
+    assert!(SimulationState::new(graph.build().unwrap()).is_ok());
+}
+
+#[test]
 fn simulation_requires_an_explicit_execution_duration() {
     let mut graph = GraphBuilder::new();
     graph.add_callback("unspecified", || Ok(|_| Ok(())));
@@ -132,7 +154,7 @@ struct Observe {
 }
 #[task_callback]
 impl Observe {
-    fn run(&self, mut input: Input<u64>, context: &Context) {
+    fn run(&self, #[trigger(true)] mut input: Input<u64>, context: &Context) {
         self.observations
             .lock()
             .unwrap()
@@ -306,7 +328,9 @@ struct Gated {
 impl Gated {
     fn run(
         &self,
-        #[keep_across_runs(false)] trigger: RequiredInput<u64>,
+        #[trigger(true)]
+        #[keep_across_runs(false)]
+        trigger: RequiredInput<u64>,
         #[trigger(false)] cached: RequiredInput<u64>,
         context: &Context,
     ) {

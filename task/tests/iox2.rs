@@ -1,8 +1,9 @@
 #![cfg(feature = "iceoryx2")]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use task::callback::InputEndpoint;
 use task::iox2::{
     Iox2ChannelConfig, Iox2ChannelPlan, Iox2EventBindings, Iox2Notification, Iox2NotifyOutput,
-    Iox2OptionalInput, Iox2Runtime,
+    Iox2OptionalInput, Iox2Runtime, Iox2SpanInput,
 };
 use task::time::FrameworkTime;
 use task::{LoanError, StorageError};
@@ -14,6 +15,33 @@ fn name() -> String {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
+fn keep_across_runs_controls_the_iox2_read_buffer() {
+    let runtime = Iox2Runtime::new().unwrap();
+    for keep in [true, false] {
+        let mut plan = Iox2ChannelPlan::<u64>::new(name(), &runtime);
+        let publisher_key = plan.publisher(2);
+        let subscriber_key = plan.subscriber_with_keep(2, keep);
+        let storage = plan.allocate().unwrap();
+        let bindings = storage.bind().unwrap();
+        let mut publisher = bindings.take_publisher(&publisher_key).unwrap();
+        let mut subscriber = bindings.take_subscriber(&subscriber_key).unwrap();
+
+        publisher.loan(1).unwrap().send();
+        publisher.loan(2).unwrap().send();
+        publisher.flush(FrameworkTime::from_nanoseconds(1));
+        subscriber.update();
+        assert_eq!(Iox2SpanInput::new(&subscriber).len(), 2);
+
+        InputEndpoint::finish(&mut subscriber);
+        assert_eq!(
+            Iox2SpanInput::new(&subscriber).len(),
+            if keep { 2 } else { 0 }
+        );
+    }
 }
 
 #[test]

@@ -134,14 +134,19 @@ struct PublisherSpec {
     notification: Iox2Notification,
 }
 
+struct SubscriberSpec {
+    capacity: usize,
+    keep_across_runs: bool,
+    sources: Option<Vec<u32>>,
+}
+
 /// One IPC channel, with data and optional event-trigger endpoints.
 pub struct Iox2ChannelPlan<T> {
     name: Arc<str>,
     runtime: Arc<Iox2Runtime>,
     config: Iox2ChannelConfig,
     publishers: Vec<PublisherSpec>,
-    subscribers: Vec<usize>,
-    subscriber_sources: Vec<Option<Vec<u32>>>,
+    subscribers: Vec<SubscriberSpec>,
     events: Vec<usize>,
     notifiers: Vec<usize>,
     payload: PhantomData<fn(T) -> T>,
@@ -158,12 +163,17 @@ impl<T> Iox2ChannelPlan<T> {
                 .iter()
                 .map(|endpoint| endpoint.capacity)
                 .collect(),
-            subscribers: self.subscribers.clone(),
-            sources: self
-                .subscriber_sources
+            subscribers: self
+                .subscribers
                 .iter()
-                .map(|sources| {
-                    sources
+                .map(|subscriber| subscriber.capacity)
+                .collect(),
+            sources: self
+                .subscribers
+                .iter()
+                .map(|subscriber| {
+                    subscriber
+                        .sources
                         .as_ref()
                         .map(|ids| ids.iter().map(|id| *id as usize).collect())
                 })
@@ -178,7 +188,12 @@ impl<T> Iox2ChannelPlan<T> {
     }
     /// Minimum local service limits from the completed endpoint declarations.
     pub fn required_config(&self) -> Result<Iox2ChannelConfig, StorageError> {
-        let buffer_capacity = self.subscribers.iter().copied().max().unwrap_or(1);
+        let buffer_capacity = self
+            .subscribers
+            .iter()
+            .map(|subscriber| subscriber.capacity)
+            .max()
+            .unwrap_or(1);
         let event_ids = self.publishers.iter().filter_map(|p| match p.notification {
             Iox2Notification::Silent => None,
             Iox2Notification::Event(id) => Some(id),
@@ -234,7 +249,6 @@ impl<T> Iox2ChannelPlan<T> {
             config: Iox2ChannelConfig::default(),
             publishers: Vec::new(),
             subscribers: Vec::new(),
-            subscriber_sources: Vec::new(),
             events: Vec::new(),
             notifiers: Vec::new(),
             payload: PhantomData,
@@ -286,9 +300,20 @@ impl<T> Iox2ChannelPlan<T> {
         Ok(())
     }
     pub fn subscriber(&mut self, capacity: usize) -> Iox2SubscriberKey<T> {
+        self.subscriber_with_keep(capacity, true)
+    }
+    /// Declare a data subscriber with explicit retention across callback runs.
+    pub fn subscriber_with_keep(
+        &mut self,
+        capacity: usize,
+        keep_across_runs: bool,
+    ) -> Iox2SubscriberKey<T> {
         let index = self.subscribers.len();
-        self.subscribers.push(capacity);
-        self.subscriber_sources.push(None);
+        self.subscribers.push(SubscriberSpec {
+            capacity,
+            keep_across_runs,
+            sources: None,
+        });
         Iox2SubscriberKey(
             Key {
                 channel: self.name.clone(),
@@ -313,11 +338,10 @@ impl<T> Iox2ChannelPlan<T> {
                 return Err(EndpointError::InvalidIndex(key.0.index));
             }
         }
-        *self
-            .subscriber_sources
+        self.subscribers
             .get_mut(subscriber.0.index)
-            .ok_or(EndpointError::InvalidIndex(subscriber.0.index))? =
-            Some(publishers.iter().map(|key| key.0.index as u32).collect());
+            .ok_or(EndpointError::InvalidIndex(subscriber.0.index))?
+            .sources = Some(publishers.iter().map(|key| key.0.index as u32).collect());
         Ok(())
     }
     pub fn events(&mut self, capacity: usize) -> Iox2EventKey {
@@ -361,13 +385,13 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelPlan<T> {
             .publishers
             .iter()
             .map(|p| &p.capacity)
-            .chain(&self.subscribers)
+            .chain(self.subscribers.iter().map(|s| &s.capacity))
             .chain(&self.events)
             .any(|&n| n == 0)
             || self
                 .subscribers
                 .iter()
-                .any(|&n| n > self.config.buffer_capacity)
+                .any(|s| s.capacity > self.config.buffer_capacity)
             || self.config.buffer_capacity == 0
             || self.config.max_borrowed_samples < self.config.buffer_capacity.saturating_mul(2)
             || self.publishers.len() > self.config.max_publishers
@@ -491,10 +515,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
             })));
         }
         let mut subscribers = Vec::new();
-        for (index, &capacity) in self.plan.subscribers.iter().enumerate() {
+        for subscriber in &self.plan.subscribers {
+            let capacity = subscriber.capacity;
             subscribers.push(RefCell::new(Some(Iox2Subscriber {
                 channel: self.plan.name.to_string(),
                 capacity,
+                keep_across_runs: subscriber.keep_across_runs,
                 port: self
                     .data
                     .as_ref()
@@ -506,7 +532,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                 read: RefCell::new(VecDeque::with_capacity(capacity)),
                 receive_errors: AtomicUsize::new(0),
                 replay: None,
-                sources: self.plan.subscriber_sources[index].clone(),
+                sources: subscriber.sources.clone(),
                 _runtime: self.plan.runtime.clone(),
             })));
         }
@@ -840,6 +866,7 @@ pub struct Iox2Subscriber<T: Debug + ZeroCopySend + Send + Sync + 'static> {
     sources: Option<Vec<u32>>,
     channel: String,
     capacity: usize,
+    keep_across_runs: bool,
     port: DataSubscriber<ipc_threadsafe::Service, Message<T>, ()>,
     read: RefCell<VecDeque<Received<T>>>,
     replay: Option<ReplayQueue<T>>,
@@ -888,6 +915,12 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
         self.read.borrow_mut().clear();
         if let Some(queue) = &self.replay {
             queue.lock().unwrap().clear();
+        }
+    }
+    /// Drop retained messages after a successful invocation when configured.
+    pub fn finish_iteration(&self) {
+        if !self.keep_across_runs {
+            self.read.borrow_mut().clear();
         }
     }
     pub fn visit_headers(&self, mut visit: impl FnMut(MessageHeader)) {

@@ -19,6 +19,10 @@ pub trait InputEndpoint: Endpoint {
     fn requests_execution(&self) -> bool {
         false
     }
+    /// Whether this input can request execution independent of its buffered contents.
+    fn triggers_execution(&self) -> bool {
+        false
+    }
     /// Readiness of the prepared snapshot, excluding subsequent arrivals.
     fn required_ready(&self) -> bool {
         true
@@ -143,6 +147,9 @@ impl<T> InputEndpoint for Subscriber<'_, T> {
     fn requests_execution(&self) -> bool {
         self.requests_execution()
     }
+    fn triggers_execution(&self) -> bool {
+        Subscriber::triggers_execution(self)
+    }
     fn visit_headers(&self, visit: impl FnMut(MessageHeader)) {
         self.visit_headers(visit);
     }
@@ -177,6 +184,9 @@ impl<T> InputEndpoint for Required<Subscriber<'_, T>> {
     }
     fn requests_execution(&self) -> bool {
         self.0.requests_execution()
+    }
+    fn triggers_execution(&self) -> bool {
+        self.0.triggers_execution()
     }
     fn required_ready(&self) -> bool {
         !self.0.is_empty()
@@ -243,6 +253,9 @@ mod ipc {
         fn clear(&mut self) {
             Iox2Subscriber::clear(self);
         }
+        fn finish(&mut self) {
+            self.finish_iteration();
+        }
         fn visit_headers(&self, visit: impl FnMut(MessageHeader)) {
             self.visit_headers(visit);
         }
@@ -300,6 +313,9 @@ mod ipc {
         }
         fn requests_execution(&self) -> bool {
             self.has_pending()
+        }
+        fn triggers_execution(&self) -> bool {
+            true
         }
         fn visit_events(&self, mut visit: impl FnMut(usize, u64)) {
             self.visit_records(|event| visit(event.event_id.as_value(), event.count));

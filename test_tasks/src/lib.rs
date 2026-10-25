@@ -41,7 +41,9 @@ pub struct FizzBuzzCalculator;
 impl FizzBuzzCalculator {
     fn run(
         &self,
-        #[channel(INTEGER_CHANNEL)] integer: RequiredInput<u64>,
+        #[trigger(true)]
+        #[channel(INTEGER_CHANNEL)]
+        integer: RequiredInput<u64>,
         #[channel(FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<String>,
     ) {
         *fizz_buzz_string = fizz_buzz(*integer);
@@ -60,7 +62,12 @@ pub struct StringCollector {
 
 #[task_callback]
 impl StringCollector {
-    fn run(&self, #[channel(FIZZ_BUZZ_STRING_CHANNEL)] string: RequiredInput<String>) {
+    fn run(
+        &self,
+        #[channel(FIZZ_BUZZ_STRING_CHANNEL)]
+        #[trigger(true)]
+        string: RequiredInput<String>,
+    ) {
         self.strings.lock().unwrap().push(string.clone());
     }
 
@@ -102,7 +109,9 @@ impl Iox2MacroDemo {
         #[channel("macro_events")] events: task::iox2::Iox2Event,
         #[channel("macro_output")] mut output: task::iox2::Iox2Output<u64>,
         #[channel("macro_signal")] signal: task::iox2::Iox2NotifyOutput,
-        #[channel("macro_required")] required: RequiredInput<u64>,
+        #[trigger(true)]
+        #[channel("macro_required")]
+        required: RequiredInput<u64>,
     ) {
         if let Some(value) = sensor.value() {
             *output = *value + history.len() as u64 + events.count() + *required;

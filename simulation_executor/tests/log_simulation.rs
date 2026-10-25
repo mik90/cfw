@@ -29,7 +29,9 @@ struct Double;
 impl Double {
     fn run(
         &self,
-        #[capacity(8)] mut input: InputSpan<u64>,
+        #[trigger(true)]
+        #[capacity(8)]
+        mut input: InputSpan<u64>,
         #[capacity(8)] output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         for value in input.drain() {

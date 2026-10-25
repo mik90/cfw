@@ -845,7 +845,17 @@ mod ipc {
             name: &str,
             capacity: usize,
         ) -> Result<Iox2SubscriberKey<T>, BuildError> {
-            let key = self.ipc::<T>(name)?.subscriber(capacity);
+            self.ipc_subscriber_with_keep(name, capacity, true)
+        }
+        pub fn ipc_subscriber_with_keep<T: Debug + ZeroCopySend + Send + Sync + 'static>(
+            &mut self,
+            name: &str,
+            capacity: usize,
+            keep_across_runs: bool,
+        ) -> Result<Iox2SubscriberKey<T>, BuildError> {
+            let key = self
+                .ipc::<T>(name)?
+                .subscriber_with_keep(capacity, keep_across_runs);
             self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
                 false,

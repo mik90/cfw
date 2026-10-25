@@ -32,9 +32,9 @@ struct Merge;
 impl Merge {
     fn run<'s>(
         &self,
-        mut a: RequiredInput<'_, 's, Tracked, Forwardable>,
-        mut b: RequiredInput<'_, 's, Tracked, Forwardable>,
-        mut c: RequiredInput<'_, 's, u32, Forwardable>,
+        #[trigger(true)] mut a: RequiredInput<'_, 's, Tracked, Forwardable>,
+        #[trigger(true)] mut b: RequiredInput<'_, 's, Tracked, Forwardable>,
+        #[trigger(true)] mut c: RequiredInput<'_, 's, u32, Forwardable>,
         #[forwards(left = a, right = b, scale = c)] output: OutputUninit<
             '_,
             's,
@@ -280,7 +280,12 @@ struct Relay;
 impl Relay {
     fn run<'s>(
         &self,
-        mut output: RequiredInput<'_, 's, Forwarded<u64, Sources<'s>>, Forwardable>,
+        #[trigger(true)] mut output: RequiredInput<
+            '_,
+            's,
+            Forwarded<u64, Sources<'s>>,
+            Forwardable,
+        >,
         #[forwards(previous = output)] last: OutputUninit<'_, 's, Forwarded<bool, Nested<'s>>>,
     ) {
         last.write(Forwarded::new(

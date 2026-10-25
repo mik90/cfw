@@ -121,6 +121,7 @@ impl MetricsRecorder {
         &mut self,
         #[channel(RESULT_CHANNEL)]
         #[capacity(4)]
+        #[trigger(true)]
         mut results: InputSpan<String>,
         #[channel(METRICS_CHANNEL)] mut snapshot: Output<Metrics>,
     ) {
@@ -143,7 +144,12 @@ pub struct MetricsSummary {
 
 #[task_callback]
 impl MetricsSummary {
-    fn run(&self, #[channel(METRICS_CHANNEL)] metrics: RequiredInput<Metrics>) {
+    fn run(
+        &self,
+        #[channel(METRICS_CHANNEL)]
+        #[trigger(true)]
+        metrics: RequiredInput<Metrics>,
+    ) {
         if metrics.total() == self.count && !self.complete.load(Ordering::Relaxed) {
             println!(
                 "Total: {} (fizz={}, buzz={}, fizzbuzz={}, numbers={})",
@@ -166,8 +172,12 @@ pub struct Printer {
 impl Printer {
     fn run(
         &mut self,
-        #[channel(RESULT_CHANNEL)] mut result: RequiredInput<String>,
-        #[channel(METRICS_CHANNEL)] metrics: OptionalInput<Metrics>,
+        #[trigger(true)]
+        #[channel(RESULT_CHANNEL)]
+        mut result: RequiredInput<String>,
+        #[trigger(true)]
+        #[channel(METRICS_CHANNEL)]
+        metrics: OptionalInput<Metrics>,
     ) {
         if let Some(metrics) = metrics.value() {
             println!(

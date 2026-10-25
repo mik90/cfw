@@ -34,7 +34,7 @@ pub struct SubscriberPolicy {
 impl Default for SubscriberPolicy {
     fn default() -> Self {
         Self {
-            trigger: true,
+            trigger: false,
             keep_across_runs: true,
         }
     }
@@ -83,6 +83,11 @@ impl<'storage, MessageType> Subscriber<'storage, MessageType> {
 
     pub fn requests_execution(&self) -> bool {
         self.policy.trigger && !self.buffer.write_buffer().is_empty()
+    }
+
+    /// Whether this input can request execution when new messages arrive.
+    pub fn triggers_execution(&self) -> bool {
+        self.policy.trigger
     }
 
     pub fn finish_iteration(&self) {

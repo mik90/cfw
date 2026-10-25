@@ -150,6 +150,14 @@ impl<'storage> SimulationState<'storage> {
                     source: TimingError::MissingDuration,
                 });
             }
+            if !node
+                .schedule
+                .is_ever_runnable(node.callback.has_triggering_inputs())
+            {
+                return Err(StepError::InvalidConfig(
+                    task_graph::GraphBuildError::NeverRuns(node.name).to_string(),
+                ));
+            }
             if node.schedule.pool >= state.config.virtual_pool_threads.len() {
                 return Err(StepError::InvalidConfig(format!(
                     "callback '{}' references missing pool {}",

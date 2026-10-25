@@ -11,7 +11,8 @@ use std::{
     time::Duration,
 };
 use task::{
-    ChannelPlan, LoanError, Publisher, RequiredInput, executor::TimeSource, time::FrameworkTime,
+    ChannelPlan, LoanError, Publisher, RequiredInput, SubscriberPolicy, executor::TimeSource,
+    time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
@@ -63,7 +64,9 @@ struct Double {
 impl Double {
     fn run(
         &self,
-        #[keep_across_runs(false)] input: RequiredInput<u64>,
+        #[trigger(true)]
+        #[keep_across_runs(false)]
+        input: RequiredInput<u64>,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         if self.slow {
@@ -262,7 +265,9 @@ struct Feedback;
 impl Feedback {
     fn run(
         &self,
-        #[keep_across_runs(false)] input: task::OptionalInput<u64>,
+        #[trigger(true)]
+        #[keep_across_runs(false)]
+        input: task::OptionalInput<u64>,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         let _ = input;
@@ -272,7 +277,7 @@ impl Feedback {
 struct Panics;
 #[task_callback]
 impl Panics {
-    fn run(&self, input: RequiredInput<u64>) {
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>) {
         let _ = input;
         panic!("worker failed");
     }
@@ -280,7 +285,16 @@ impl Panics {
 #[test]
 fn drain_timeout_and_worker_failure_are_not_successful_completion() {
     let mut plan = ChannelPlan::new("feedback");
-    let declaration = FeedbackDeclaration::from_keys(plan.subscriber(1), plan.publisher(1));
+    let declaration = FeedbackDeclaration::from_keys(
+        plan.subscriber_with_policy(
+            1,
+            SubscriberPolicy {
+                trigger: true,
+                keep_across_runs: false,
+            },
+        ),
+        plan.publisher(1),
+    );
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind();
     let mut graph = GraphBuilder::new();
@@ -298,7 +312,11 @@ fn drain_timeout_and_worker_failure_are_not_successful_completion() {
         },
     )
     .unwrap();
-    assert!(matches!(replay.run(), Err(LiveReplayError::DrainTimeout)));
+    let result = replay.run();
+    assert!(
+        matches!(result, Err(LiveReplayError::DrainTimeout)),
+        "{result:?}"
+    );
 
     let mut input = ChannelPlan::new("input");
     let declaration = Panics::declare(&mut input).unwrap();

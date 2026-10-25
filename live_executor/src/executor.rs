@@ -45,6 +45,11 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
                 reason: "each executor pool must have at least one worker".into(),
             });
         }
+        graph
+            .validate_runnable()
+            .map_err(|error| LiveExecutorStartError {
+                reason: error.to_string(),
+            })?;
         let (nodes, metadata) = graph.into_parts();
         if let Some(node) = nodes
             .iter()
@@ -353,6 +358,9 @@ mod tests {
             fn has_ipc_endpoints(&self) -> bool {
                 true
             }
+            fn has_triggering_inputs(&self) -> bool {
+                true
+            }
             fn run(&mut self, _: &task::Context) -> Result<(), task::LoanError> {
                 Ok(())
             }
@@ -368,6 +376,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_callbacks_without_triggers_or_timers() {
+        let mut builder = GraphBuilder::new();
+        builder.add_callback("dead", || Ok(|_| Ok(())));
+        let error =
+            LiveExecutor::new_multi_pool_with_time(vec![1], builder.build().unwrap(), Clock)
+                .err()
+                .expect("graph should be rejected");
+        assert!(error.reason.contains("no triggering inputs"));
+    }
+
+    #[test]
     #[cfg(feature = "iceoryx2")]
     #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
     fn worker_spawn_failure_joins_already_attached_readiness_thread() {
@@ -375,6 +394,9 @@ mod tests {
         struct EventCallback(Iox2EventSubscriber);
         impl task::Callback for EventCallback {
             fn outputs_are_local(&self) -> bool {
+                true
+            }
+            fn has_triggering_inputs(&self) -> bool {
                 true
             }
             fn set_waker(&mut self, wake: task::wake::WakeHandle) {
@@ -426,7 +448,7 @@ mod tests {
             let schedule = if periodic {
                 CallbackSchedule::periodic(Duration::from_secs(3600))
             } else {
-                CallbackSchedule::input_triggered()
+                CallbackSchedule::on_start()
             };
             builder.add_scheduled_callback("probe", schedule, || {
                 Ok(move |_| {

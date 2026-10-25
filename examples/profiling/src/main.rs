@@ -35,7 +35,7 @@ struct FizzBuzzCalculator;
 impl FizzBuzzCalculator {
     fn run(
         &mut self,
-        integer: RequiredInput<u64>,
+        #[trigger(true)] integer: RequiredInput<u64>,
         #[channel(FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<FizzBuzzString>,
     ) {
         let n = *integer;
@@ -79,7 +79,12 @@ struct StringCollector {
 
 #[task_callback]
 impl StringCollector {
-    fn run(&self, #[channel(FIZZ_BUZZ_STRING_CHANNEL)] string: RequiredInput<FizzBuzzString>) {
+    fn run(
+        &self,
+        #[channel(FIZZ_BUZZ_STRING_CHANNEL)]
+        #[trigger(true)]
+        string: RequiredInput<FizzBuzzString>,
+    ) {
         self.counter
             .fetch_add(string.len() as u64, Ordering::Relaxed);
     }

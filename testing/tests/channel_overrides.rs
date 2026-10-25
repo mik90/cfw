@@ -12,7 +12,9 @@ struct Scale;
 impl Scale {
     fn run(
         &self,
-        #[channel("sensor")] input: RequiredInput<u64>,
+        #[trigger(true)]
+        #[channel("sensor")]
+        input: RequiredInput<u64>,
         #[trigger(false)] gain: RequiredInput<u64>,
         #[channel("results")] output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
@@ -68,7 +70,9 @@ struct Lazy;
 impl Lazy {
     fn run(
         &self,
-        #[channel(unused_default())] input: RequiredInput<u64>,
+        #[trigger(true)]
+        #[channel(unused_default())]
+        input: RequiredInput<u64>,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {
         output.publish(*input)
@@ -177,7 +181,7 @@ fn incompatible_channel_types_are_rejected_before_allocation() {
     struct Text;
     #[task_callback]
     impl Text {
-        fn run(&self, input: RequiredInput<String>) {
+        fn run(&self, #[trigger(true)] input: RequiredInput<String>) {
             let _ = input;
         }
     }

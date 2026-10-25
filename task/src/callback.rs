@@ -33,6 +33,10 @@ pub trait Callback: Send {
     fn has_ipc_endpoints(&self) -> bool {
         false
     }
+    /// Whether any input can request execution without a timer.
+    fn has_triggering_inputs(&self) -> bool {
+        false
+    }
     fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
         None
     }

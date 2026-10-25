@@ -57,7 +57,9 @@ struct Sum;
 impl Sum {
     fn run(
         &self,
-        #[capacity(4)] input: InputSpan<Value>,
+        #[trigger(true)]
+        #[capacity(4)]
+        input: InputSpan<Value>,
         summary: &mut Publisher<Value>,
     ) -> Result<(), LoanError> {
         summary.publish(Value(input.inputs().map(|m| m.message.0).sum()))
@@ -260,9 +262,15 @@ fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publ
     impl Consumer {
         fn run(
             &self,
-            #[capacity(4)] input: InputSpan<Value>,
-            #[capacity(4)] opaque: InputSpan<Hidden>,
-            #[capacity(4)] contextual: InputSpan<Contextual>,
+            #[trigger(true)]
+            #[capacity(4)]
+            input: InputSpan<Value>,
+            #[trigger(true)]
+            #[capacity(4)]
+            opaque: InputSpan<Hidden>,
+            #[trigger(true)]
+            #[capacity(4)]
+            contextual: InputSpan<Contextual>,
         ) {
             let _ = (input, opaque, contextual);
         }
