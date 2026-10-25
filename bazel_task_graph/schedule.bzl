@@ -5,7 +5,7 @@ forward that function through a bridge crate, so custom schedule crates flow
 through the normal Bazel dependency graph.
 """
 
-load("//bazel:rust.bzl", "rust_library")
+load("//bazel:rust.bzl", "RUST_SOURCE_TOOLCHAINS", "render_rust_source", "rust_library", "rust_source_attrs")
 load("//bazel_task_graph:labels.bzl", "crate_name")
 load("//bazel_task_graph:time.bzl", "duration_expression", "duration_nanos")
 
@@ -18,15 +18,15 @@ CfwCallbackScheduleInfo = provider(
 )
 
 def _schedule_src_impl(ctx):
-    output = ctx.actions.declare_file(ctx.label.name + ".rs")
-    ctx.actions.write(output, ctx.attr.content)
+    output = render_rust_source(ctx, ctx.attr.content)
     return [DefaultInfo(files = depset([output]))]
 
 _schedule_src = rule(
     implementation = _schedule_src_impl,
-    attrs = {
+    attrs = rust_source_attrs({
         "content": attr.string(mandatory = True),
-    },
+    }),
+    toolchains = RUST_SOURCE_TOOLCHAINS,
 )
 
 def _schedule_info_impl(ctx):

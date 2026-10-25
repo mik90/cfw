@@ -1,6 +1,12 @@
 """Generate a live-executor binary from one or more cfw pools."""
 
-load("//bazel:rust.bzl", "rust_binary")
+load(
+    "//bazel:rust.bzl",
+    "RUST_SOURCE_TOOLCHAINS",
+    "render_rust_source",
+    "rust_binary",
+    "rust_source_attrs",
+)
 load("//bazel_task_graph:pools.bzl", "CfwPoolInfo")
 
 def _info_label(label):
@@ -31,18 +37,18 @@ def _application_src_impl(ctx):
         "",
     ])
 
-    output = ctx.actions.declare_file(ctx.label.name + ".rs")
-    ctx.actions.write(output, "\n".join(lines))
+    output = render_rust_source(ctx, "\n".join(lines))
     return [DefaultInfo(files = depset([output]))]
 
 _application_src = rule(
     implementation = _application_src_impl,
-    attrs = {
+    attrs = rust_source_attrs({
         "pools": attr.label_list(
             mandatory = True,
             providers = [CfwPoolInfo],
         ),
-    },
+    }),
+    toolchains = RUST_SOURCE_TOOLCHAINS,
 )
 
 def _live_application_impl(name, visibility, pools, **kwargs):

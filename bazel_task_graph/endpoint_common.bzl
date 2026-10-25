@@ -1,5 +1,12 @@
 """Shared helpers for cfw endpoint macros."""
 
+load(
+    "//bazel:rust.bzl",
+    "RUST_SOURCE_TOOLCHAINS",
+    "render_rust_source",
+    "rust_source_attrs",
+)
+
 _SPAN_KINDS = ["span", "output_span", "iox2_span"]
 
 def endpoint_default_capacity(label, kind, queue_capacity):
@@ -18,15 +25,15 @@ def endpoint_default_capacity(label, kind, queue_capacity):
     return queue_capacity if queue_capacity > 0 else 1
 
 def _endpoint_reexport_src_impl(ctx):
-    output = ctx.actions.declare_file(ctx.label.name + ".rs")
-    ctx.actions.write(output, ctx.attr.content)
+    output = render_rust_source(ctx, ctx.attr.content)
     return [DefaultInfo(files = depset([output]))]
 
 endpoint_reexport_src = rule(
     implementation = _endpoint_reexport_src_impl,
-    attrs = {
+    attrs = rust_source_attrs({
         "content": attr.string(mandatory = True),
-    },
+    }),
+    toolchains = RUST_SOURCE_TOOLCHAINS,
 )
 
 def validate_endpoint_transport(label, kind, channel):

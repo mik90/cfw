@@ -10,7 +10,7 @@ pools with per-instance channel overrides; use a newtype if the endpoint
 structure differs.
 """
 
-load("//bazel:rust.bzl", "rust_library")
+load("//bazel:rust.bzl", "RUST_SOURCE_TOOLCHAINS", "render_rust_source", "rust_library", "rust_source_attrs")
 load("//bazel_task_graph:labels.bzl", "crate_name", "field_name", "info_label")
 load("//bazel_task_graph:publisher.bzl", "CfwPublisherInfo")
 load("//bazel_task_graph:schedule.bzl", "CfwCallbackScheduleInfo")
@@ -145,13 +145,12 @@ def _task_api_src_impl(ctx):
         "\n".join(publisher_lines),
         "\n".join(payload_lines),
     )
-    output = ctx.actions.declare_file(ctx.label.name + ".rs")
-    ctx.actions.write(output, content)
+    output = render_rust_source(ctx, content)
     return [DefaultInfo(files = depset([output]))]
 
 _task_api_src = rule(
     implementation = _task_api_src_impl,
-    attrs = {
+    attrs = rust_source_attrs({
         "api_crate": attr.string(mandatory = True),
         "payloads_module": attr.string(mandatory = True),
         "publishers": attr.label_list(
@@ -163,7 +162,8 @@ _task_api_src = rule(
             providers = [CfwSubscriberInfo],
         ),
         "task_name": attr.string(mandatory = True),
-    },
+    }),
+    toolchains = RUST_SOURCE_TOOLCHAINS,
 )
 
 def _task_schedule_src_impl(ctx):
@@ -178,18 +178,18 @@ pub fn __cfw_schedule() -> ::task_graph::CallbackSchedule {
     %s
 }
 """ % expression
-    output = ctx.actions.declare_file(ctx.label.name + ".rs")
-    ctx.actions.write(output, content)
+    output = render_rust_source(ctx, content)
     return [DefaultInfo(files = depset([output]))]
 
 _task_schedule_src = rule(
     implementation = _task_schedule_src_impl,
-    attrs = {
+    attrs = rust_source_attrs({
         "schedule": attr.label(
             default = None,
             providers = [CfwCallbackScheduleInfo],
         ),
-    },
+    }),
+    toolchains = RUST_SOURCE_TOOLCHAINS,
 )
 
 def _task_meta_impl(ctx):

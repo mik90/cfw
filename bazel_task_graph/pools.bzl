@@ -1,6 +1,13 @@
 """Compose cfw tasks into a scheduling pool."""
 
-load("//bazel:rust.bzl", "rust_library", "rust_test")
+load(
+    "//bazel:rust.bzl",
+    "RUST_SOURCE_TOOLCHAINS",
+    "render_rust_source",
+    "rust_library",
+    "rust_source_attrs",
+    "rust_test",
+)
 load("//bazel_task_graph:labels.bzl", "related_label")
 load("//bazel_task_graph:task.bzl", "CfwTaskInfo")
 
@@ -63,8 +70,7 @@ def _pool_src_impl(ctx):
         "",
     ])
 
-    output = ctx.actions.declare_file(ctx.label.name + ".rs")
-    ctx.actions.write(output, "\n".join(lines))
+    output = render_rust_source(ctx, "\n".join(lines))
     return [
         DefaultInfo(files = depset([output])),
         CfwPoolInfo(
@@ -76,14 +82,15 @@ def _pool_src_impl(ctx):
 
 _pool_src = rule(
     implementation = _pool_src_impl,
-    attrs = {
+    attrs = rust_source_attrs({
         "crate_name": attr.string(mandatory = True),
         "tasks": attr.label_list(
             mandatory = True,
             providers = [CfwTaskInfo],
         ),
         "threads": attr.int(mandatory = True),
-    },
+    }),
+    toolchains = RUST_SOURCE_TOOLCHAINS,
 )
 
 def _pool_impl(name, visibility, tasks, threads, deps, **kwargs):

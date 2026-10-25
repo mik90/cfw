@@ -1,3 +1,15 @@
+load("//bazel:settings.bzl", "format_generated_rust")
+
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["rust.bzl"])
+exports_files([
+    "rust.bzl",
+    "settings.bzl",
+])
+
+# Disable generated-source formatting with
+# `--//bazel:format_generated_rust=false`.
+format_generated_rust(
+    name = "format_generated_rust",
+    build_setting_default = True,
+)
