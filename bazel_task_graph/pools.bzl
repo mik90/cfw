@@ -1,13 +1,13 @@
-"""Compose CFW tasks into a scheduling pool."""
+"""Compose cfw tasks into a scheduling pool."""
 
 load("//bazel:rust.bzl", "rust_library", "rust_test")
 load("//bazel_task_graph:task.bzl", "CfwTaskInfo")
 
 CfwPoolInfo = provider(
-    doc = "A CFW scheduling pool.",
+    doc = "A cfw scheduling pool.",
     fields = {
         "crate_name": "Rust library crate that exposes add_to and THREADS.",
-        "tasks": "Task metadata used by the pool.",
+        "tasks": "Tasks that will be executed in the pool.",
         "threads": "Number of executor workers for this pool.",
     },
 )
@@ -81,7 +81,7 @@ _pool_src = rule(
             mandatory = True,
             providers = [CfwTaskInfo],
         ),
-        "threads": attr.int(default = 1),
+        "threads": attr.int(mandatory = True),
     },
 )
 
@@ -126,7 +126,6 @@ pool = macro(
         ),
         "deps": attr.label_list(
             default = [],
-            configurable = False,
             doc = "Rust crates that define the task types.",
         ),
     },

@@ -18,7 +18,7 @@ enum Role {
 }
 
 #[derive(Parser)]
-#[command(about = "Run FizzBuzz in two CFW processes connected by iceoryx2")]
+#[command(about = "Run FizzBuzz in two cfw processes connected by iceoryx2")]
 struct Args {
     /// Number of integers to publish (starting at 1).
     #[arg(long, default_value_t = 30)]

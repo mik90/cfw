@@ -1,4 +1,4 @@
-"""Channel, subscriber, and publisher targets for CFW tasks.
+"""Channel, subscriber, and publisher targets for cfw tasks.
 
 Each target also creates a tiny Rust re-export crate. That lets payload crate
 dependencies flow through the Bazel dependency graph instead of being repeated
@@ -8,7 +8,7 @@ on every task.
 load("//bazel:rust.bzl", "rust_library")
 
 CfwChannelInfo = provider(
-    doc = "A CFW channel payload type.",
+    doc = "A cfw channel payload type.",
     fields = {
         "channel_name": "Framework channel name.",
         "event": "Whether this is an IPC event channel.",
@@ -18,7 +18,7 @@ CfwChannelInfo = provider(
 )
 
 CfwSubscriberInfo = provider(
-    doc = "A configured CFW subscriber endpoint.",
+    doc = "A configured cfw subscriber endpoint.",
     fields = {
         "capacity": "Queue capacity.",
         "channel_name": "Framework channel name.",
@@ -32,7 +32,7 @@ CfwSubscriberInfo = provider(
 )
 
 CfwPublisherInfo = provider(
-    doc = "A configured CFW publisher endpoint.",
+    doc = "A configured cfw publisher endpoint.",
     fields = {
         "capacity": "Queue capacity.",
         "channel_name": "Framework channel name.",

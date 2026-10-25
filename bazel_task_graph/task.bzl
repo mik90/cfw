@@ -1,4 +1,4 @@
-"""Declare a CFW task linked to a user implementation crate.
+"""Declare a cfw task linked to a user implementation crate.
 
 The generated API crate contains the user-facing `Inputs`/`Outputs` types, the
 `Run` trait, and an exported `impl_task!` macro. The implementation crate
@@ -17,7 +17,7 @@ load(
 )
 
 CfwTaskInfo = provider(
-    doc = "Composition metadata for a CFW task.",
+    doc = "Composition metadata for a cfw task.",
     fields = {
         "callback_name": "Name used in ApplicationBuilder.",
         "implementation": "Rust crate that defines the task type.",
@@ -194,7 +194,7 @@ _task_meta = rule(
         "input_channels": attr.string_dict(default = {}),
         "output_channels": attr.string_dict(default = {}),
         "rust_type": attr.string(mandatory = True),
-        "schedule": attr.string(default = "::task_graph::CallbackSchedule::default()"),
+        "schedule": attr.string(),
     },
 )
 

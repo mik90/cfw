@@ -1,4 +1,4 @@
-"""Generate a live-executor binary from one or more CFW pools."""
+"""Generate a live-executor binary from one or more cfw pools."""
 
 load("//bazel:rust.bzl", "rust_binary")
 load("//bazel_task_graph:pools.bzl", "CfwPoolInfo")

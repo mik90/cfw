@@ -1,4 +1,4 @@
-//! Two CFW graphs connected by an iceoryx2 integer channel.
+//! Two cfw graphs connected by an iceoryx2 integer channel.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
