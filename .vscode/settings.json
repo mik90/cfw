@@ -4,7 +4,7 @@
         "**/bower_components": true,
         "**/bazel-*": true,
         "**/external*": true,
-        ".lock": true,
+        "*.lock": true,
         "**/.idea*": true,
         "**/*.code-search": true
     },
