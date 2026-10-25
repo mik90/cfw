@@ -10,7 +10,16 @@ load(
 _SPAN_KINDS = ["span", "output_span", "iox2_span"]
 
 def endpoint_default_capacity(label, kind, queue_capacity):
-    """Resolve an endpoint queue capacity, requiring explicit span capacities."""
+    """Resolve an endpoint queue capacity, requiring explicit span capacities.
+
+    Args:
+      label: Endpoint target name used in diagnostics.
+      kind: Endpoint kind.
+      queue_capacity: Requested capacity, or zero to use the kind default.
+
+    Returns:
+      The resolved queue capacity.
+    """
     if queue_capacity < 0:
         fail("%s: queue_capacity must be positive or zero" % label)
     if kind in _SPAN_KINDS:
@@ -37,7 +46,13 @@ endpoint_reexport_src = rule(
 )
 
 def validate_endpoint_transport(label, kind, channel):
-    """Check that an endpoint kind matches its channel transport and payload."""
+    """Check that an endpoint kind matches its channel transport and payload.
+
+    Args:
+      label: Endpoint target name used in diagnostics.
+      kind: Endpoint kind.
+      channel: Channel info for the endpoint.
+    """
     ipc = kind.startswith("iox2_")
     event_endpoint = kind in ["iox2_event", "iox2_notifier"]
     if not ipc:

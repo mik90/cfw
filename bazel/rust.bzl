@@ -1,3 +1,5 @@
+"""Bazel Rust rule wrappers and generated-source helpers."""
+
 load("@crates//:defs.bzl", "lint_config")
 load("@rules_rs//rs:rust_binary.bzl", _rust_binary = "rust_binary")
 load("@rules_rs//rs:rust_library.bzl", _rust_library = "rust_library")
@@ -22,7 +24,16 @@ def rust_source_attrs(attrs):
     return attrs
 
 def render_rust_source(ctx, content, edition = "2024"):
-    """Writes generated Rust source, formatting it with the Bazel toolchain."""
+    """Writes generated Rust source, formatting it with the Bazel toolchain.
+
+    Args:
+      ctx: Rule context.
+      content: Rust source text to write.
+      edition: Rust edition passed to rustfmt.
+
+    Returns:
+      The declared formatted `.rs` file.
+    """
     output = ctx.actions.declare_file(ctx.label.name + ".rs")
     if not ctx.attr._format_generated_rust[FormatGeneratedRustInfo].value:
         ctx.actions.write(output, content)

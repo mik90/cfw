@@ -30,3 +30,4 @@ bazel-lint:
     #!/usr/bin/env bash
     set -euo pipefail
     buildifier -r --lint=fix .
+    buildifier -r -mode=check --lint=warn .

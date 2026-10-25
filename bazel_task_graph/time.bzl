@@ -33,7 +33,15 @@ _DURATION_UNITS = {
 }
 
 def duration_nanos(attr_name, value):
-    """Parse a duration such as '100ms' or '1.5sec' into nanoseconds."""
+    """Parse a duration such as '100ms' or '1.5sec' into nanoseconds.
+
+    Args:
+      attr_name: Attribute name used in diagnostics.
+      value: Duration text to parse.
+
+    Returns:
+      The duration in nanoseconds.
+    """
     text = value.replace(" ", "").lower()
     if not text:
         fail("%s must be a duration such as '100ms'" % attr_name)
