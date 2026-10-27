@@ -11,50 +11,6 @@ use std::{
 use task::{Callback, ChannelBindings, ChannelPlan, ChannelStorage, SubscriberPolicy};
 use topology::Topology;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[cfg(feature = "iceoryx2")]
-    #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
-    fn native_and_ipc_channels_cannot_claim_the_same_name() {
-        let mut plan = GraphPlan::default();
-        plan.native::<u64>("shared").unwrap();
-        assert!(plan.ipc::<u64>("shared").is_err());
-    }
-
-    #[test]
-    fn all_channels_are_validated_before_any_arena_is_allocated() {
-        let mut plan = GraphPlan::default();
-        // This valid channel would allocate an enormous arena if validation were interleaved.
-        plan.native::<u64>("a-large")
-            .unwrap()
-            .publisher(u32::MAX as usize);
-        plan.native::<u64>("z-invalid").unwrap().subscriber(0);
-        let error = plan.allocate().err().expect("invalid subscriber capacity");
-        assert!(error.to_string().contains("ZeroSubscriberCapacity"));
-        assert!(GraphPlan::default().allocate().unwrap().build().is_ok());
-    }
-
-    #[test]
-    fn repeated_channel_names_share_declarations_and_reject_conflicting_types() {
-        let mut plan = GraphPlan::default();
-        let publisher = plan.native::<u64>("shared").unwrap().publisher(1);
-        let subscriber = plan.native::<u64>("shared").unwrap().subscriber(1);
-        assert!(plan.native::<String>("shared").is_err());
-        let storage = plan.allocate().unwrap();
-        let bindings = storage.bind().unwrap();
-        let channel = bindings.native::<u64>("shared").unwrap();
-        let mut publisher = channel.take_publisher(&publisher).unwrap();
-        let subscriber = channel.take_subscriber(&subscriber).unwrap();
-        publisher.publish(42).unwrap();
-        publisher.flush(task::time::FrameworkTime::from_nanoseconds(1));
-        subscriber.update();
-        assert_eq!(subscriber.input_forwardable().pop().unwrap().message, 42);
-    }
-}
-
 #[derive(Debug)]
 pub struct BuildError(pub String);
 impl std::fmt::Display for BuildError {
@@ -936,5 +892,49 @@ mod ipc {
                 .and_then(|a| a.downcast_ref())
                 .ok_or_else(|| BuildError(format!("channel '{name}': no event bindings")))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "iceoryx2")]
+    #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
+    fn native_and_ipc_channels_cannot_claim_the_same_name() {
+        let mut plan = GraphPlan::default();
+        plan.native::<u64>("shared").unwrap();
+        assert!(plan.ipc::<u64>("shared").is_err());
+    }
+
+    #[test]
+    fn all_channels_are_validated_before_any_arena_is_allocated() {
+        let mut plan = GraphPlan::default();
+        // This valid channel would allocate an enormous arena if validation were interleaved.
+        plan.native::<u64>("a-large")
+            .unwrap()
+            .publisher(u32::MAX as usize);
+        plan.native::<u64>("z-invalid").unwrap().subscriber(0);
+        let error = plan.allocate().err().expect("invalid subscriber capacity");
+        assert!(error.to_string().contains("ZeroSubscriberCapacity"));
+        assert!(GraphPlan::default().allocate().unwrap().build().is_ok());
+    }
+
+    #[test]
+    fn repeated_channel_names_share_declarations_and_reject_conflicting_types() {
+        let mut plan = GraphPlan::default();
+        let publisher = plan.native::<u64>("shared").unwrap().publisher(1);
+        let subscriber = plan.native::<u64>("shared").unwrap().subscriber(1);
+        assert!(plan.native::<String>("shared").is_err());
+        let storage = plan.allocate().unwrap();
+        let bindings = storage.bind().unwrap();
+        let channel = bindings.native::<u64>("shared").unwrap();
+        let mut publisher = channel.take_publisher(&publisher).unwrap();
+        let subscriber = channel.take_subscriber(&subscriber).unwrap();
+        publisher.publish(42).unwrap();
+        publisher.flush(task::time::FrameworkTime::from_nanoseconds(1));
+        subscriber.update();
+        assert_eq!(subscriber.input_forwardable().pop().unwrap().message, 42);
     }
 }
