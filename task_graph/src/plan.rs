@@ -185,12 +185,8 @@ impl TaskRegistration {
 type TaskDefinition = (String, crate::CallbackSchedule, TaskBinding);
 
 pub(crate) trait Plan {
-    fn forwarding_slots(&self) -> Result<usize, BuildError> {
-        Err(BuildError("forwarding requires native storage".into()))
-    }
-    fn reserve_forwarding(&mut self, _: usize) -> Result<(), BuildError> {
-        Err(BuildError("forwarding requires native storage".into()))
-    }
+    fn forwarding_slots(&self) -> Result<usize, BuildError>;
+    fn reserve_forwarding(&mut self, _: usize) -> Result<(), BuildError>;
     fn topology(&self) -> topology::ChannelTopology;
     fn validate(&self) -> Result<(), BuildError>;
     fn payload_type(&self) -> &'static str;
@@ -622,6 +618,16 @@ mod ipc {
     use std::fmt::Debug;
     use task::iox2::*;
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Plan for Iox2ChannelPlan<T> {
+        fn forwarding_slots(&self) -> Result<usize, BuildError> {
+            return Err(BuildError(
+                "Iox2ChannelPlan cannot support forwarding, this is only supported on native transports".into(),
+            ));
+        }
+        fn reserve_forwarding(&mut self, _: usize) -> Result<(), BuildError> {
+            return Err(BuildError(
+                "Iox2ChannelPlan cannot support forwarding, this is only supported on native transports".into(),
+            ));
+        }
         fn topology(&self) -> topology::ChannelTopology {
             self.topology()
         }
