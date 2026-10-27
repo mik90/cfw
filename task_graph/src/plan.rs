@@ -615,18 +615,19 @@ impl<'a> GraphBindings<'a> {
 mod ipc {
     use super::*;
     use iceoryx2::prelude::ZeroCopySend;
+    use std::collections::btree_map::Entry;
     use std::fmt::Debug;
     use task::iox2::*;
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Plan for Iox2ChannelPlan<T> {
         fn forwarding_slots(&self) -> Result<usize, BuildError> {
-            return Err(BuildError(
+            Err(BuildError(
                 "Iox2ChannelPlan cannot support forwarding, this is only supported on native transports".into(),
-            ));
+            ))
         }
         fn reserve_forwarding(&mut self, _: usize) -> Result<(), BuildError> {
-            return Err(BuildError(
+            Err(BuildError(
                 "Iox2ChannelPlan cannot support forwarding, this is only supported on native transports".into(),
-            ));
+            ))
         }
         fn topology(&self) -> topology::ChannelTopology {
             self.topology()
@@ -707,50 +708,52 @@ mod ipc {
         pub fn ipc_service_limits(
             &self,
         ) -> Result<BTreeMap<String, Iox2ChannelConfig>, BuildError> {
-            let mut required = BTreeMap::new();
+            let mut requirements = BTreeMap::new();
             for (name, channel) in &self.channels {
                 if let Some(config) = channel.plan.ipc_requirements()? {
-                    required.insert(name.clone(), config);
+                    requirements.insert(name.clone(), config);
                 }
             }
             for (name, (plan, _)) in &self.events {
                 let events = plan.required_config()?;
-                let config = required.entry(name.clone()).or_insert(Iox2ChannelConfig {
-                    max_listeners: 0,
-                    max_notifiers: 0,
-                    ..events.clone()
-                });
-                config.max_listeners = config
-                    .max_listeners
-                    .checked_add(events.max_listeners)
-                    .ok_or(task::StorageError::CapacityOverflow)?;
-                config.max_notifiers = config
-                    .max_notifiers
-                    .checked_add(events.max_notifiers)
-                    .ok_or(task::StorageError::CapacityOverflow)?;
-                config.event_id_max_value =
-                    config.event_id_max_value.max(events.event_id_max_value);
+                match requirements.entry(name.clone()) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(events);
+                    }
+                    Entry::Occupied(mut entry) => {
+                        entry.get_mut().merge_event_requirements(&events)?;
+                    }
+                }
             }
             for name in self.ipc_limits.keys() {
-                if !required.contains_key(name) {
+                if !requirements.contains_key(name) {
                     return Err(BuildError(format!(
                         "IPC limits configured for unknown/non-IPC channel '{name}'"
                     )));
                 }
             }
-            required.into_iter().map(|(name, needed)| {
-                let mut limits = Iox2ChannelConfig::default();
-                macro_rules! grow { ($($field:ident),*) => { $(limits.$field = limits.$field.max(needed.$field);)* }; }
-                grow!(buffer_capacity, max_borrowed_samples, max_publishers, max_subscribers, max_nodes, max_listeners, max_notifiers, event_id_max_value);
-                if let Some(explicit) = self.ipc_limits.get(&name) { limits = explicit.clone(); }
-                let mut insufficient = Vec::new();
-                if limits.max_listeners == 0 || limits.max_notifiers == 0 { insufficient.push("max_listeners and max_notifiers must be positive service limits".into()); }
-                macro_rules! check { ($($field:ident),*) => { $(if limits.$field < needed.$field { insufficient.push(format!("{} requires {}, configured {}", stringify!($field), needed.$field, limits.$field)); })* }; }
-                check!(buffer_capacity, max_borrowed_samples, max_publishers, max_subscribers, max_nodes, max_listeners, max_notifiers, event_id_max_value);
-                if limits.max_borrowed_samples < limits.buffer_capacity.checked_mul(2).ok_or(task::StorageError::CapacityOverflow)? { insufficient.push("max_borrowed_samples must cover twice buffer_capacity".into()); }
-                if !insufficient.is_empty() { return Err(BuildError(format!("IPC service '{name}': {}", insufficient.join(", ")))); }
-                Ok((name, limits))
-            }).collect()
+
+            let mut resolved = BTreeMap::new();
+            for (name, required) in requirements {
+                let limits = match self.ipc_limits.get(&name) {
+                    Some(explicit) => explicit.clone(),
+                    None => {
+                        let mut limits = Iox2ChannelConfig::default();
+                        limits.grow_to_cover(&required);
+                        limits
+                    }
+                };
+
+                let problems = limits.errors_against(&required)?;
+                if !problems.is_empty() {
+                    return Err(BuildError(format!(
+                        "IPC service '{name}': {}",
+                        problems.join(", ")
+                    )));
+                }
+                resolved.insert(name, limits);
+            }
+            Ok(resolved)
         }
         pub fn with_iox2_runtime(runtime: Arc<Iox2Runtime>) -> Self {
             Self {

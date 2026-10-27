@@ -81,6 +81,93 @@ impl Default for Iox2ChannelConfig {
     }
 }
 
+impl Iox2ChannelConfig {
+    /// Raise every limit to at least the corresponding requirement.
+    pub fn grow_to_cover(&mut self, required: &Self) {
+        self.buffer_capacity = self.buffer_capacity.max(required.buffer_capacity);
+        self.max_borrowed_samples = self.max_borrowed_samples.max(required.max_borrowed_samples);
+        self.max_publishers = self.max_publishers.max(required.max_publishers);
+        self.max_subscribers = self.max_subscribers.max(required.max_subscribers);
+        self.max_nodes = self.max_nodes.max(required.max_nodes);
+        self.max_listeners = self.max_listeners.max(required.max_listeners);
+        self.max_notifiers = self.max_notifiers.max(required.max_notifiers);
+        self.event_id_max_value = self.event_id_max_value.max(required.event_id_max_value);
+    }
+
+    /// Add the event-port requirements for a service sharing these limits.
+    pub fn merge_event_requirements(&mut self, events: &Self) -> Result<(), StorageError> {
+        self.max_listeners = self
+            .max_listeners
+            .checked_add(events.max_listeners)
+            .ok_or(StorageError::CapacityOverflow)?;
+        self.max_notifiers = self
+            .max_notifiers
+            .checked_add(events.max_notifiers)
+            .ok_or(StorageError::CapacityOverflow)?;
+        self.event_id_max_value = self.event_id_max_value.max(events.event_id_max_value);
+        Ok(())
+    }
+
+    /// Every reason these limits cannot satisfy `required`.
+    ///
+    /// Includes per-field shortfalls and service-wide invariants.
+    pub fn errors_against(&self, required: &Self) -> Result<Vec<String>, StorageError> {
+        let mut errors = Vec::new();
+
+        if self.max_listeners == 0 || self.max_notifiers == 0 {
+            errors
+                .push("max_listeners and max_notifiers must be positive service limits".to_owned());
+        }
+
+        for (field, configured, required) in [
+            (
+                "buffer_capacity",
+                self.buffer_capacity,
+                required.buffer_capacity,
+            ),
+            (
+                "max_borrowed_samples",
+                self.max_borrowed_samples,
+                required.max_borrowed_samples,
+            ),
+            (
+                "max_publishers",
+                self.max_publishers,
+                required.max_publishers,
+            ),
+            (
+                "max_subscribers",
+                self.max_subscribers,
+                required.max_subscribers,
+            ),
+            ("max_nodes", self.max_nodes, required.max_nodes),
+            ("max_listeners", self.max_listeners, required.max_listeners),
+            ("max_notifiers", self.max_notifiers, required.max_notifiers),
+            (
+                "event_id_max_value",
+                self.event_id_max_value,
+                required.event_id_max_value,
+            ),
+        ] {
+            if configured < required {
+                errors.push(format!(
+                    "{field} requires {required}, configured {configured}"
+                ));
+            }
+        }
+
+        let required_borrowed = self
+            .buffer_capacity
+            .checked_mul(2)
+            .ok_or(StorageError::CapacityOverflow)?;
+        if self.max_borrowed_samples < required_borrowed {
+            errors.push("max_borrowed_samples must cover twice buffer_capacity".to_owned());
+        }
+
+        Ok(errors)
+    }
+}
+
 struct Key {
     channel: Arc<str>,
     index: usize,
@@ -384,30 +471,28 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelPlan<T> {
         if self
             .publishers
             .iter()
-            .map(|p| &p.capacity)
-            .chain(self.subscribers.iter().map(|s| &s.capacity))
-            .chain(&self.events)
-            .any(|&n| n == 0)
-            || self
-                .subscribers
-                .iter()
-                .any(|s| s.capacity > self.config.buffer_capacity)
-            || self.config.buffer_capacity == 0
-            || self.config.max_borrowed_samples < self.config.buffer_capacity.saturating_mul(2)
-            || self.publishers.len() > self.config.max_publishers
-            || self.subscribers.len() > self.config.max_subscribers
-            || self.events.len() > self.config.max_listeners
-            || self.publishers.iter().filter(|p| matches!(p.notification, Iox2Notification::Event(_))).count()
-                + self.notifiers.len() > self.config.max_notifiers
-            || self.publishers.iter().any(|p| matches!(p.notification, Iox2Notification::Event(id) if id > self.config.event_id_max_value))
-            || self
-                .notifiers
-                .iter()
-                .any(|&id| id > self.config.event_id_max_value)
+            .map(|publisher| publisher.capacity)
+            .chain(
+                self.subscribers
+                    .iter()
+                    .map(|subscriber| subscriber.capacity),
+            )
+            .chain(self.events.iter().copied())
+            .any(|capacity| capacity == 0)
         {
             return Err(transport(format!(
-                "invalid endpoint/service capacities on '{}': required {:?}, configured {:?} (borrowed samples must cover twice the service buffer)",
-                self.name, self.required_config()?, self.config
+                "endpoint capacities must be positive on '{}'",
+                self.name
+            )));
+        }
+
+        let required = self.required_config()?;
+        let problems = self.config.errors_against(&required)?;
+        if !problems.is_empty() {
+            return Err(transport(format!(
+                "invalid endpoint/service capacities on '{}': {}",
+                self.name,
+                problems.join(", ")
             )));
         }
         Ok(())
@@ -734,6 +819,124 @@ mod key_tests {
                 matches!(bindings.take_notifier(&Iox2NotifierKey(key())), Err(error) if error == expected)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    fn required_config() -> Iox2ChannelConfig {
+        Iox2ChannelConfig {
+            buffer_capacity: 2048,
+            max_borrowed_samples: 4096,
+            max_publishers: 20,
+            max_subscribers: 30,
+            max_nodes: 16,
+            max_listeners: 32,
+            max_notifiers: 24,
+            event_id_max_value: 7,
+        }
+    }
+
+    #[test]
+    fn grow_to_cover_raises_every_limit() {
+        let required = required_config();
+        let mut limits = Iox2ChannelConfig::default();
+        limits.grow_to_cover(&required);
+        assert_eq!(limits, required);
+    }
+
+    #[test]
+    fn grow_to_cover_preserves_larger_limits() {
+        let mut limits = Iox2ChannelConfig {
+            max_publishers: 100,
+            ..Iox2ChannelConfig::default()
+        };
+        limits.grow_to_cover(&required_config());
+        assert_eq!(limits.max_publishers, 100);
+        assert_eq!(limits.buffer_capacity, 2048);
+    }
+
+    #[test]
+    fn errors_against_reports_shortfalls_and_service_invariants() {
+        let required = required_config();
+        let limits = Iox2ChannelConfig {
+            buffer_capacity: 4096,
+            max_borrowed_samples: 1024,
+            max_listeners: 0,
+            max_notifiers: 0,
+            ..Iox2ChannelConfig::default()
+        };
+        let errors = limits.errors_against(&required).unwrap();
+
+        assert!(errors.iter().any(|error| {
+            error == "max_listeners and max_notifiers must be positive service limits"
+        }));
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error == "max_borrowed_samples requires 4096, configured 1024" })
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error == "max_listeners requires 32, configured 0" })
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error == "max_borrowed_samples must cover twice buffer_capacity")
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.starts_with("buffer_capacity"))
+        );
+    }
+
+    #[test]
+    fn grown_limits_have_no_errors() {
+        let required = required_config();
+        let mut limits = Iox2ChannelConfig::default();
+        limits.grow_to_cover(&required);
+        assert!(limits.errors_against(&required).unwrap().is_empty());
+    }
+
+    #[test]
+    fn merge_event_requirements_adds_ports_and_maxes_event_ids() {
+        let events = Iox2ChannelConfig {
+            max_listeners: 4,
+            max_notifiers: 5,
+            event_id_max_value: 9,
+            ..Iox2ChannelConfig::default()
+        };
+        let mut limits = Iox2ChannelConfig {
+            max_listeners: 2,
+            max_notifiers: 1,
+            event_id_max_value: 3,
+            ..Iox2ChannelConfig::default()
+        };
+        limits.merge_event_requirements(&events).unwrap();
+        assert_eq!(limits.max_listeners, 6);
+        assert_eq!(limits.max_notifiers, 6);
+        assert_eq!(limits.event_id_max_value, 9);
+    }
+
+    #[test]
+    fn merge_event_requirements_reports_overflow() {
+        let events = Iox2ChannelConfig {
+            max_listeners: 1,
+            ..Iox2ChannelConfig::default()
+        };
+        let mut limits = Iox2ChannelConfig {
+            max_listeners: usize::MAX,
+            ..Iox2ChannelConfig::default()
+        };
+        assert_eq!(
+            limits.merge_event_requirements(&events),
+            Err(StorageError::CapacityOverflow)
+        );
     }
 }
 
