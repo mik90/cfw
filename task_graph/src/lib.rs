@@ -2,7 +2,6 @@
 mod application;
 pub mod bundle;
 pub mod capture;
-pub mod endpoint_capture;
 pub mod endpoints;
 pub mod graph;
 mod plan;

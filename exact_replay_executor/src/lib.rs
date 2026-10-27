@@ -1,8 +1,10 @@
 //! Deterministic recorded-execution replay over externally owned graph storage.
 //! Plan isolated hydration publishers before allocation, install per-endpoint captures
 //! before binding callbacks, and step recorded input snapshots in timestamp order.
+mod output_capture;
 pub mod plan;
 pub mod replay_plan;
+pub use output_capture::OutputCapture;
 pub use replay_plan::{ExactReplayPlan, ExplicitReplayEndpoint, GraphSourceCachePlan};
 mod replay;
 mod replay_log;

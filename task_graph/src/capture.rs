@@ -1,7 +1,11 @@
 //! Lifetime-preserving serialization capabilities for planned captures.
+pub mod output;
+
 use crate::{BuildError, GraphBindings, GraphPlan};
 use std::{collections::BTreeSet, marker::PhantomData};
 use task::{Subscriber, SubscriberPolicy, loggable::Loggable, message::MessageHeader};
+
+pub use output::{OutputBinding, OutputSink};
 
 pub type CaptureError = Box<dyn std::error::Error + Send + Sync>;
 pub type CaptureVisitor<'a> = dyn FnMut(MessageHeader, &[u8]) -> Result<(), CaptureError> + 'a;
@@ -99,13 +103,6 @@ pub(crate) type CaptureBinding = Box<
     dyn for<'a> FnOnce(&GraphBindings<'a>) -> Result<Box<dyn SerializedCapture + 'a>, BuildError>,
 >;
 
-/// A publisher observer attachment borrowing endpoints only while it is installed.
-pub type OutputBinding = Box<
-    dyn for<'a> FnOnce(
-        &GraphBindings<'a>,
-    ) -> Result<super::endpoint_capture::EndpointCapture, BuildError>,
->;
-
 #[derive(Clone, Copy)]
 pub(crate) struct CaptureDeclaration {
     pub declare_output:
@@ -121,13 +118,13 @@ fn native_output<T: Loggable + Send + Sync + 'static>(
         .native::<T>(&endpoint.channel)?
         .publisher_key(endpoint.index);
     let channel = endpoint.channel.clone();
-    let capacity = endpoint.capacity;
-    Ok(Box::new(move |bindings| {
-        Ok(bindings
+    Ok(OutputBinding::new(move |bindings, sink| {
+        bindings
             .native::<T>(&channel)?
             .configure_publisher(&publisher, |publisher| {
-                super::endpoint_capture::EndpointCapture::native(publisher, capacity)
-            })?)
+                output::observe_native(publisher, sink);
+            })?;
+        Ok(())
     }))
 }
 fn native<T: Loggable + Send + Sync + 'static>(
@@ -296,13 +293,13 @@ mod ipc {
             .ipc::<T>(&endpoint.channel)?
             .publisher_key(endpoint.index);
         let channel = endpoint.channel.clone();
-        let capacity = endpoint.capacity;
-        Ok(Box::new(move |bindings| {
-            Ok(bindings
+        Ok(OutputBinding::new(move |bindings, sink| {
+            bindings
                 .ipc::<T>(&channel)?
                 .configure_publisher(&publisher, |publisher| {
-                    super::super::endpoint_capture::EndpointCapture::ipc(publisher, capacity)
-                })?)
+                    output::observe_ipc(publisher, sink);
+                })?;
+            Ok(())
         }))
     }
     fn declare<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static>(

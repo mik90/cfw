@@ -1,6 +1,6 @@
 //! Heterogeneous forwarding families and explicit retention dependencies.
 use crate::plan::{Binding, Channel, Plan, Stored};
-use crate::{BuildError, GraphBindings, GraphPlan, capture, endpoint_capture, endpoints, topology};
+use crate::{BuildError, GraphBindings, GraphPlan, capture, endpoints, topology};
 use std::marker::PhantomData;
 use std::{
     any::{Any, TypeId},
@@ -335,12 +335,13 @@ where
         .bundle::<M, S>(&endpoint.channel)?
         .publisher_key(endpoint.index);
     let channel = endpoint.channel.clone();
-    let capacity = endpoint.capacity;
-    Ok(Box::new(move |bindings| {
-        Ok(bindings
-            .bundle::<M, S>(&channel)?
-            .configure_publisher(&publisher_key::<M, S>(key), |publisher| {
-                endpoint_capture::EndpointCapture::native(publisher, capacity)
-            })?)
+    Ok(capture::OutputBinding::new(move |bindings, sink| {
+        bindings.bundle::<M, S>(&channel)?.configure_publisher(
+            &publisher_key::<M, S>(key),
+            |publisher| {
+                capture::output::observe_native(publisher, sink);
+            },
+        )?;
+        Ok(())
     }))
 }

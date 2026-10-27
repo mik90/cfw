@@ -1,5 +1,5 @@
-use crate::ReplayError;
-use logging::{BoxedLogError, EndpointCapture, ReplaySource};
+use crate::{OutputCapture, ReplayError};
+use logging::{BoxedLogError, ReplaySource};
 use std::collections::BTreeMap;
 use task::{
     ChannelBindings, ChannelPlan, PublisherKey, StorageError, SubscriberKey, loggable::Loggable,
@@ -184,7 +184,7 @@ pub(crate) type CacheLoader<'a> =
 #[derive(Default)]
 pub struct ReplayBindings<'a> {
     pub(crate) inputs: BTreeMap<Endpoint, ReplaySource<'a>>,
-    pub(crate) outputs: BTreeMap<Endpoint, EndpointCapture>,
+    pub(crate) outputs: BTreeMap<Endpoint, OutputCapture>,
     pub(crate) caches: BTreeMap<String, CacheLoader<'a>>,
 }
 impl<'a> ReplayBindings<'a> {
@@ -210,7 +210,7 @@ impl<'a> ReplayBindings<'a> {
         &mut self,
         callback: impl Into<String>,
         ordinal: usize,
-        capture: EndpointCapture,
+        capture: OutputCapture,
     ) -> Result<(), ReplayError> {
         let key = (callback.into(), ordinal);
         if self.outputs.contains_key(&key) {

@@ -1,8 +1,8 @@
 use exact_replay_executor::{
-    DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, ReplayBindings, ReplayError,
-    ReplayInputPlan, ReplayLog,
+    DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, OutputCapture, ReplayBindings,
+    ReplayError, ReplayInputPlan, ReplayLog,
 };
-use logging::{CapturePlan, EndpointCapture, ExecutionRecorder, LogSession};
+use logging::{CapturePlan, ExecutionRecorder, LogSession};
 use std::{
     collections::HashMap,
     io::Write,
@@ -176,7 +176,7 @@ fn replay<R>(
             0,
             source
                 .configure_publisher(a.output_key(), |publisher| {
-                    EndpointCapture::native(publisher, 8)
+                    OutputCapture::native(publisher, 8)
                 })
                 .unwrap(),
         )
@@ -187,7 +187,7 @@ fn replay<R>(
             0,
             output
                 .configure_publisher(b.output_key(), |publisher| {
-                    EndpointCapture::native(publisher, 8)
+                    OutputCapture::native(publisher, 8)
                 })
                 .unwrap(),
         )
@@ -696,7 +696,7 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
             "pair",
             0,
             result
-                .configure_publisher(declaration.output_key(), |p| EndpointCapture::native(p, 1))
+                .configure_publisher(declaration.output_key(), |p| OutputCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
@@ -778,7 +778,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
             "pair",
             0,
             bindings
-                .configure_publisher(declaration.first_key(), |p| EndpointCapture::native(p, 1))
+                .configure_publisher(declaration.first_key(), |p| OutputCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
@@ -787,7 +787,7 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
             "pair",
             1,
             bindings
-                .configure_publisher(declaration.second_key(), |p| EndpointCapture::native(p, 1))
+                .configure_publisher(declaration.second_key(), |p| OutputCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
@@ -954,7 +954,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                     "source",
                     0,
                     source
-                        .configure_publisher(a.output_key(), |p| EndpointCapture::native(p, 4))
+                        .configure_publisher(a.output_key(), |p| OutputCapture::native(p, 4))
                         .unwrap(),
                 )
                 .unwrap();
@@ -963,7 +963,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                     "forward",
                     0,
                     forward
-                        .configure_publisher(b.output_key(), |p| EndpointCapture::native(p, 4))
+                        .configure_publisher(b.output_key(), |p| OutputCapture::native(p, 4))
                         .unwrap(),
                 )
                 .unwrap();
@@ -972,7 +972,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                     "consume",
                     0,
                     result
-                        .configure_publisher(c.output_key(), |p| EndpointCapture::native(p, 4))
+                        .configure_publisher(c.output_key(), |p| OutputCapture::native(p, 4))
                         .unwrap(),
                 )
                 .unwrap();

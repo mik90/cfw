@@ -1,7 +1,7 @@
 use exact_replay_executor::{
-    ExactReplayExecutor, ReplayBindings, ReplayInputPlan, ReplayLog, SourceCachePlan,
+    ExactReplayExecutor, OutputCapture, ReplayBindings, ReplayInputPlan, ReplayLog, SourceCachePlan,
 };
-use logging::{CapturePlan, EndpointCapture, ExecutionRecorder, LogSession};
+use logging::{CapturePlan, ExecutionRecorder, LogSession};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -251,7 +251,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
                                 .unwrap()
                                 .push((message.header.publisher_index, message.header.batch_index))
                         });
-                        EndpointCapture::native(p, 2)
+                        OutputCapture::native(p, 2)
                     })
                     .unwrap(),
             )
@@ -262,7 +262,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
             "forward",
             0,
             forward
-                .configure_publisher(f.output_key(), |p| EndpointCapture::native(p, 4))
+                .configure_publisher(f.output_key(), |p| OutputCapture::native(p, 4))
                 .unwrap(),
         )
         .unwrap();
@@ -271,7 +271,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
             "observe",
             0,
             observed
-                .configure_publisher(o.output_key(), |p| EndpointCapture::native(p, 1))
+                .configure_publisher(o.output_key(), |p| OutputCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();
@@ -280,7 +280,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
             "consume",
             0,
             result
-                .configure_publisher(c.output_key(), |p| EndpointCapture::native(p, 1))
+                .configure_publisher(c.output_key(), |p| OutputCapture::native(p, 1))
                 .unwrap(),
         )
         .unwrap();

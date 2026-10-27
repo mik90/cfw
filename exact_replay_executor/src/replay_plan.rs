@@ -16,14 +16,33 @@
 //!     Ok(())
 //! }
 //! ```
-use crate::{ReplayBindings, ReplayError, ReplayLog, SourceCache, SourceCachePlan};
+use crate::{OutputCapture, ReplayBindings, ReplayError, ReplayLog, SourceCache, SourceCachePlan};
 use std::collections::{BTreeMap, BTreeSet};
 use task::recording::{Direction, Transport};
 use task_graph::{GraphBindings, GraphPlan, capture::OutputBinding, replay::SourceBinding};
 
 enum EndpointBinding {
     Input(SourceBinding),
-    Output(OutputBinding),
+    Output {
+        binding: OutputBinding,
+        channel: String,
+        payload_type: String,
+        capacity: usize,
+    },
+}
+
+enum Request {
+    Input {
+        name: String,
+        ordinal: usize,
+    },
+    Output {
+        name: String,
+        ordinal: usize,
+        channel: String,
+        payload_type: String,
+        capacity: usize,
+    },
 }
 
 /// A caller-supplied endpoint binding, omitted from inferred wiring.
@@ -161,7 +180,20 @@ impl ExactReplayPlan {
                         callback.name, expected.ordinal
                     )));
                 }
-                requests.push((callback.name.clone(), expected.ordinal, output));
+                if output {
+                    requests.push(Request::Output {
+                        name: callback.name.clone(),
+                        ordinal: expected.ordinal,
+                        channel: endpoint.channel.clone(),
+                        payload_type: endpoint.payload_type.to_owned(),
+                        capacity: endpoint.capacity,
+                    });
+                } else {
+                    requests.push(Request::Input {
+                        name: callback.name.clone(),
+                        ordinal: expected.ordinal,
+                    });
+                }
             }
         }
         if !remaining.is_empty() {
@@ -171,15 +203,37 @@ impl ExactReplayPlan {
         }
         // Validate the complete descriptor before any endpoints are added or rewired.
         let mut endpoints = Vec::new();
-        for (name, ordinal, output) in requests {
-            let bind = if output {
-                plan.observe_output(&name, ordinal)
-                    .map(EndpointBinding::Output)
-            } else {
-                plan.inject_input(&name, ordinal, 1)
-                    .map(EndpointBinding::Input)
-            }
-            .map_err(|e| ReplayError::Setup(e.to_string()))?;
+        for request in requests {
+            let (name, ordinal, bind) = match request {
+                Request::Input { name, ordinal } => {
+                    let bind = plan
+                        .inject_input(&name, ordinal, 1)
+                        .map(EndpointBinding::Input)
+                        .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                    (name, ordinal, bind)
+                }
+                Request::Output {
+                    name,
+                    ordinal,
+                    channel,
+                    payload_type,
+                    capacity,
+                } => {
+                    let binding = plan
+                        .observe_output(&name, ordinal)
+                        .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                    (
+                        name,
+                        ordinal,
+                        EndpointBinding::Output {
+                            binding,
+                            channel,
+                            payload_type,
+                            capacity,
+                        },
+                    )
+                }
+            };
             endpoints.push((name, ordinal, bind));
         }
         Ok(Self {
@@ -211,11 +265,18 @@ impl ExactReplayPlan {
                     ordinal,
                     bind(bindings).map_err(|e| ReplayError::Setup(e.to_string()))?,
                 )?,
-                EndpointBinding::Output(bind) => replay.add_output(
-                    name,
-                    ordinal,
-                    bind(bindings).map_err(|e| ReplayError::Setup(e.to_string()))?,
-                )?,
+                EndpointBinding::Output {
+                    binding,
+                    channel,
+                    payload_type,
+                    capacity,
+                } => {
+                    let capture = OutputCapture::new(channel, payload_type, capacity);
+                    binding
+                        .attach(bindings, capture.sink())
+                        .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                    replay.add_output(name, ordinal, capture)?;
+                }
             }
         }
         Ok(replay)

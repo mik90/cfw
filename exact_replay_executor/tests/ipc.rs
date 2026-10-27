@@ -1,9 +1,7 @@
 #![cfg(feature = "iceoryx2")]
-use exact_replay_executor::{ExactReplayExecutor, ReplayBindings, ReplayLog};
+use exact_replay_executor::{ExactReplayExecutor, OutputCapture, ReplayBindings, ReplayLog};
 use iceoryx2::prelude::ZeroCopySend;
-use logging::{
-    Capture, EndpointCapture, ExecutionRecorder, LogFileWriter, LogSession, ReplaySource,
-};
+use logging::{Capture, ExecutionRecorder, LogFileWriter, LogSession, ReplaySource};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -221,7 +219,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
             "observe",
             0,
             output
-                .configure_publisher(declaration.output_key(), |p| EndpointCapture::ipc(p, 2))
+                .configure_publisher(declaration.output_key(), |p| OutputCapture::ipc(p, 2))
                 .unwrap(),
         )
         .unwrap();

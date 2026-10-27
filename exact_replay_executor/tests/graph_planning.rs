@@ -1,4 +1,4 @@
-use exact_replay_executor::{ExactReplayExecutor, ExactReplayPlan, ReplayLog};
+use exact_replay_executor::{ExactReplayExecutor, ExactReplayPlan, OutputCapture, ReplayLog};
 use logging::{CaptureOptions, ExecutionRecorder, GraphCapturePlan, LogSession};
 use std::{
     io::Write,
@@ -215,9 +215,7 @@ fn explicit_custom_endpoints_can_be_combined_with_automatic_bindings() {
             bindings
                 .native::<Value>("shared")
                 .unwrap()
-                .configure_publisher(&output_key, |publisher| {
-                    logging::EndpointCapture::native(publisher, 2)
-                })
+                .configure_publisher(&output_key, |publisher| OutputCapture::native(publisher, 2))
                 .unwrap(),
         )
         .unwrap();

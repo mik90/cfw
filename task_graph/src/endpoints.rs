@@ -252,12 +252,27 @@ impl GraphPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::OutputSink;
+    use std::sync::{Arc, Mutex};
     use task::{
         SubscriberPolicy,
         loggable::{DeserializeError, Loggable, SerializeError},
         message::MessageHeader,
         time::FrameworkTime,
     };
+
+    type Captured = Arc<Mutex<Vec<(MessageHeader, Vec<u8>)>>>;
+
+    #[derive(Clone, Default)]
+    struct TestSink(Captured);
+    impl OutputSink for TestSink {
+        fn captured(&mut self, header: MessageHeader, payload: Vec<u8>) {
+            self.0.lock().unwrap().push((header, payload));
+        }
+        fn failed(&mut self, error: SerializeError) {
+            panic!("output capture failed: {error}");
+        }
+    }
 
     struct Value(u8);
     impl Loggable for Value {
@@ -335,7 +350,10 @@ mod tests {
         assert!(plan.observe_output("writer", 0).is_err());
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let mut capture = capture(&bindings).unwrap();
+        let captured = TestSink::default();
+        capture
+            .attach(&bindings, Box::new(captured.clone()))
+            .unwrap();
         let channel = bindings.native::<Value>("data").unwrap();
         let mut first = channel.take_publisher(&first).unwrap();
         let mut second = channel.take_publisher(&second).unwrap();
@@ -345,7 +363,7 @@ mod tests {
         first.flush(now);
         second.publish(Value(7)).unwrap();
         second.flush(now);
-        let captured = capture.take().unwrap();
+        let captured = captured.0.lock().unwrap();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].1, [3]);
         input.update();
