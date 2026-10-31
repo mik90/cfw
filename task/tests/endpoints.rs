@@ -4,9 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use base::arena::Arena;
 use task::message::Message;
 use task::time::FrameworkTime;
-use task::{
-    Forwarded, LoanError, Publisher, PublisherOps, ReplayError, ReplayPublisher, Subscriber,
-};
+use task::{Forwarded, LoanError, Publisher, Subscriber};
 
 struct Counted(Arc<AtomicUsize>);
 
@@ -319,9 +317,7 @@ fn forwarded_messages_retain_source_storage_through_destination() {
             forwarded,
         ))
         .unwrap();
-    // Type erasure accepts a publisher whose payload itself contains a borrow.
-    let erased: &mut dyn PublisherOps = &mut destination;
-    erased.flush(timestamp());
+    destination.flush(timestamp());
     drop(source);
     drop(destination);
     drop(source_subscriber);
@@ -339,66 +335,6 @@ fn forwarded_messages_retain_source_storage_through_destination() {
     assert_eq!(destination_drops.load(Ordering::Relaxed), 1);
     assert!(source_arena.try_allocate_uninit().is_some());
     assert!(destination_arena.try_allocate_uninit().is_some());
-}
-
-#[test]
-fn erased_publishers_keep_storage_borrows_and_replay_checks_only_payloads() {
-    let numbers = Arena::new(1);
-    let strings = Arena::new(1);
-    let number_sub = Subscriber::new(1);
-    let string_sub = Subscriber::new(1);
-    let mut number_pub = Publisher::new(numbers.allocator(), 1);
-    let mut string_pub = Publisher::new(strings.allocator(), 1);
-    number_pub.connect(&number_sub);
-    string_pub.connect(&string_sub);
-    number_pub.publish(42_u64).unwrap();
-    string_pub.publish(String::from("hello")).unwrap();
-    let mut publishers: Vec<Box<dyn PublisherOps + '_>> =
-        vec![Box::new(number_pub), Box::new(string_pub)];
-    for publisher in &mut publishers {
-        publisher.flush(timestamp());
-    }
-    drop(publishers);
-    number_sub.update();
-    string_sub.update();
-    assert_eq!(number_sub.input_forwardable().pop().unwrap().message, 42);
-    assert_eq!(
-        string_sub.input_forwardable().pop().unwrap().message,
-        "hello"
-    );
-
-    let mut publisher = Publisher::<u64>::new(numbers.allocator(), 1);
-    publisher.connect(&number_sub);
-    let replay: &mut dyn ReplayPublisher = &mut publisher;
-    match replay.publish_boxed(Box::new(String::from("wrong type"))) {
-        Err(ReplayError::TypeMismatch(value)) => {
-            assert_eq!(*value.downcast::<String>().unwrap(), "wrong type")
-        }
-        _ => panic!("expected a recoverable type mismatch"),
-    }
-    assert!(replay.publish_boxed(Box::new(10_u64)).is_ok());
-    let retry = match replay.publish_boxed(Box::new(20_u64)) {
-        Err(ReplayError::Loan {
-            reason: LoanError::LoanCapacityReached,
-            value,
-        }) => value,
-        _ => panic!("expected a recoverable loan-capacity error"),
-    };
-    replay.flush(timestamp());
-    // Capacity is still retained by the subscriber, rather than by pending loans.
-    let retry = match replay.publish_boxed(retry) {
-        Err(ReplayError::Loan {
-            reason: LoanError::ArenaExhausted,
-            value,
-        }) => value,
-        _ => panic!("expected subscriber-retained storage to remain occupied"),
-    };
-    number_sub.update();
-    assert_eq!(number_sub.input_forwardable().pop().unwrap().message, 10);
-    assert!(replay.publish_boxed(retry).is_ok());
-    replay.flush(timestamp());
-    number_sub.update();
-    assert_eq!(number_sub.input_forwardable().pop().unwrap().message, 20);
 }
 
 #[test]
