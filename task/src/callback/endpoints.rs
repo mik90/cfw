@@ -1,6 +1,6 @@
 //! Statically dispatched traversal of heterogeneous callback endpoints.
 use crate::{
-    LoanError, Publisher, Subscriber, message::MessageHeader, recording::Transport,
+    LoanError, Publisher, Subscriber, execution_log_schema::Transport, message::MessageHeader,
     time::FrameworkTime, wake::WakeHandle,
 };
 
@@ -37,7 +37,7 @@ pub trait InputEndpoint: Endpoint {
         Err(LoanError::Transport("unknown replay event endpoint".into()))
     }
     #[cfg(feature = "iceoryx2")]
-    fn take_registration(&mut self) -> Option<crate::iox2::Iox2EventRegistration> {
+    fn take_registration(&mut self) -> Option<crate::iox2::Iox2EventRegistration<'static>> {
         None
     }
 }
@@ -323,7 +323,7 @@ mod ipc {
         fn stage_event(&mut self, id: usize, count: u64) -> Result<(), LoanError> {
             self.stage_replay(id, count)
         }
-        fn take_registration(&mut self) -> Option<Iox2EventRegistration> {
+        fn take_registration(&mut self) -> Option<Iox2EventRegistration<'static>> {
             self.take_registration()
         }
     }

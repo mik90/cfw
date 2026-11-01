@@ -131,7 +131,7 @@ This executor is meant for triaging/reproducing an issue seen on the robot.
 Exact replay requires a log that contains execution logs which are produced by the frame during execution (surprisingly).
 Generally we can assume this executor is replaying execution from the live_executor, but it can theoretically reproduce executions from any executor.
 
-An executor can be configured to emit [execution logs](./task/src/execution_log.rs) which track
+An executor can be configured to emit [execution logs](./task/src/execution_log_schema.rs) which track
 - the time the callback executed
 - what inputs the callback executed with
 - what outputs the callback emitted

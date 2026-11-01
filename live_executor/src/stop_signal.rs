@@ -1,44 +1,68 @@
 use crate::pool_state::Scheduler;
 use crossbeam::channel::Receiver;
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
 
-/// May outlive the execution scope: it references scheduling metadata only.
+/// Event targets borrow callback publishers; the router lives only while the
+/// executor graph storage is alive.
+#[cfg(feature = "iceoryx2")]
+pub(crate) struct EventRouter<'storage> {
+    pub targets: BTreeMap<(String, usize), task::iox2::Iox2EventTarget<'storage>>,
+}
+
+/// Stop and drain controls. `'storage` is the graph lifetime used by event
+/// target observers.
 #[derive(Clone)]
-pub struct StopSignal(pub(crate) Arc<Scheduler>);
+pub struct StopSignal<'storage> {
+    scheduler: Arc<Scheduler>,
+    #[cfg(feature = "iceoryx2")]
+    events: Arc<OnceLock<EventRouter<'storage>>>,
+}
 
-impl StopSignal {
+impl<'storage> StopSignal<'storage> {
+    pub(crate) fn new(
+        scheduler: Arc<Scheduler>,
+        #[cfg(feature = "iceoryx2")] events: Arc<OnceLock<EventRouter<'storage>>>,
+    ) -> Self {
+        Self {
+            scheduler,
+            #[cfg(feature = "iceoryx2")]
+            events,
+        }
+    }
+
     /// Stop generating timer work after dispatching currently due timers, then
     /// wait for queued/running work and pending IPC readiness to drain. Gated
     /// callbacks awaiting absent inputs are idle. Future external input is outside
     /// this boundary; the caller should stop its producers first.
     pub fn drain(&self, now: task::time::FrameworkTime, timeout: std::time::Duration) -> bool {
-        self.0.quiesce_timers(now);
+        self.scheduler.quiesce_timers(now);
         let started = std::time::Instant::now();
         loop {
             if self.is_stopped() || started.elapsed() >= timeout {
                 return false;
             }
-            let generation = self.0.completion_epoch();
-            if self.0.is_idle() {
+            let generation = self.scheduler.completion_epoch();
+            if self.scheduler.is_idle() {
                 #[cfg(feature = "iceoryx2")]
                 {
-                    let ticket = self.0.request_poll();
-                    while !self.0.polled(ticket) {
+                    let ticket = self.scheduler.request_poll();
+                    while !self.scheduler.polled(ticket) {
                         if self.is_stopped() || started.elapsed() >= timeout {
                             return false;
                         }
                         let _ = self
-                            .0
+                            .scheduler
                             .stop_rx
                             .recv_timeout(std::time::Duration::from_millis(1));
                     }
                 }
-                if self.0.is_idle() && generation == self.0.completion_epoch() {
+                if self.scheduler.is_idle() && generation == self.scheduler.completion_epoch() {
                     return true;
                 }
             }
             let _ = self
-                .0
+                .scheduler
                 .stop_rx
                 .recv_timeout(std::time::Duration::from_millis(1));
         }
@@ -57,10 +81,9 @@ impl StopSignal {
             return Err("executor is stopped".into());
         }
         let target = self
-            .0
-            .event_targets
+            .events
             .get()
-            .and_then(|targets| targets.get(&(callback.into(), ordinal)))
+            .and_then(|router| router.targets.get(&(callback.into(), ordinal)))
             .ok_or_else(|| format!("unknown event recipient '{callback}' subscriber {ordinal}"))?;
         if target.channel != channel {
             return Err(format!(
@@ -72,23 +95,23 @@ impl StopSignal {
         Ok(())
     }
     pub fn request_stop(&self) {
-        self.0.request_stop();
+        self.scheduler.request_stop();
     }
     pub fn is_stopped(&self) -> bool {
-        self.0.is_stopped()
+        self.scheduler.is_stopped()
     }
     /// Block until shutdown is requested, including a worker failure.
     pub fn wait(&self) {
-        let _ = self.0.stop_rx.recv();
+        let _ = self.scheduler.stop_rx.recv();
     }
     /// Disconnection signals shutdown to every receiver. A main-thread signal
     /// loop can select on this alongside its OS-signal/event receiver.
     pub fn receiver(&self) -> Receiver<()> {
-        self.0.stop_rx.clone()
+        self.scheduler.stop_rx.clone()
     }
 }
 
-impl task::executor::ExecutorStopSignal for StopSignal {
+impl task::executor::ExecutorStopSignal for StopSignal<'_> {
     fn request_stop(&self) {
         StopSignal::request_stop(self);
     }

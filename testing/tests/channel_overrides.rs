@@ -1,8 +1,6 @@
+use logging::{RecordingOptions, StandaloneExecutionLogPlan};
 use std::time::Duration;
-use task::{
-    LoanError, Publisher, RequiredInput,
-    recording::{Direction, ExecutionRecorder},
-};
+use task::{LoanError, Publisher, RequiredInput, execution_log_schema::Direction};
 use task_graph::{CallbackSchedule, GraphPlan, Task};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
@@ -99,12 +97,12 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     let storage = plan.allocate().unwrap();
     let (graph, bindings) = storage.bind_and_build().unwrap();
     assert!(storage.build().is_err());
-    let recorder = ExecutionRecorder::new(1);
-    let mut graph = testing::UnitTestExecutor::new_with_graph(
-        graph.with_recording(&recorder).unwrap(),
-        Default::default(),
-    );
-    let descriptor = recorder.descriptor().unwrap();
+    let log_plan =
+        StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 1).unwrap();
+    let log_storage = log_plan.allocate().unwrap();
+    let (graph, metadata, mut log_captures) = log_storage.attach(graph).unwrap();
+    let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
+    let descriptor = metadata.descriptor.clone();
     let endpoints = &descriptor.callbacks[0].endpoints;
     assert_eq!(
         (
@@ -144,7 +142,10 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     assert_eq!(capture.input_forwardable().value(), Some(&42));
     extra.update();
     assert_eq!(extra.input_forwardable().value(), Some(&42));
-    assert_eq!(recorder.drain()[0].inputs[0].ordinal, 0);
+    let rows = log_captures[0].drain_to_vec().unwrap();
+    let record: task::execution_log_schema::ExecutionRecord =
+        serde_json::from_slice(&rows[0].1).unwrap();
+    assert_eq!(record.inputs[0].ordinal, 0);
 }
 
 #[test]

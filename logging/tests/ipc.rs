@@ -1,14 +1,14 @@
 #![cfg(all(feature = "serde", feature = "iceoryx2"))]
 use iceoryx2::prelude::{EventId, ZeroCopySend};
-use logging::{Capture, ExecutionRecorder, ReplaySource};
+use logging::{Capture, RecordingOptions, ReplaySource, StandaloneExecutionLogPlan};
 use std::time::Duration;
 use task::iox2::{
     Iox2ChannelPlan, Iox2Event, Iox2NotifyOutput, Iox2OptionalInput, Iox2Output, Iox2Runtime,
 };
 use task::{
     ChannelPlan, RequiredInput,
+    execution_log_schema::{Outcome, Transport},
     message::MessageHeader,
-    recording::{Outcome, Transport},
     time::FrameworkTime,
 };
 use task_graph::{CallbackSchedule, GraphBuilder};
@@ -80,8 +80,11 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
         CallbackSchedule::input_triggered().with_execution_duration(Duration::from_nanos(2)),
         || Ok(Observe.bind(declaration, &input, &input, &gate, &output, &events)?),
     );
-    let recorder = ExecutionRecorder::new(2);
-    let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    let graph = graph.build().unwrap();
+    let log_plan =
+        StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 2).unwrap();
+    let log_storage = log_plan.allocate().unwrap();
+    let (graph, metadata, mut log_captures) = log_storage.attach(graph).unwrap();
     let mut simulation = simulation_executor::SimulationState::with_config(
         graph,
         simulation_executor::SimulationConfig {
@@ -107,7 +110,7 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
         .unwrap();
     assert!(simulation.step().unwrap().executed.is_empty());
     assert!(
-        recorder.drain().is_empty(),
+        log_captures[0].drain_to_vec().unwrap().is_empty(),
         "gated callbacks did not execute"
     );
     #[derive(Clone, Default)]
@@ -121,34 +124,6 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
             Ok(())
         }
     }
-    let bytes = Bytes::default();
-    let mut log = logging::LogSession::new(
-        logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
-        vec![],
-    )
-    .with_recording(recorder.clone())
-    .unwrap();
-    log.flush().unwrap();
-    let reader =
-        logging::log_file_json::JsonLogFileReader::from_reader(bytes.0.lock().unwrap().as_slice())
-            .unwrap();
-    use logging::LogFileReader;
-    let entry = reader.entry(0).unwrap();
-    assert_eq!(
-        entry.channel_name,
-        task::recording::IOX2_EVENT_RECORD_CHANNEL
-    );
-    let activation: logging::Iox2EventRecord =
-        serde_json::from_slice(entry.serialized_body).unwrap();
-    assert_eq!(activation.observed_at.to_nanoseconds(), 10);
-    assert_eq!(
-        (
-            activation.callback_id.index(),
-            activation.iox2_event.ordinal,
-            activation.iox2_event.count
-        ),
-        (0, 1, 5)
-    );
     let mut publisher = gate.take_publisher(&gate_key).unwrap();
     simulation
         .schedule_at(FrameworkTime::from_nanoseconds(20), move |time| {
@@ -159,7 +134,11 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
         .unwrap();
     assert!(simulation.step().unwrap().executed.is_empty());
     assert_eq!(simulation.step().unwrap().executed, [0]);
-    let records = recorder.drain();
+    let rows = log_captures[0].drain_to_vec().unwrap();
+    let records: Vec<task::execution_log_schema::ExecutionRecord> = rows
+        .iter()
+        .map(|(_, body)| serde_json::from_slice(body).unwrap())
+        .collect();
     assert_eq!(records.len(), 1);
     let record = &records[0];
     assert_eq!(record.outcome, Outcome::Committed);
@@ -189,8 +168,36 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
         [(0, 0, 1), (1, 17, 1)]
     );
     assert_eq!(
-        recorder.descriptor().unwrap().callbacks[0].endpoints[1].transport,
+        metadata.descriptor.callbacks[0].endpoints[1].transport,
         Transport::Iox2Event
+    );
+    let bytes = Bytes::default();
+    let mut log = logging::LogSession::new(
+        logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
+        log_captures,
+    )
+    .with_execution_log(metadata.clone())
+    .unwrap();
+    log.flush().unwrap();
+    let reader =
+        logging::log_file_json::JsonLogFileReader::from_reader(bytes.0.lock().unwrap().as_slice())
+            .unwrap();
+    use logging::LogFileReader;
+    let entry = reader.entry(0).unwrap();
+    assert_eq!(
+        entry.channel_name,
+        task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL
+    );
+    let activation: logging::Iox2EventRecord =
+        serde_json::from_slice(entry.serialized_body).unwrap();
+    assert_eq!(activation.observed_at.to_nanoseconds(), 10);
+    assert_eq!(
+        (
+            activation.callback_id.index(),
+            activation.iox2_event.ordinal,
+            activation.iox2_event.count
+        ),
+        (0, 1, 5)
     );
     let messages = Capture::ipc(output.take_subscriber(&capture).unwrap())
         .drain_to_vec()
@@ -264,8 +271,11 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
     graph.add_callback("observe", || {
         Ok(Observe.bind(declaration, &input, &input, &gate, &output, &events)?)
     });
-    let recorder = ExecutionRecorder::new(4);
-    let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+    let graph = graph.build().unwrap();
+    let log_plan =
+        StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 4).unwrap();
+    let log_storage = log_plan.allocate().unwrap();
+    let (graph, _metadata, mut log_captures) = log_storage.attach(graph).unwrap();
     ReplaySource::iox2(input.take_publisher(&data_key).unwrap())
         .inject(
             MessageHeader::new(FrameworkTime::from_nanoseconds(7)),
@@ -286,10 +296,10 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
         .run_with(|stop| {
             let start = std::time::Instant::now();
             loop {
-                let records = recorder.drain();
-                if !records.is_empty() {
+                let rows = log_captures[0].drain_to_vec().unwrap();
+                if !rows.is_empty() {
                     stop.request_stop();
-                    break records;
+                    break rows;
                 }
                 assert!(
                     start.elapsed() < Duration::from_secs(10),
@@ -299,8 +309,16 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
             }
         })
         .unwrap();
+    let records: Vec<task::execution_log_schema::ExecutionRecord> = records
+        .iter()
+        .map(|(_, body)| serde_json::from_slice(body).unwrap())
+        .collect();
     assert_eq!(records[0].outcome, Outcome::Committed);
-    let arrivals = recorder.drain_iox2_event_records();
+    let rows = log_captures[1].drain_to_vec().unwrap();
+    let arrivals: Vec<task::execution_log_schema::Iox2EventRecord> = rows
+        .iter()
+        .map(|(_, body)| serde_json::from_slice(body).unwrap())
+        .collect();
     assert_eq!(arrivals.len(), 1);
     assert_eq!(
         arrivals[0].observed_at,

@@ -1,7 +1,9 @@
 use super::{Callback, endpoints::*};
 use crate::{
     Context, LoanError,
-    recording::{Direction, EndpointDescriptor, LoggedIox2Event, LoggedMessage, Transport},
+    execution_log_schema::{
+        Direction, EndpointDescriptor, LoggedIox2Event, LoggedMessage, Transport,
+    },
     time::FrameworkTime,
     wake::WakeHandle,
 };
@@ -136,10 +138,13 @@ where
             .unwrap_or_else(|| Err(LoanError::Transport("unknown replay event endpoint".into())))
     }
     #[cfg(feature = "iceoryx2")]
-    fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
-        let mut registrations = Registrations(Vec::new());
-        self.inputs.visit_mut(&mut registrations);
-        registrations.0
+    fn take_iox2_events<'a>(
+        &mut self,
+        visit: &mut dyn FnMut(crate::iox2::Iox2EventRegistration<'a>),
+    ) where
+        Self: 'a,
+    {
+        self.inputs.visit_mut(&mut Registrations { visit });
     }
 }
 
@@ -332,12 +337,14 @@ impl InputVisitorMut for StageEvent {
     }
 }
 #[cfg(feature = "iceoryx2")]
-struct Registrations(Vec<crate::iox2::Iox2EventRegistration>);
+struct Registrations<'a, 'b> {
+    visit: &'b mut dyn FnMut(crate::iox2::Iox2EventRegistration<'a>),
+}
 #[cfg(feature = "iceoryx2")]
-impl InputVisitorMut for Registrations {
+impl InputVisitorMut for Registrations<'_, '_> {
     fn visit(&mut self, endpoint: &mut impl InputEndpoint) {
         if let Some(registration) = endpoint.take_registration() {
-            self.0.push(registration);
+            (self.visit)(registration);
         }
     }
 }

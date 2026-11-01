@@ -1,7 +1,7 @@
 //! Shared streaming input selection for simulated and wall-clock-paced replay.
 use crate::{BoxedLogError, OwnedLogEntry, ReplaySource, SortedLogStreamReader};
 use std::collections::{BTreeMap, HashSet};
-use task::{recording::*, time::FrameworkTime};
+use task::{execution_log_schema::*, time::FrameworkTime};
 enum Pending {
     Data(OwnedLogEntry),
     Iox2Event {

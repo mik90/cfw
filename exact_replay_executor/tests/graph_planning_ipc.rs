@@ -1,6 +1,8 @@
 #![cfg(feature = "iceoryx2")]
 use exact_replay_executor::{ExactReplayExecutor, ExactReplayPlan, ReplayLog};
-use logging::{CaptureOptions, ExecutionRecorder, GraphCapturePlan, LogSession};
+use logging::{
+    CaptureOptions, GraphCapturePlan, LogSession, RecordingOptions, StandaloneExecutionLogPlan,
+};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -75,12 +77,11 @@ fn automatic_ipc_hydration_is_endpoint_local_and_preserves_event_ordinals() {
         let capture = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(16)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let recorder = ExecutionRecorder::new(16);
-        let mut graph = storage
-            .build_with(&bindings)
-            .unwrap()
-            .with_recording(&recorder)
-            .unwrap();
+        let graph = storage.build_with(&bindings).unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 16).unwrap();
+        let log_storage = log_plan.allocate().unwrap();
+        let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule = task_graph::CallbackSchedule {
                 run_on_start: true,
@@ -89,11 +90,13 @@ fn automatic_ipc_hydration_is_endpoint_local_and_preserves_event_ordinals() {
             };
         });
         let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
+        let mut captures = capture.bind(&bindings).unwrap();
+        captures.extend(log_captures);
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
-            capture.bind(&bindings).unwrap(),
+            captures,
         )
-        .with_recording(recorder)
+        .with_execution_log(metadata)
         .unwrap();
         graph
             .run_until(FrameworkTime::from_nanoseconds(11), 32)

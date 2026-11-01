@@ -15,6 +15,8 @@ default = ["iceoryx2"]
 iceoryx2 = ["task/iceoryx2", "task_graph/iceoryx2", "simulation_executor/iceoryx2", "dep:iceoryx2"]
 
 [dev-dependencies]
+logging = { path = "../logging" }
+serde_json = { workspace = true }
 task_macros = { path = "../task_macros" }
 
 [lints]

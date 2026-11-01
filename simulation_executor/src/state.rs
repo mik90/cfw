@@ -94,9 +94,9 @@ pub struct SimulationState<'storage> {
     actions: BTreeMap<(FrameworkTime, usize), Action<'storage>>,
     action_sequence: usize,
     #[cfg(feature = "iceoryx2")]
-    events: Vec<task::iox2::Iox2EventRegistration>,
+    events: Vec<task::iox2::Iox2EventRegistration<'storage>>,
     #[cfg(feature = "iceoryx2")]
-    event_targets: BTreeMap<(String, usize), EventTarget>,
+    event_targets: BTreeMap<(String, usize), EventTarget<'storage>>,
 }
 
 impl<'storage> SimulationState<'storage> {
@@ -168,7 +168,9 @@ impl<'storage> SimulationState<'storage> {
             node.callback.set_waker(notification.clone());
             #[cfg(feature = "iceoryx2")]
             {
-                let registrations = node.callback.take_iox2_events();
+                let mut registrations = Vec::new();
+                node.callback
+                    .take_iox2_events(&mut |registration| registrations.push(registration));
                 let targets =
                     task::iox2::event_targets(&registrations, node.callback.recording_endpoints())
                         .map_err(|error| {
@@ -261,7 +263,7 @@ impl<'storage> SimulationState<'storage> {
         &self,
         callback: &str,
         ordinal: usize,
-    ) -> Result<EventTarget, StepError> {
+    ) -> Result<EventTarget<'storage>, StepError> {
         self.event_targets
             .get(&(callback.into(), ordinal))
             .cloned()
@@ -272,7 +274,7 @@ impl<'storage> SimulationState<'storage> {
             })
     }
     #[cfg(feature = "iceoryx2")]
-    pub(crate) fn replay_event_targets(&self) -> BTreeMap<(String, usize), EventTarget> {
+    pub(crate) fn replay_event_targets(&self) -> BTreeMap<(String, usize), EventTarget<'storage>> {
         self.event_targets.clone()
     }
 

@@ -33,10 +33,6 @@ pub(crate) struct Scheduler {
     #[cfg(feature = "iceoryx2")]
     poll_completed: AtomicUsize,
     #[cfg(feature = "iceoryx2")]
-    pub event_targets: std::sync::OnceLock<
-        std::collections::BTreeMap<(String, usize), task::iox2::Iox2EventTarget>,
-    >,
-    #[cfg(feature = "iceoryx2")]
     external_stop: std::sync::OnceLock<WakeHandle>,
     pub pools: Vec<PoolState>,
     nodes: Vec<NodeState>,
@@ -72,8 +68,6 @@ impl Scheduler {
             poll_requested: AtomicUsize::new(0),
             #[cfg(feature = "iceoryx2")]
             poll_completed: AtomicUsize::new(0),
-            #[cfg(feature = "iceoryx2")]
-            event_targets: std::sync::OnceLock::new(),
             #[cfg(feature = "iceoryx2")]
             external_stop: std::sync::OnceLock::new(),
             pools,

@@ -2,7 +2,7 @@ use exact_replay_executor::{
     DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, OutputCapture, ReplayBindings,
     ReplayError, ReplayInputPlan, ReplayLog,
 };
-use logging::{CapturePlan, ExecutionRecorder, LogSession};
+use logging::{CapturePlan, LogSession, RecordingOptions, StandaloneExecutionLogPlan};
 use std::{
     collections::HashMap,
     io::Write,
@@ -123,8 +123,15 @@ fn recorded(log_source: bool) -> ReplayLog {
         graph.add_callback("transform", || {
             Ok(Transform { factor: 2 }.bind(b, &source, &output)?)
         });
-        let recorder = ExecutionRecorder::new(8);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let graph = graph.build().unwrap();
+        let log_plan = StandaloneExecutionLogPlan::for_graph(
+            &graph,
+            task::execution_log_schema::RecordingOptions::default(),
+            8,
+        )
+        .unwrap();
+        let log_storage = log_plan.allocate().unwrap();
+        let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule = task_graph::CallbackSchedule {
                 run_on_start: true,
@@ -137,11 +144,12 @@ fn recorded(log_source: bool) -> ReplayLog {
         if let Some(capture) = source_capture {
             captures.push(capture.bind(&source).unwrap());
         }
+        captures.extend(log_captures);
         let log = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             captures,
         )
-        .with_recording(recorder)
+        .with_execution_log(metadata)
         .unwrap();
         graph.run_until(at(11), 32).unwrap();
         log.finish().unwrap();
@@ -350,11 +358,11 @@ fn panic_is_terminal_even_in_best_effort_and_stop_is_scope_local_metadata() {
 }
 
 fn log_from(
-    descriptor: task::recording::ExecutionDescriptor,
-    records: Vec<task::recording::ExecutionRecord>,
+    descriptor: task::execution_log_schema::ExecutionDescriptor,
+    records: Vec<task::execution_log_schema::ExecutionRecord>,
     payloads: Vec<(&str, i64, Vec<u8>)>,
 ) -> Result<ReplayLog, ReplayError> {
-    use task::{message::MessageHeader, recording::*};
+    use task::{execution_log_schema::*, message::MessageHeader};
     let mut tables = InternTables::default();
     for callback in &descriptor.callbacks {
         tables.callbacks.intern(&callback.name);
@@ -394,7 +402,7 @@ fn log_from(
 }
 #[test]
 fn missing_and_ambiguous_payloads_and_failed_records_cannot_claim_exactness() {
-    use task::recording::*;
+    use task::execution_log_schema::*;
     let original = recorded(true);
     let descriptor = original.descriptor_ref().clone();
     assert!(
@@ -450,7 +458,7 @@ fn missing_and_ambiguous_payloads_and_failed_records_cannot_claim_exactness() {
 
 #[test]
 fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
-    use task::recording::*;
+    use task::execution_log_schema::*;
     let empty = logging::log_file_json::JsonLogFileReader::from_reader(b"".as_slice()).unwrap();
     assert!(matches!(
         ReplayLog::from_reader(&empty),
@@ -511,7 +519,7 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
 
 #[test]
 fn publisher_lookup_and_batch_headers_are_validated_before_execution() {
-    use task::{message::MessageHeader, recording::*};
+    use task::{execution_log_schema::*, message::MessageHeader};
     let descriptor = recorded(true).descriptor_ref().clone();
     for header in [
         MessageHeader {
@@ -568,7 +576,7 @@ fn incomplete_logs_are_rejected_even_when_the_surviving_trace_is_valid() {
         let mut writer = logging::log_file_json::JsonLogFileWriter::new(bytes.clone());
         writer
             .write_artifact(
-                task::recording::EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
+                task::execution_log_schema::EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
                 &serde_json::to_vec(recorded(true).descriptor_ref()).unwrap(),
             )
             .unwrap();
@@ -639,8 +647,11 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
         graph.add_callback("pair", || {
             Ok(TwoInputs.bind(declaration, &shared, &shared, &result)?)
         });
-        let recorder = ExecutionRecorder::new(1);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let graph = graph.build().unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 1).unwrap();
+        let log_storage = log_plan.allocate().unwrap();
+        let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule = task_graph::CallbackSchedule::on_start()
                 .with_execution_duration(std::time::Duration::ZERO);
@@ -652,11 +663,13 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
                 ..Default::default()
             },
         );
+        let mut captures = vec![capture.bind(&shared).unwrap(), out.bind(&result).unwrap()];
+        captures.extend(log_captures);
         let log = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
-            vec![capture.bind(&shared).unwrap(), out.bind(&result).unwrap()],
+            captures,
         )
-        .with_recording(recorder)
+        .with_execution_log(metadata)
         .unwrap();
         logging::ReplaySource::native(shared.take_publisher(&first).unwrap())
             .inject(task::message::MessageHeader::new(at(0)), b"1")
@@ -745,18 +758,23 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
         graph.add_callback("pair", || {
             Ok(TwoOutputs { swapped: false }.bind(declaration, &bindings, &bindings)?)
         });
-        let recorder = ExecutionRecorder::new(1);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let graph = graph.build().unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 1).unwrap();
+        let log_storage = log_plan.allocate().unwrap();
+        let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule = task_graph::CallbackSchedule::on_start()
                 .with_execution_duration(std::time::Duration::ZERO);
         });
         let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
+        let mut captures = vec![capture.bind(&bindings).unwrap()];
+        captures.extend(log_captures);
         let log = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
-            vec![capture.bind(&bindings).unwrap()],
+            captures,
         )
-        .with_recording(recorder)
+        .with_execution_log(metadata)
         .unwrap();
         graph.run_until_idle(8).unwrap();
         log.finish().unwrap();
@@ -872,8 +890,12 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 });
                 graph.add_callback("forward", || Ok(Forward.bind(b, &source, &forward)?));
                 graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
-                let recorder = ExecutionRecorder::new(8);
-                let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+                let graph = graph.build().unwrap();
+                let log_plan =
+                    StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 8)
+                        .unwrap();
+                let log_storage = log_plan.allocate().unwrap();
+                let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
                 graph.configure_schedules(|_, schedule| {
                     *schedule = task_graph::CallbackSchedule {
                         run_on_start: true,
@@ -892,11 +914,12 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 if let Some(capture) = forward_log {
                     captures.push(capture.bind(&forward).unwrap());
                 }
+                captures.extend(log_captures);
                 let log = LogSession::new(
                     logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
                     captures,
                 )
-                .with_recording(recorder)
+                .with_execution_log(metadata)
                 .unwrap();
                 graph.run_until(at(11), 32).unwrap();
                 log.finish().unwrap();

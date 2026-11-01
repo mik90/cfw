@@ -1,5 +1,5 @@
 //! Owned, deterministic graph inspection before or after storage allocation.
-use task::recording::Transport;
+use task::execution_log_schema::Transport;
 
 pub use task::channel::ChannelTopology;
 #[derive(Clone, Debug)]

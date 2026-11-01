@@ -14,6 +14,8 @@ pub mod replay_source;
 #[cfg(feature = "serde")]
 pub use replay_feed::ReplayFeed;
 pub mod diagnostics;
+#[cfg(feature = "serde")]
+pub mod execution_log;
 pub mod intern_tables;
 #[cfg(feature = "serde")]
 pub use intern_tables::read_intern_tables;
@@ -30,12 +32,17 @@ pub use sorted_log_stream::{LogReadError, OwnedLogEntry, SortedLogStreamReader};
 pub mod testing;
 
 pub use capture::{Capture, CapturePlan};
+#[cfg(feature = "serde")]
+pub use execution_log::{
+    ExecutionLogBindings, ExecutionLogPlan, StandaloneExecutionLog, StandaloneExecutionLogPlan,
+};
 pub use replay_source::{ReplaySource, ReplaySourcePlan};
 pub use session::{LogSession, LogStatus};
-pub use task::recording::{
-    ExecutionDescriptor, ExecutionRecord, ExecutionRecorder, Iox2EventRecord, RecordingMode,
-    RecordingOptions,
+pub use task::execution_log_schema::{
+    ExecutionDescriptor, ExecutionRecord, Iox2EventRecord, RecordingMode, RecordingOptions,
 };
+#[cfg(feature = "serde")]
+pub use task_graph::execution_log::ExecutionLogMetadata;
 #[cfg(feature = "testing")]
 pub use testing::InMemoryWriter;
 

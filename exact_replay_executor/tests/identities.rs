@@ -1,7 +1,7 @@
 use exact_replay_executor::{
     ExactReplayExecutor, OutputCapture, ReplayBindings, ReplayInputPlan, ReplayLog, SourceCachePlan,
 };
-use logging::{CapturePlan, ExecutionRecorder, LogSession};
+use logging::{CapturePlan, LogSession, RecordingOptions, StandaloneExecutionLogPlan};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -130,8 +130,12 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         graph.add_callback("forward", || Ok(Forward.bind(f, &source, &forward)?));
         graph.add_callback("observe", || Ok(Observe.bind(o, &source, &observed)?));
         graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
-        let recorder = ExecutionRecorder::new(10);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let graph = graph.build().unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 10).unwrap();
+        let log_storage = log_plan.allocate().unwrap();
+        let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
+        let descriptor = metadata.descriptor.clone();
         graph.configure_schedules(|name, schedule| {
             *schedule = if matches!(name, "a" | "b") {
                 task_graph::CallbackSchedule {
@@ -162,16 +166,16 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         if let Some(log) = forward_log {
             captures.push(log.bind(&forward).unwrap());
         }
+        captures.extend(log_captures);
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
             captures,
         )
-        .with_recording(recorder.clone())
+        .with_execution_log(metadata)
         .unwrap();
         graph
             .run_until(FrameworkTime::from_nanoseconds(11), 32)
             .unwrap();
-        let descriptor = recorder.descriptor().unwrap();
         assert_eq!(
             descriptor.callbacks[0].endpoints[0].publisher_index,
             Some(0)

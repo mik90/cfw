@@ -52,12 +52,12 @@ impl std::fmt::Display for LiveReplayError {
     }
 }
 impl std::error::Error for LiveReplayError {}
-pub struct ReplayControl<C: TimeSource = MonotonicClock> {
+pub struct ReplayControl<'storage, C: TimeSource = MonotonicClock> {
     clock: ReplayTimeSource<C>,
-    stop: StopSignal,
+    stop: StopSignal<'storage>,
     exhausted: Arc<AtomicBool>,
 }
-impl<C: TimeSource> Clone for ReplayControl<C> {
+impl<C: TimeSource> Clone for ReplayControl<'_, C> {
     fn clone(&self) -> Self {
         Self {
             clock: self.clock.clone(),
@@ -66,7 +66,7 @@ impl<C: TimeSource> Clone for ReplayControl<C> {
         }
     }
 }
-impl<C: TimeSource> ReplayControl<C> {
+impl<C: TimeSource> ReplayControl<'_, C> {
     pub fn pause(&self) {
         self.clock.pause();
     }
@@ -104,7 +104,7 @@ pub struct ReplayCompletion {
 pub struct LiveReplayExecutor<'storage, C: TimeSource = MonotonicClock> {
     inner: LiveExecutor<'storage, ReplayTimeSource<C>>,
     feed: ReplayFeed<'storage>,
-    control: ReplayControl<C>,
+    control: ReplayControl<'storage, C>,
     config: LiveReplayConfig,
 }
 impl<'storage> LiveReplayExecutor<'storage> {
@@ -117,8 +117,8 @@ impl<'storage> LiveReplayExecutor<'storage> {
         Self::with_clock(graph, reader, sources, config, MonotonicClock::default())
     }
 }
-struct StopOnDrop(StopSignal);
-impl Drop for StopOnDrop {
+struct StopOnDrop<'storage>(StopSignal<'storage>);
+impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
         self.0.request_stop();
     }
@@ -161,7 +161,7 @@ impl<'storage, C: TimeSource> LiveReplayExecutor<'storage, C> {
             config,
         })
     }
-    pub fn control(&self) -> ReplayControl<C> {
+    pub fn control(&self) -> ReplayControl<'storage, C> {
         self.control.clone()
     }
     pub fn run(self) -> Result<ReplayCompletion, LiveReplayError> {
@@ -172,7 +172,7 @@ impl<'storage, C: TimeSource> LiveReplayExecutor<'storage, C> {
     /// are scoped and joined, including when the controller panics or returns early.
     pub fn run_with<R>(
         self,
-        controller: impl FnOnce(&ReplayControl<C>) -> R,
+        controller: impl FnOnce(&ReplayControl<'storage, C>) -> R,
     ) -> Result<(R, ReplayCompletion), LiveReplayError> {
         let Self {
             inner,
@@ -203,7 +203,7 @@ impl<'storage, C: TimeSource> LiveReplayExecutor<'storage, C> {
 }
 fn play<C: TimeSource>(
     feed: &mut ReplayFeed<'_>,
-    control: &ReplayControl<C>,
+    control: &ReplayControl<'_, C>,
     config: &LiveReplayConfig,
 ) -> Result<ReplayCompletion, LiveReplayError> {
     let stopped = || ReplayCompletion {

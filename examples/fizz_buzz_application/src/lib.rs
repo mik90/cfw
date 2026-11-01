@@ -2,8 +2,8 @@ use std::path::Path;
 
 use exact_replay_executor::{ExactReplayConfig, ExactReplayExecutor, ExactReplayPlan, ReplayLog};
 use logging::{
-    CaptureOptions, ExecutionRecorder, GraphCapturePlan, GraphReplayPlan, LogSession,
-    ReplayOptions, ReplaySource,
+    CaptureOptions, ExecutionLogPlan, GraphCapturePlan, GraphReplayPlan, LogSession,
+    RecordingOptions, ReplayOptions, ReplaySource,
 };
 use task_graph::{ApplicationBuilder, BuiltGraph};
 use test_tasks::{
@@ -65,15 +65,17 @@ pub fn with_recording<R>(
         options = options.exclude(INTEGER_CHANNEL);
     }
     let captures = GraphCapturePlan::declare(&mut plan, &options)?;
+    let execution_log =
+        ExecutionLogPlan::declare(&mut plan, RecordingOptions::default(), CAPACITY)?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.bind_and_build()?;
-    let recorder = ExecutionRecorder::new(CAPACITY * 3);
-    let graph = graph.with_recording(&recorder)?;
-    let captures = captures.bind(&bindings)?;
+    let (graph, metadata, execution_captures) = execution_log.attach(graph, &bindings)?;
+    let mut captures = captures.bind(&bindings)?;
+    captures.extend(execution_captures);
     let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(
         std::fs::File::create(path)?,
     ));
-    let session = LogSession::new(writer, captures).with_recording(recorder)?;
+    let session = LogSession::new(writer, captures).with_execution_log(metadata)?;
     run(graph, session, collected)
 }
 

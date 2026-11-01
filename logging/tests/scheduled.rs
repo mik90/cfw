@@ -309,7 +309,7 @@ fn invalid_schedule_trigger_count_and_duplicate_attachment_are_rejected() {
 #[cfg(feature = "serde")]
 #[test]
 fn shards_share_a_writer_and_record_only_workload_callbacks_once() {
-    use task::recording::{
+    use task::execution_log_schema::{
         EXECUTION_LOG_CHANNEL, EXECUTION_LOG_DESCRIPTOR_ARTIFACT, ExecutionDescriptor,
     };
     let mut a = ChannelPlan::new("a");
@@ -325,16 +325,21 @@ fn shards_share_a_writer_and_record_only_workload_callbacks_once() {
     let schedule = CallbackSchedule::on_start().with_execution_duration(Duration::ZERO);
     builder.add_scheduled_callback("a", schedule.clone(), || Ok(Source.bind(a_source, &a)?));
     builder.add_scheduled_callback("b", schedule, || Ok(Source.bind(b_source, &b)?));
-    let recorder = logging::ExecutionRecorder::new(8);
-    let graph = builder.build().unwrap().with_recording(&recorder).unwrap();
-    let writer = Writer::default();
-    let logger = LoggingScope::new(
-        writer.clone(),
-        vec![a_log.bind(&a).unwrap(), b_log.bind(&b).unwrap()],
-        2,
+    let graph = builder.build().unwrap();
+    let log_plan = logging::StandaloneExecutionLogPlan::for_graph(
+        &graph,
+        logging::RecordingOptions::default(),
+        8,
     )
-    .with_recording(recorder)
     .unwrap();
+    let log_storage = log_plan.allocate().unwrap();
+    let (graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
+    let writer = Writer::default();
+    let mut captures = vec![a_log.bind(&a).unwrap(), b_log.bind(&b).unwrap()];
+    captures.extend(log_captures);
+    let logger = LoggingScope::new(writer.clone(), captures, 2)
+        .with_execution_log(metadata)
+        .unwrap();
     let status = logger.status();
     {
         let graph = logger

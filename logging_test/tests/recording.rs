@@ -1,4 +1,7 @@
-use logging::{CapturePlan, ExecutionRecord, ExecutionRecorder, InMemoryWriter, LogSession};
+use logging::{
+    CapturePlan, ExecutionRecord, InMemoryWriter, LogSession, RecordingOptions,
+    StandaloneExecutionLogPlan,
+};
 use simulation_executor::{SimulationConfig, SimulationState};
 use std::time::Duration;
 use task::{ChannelPlan, Output};
@@ -33,14 +36,19 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
                     .with_execution_duration(Duration::from_nanos(2)),
                 || Ok(Counter(0).bind(declaration, &values)?),
             );
-            let recorder = ExecutionRecorder::new(8);
-            let graph = builder.build().unwrap().with_recording(&recorder).unwrap();
-            let captures = capture
+            let graph = builder.build().unwrap();
+            let log_plan =
+                StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 8)
+                    .unwrap();
+            let log_storage = log_plan.allocate().unwrap();
+            let (graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
+            let mut captures: Vec<_> = capture
                 .map(|c| c.bind(&values).unwrap())
                 .into_iter()
                 .collect();
+            captures.extend(log_captures);
             let mut session = LogSession::new(writer, captures)
-                .with_recording(recorder)
+                .with_execution_log(metadata)
                 .unwrap();
             let mut simulation = SimulationState::with_config(
                 graph,
@@ -72,14 +80,17 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
         let records: Vec<ExecutionRecord> = data
             .messages()
             .iter()
-            .filter(|m| m.channel() == task::recording::EXECUTION_LOG_CHANNEL)
+            .filter(|m| m.channel() == task::execution_log_schema::EXECUTION_LOG_CHANNEL)
             .map(|m| serde_json::from_slice(m.body()).unwrap())
             .collect();
         assert_eq!(records.len(), 4);
         for (index, record) in records.iter().enumerate() {
             assert_eq!(record.execution_time.to_nanoseconds(), index as i64 * 12);
             assert_eq!(record.outputs.len(), 1);
-            assert_eq!(record.outcome, task::recording::Outcome::Committed);
+            assert_eq!(
+                record.outcome,
+                task::execution_log_schema::Outcome::Committed
+            );
             if capture_payload {
                 assert_eq!(
                     serde_json::from_slice::<u64>(payloads[index].body()).unwrap(),

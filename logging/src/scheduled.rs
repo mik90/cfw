@@ -1,7 +1,7 @@
 //! Scoped periodic and explicitly event-triggered logging, independent of task macros.
 //!
 //! Declare captures and flush-event subscribers before allocating storage. Build
-//! the workload graph, attach its ExecutionRecorder if needed, then create a
+//! the workload graph, attach execution-log publishers if needed, then create a
 //! LoggingScope and append periodic or event logger callbacks. Release the graph
 //! or executor before calling LoggingScope::finish. Keeping a LoggingStatus clone
 //! also makes final best-effort cleanup errors observable after scope destruction.
@@ -20,6 +20,8 @@ use task::{
     Callback, ChannelBindings, ChannelPlan, Context, LoanError, Subscriber, SubscriberKey,
     SubscriberPolicy,
 };
+#[cfg(feature = "serde")]
+use task_graph::execution_log::ExecutionLogMetadata;
 use task_graph::{BuiltGraph, CallbackSchedule, ScheduledCallback};
 
 #[derive(Clone)]
@@ -147,6 +149,13 @@ impl<'a> FlushTrigger<'a> {
             Self::Ipc(subscriber) => subscriber.set_waker(wake),
         }
     }
+    #[cfg(feature = "iceoryx2")]
+    fn take_registration(&mut self) -> Option<task::iox2::Iox2EventRegistration<'static>> {
+        match self {
+            Self::Native(_) => None,
+            Self::Ipc(subscriber) => subscriber.take_registration(),
+        }
+    }
 }
 
 /// Own sessions outside the executor so final draining happens after callbacks stop.
@@ -179,7 +188,7 @@ impl<'storage> LoggingScope<'storage> {
         requested_shards.max(1).min(captured_channels.max(1))
     }
     /// Round-robin channels across shards; clamp to at least one and at most the
-    /// number of captured channels (one empty shard can still drain a recorder).
+    /// number of captured channels (one empty shard can still drain execution metadata).
     pub fn new(
         writer: impl LogFileWriter + 'static,
         captures: Vec<Capture<'storage>>,
@@ -239,19 +248,19 @@ impl<'storage> LoggingScope<'storage> {
         }
         self
     }
-    /// Attach the recorder to the workload graph first, then configure this scope,
-    /// then append logger callbacks. Only shard zero drains recording metadata.
+    /// Attach execution-log metadata to the first session. Other shards share
+    /// the same registry and write through the same capture.
     #[cfg(feature = "serde")]
-    pub fn with_recording(
+    pub fn with_execution_log(
         mut self,
-        recorder: task::recording::ExecutionRecorder,
+        metadata: ExecutionLogMetadata,
     ) -> Result<Self, BoxedLogError> {
-        self.sessions[0]
-            .get_mut()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .attach_recording(recorder, self.channels.clone())?;
+        let mut slot = self.sessions[0].lock().unwrap_or_else(|p| p.into_inner());
+        let mut session = slot.take().expect("logging session must be present");
+        session.attach_execution_log_for(metadata, self.channels.clone())?;
+        self.status.shards[0] = session.status();
+        *slot = Some(session);
+        drop(slot);
         Ok(self)
     }
     pub fn attach_periodic<'scope>(
@@ -367,6 +376,17 @@ impl Callback for LogTask<'_, '_> {
             trigger.set_waker(wake);
         }
     }
+    #[cfg(feature = "iceoryx2")]
+    fn take_iox2_events<'a>(&mut self, visit: &mut dyn FnMut(task::iox2::Iox2EventRegistration<'a>))
+    where
+        Self: 'a,
+    {
+        if let Some(trigger) = &mut self.trigger
+            && let Some(registration) = trigger.take_registration()
+        {
+            visit(registration);
+        }
+    }
     fn has_pending_inputs(&self) -> bool {
         self.trigger.as_ref().is_some_and(FlushTrigger::pending)
     }
@@ -401,14 +421,5 @@ impl Callback for LogTask<'_, '_> {
             .expect("logging session must outlive its graph")
             .flush_at(context.now);
         Ok(())
-    }
-    #[cfg(feature = "iceoryx2")]
-    fn take_iox2_events(&mut self) -> Vec<task::iox2::Iox2EventRegistration> {
-        match &mut self.trigger {
-            Some(FlushTrigger::Ipc(subscriber)) => {
-                subscriber.take_registration().into_iter().collect()
-            }
-            _ => Vec::new(),
-        }
     }
 }

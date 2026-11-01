@@ -244,7 +244,7 @@ impl<T> Iox2ChannelPlan<T> {
             forwarding_retention_per_publisher: 0,
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),
-            transport: crate::recording::Transport::Iox2Data,
+            transport: crate::execution_log_schema::Transport::Iox2Data,
             publishers: self
                 .publishers
                 .iter()
@@ -1277,7 +1277,7 @@ impl Iox2EventSubscriber {
             }
         }
     }
-    pub fn take_registration(&mut self) -> Option<Iox2EventRegistration> {
+    pub fn take_registration(&mut self) -> Option<Iox2EventRegistration<'static>> {
         Some(Iox2EventRegistration {
             observer: None,
             channel: self.channel.clone(),
@@ -1321,25 +1321,25 @@ impl<'a> Iox2Event<'a> {
             .map(|record| (record.event_id, record.count))
     }
 }
-pub struct Iox2EventRegistration {
-    pub observer: Option<EventObserver>,
+pub struct Iox2EventRegistration<'a> {
+    pub observer: Option<EventObserver<'a>>,
     pub channel: String,
     pub listener: Listener<ipc_threadsafe::Service>,
     pub staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
     pub wake: WakeHandle,
     _runtime: Arc<Iox2Runtime>,
 }
-pub type EventObserver = Arc<dyn Fn(FrameworkTime, EventRecord) + Send + Sync>;
+pub type EventObserver<'a> = Arc<dyn Fn(FrameworkTime, EventRecord) + Send + Sync + 'a>;
 
 /// Owned event staging state, independent of callback and arena borrows.
 #[derive(Clone)]
-pub struct Iox2EventTarget {
+pub struct Iox2EventTarget<'a> {
     pub channel: String,
     staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
     wake: WakeHandle,
-    observer: Option<EventObserver>,
+    observer: Option<EventObserver<'a>>,
 }
-impl Iox2EventTarget {
+impl<'a> Iox2EventTarget<'a> {
     pub fn inject(&self, at: FrameworkTime, event_id: EventId, count: u64) {
         if count != 0 {
             let record = EventRecord { event_id, count };
@@ -1351,8 +1351,8 @@ impl Iox2EventTarget {
         }
     }
 }
-impl Iox2EventRegistration {
-    pub fn target(&self) -> Iox2EventTarget {
+impl<'a> Iox2EventRegistration<'a> {
+    pub fn target(&self) -> Iox2EventTarget<'a> {
         Iox2EventTarget {
             channel: self.channel.clone(),
             staging: self.staging.clone(),
@@ -1363,11 +1363,11 @@ impl Iox2EventRegistration {
 }
 
 /// Match received event endpoints to registrations before executor-specific dispatch.
-pub fn event_targets(
-    events: &[Iox2EventRegistration],
-    endpoints: Option<Vec<crate::recording::EndpointDescriptor>>,
-) -> Result<std::collections::BTreeMap<usize, Iox2EventTarget>, String> {
-    use crate::recording::{Direction, Transport};
+pub fn event_targets<'a>(
+    events: &[Iox2EventRegistration<'a>],
+    endpoints: Option<Vec<crate::execution_log_schema::EndpointDescriptor>>,
+) -> Result<std::collections::BTreeMap<usize, Iox2EventTarget<'a>>, String> {
+    use crate::execution_log_schema::{Direction, Transport};
     let mut targets = std::collections::BTreeMap::new();
     if let Some(endpoints) = endpoints {
         let endpoints: Vec<_> = endpoints

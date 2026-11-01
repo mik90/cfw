@@ -59,8 +59,8 @@ impl GraphReplayPlan {
             .filter(|c| !options.excluded_channels.contains(c))
             .collect();
         for channel in &channels {
-            if channel == task::recording::EXECUTION_LOG_CHANNEL
-                || channel == task::recording::IOX2_EVENT_RECORD_CHANNEL
+            if channel == task::execution_log_schema::EXECUTION_LOG_CHANNEL
+                || channel == task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL
             {
                 return Err(BuildError(format!(
                     "reserved replay source channel '{channel}'"
@@ -86,8 +86,8 @@ impl GraphReplayPlan {
         Ok(Self::declare(
             plan,
             reader.channel_names().iter().filter(|channel| {
-                channel.as_str() != task::recording::EXECUTION_LOG_CHANNEL
-                    && channel.as_str() != task::recording::IOX2_EVENT_RECORD_CHANNEL
+                channel.as_str() != task::execution_log_schema::EXECUTION_LOG_CHANNEL
+                    && channel.as_str() != task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL
             }),
             options,
         )?)

@@ -18,7 +18,7 @@ pub struct CaptureLoss {
 pub struct RecordingIncompleteness {
     pub captures: Vec<CaptureLoss>,
     /// Aggregate loss from the recorder's shared execution/event queue budget.
-    pub recorder_entries_dropped: usize,
+    pub execution_log_entries_dropped: usize,
     pub errors: Vec<String>,
     #[serde(default)]
     pub diagnostics: Vec<crate::LogDiagnostic>,

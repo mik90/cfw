@@ -314,7 +314,7 @@ impl GraphPlan {
         for (name, (plan, _)) in &self.events {
             if !self.channels.contains_key(name) {
                 let mut channel = plan.topology();
-                channel.transport = task::recording::Transport::Iox2Event;
+                channel.transport = task::execution_log_schema::Transport::Iox2Event;
                 snapshot.channels.push(channel);
             }
         }
@@ -350,7 +350,7 @@ impl GraphPlan {
             .filter(|endpoint| {
                 endpoint.channel == name
                     && endpoint.output
-                    && endpoint.transport == task::recording::Transport::Native
+                    && endpoint.transport == task::execution_log_schema::Transport::Native
             })
             .map(|endpoint| endpoint.index)
             .collect();
@@ -686,7 +686,7 @@ mod ipc {
                 .filter(|endpoint| {
                     endpoint.channel == name
                         && endpoint.output
-                        && endpoint.transport == task::recording::Transport::Iox2Data
+                        && endpoint.transport == task::execution_log_schema::Transport::Iox2Data
                 })
                 .map(|endpoint| endpoint.index)
                 .collect();

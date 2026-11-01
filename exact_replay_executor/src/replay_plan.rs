@@ -18,7 +18,7 @@
 //! ```
 use crate::{OutputCapture, ReplayBindings, ReplayError, ReplayLog, SourceCache, SourceCachePlan};
 use std::collections::{BTreeMap, BTreeSet};
-use task::recording::{Direction, Transport};
+use task::execution_log_schema::{Direction, Transport};
 use task_graph::{GraphBindings, GraphPlan, capture::OutputBinding, replay::SourceBinding};
 
 enum EndpointBinding {

@@ -3,6 +3,7 @@ mod application;
 pub mod bundle;
 pub mod capture;
 pub mod endpoints;
+pub mod execution_log;
 pub mod graph;
 mod plan;
 pub mod replay;

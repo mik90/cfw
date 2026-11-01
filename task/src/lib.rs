@@ -1,6 +1,7 @@
 pub mod callback;
 pub mod channel;
 pub mod context;
+pub mod execution_log_schema;
 pub mod executor;
 pub mod forwarded_message;
 pub mod input;
@@ -10,7 +11,6 @@ pub mod loggable;
 pub mod message;
 pub mod output;
 pub mod publisher;
-pub mod recording;
 pub mod storage;
 pub mod string_interner;
 pub mod subscriber;

@@ -81,7 +81,7 @@ pub struct ChannelTopology {
     pub forwarding_retention_per_publisher: usize,
     pub name: String,
     pub payload_type: &'static str,
-    pub transport: crate::recording::Transport,
+    pub transport: crate::execution_log_schema::Transport,
     /// Per-publisher loan capacities, in declaration order.
     pub publishers: Vec<usize>,
     /// Per-subscriber retained window capacities, in declaration order.
@@ -112,7 +112,7 @@ impl<T> ChannelPlan<T> {
             forwarding_retention_per_publisher: self.forwarding_retention,
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),
-            transport: crate::recording::Transport::Native,
+            transport: crate::execution_log_schema::Transport::Native,
             publishers: self
                 .publishers
                 .iter()

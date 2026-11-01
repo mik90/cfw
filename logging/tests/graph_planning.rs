@@ -288,7 +288,7 @@ fn replay_planning_rejects_missing_and_contextual_decoders_without_mutating_publ
         "opaque",
         "contextual",
         "missing",
-        task::recording::EXECUTION_LOG_CHANNEL,
+        task::execution_log_schema::EXECUTION_LOG_CHANNEL,
     ] {
         assert!(
             GraphReplayPlan::declare(&mut plan, ["input", channel], &ReplayOptions::new(1))
@@ -413,7 +413,7 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
 #[cfg(feature = "serde")]
 #[test]
 fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
-    use logging::{ExecutionRecorder, LogFileReader, LogSession};
+    use logging::{LogFileReader, LogSession, RecordingOptions, StandaloneExecutionLogPlan};
     use std::{
         io::Write,
         sync::{Arc, Mutex},
@@ -438,23 +438,24 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
             GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(capacity)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
-        let recorder = ExecutionRecorder::new(1);
-        let mut graph = storage
-            .build_with(&bindings)
-            .unwrap()
-            .with_recording(&recorder)
-            .unwrap();
+        let graph = storage.build_with(&bindings).unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 1).unwrap();
+        let log_storage = log_plan.allocate().unwrap();
+        let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule =
                 CallbackSchedule::on_start().with_execution_duration(std::time::Duration::ZERO);
         });
         let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
         let bytes = Bytes::default();
+        let mut captures = captures.bind(&bindings).unwrap();
+        captures.extend(log_captures);
         let session = LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
-            captures.bind(&bindings).unwrap(),
+            captures,
         )
-        .with_recording(recorder)
+        .with_execution_log(metadata)
         .unwrap();
         graph.run_until_idle(8).unwrap();
         assert_eq!(session.finish().is_ok(), capacity == 2);
@@ -462,9 +463,9 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
             bytes.0.lock().unwrap().as_slice(),
         )
         .unwrap();
-        let descriptor: task::recording::ExecutionDescriptor = serde_json::from_slice(
+        let descriptor: task::execution_log_schema::ExecutionDescriptor = serde_json::from_slice(
             reader
-                .artifact(task::recording::EXECUTION_LOG_DESCRIPTOR_ARTIFACT)
+                .artifact(task::execution_log_schema::EXECUTION_LOG_DESCRIPTOR_ARTIFACT)
                 .unwrap(),
         )
         .unwrap();

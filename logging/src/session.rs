@@ -2,14 +2,17 @@ pub use crate::diagnostics::LogStatus;
 use crate::{
     BoxedLogError, Capture, DiagnosticKind, DiagnosticPolicy, LogDiagnostic, LogFileWriter,
 };
-use task::{recording::ExecutionRecorder, time::FrameworkTime};
+use task::time::FrameworkTime;
+#[cfg(feature = "serde")]
+use task_graph::execution_log::ExecutionLogMetadata;
 
 /// Storage must outlive the session. Known failures are sticky and, with serde,
 /// persisted best-effort. Final cleanup never propagates a diagnostic-policy panic.
 pub struct LogSession<'a> {
     captures: Vec<Capture<'a>>,
     writer: Box<dyn LogFileWriter>,
-    recorder: Option<ExecutionRecorder>,
+    #[cfg(feature = "serde")]
+    execution_log: Option<ExecutionLogMetadata>,
     status: LogStatus,
     policy: DiagnosticPolicy,
     finished: bool,
@@ -27,7 +30,8 @@ impl<'a> LogSession<'a> {
         Self {
             captures,
             writer: Box::new(writer),
-            recorder: None,
+            #[cfg(feature = "serde")]
+            execution_log: None,
             status: LogStatus::new(registry),
             policy: DiagnosticPolicy::Silent,
             finished: false,
@@ -40,47 +44,59 @@ impl<'a> LogSession<'a> {
     pub(crate) fn set_diagnostic_policy(&mut self, policy: DiagnosticPolicy) {
         self.policy = policy;
     }
+    /// Attach execution-log metadata without starting the session.
     #[cfg(feature = "serde")]
-    pub fn with_recording(mut self, recorder: ExecutionRecorder) -> Result<Self, BoxedLogError> {
+    pub(crate) fn attach_execution_log(
+        &mut self,
+        metadata: ExecutionLogMetadata,
+    ) -> Result<(), BoxedLogError> {
         let channels = self
             .captures
             .iter()
             .map(|c| c.channel().to_owned())
             .collect();
-        self.attach_recording(recorder, channels)?;
-        self.start()?;
-        Ok(self)
+        self.attach_execution_log_for(metadata, channels)
     }
     #[cfg(feature = "serde")]
-    pub(crate) fn attach_recording(
+    pub(crate) fn attach_execution_log_for(
         &mut self,
-        recorder: ExecutionRecorder,
-        channels: Vec<String>,
+        metadata: ExecutionLogMetadata,
+        mut channels: Vec<String>,
     ) -> Result<(), BoxedLogError> {
-        let mut descriptor = recorder
-            .descriptor()
-            .ok_or("recorder must be attached before constructing the log session")?;
+        let mut descriptor = metadata.descriptor.clone();
+        channels.retain(|channel| {
+            channel != task::execution_log_schema::EXECUTION_LOG_CHANNEL
+                && channel != task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL
+        });
         descriptor.logged_channels = channels;
         descriptor.logged_channels.sort();
         descriptor.logged_channels.dedup();
-        self.status.registry.configure(
-            recorder
-                .intern_tables()
-                .ok_or("recorder name tables missing")?,
-        )?;
+        self.status
+            .registry
+            .configure(metadata.intern_tables.clone())?;
         self.status.registry.recording(descriptor)?;
-        self.recorder = Some(recorder);
+        self.execution_log = Some(metadata);
         Ok(())
     }
-    /// Supply graph tables before starting a standalone session. Scoped loggers
-    /// obtain them from the attached graph, and recorders supply them automatically.
+    /// Attach execution-log metadata. Records arrive through captures; this only
+    /// supplies the descriptor and drop counters.
+    #[cfg(feature = "serde")]
+    pub fn with_execution_log(
+        mut self,
+        metadata: ExecutionLogMetadata,
+    ) -> Result<Self, BoxedLogError> {
+        self.attach_execution_log(metadata)?;
+        self.start()?;
+        Ok(self)
+    }
+    /// Supply graph tables before starting a standalone session.
     pub fn with_intern_tables(self, tables: crate::InternTables) -> Result<Self, BoxedLogError> {
         self.status.registry.configure(tables)?;
         Ok(self)
     }
     /// Write intern tables first, then the execution descriptor when present.
-    /// Idempotent. Scope attachment and with_recording call this before returning;
-    /// capture-only sessions can call it explicitly or start on their first flush.
+    /// Idempotent. Capture-only sessions can call it explicitly or start on their
+    /// first flush.
     pub fn start(&mut self) -> Result<(), BoxedLogError> {
         if let Err(error) = self.status.registry.start(self.writer.as_mut()) {
             let start = self.status.diagnostics().len();
@@ -151,56 +167,34 @@ impl<'a> LogSession<'a> {
             }
         }
         #[cfg(feature = "serde")]
-        if let Some(recorder) = &self.recorder {
-            if recorder.dropped() != 0 {
+        if let Some(metadata) = &self.execution_log {
+            if metadata.dropped_records() != 0 {
                 let error: BoxedLogError = format!(
-                    "execution recording overflow: {} records dropped",
-                    recorder.dropped()
+                    "execution log overflow: {} records dropped",
+                    metadata.dropped_records()
                 )
                 .into();
                 self.report(
                     DiagnosticKind::Overflow,
                     at,
-                    Some(task::recording::EXECUTION_LOG_CHANNEL),
+                    Some(task::execution_log_schema::EXECUTION_LOG_CHANNEL),
                     &error,
                 );
                 first.get_or_insert(error);
             }
-            for record in recorder.drain() {
-                let result = (|| {
-                    self.writer.store_message(
-                        task::recording::EXECUTION_LOG_CHANNEL,
-                        &task::message::MessageHeader::new(record.execution_time),
-                        &serde_json::to_vec(&record)?,
-                    )
-                })();
-                if let Err(error) = result {
-                    self.report(
-                        DiagnosticKind::Write,
-                        Some(record.execution_time),
-                        Some(task::recording::EXECUTION_LOG_CHANNEL),
-                        &error,
-                    );
-                    first.get_or_insert(error);
-                }
-            }
-            for event in recorder.drain_iox2_event_records() {
-                let result = (|| {
-                    self.writer.store_message(
-                        task::recording::IOX2_EVENT_RECORD_CHANNEL,
-                        &task::message::MessageHeader::new(event.observed_at),
-                        &serde_json::to_vec(&event)?,
-                    )
-                })();
-                if let Err(error) = result {
-                    self.report(
-                        DiagnosticKind::Write,
-                        Some(event.observed_at),
-                        Some(task::recording::IOX2_EVENT_RECORD_CHANNEL),
-                        &error,
-                    );
-                    first.get_or_insert(error);
-                }
+            if metadata.dropped_iox2_event_records() != 0 {
+                let error: BoxedLogError = format!(
+                    "iox2 event record overflow: {} records dropped",
+                    metadata.dropped_iox2_event_records()
+                )
+                .into();
+                self.report(
+                    DiagnosticKind::Overflow,
+                    at,
+                    Some(task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL),
+                    &error,
+                );
+                first.get_or_insert(error);
             }
         }
         first.map_or(Ok(()), Err)
@@ -214,7 +208,10 @@ impl<'a> LogSession<'a> {
         self.status.registry.start(self.writer.as_mut())?;
         let snapshot = crate::incompleteness::RecordingIncompleteness {
             captures: self.captures.iter().map(Capture::loss).collect(),
-            recorder_entries_dropped: self.recorder.as_ref().map_or(0, ExecutionRecorder::dropped),
+            execution_log_entries_dropped: self
+                .execution_log
+                .as_ref()
+                .map_or(0, ExecutionLogMetadata::dropped),
             errors,
             diagnostics: self.status.diagnostics(),
         };

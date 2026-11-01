@@ -33,12 +33,13 @@
 use clap::{Parser, Subcommand};
 use facet::Facet;
 use live_executor::LiveExecutor;
-use logging::{CaptureOptions, ExecutionRecorder, GraphCapturePlan, LogSession};
+use logging::{CaptureOptions, ExecutionLogPlan, GraphCapturePlan, LogSession};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use task::Output;
+use task::execution_log_schema::RecordingOptions;
 use task::loggable::Loggable;
 use task_graph::{ApplicationBuilder, CallbackSchedule};
 use task_macros::task_callback;
@@ -168,15 +169,16 @@ fn run_live(
     );
     let mut plan = app.plan()?;
     let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(32))?;
+    let execution_log = ExecutionLogPlan::declare(&mut plan, RecordingOptions::default(), 32)?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.bind_and_build()?;
-    let recorder = ExecutionRecorder::new(32);
-    let graph = graph.with_recording(&recorder)?;
+    let (graph, metadata, execution_captures) = execution_log.attach(graph, &bindings)?;
+    let mut captures = captures.bind(&bindings)?;
+    captures.extend(execution_captures);
     let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(
         std::fs::File::create(log_path)?,
     ));
-    let mut session =
-        LogSession::new(writer, captures.bind(&bindings)?).with_recording(recorder)?;
+    let mut session = LogSession::new(writer, captures).with_execution_log(metadata)?;
     LiveExecutor::new(1, graph)?.run_with(|stop| -> Result<(), logging::BoxedLogError> {
         while !term.load(Ordering::Relaxed) && !stop.is_stopped() {
             session.flush()?;

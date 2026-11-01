@@ -35,7 +35,7 @@ pub struct ReplayDetail {
     pub callback: task::string_interner::CallbackId,
     pub channel: Option<task::string_interner::ChannelId>,
     pub time: task::time::FrameworkTime,
-    pub endpoint: Option<(task::recording::Direction, usize)>,
+    pub endpoint: Option<(task::execution_log_schema::Direction, usize)>,
     pub publication: Option<task::message::MessageHeader>,
     pub reason: String,
     pub reason_truncated: bool,
@@ -83,7 +83,7 @@ impl ChannelStats {
 /// [`replay_report`]: crate::ExactReplayExecutor::replay_report
 #[derive(Debug, Clone, Default)]
 pub struct ReplayReport {
-    intern_tables: task::recording::InternTables,
+    intern_tables: task::execution_log_schema::InternTables,
     details: Vec<ReplayDetail>,
     omitted_details: usize,
     total_executions: usize,
@@ -108,10 +108,10 @@ impl ReplayReport {
             errors: 0,
         }
     }
-    pub(crate) fn set_intern_tables(&mut self, tables: task::recording::InternTables) {
+    pub(crate) fn set_intern_tables(&mut self, tables: task::execution_log_schema::InternTables) {
         self.intern_tables = tables;
     }
-    pub fn intern_tables(&self) -> &task::recording::InternTables {
+    pub fn intern_tables(&self) -> &task::execution_log_schema::InternTables {
         &self.intern_tables
     }
     pub fn details(&self) -> &[ReplayDetail] {

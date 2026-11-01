@@ -1,7 +1,9 @@
 #![cfg(feature = "iceoryx2")]
 use exact_replay_executor::{ExactReplayExecutor, OutputCapture, ReplayBindings, ReplayLog};
 use iceoryx2::prelude::ZeroCopySend;
-use logging::{Capture, ExecutionRecorder, LogFileWriter, LogSession, ReplaySource};
+use logging::{
+    Capture, LogFileWriter, LogSession, RecordingOptions, ReplaySource, StandaloneExecutionLogPlan,
+};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -116,8 +118,11 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
             storage.2.name(),
         ]);
         graph.add_callback("observe", || Ok(callback));
-        let recorder = ExecutionRecorder::new(2);
-        let mut graph = graph.build().unwrap().with_recording(&recorder).unwrap();
+        let graph = graph.build().unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 2).unwrap();
+        let log_storage = log_plan.allocate().unwrap();
+        let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
             *schedule = task_graph::CallbackSchedule::on_start()
                 .with_execution_duration(std::time::Duration::ZERO);
@@ -136,10 +141,10 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         writer
             .store_message(&input_name, &input_header(4, 1), b"11")
             .unwrap();
-        let observed = task::recording::Iox2EventRecord {
+        let observed = task::execution_log_schema::Iox2EventRecord {
             callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
             observed_at: at(5),
-            iox2_event: task::recording::LoggedIox2Event {
+            iox2_event: task::execution_log_schema::LoggedIox2Event {
                 ordinal: 2,
                 event_id: 9,
                 count: 5,
@@ -147,20 +152,19 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         };
         writer
             .store_message(
-                task::recording::IOX2_EVENT_RECORD_CHANNEL,
+                task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL,
                 &MessageHeader::new(at(5)),
                 &serde_json::to_vec(&observed).unwrap(),
             )
             .unwrap();
-        let log = LogSession::new(
-            writer,
-            vec![
-                Capture::ipc(input.take_subscriber(&capture_input).unwrap()),
-                Capture::ipc(output.take_subscriber(&capture_output).unwrap()),
-            ],
-        )
-        .with_recording(recorder)
-        .unwrap();
+        let mut captures = vec![
+            Capture::ipc(input.take_subscriber(&capture_input).unwrap()),
+            Capture::ipc(output.take_subscriber(&capture_output).unwrap()),
+        ];
+        captures.extend(log_captures);
+        let log = LogSession::new(writer, captures)
+            .with_execution_log(metadata)
+            .unwrap();
         graph.run_until_idle(8).unwrap();
         log.finish().unwrap();
     }

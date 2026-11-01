@@ -16,6 +16,8 @@ pub struct LiveExecutor<'storage, T: TimeSource = WallClock> {
     nodes: Vec<ScheduledCallback<'storage>>,
     metadata: GraphMetadata,
     scheduler: Arc<Scheduler>,
+    #[cfg(feature = "iceoryx2")]
+    events: Arc<std::sync::OnceLock<crate::stop_signal::EventRouter<'storage>>>,
     clock: T,
 }
 
@@ -78,12 +80,17 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
             nodes,
             metadata,
             scheduler,
+            #[cfg(feature = "iceoryx2")]
+            events: Arc::new(std::sync::OnceLock::new()),
             clock,
         })
     }
 
-    pub fn stop_signal(&self) -> StopSignal {
-        StopSignal(self.scheduler.clone())
+    pub fn stop_signal(&self) -> StopSignal<'storage> {
+        #[cfg(feature = "iceoryx2")]
+        return StopSignal::new(self.scheduler.clone(), Arc::clone(&self.events));
+        #[cfg(not(feature = "iceoryx2"))]
+        return StopSignal::new(self.scheduler.clone());
     }
 
     /// Wait for an external stop request or a worker failure.
@@ -97,23 +104,28 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
     /// A controller panic is resumed only after all threads have joined.
     pub fn run_with<R>(
         self,
-        controller: impl FnOnce(&StopSignal) -> R,
+        controller: impl FnOnce(&StopSignal<'storage>) -> R,
     ) -> Result<R, LiveExecutorError> {
         self.run_checked(controller, |_| Ok(()))
     }
 
     fn run_checked<R>(
         self,
-        controller: impl FnOnce(&StopSignal) -> R,
+        controller: impl FnOnce(&StopSignal<'storage>) -> R,
         mut before_spawn: impl FnMut(usize) -> std::io::Result<()>,
     ) -> Result<R, LiveExecutorError> {
         let Self {
             mut nodes,
             metadata,
             scheduler,
+            #[cfg(feature = "iceoryx2")]
+            events,
             clock,
         } = self;
-        let stop = StopSignal(scheduler.clone());
+        #[cfg(feature = "iceoryx2")]
+        let stop = StopSignal::new(scheduler.clone(), Arc::clone(&events));
+        #[cfg(not(feature = "iceoryx2"))]
+        let stop = StopSignal::new(scheduler.clone());
         let _stop_on_exit = StopOnExit(stop.clone());
         let started = clock.now();
         let mut periodic = Vec::new();
@@ -138,20 +150,25 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
             node.callback.set_waker(scheduler.waker(index));
             #[cfg(feature = "iceoryx2")]
             {
-                let events = node.callback.take_iox2_events();
-                let targets =
-                    task::iox2::event_targets(&events, node.callback.recording_endpoints())
-                        .map_err(|error| {
-                            LiveExecutorError::Start(LiveExecutorStartError {
-                                reason: format!("callback '{}': {error}", node.name),
-                            })
-                        })?;
+                let mut registrations_for_node = Vec::new();
+                node.callback.take_iox2_events(&mut |registration| {
+                    registrations_for_node.push(registration)
+                });
+                let targets = task::iox2::event_targets(
+                    &registrations_for_node,
+                    node.callback.recording_endpoints(),
+                )
+                .map_err(|error| {
+                    LiveExecutorError::Start(LiveExecutorStartError {
+                        reason: format!("callback '{}': {error}", node.name),
+                    })
+                })?;
                 event_targets.extend(
                     targets
                         .into_iter()
                         .map(|(ordinal, target)| ((node.name.clone(), ordinal), target)),
                 );
-                registrations.extend(events);
+                registrations.extend(registrations_for_node);
             }
         }
         #[cfg(feature = "iceoryx2")]
@@ -167,7 +184,13 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
             Some(shutdown)
         };
         #[cfg(feature = "iceoryx2")]
-        assert!(scheduler.event_targets.set(event_targets).is_ok());
+        assert!(
+            events
+                .set(crate::stop_signal::EventRouter {
+                    targets: event_targets,
+                })
+                .is_ok()
+        );
         let initial: Vec<_> = nodes
             .iter()
             .enumerate()
@@ -290,8 +313,8 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
     }
 }
 
-struct StopOnExit(StopSignal);
-impl Drop for StopOnExit {
+struct StopOnExit<'storage>(StopSignal<'storage>);
+impl Drop for StopOnExit<'_> {
     fn drop(&mut self) {
         self.0.request_stop();
     }
@@ -369,8 +392,15 @@ mod tests {
             fn set_waker(&mut self, wake: task::wake::WakeHandle) {
                 self.0.set_waker(wake);
             }
-            fn take_iox2_events(&mut self) -> Vec<task::iox2::Iox2EventRegistration> {
-                self.0.take_registration().into_iter().collect()
+            fn take_iox2_events<'a>(
+                &mut self,
+                visit: &mut dyn FnMut(task::iox2::Iox2EventRegistration<'a>),
+            ) where
+                Self: 'a,
+            {
+                if let Some(registration) = self.0.take_registration() {
+                    visit(registration);
+                }
             }
             fn run(&mut self, _: &task::Context) -> Result<(), task::LoanError> {
                 Ok(())

@@ -344,13 +344,21 @@ fn record_sort_and_simulate_current_format_end_to_end() {
     }
     let bytes = Bytes::default();
     with_graph(|graph, source, input_capture, output_capture| {
-        let recorder = logging::ExecutionRecorder::new(8);
-        let graph = graph.with_recording(&recorder).unwrap();
+        let log_plan = logging::StandaloneExecutionLogPlan::for_graph(
+            &graph,
+            logging::RecordingOptions::default(),
+            8,
+        )
+        .unwrap();
+        let log_storage = log_plan.allocate().unwrap();
+        let (graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
+        let mut captures = vec![input_capture, output_capture];
+        captures.extend(log_captures);
         let log = logging::LogSession::new(
             logging::log_file_json::JsonLogFileWriter::new(bytes.clone()),
-            vec![input_capture, output_capture],
+            captures,
         )
-        .with_recording(recorder)
+        .with_execution_log(metadata)
         .unwrap();
         let mut simulation = simulation_executor::SimulationState::with_config(
             graph,
@@ -402,7 +410,7 @@ fn record_sort_and_simulate_current_format_end_to_end() {
 }
 
 fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
-    use task::recording::*;
+    use task::execution_log_schema::*;
     let descriptor = ExecutionDescriptor {
         callbacks: vec![CallbackDescriptor {
             recording_mode: RecordingMode::Full,
@@ -438,7 +446,7 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
     .unwrap()
 }
 fn descriptor_artifacts(
-    descriptor: &task::recording::ExecutionDescriptor,
+    descriptor: &task::execution_log_schema::ExecutionDescriptor,
 ) -> HashMap<String, Vec<u8>> {
     let mut tables = logging::InternTables::default();
     for callback in &descriptor.callbacks {
@@ -449,7 +457,7 @@ fn descriptor_artifacts(
     }
     HashMap::from([
         (
-            task::recording::EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
+            task::execution_log_schema::EXECUTION_LOG_DESCRIPTOR_ARTIFACT.into(),
             serde_json::to_vec(descriptor).unwrap(),
         ),
         (
@@ -499,8 +507,8 @@ mod ipc {
     use std::sync::{Arc, Mutex};
     use task::{
         Context, RequiredInput,
+        execution_log_schema::*,
         iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Runtime},
-        recording::*,
     };
     type Trace = Arc<Mutex<Vec<(&'static str, FrameworkTime, u64, u64)>>>;
     struct Observe {

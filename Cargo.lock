@@ -1624,6 +1624,8 @@ name = "testing"
 version = "0.1.0"
 dependencies = [
  "iceoryx2",
+ "logging",
+ "serde_json",
  "simulation_executor",
  "task",
  "task_graph",

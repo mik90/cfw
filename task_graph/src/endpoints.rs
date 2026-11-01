@@ -1,6 +1,6 @@
 //! Registered endpoint metadata and wiring.
 use crate::{BuildError, GraphPlan};
-use task::recording::Transport;
+use task::execution_log_schema::Transport;
 
 #[derive(Clone)]
 pub struct PlannedEndpoint {

@@ -37,14 +37,6 @@ rust_test(
     ),
 )
 
-rust_test(
-    name = "recording_test",
-    srcs = ["tests/recording.rs"],
-    deps = [":task_graph"] + all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ),
-)
 
 miri_test(
     name = "task_graph_miri",

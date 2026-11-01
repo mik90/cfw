@@ -190,7 +190,10 @@ fn event_is_retained_until_required_native_input_allows_execution() {
     let (sent, received) = crossbeam::channel::bounded(2);
     let mut callback = Gated { sent }.bind(declaration, &input, &event).unwrap();
     task::Callback::set_waker(&mut callback, std::sync::Arc::new(Noop));
-    let registrations = task::Callback::take_iox2_events(&mut callback);
+    let mut registrations = Vec::new();
+    task::Callback::take_iox2_events(&mut callback, &mut |registration| {
+        registrations.push(registration)
+    });
     registrations[0].staging.push(task::iox2::EventRecord {
         event_id: iceoryx2::prelude::EventId::new(0),
         count: 3,

@@ -37,21 +37,36 @@ pub trait Callback: Send {
     fn has_triggering_inputs(&self) -> bool {
         false
     }
-    fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
+    fn recording_endpoints(&self) -> Option<Vec<crate::execution_log_schema::EndpointDescriptor>> {
         None
     }
-    fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-    fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-    fn visit_prepared_iox2_events(
+    fn visit_prepared_messages(
         &self,
-        _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event),
+        _visit: &mut dyn FnMut(crate::execution_log_schema::LoggedMessage),
     ) {
     }
-    fn visit_pending_iox2_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {
+    fn visit_pending_messages(
+        &self,
+        _visit: &mut dyn FnMut(crate::execution_log_schema::LoggedMessage),
+    ) {
+    }
+    fn visit_prepared_iox2_events(
+        &self,
+        _visit: &mut dyn FnMut(crate::execution_log_schema::LoggedIox2Event),
+    ) {
+    }
+    fn visit_pending_iox2_events(
+        &self,
+        _visit: &mut dyn FnMut(crate::execution_log_schema::LoggedIox2Event),
+    ) {
     }
     #[cfg(feature = "iceoryx2")]
-    fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
-        Vec::new()
+    fn take_iox2_events<'a>(
+        &mut self,
+        _visit: &mut dyn FnMut(crate::iox2::Iox2EventRegistration<'a>),
+    ) where
+        Self: 'a,
+    {
     }
     fn set_waker(&mut self, _wake: crate::wake::WakeHandle) {}
     fn has_pending_inputs(&self) -> bool {
@@ -102,21 +117,36 @@ where
     fn has_iox2_endpoints(&self) -> bool {
         false
     }
-    fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {
+    fn recording_endpoints(&self) -> Option<Vec<crate::execution_log_schema::EndpointDescriptor>> {
         None
     }
-    fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-    fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-    fn visit_prepared_iox2_events(
+    fn visit_prepared_messages(
         &self,
-        _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event),
+        _visit: &mut dyn FnMut(crate::execution_log_schema::LoggedMessage),
     ) {
     }
-    fn visit_pending_iox2_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {
+    fn visit_pending_messages(
+        &self,
+        _visit: &mut dyn FnMut(crate::execution_log_schema::LoggedMessage),
+    ) {
+    }
+    fn visit_prepared_iox2_events(
+        &self,
+        _visit: &mut dyn FnMut(crate::execution_log_schema::LoggedIox2Event),
+    ) {
+    }
+    fn visit_pending_iox2_events(
+        &self,
+        _visit: &mut dyn FnMut(crate::execution_log_schema::LoggedIox2Event),
+    ) {
     }
     #[cfg(feature = "iceoryx2")]
-    fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
-        Vec::new()
+    fn take_iox2_events<'a>(
+        &mut self,
+        _visit: &mut dyn FnMut(crate::iox2::Iox2EventRegistration<'a>),
+    ) where
+        Self: 'a,
+    {
     }
     fn set_waker(&mut self, _wake: crate::wake::WakeHandle) {}
     fn has_pending_inputs(&self) -> bool {

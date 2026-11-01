@@ -1,8 +1,8 @@
 //! Name tables are the first artifact in a logging stream. Array positions are IDs.
 use crate::{BoxedLogError, LogFileWriter};
 use std::sync::{Arc, Mutex};
-use task::recording::{EXECUTION_LOG_CHANNEL, IOX2_EVENT_RECORD_CHANNEL};
-pub use task::recording::{INTERN_TABLES_ARTIFACT, InternTables};
+use task::execution_log_schema::{EXECUTION_LOG_CHANNEL, IOX2_EVENT_RECORD_CHANNEL};
+pub use task::execution_log_schema::{INTERN_TABLES_ARTIFACT, InternTables};
 
 #[cfg(feature = "serde")]
 pub fn read_intern_tables(
@@ -20,7 +20,7 @@ pub fn decode_intern_tables(bytes: Option<&[u8]>) -> Result<InternTables, BoxedL
 #[cfg(feature = "serde")]
 pub fn validate_descriptor_tables(
     tables: &InternTables,
-    descriptor: &task::recording::ExecutionDescriptor,
+    descriptor: &task::execution_log_schema::ExecutionDescriptor,
 ) -> Result<(), BoxedLogError> {
     for (index, callback) in descriptor.callbacks.iter().enumerate() {
         let id = task::string_interner::CallbackId::from_index(index)
@@ -50,7 +50,7 @@ struct State {
     tables: InternTables,
     started: bool,
     #[cfg(feature = "serde")]
-    descriptor: Option<task::recording::ExecutionDescriptor>,
+    descriptor: Option<task::execution_log_schema::ExecutionDescriptor>,
 }
 /// Shared across shards, including the startup write barrier.
 #[derive(Clone, Default)]
@@ -95,7 +95,7 @@ impl Registry {
     #[cfg(feature = "serde")]
     pub fn recording(
         &self,
-        descriptor: task::recording::ExecutionDescriptor,
+        descriptor: task::execution_log_schema::ExecutionDescriptor,
     ) -> Result<(), BoxedLogError> {
         let mut state = self.state();
         if state.started {
@@ -117,7 +117,7 @@ impl Registry {
             writer.write_artifact(INTERN_TABLES_ARTIFACT, &serde_json::to_vec(&state.tables)?)?;
             if let Some(descriptor) = &state.descriptor {
                 writer.write_artifact(
-                    task::recording::EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
+                    task::execution_log_schema::EXECUTION_LOG_DESCRIPTOR_ARTIFACT,
                     &serde_json::to_vec(descriptor)?,
                 )?;
             }
@@ -134,7 +134,7 @@ mod tests {
     use super::*;
     #[test]
     fn table_wire_format_preserves_ids_and_rejects_invalid_names() {
-        use task::{recording::*, string_interner::ChannelId};
+        use task::{execution_log_schema::*, string_interner::ChannelId};
         let mut tables = InternTables::default();
         let z = tables.channels.intern("z");
         let a = tables.channels.intern("a");

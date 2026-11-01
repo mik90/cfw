@@ -1,7 +1,7 @@
 use crate::ReplayError;
 use logging::{LogFileReader, SortedLogStreamReader};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use task::{message::MessageHeader, recording::*, time::FrameworkTime};
+use task::{execution_log_schema::*, message::MessageHeader, time::FrameworkTime};
 
 pub(crate) type Identity = (String, MessageHeader);
 

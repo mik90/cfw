@@ -12,7 +12,7 @@ use std::{
 };
 use task::{
     Callback, Context, LoanError,
-    recording::{
+    execution_log_schema::{
         Direction, EndpointDescriptor, ExecutionRecord, LoggedIox2Event, LoggedMessage, Transport,
     },
 };

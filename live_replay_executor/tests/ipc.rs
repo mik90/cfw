@@ -8,8 +8,8 @@ use std::{
 };
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
 use task::{
-    ChannelPlan, LoanError, Publisher, RequiredInput, message::MessageHeader, recording::*,
-    time::FrameworkTime,
+    ChannelPlan, LoanError, Publisher, RequiredInput, execution_log_schema::*,
+    message::MessageHeader, time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
@@ -135,7 +135,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
         callbacks: ["a", "b"]
             .into_iter()
             .map(|name| CallbackDescriptor {
-                recording_mode: task::recording::RecordingMode::Full,
+                recording_mode: task::execution_log_schema::RecordingMode::Full,
                 name: name.into(),
                 endpoints: vec![EndpointDescriptor {
                     ordinal: 0,
