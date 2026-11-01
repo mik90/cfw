@@ -30,7 +30,7 @@ pub trait Callback: Send {
         Err(LoanError::Transport("unknown replay event endpoint".into()))
     }
     /// Whether this callback has endpoints on a non-native transport.
-    fn has_ipc_endpoints(&self) -> bool {
+    fn has_iox2_endpoints(&self) -> bool {
         false
     }
     /// Whether any input can request execution without a timer.
@@ -94,7 +94,7 @@ where
         Err(LoanError::Transport("unknown replay event endpoint".into()))
     }
     /// Whether this callback has endpoints on a non-native transport.
-    fn has_ipc_endpoints(&self) -> bool {
+    fn has_iox2_endpoints(&self) -> bool {
         false
     }
     fn recording_endpoints(&self) -> Option<Vec<crate::recording::EndpointDescriptor>> {

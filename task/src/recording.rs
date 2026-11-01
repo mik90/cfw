@@ -281,8 +281,8 @@ impl Callback for Recorded<'_> {
     fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
         self.callback.recording_endpoints()
     }
-    fn has_ipc_endpoints(&self) -> bool {
-        self.callback.has_ipc_endpoints()
+    fn has_iox2_endpoints(&self) -> bool {
+        self.callback.has_iox2_endpoints()
     }
     fn has_triggering_inputs(&self) -> bool {
         self.callback.has_triggering_inputs()

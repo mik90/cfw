@@ -53,7 +53,7 @@ where
         self.inputs.visit(&mut pending);
         pending.0
     }
-    fn has_ipc_endpoints(&self) -> bool {
+    fn has_iox2_endpoints(&self) -> bool {
         let mut visitor = HasIpc(false);
         self.inputs.visit(&mut visitor);
         self.outputs.visit(&mut visitor);
