@@ -240,7 +240,7 @@ mod ipc {
             self.channel_name()
         }
         fn transport(&self) -> Transport {
-            Transport::Ipc
+            Transport::Iox2Data
         }
         fn publisher_index(&self) -> Option<u32> {
             None
@@ -266,7 +266,7 @@ mod ipc {
             self.channel_name()
         }
         fn transport(&self) -> Transport {
-            Transport::Ipc
+            Transport::Iox2Data
         }
         fn publisher_index(&self) -> Option<u32> {
             Some(self.publisher_index())
@@ -295,7 +295,7 @@ mod ipc {
             self.channel_name()
         }
         fn transport(&self) -> Transport {
-            Transport::Event
+            Transport::Iox2Event
         }
         fn publisher_index(&self) -> Option<u32> {
             None
@@ -333,7 +333,7 @@ mod ipc {
             self.channel_name()
         }
         fn transport(&self) -> Transport {
-            Transport::Event
+            Transport::Iox2Event
         }
         fn publisher_index(&self) -> Option<u32> {
             None

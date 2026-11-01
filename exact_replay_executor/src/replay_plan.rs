@@ -141,10 +141,10 @@ impl ExactReplayPlan {
                     local_outputs.push((
                         endpoint.channel.clone(),
                         endpoint.index,
-                        endpoint.transport == Transport::Event,
+                        endpoint.transport == Transport::Iox2Event,
                     ));
                 }
-                if endpoint.transport == Transport::Event {
+                if endpoint.transport == Transport::Iox2Event {
                     continue;
                 }
                 if remaining.remove(&ExplicitReplayEndpoint {

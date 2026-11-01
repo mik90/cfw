@@ -186,7 +186,7 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     );
     assert_eq!(
         recorder.descriptor().unwrap().callbacks[0].endpoints[1].transport,
-        Transport::Event
+        Transport::Iox2Event
     );
     let messages = Capture::ipc(output.take_subscriber(&capture).unwrap())
         .drain_to_vec()

@@ -244,7 +244,7 @@ impl<T> Iox2ChannelPlan<T> {
             forwarding_retention_per_publisher: 0,
             name: self.name.to_string(),
             payload_type: std::any::type_name::<T>(),
-            transport: crate::recording::Transport::Ipc,
+            transport: crate::recording::Transport::Iox2Data,
             publishers: self
                 .publishers
                 .iter()
@@ -1373,7 +1373,8 @@ pub fn event_targets(
         let endpoints: Vec<_> = endpoints
             .into_iter()
             .filter(|endpoint| {
-                endpoint.direction == Direction::Received && endpoint.transport == Transport::Event
+                endpoint.direction == Direction::Received
+                    && endpoint.transport == Transport::Iox2Event
             })
             .collect();
         if endpoints.len() != events.len()

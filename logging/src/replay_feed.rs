@@ -149,7 +149,7 @@ impl<'a> ReplayFeed<'a> {
                     let endpoint = endpoints
                         .next()
                         .ok_or("event record has unknown subscriber ordinal")?;
-                    if endpoints.next().is_some() || endpoint.transport != Transport::Event {
+                    if endpoints.next().is_some() || endpoint.transport != Transport::Iox2Event {
                         return Err(
                             "event record has ambiguous or non-event subscriber ordinal".into()
                         );

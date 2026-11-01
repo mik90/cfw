@@ -1,7 +1,7 @@
 use super::{Callback, endpoints::*};
 use crate::{
     Context, LoanError,
-    recording::{Direction, EndpointDescriptor, LoggedEvent, LoggedMessage, Transport},
+    recording::{Direction, EndpointDescriptor, LoggedIox2Event, LoggedMessage, Transport},
     time::FrameworkTime,
     wake::WakeHandle,
 };
@@ -112,10 +112,10 @@ where
     fn visit_pending_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
         self.outputs.visit(&mut Messages { visit, ordinal: 0 });
     }
-    fn visit_prepared_events(&self, visit: &mut dyn FnMut(LoggedEvent)) {
+    fn visit_prepared_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
         self.inputs.visit(&mut Events { visit, ordinal: 0 });
     }
-    fn visit_pending_events(&self, visit: &mut dyn FnMut(LoggedEvent)) {
+    fn visit_pending_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
         self.outputs.visit(&mut Events { visit, ordinal: 0 });
     }
     fn stage_replay_event(
@@ -286,13 +286,13 @@ impl OutputVisitor for Messages<'_> {
     }
 }
 struct Events<'a> {
-    visit: &'a mut dyn FnMut(LoggedEvent),
+    visit: &'a mut dyn FnMut(LoggedIox2Event),
     ordinal: usize,
 }
 impl InputVisitor for Events<'_> {
     fn visit(&mut self, endpoint: &impl InputEndpoint) {
         endpoint.visit_events(|event_id, count| {
-            (self.visit)(LoggedEvent {
+            (self.visit)(LoggedIox2Event {
                 ordinal: self.ordinal,
                 event_id,
                 count,
@@ -304,7 +304,7 @@ impl InputVisitor for Events<'_> {
 impl OutputVisitor for Events<'_> {
     fn visit(&mut self, endpoint: &impl OutputEndpoint) {
         endpoint.visit_events(|event_id, count| {
-            (self.visit)(LoggedEvent {
+            (self.visit)(LoggedIox2Event {
                 ordinal: self.ordinal,
                 event_id,
                 count,

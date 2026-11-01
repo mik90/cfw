@@ -75,7 +75,7 @@ impl ReplayLog {
             let mut endpoints = HashSet::new();
             for endpoint in &callback.endpoints {
                 let data_output = endpoint.direction == Direction::Published
-                    && endpoint.transport != Transport::Event;
+                    && endpoint.transport != Transport::Iox2Event;
                 if data_output != endpoint.publisher_index.is_some() {
                     return Err(ReplayError::InvalidLog(
                         "publisher index must identify a data output endpoint".into(),
@@ -144,7 +144,7 @@ impl ReplayLog {
                         true,
                     )?
                     .transport
-                    != Transport::Event
+                    != Transport::Iox2Event
                 {
                     return Err(ReplayError::InvalidLog(
                         "observed event is not addressed to an event endpoint".into(),
@@ -184,7 +184,7 @@ impl ReplayLog {
                         && (if event {
                             p.transport != Transport::Native
                         } else {
-                            p.transport != Transport::Event
+                            p.transport != Transport::Iox2Event
                         })
                 })
             })
@@ -254,7 +254,7 @@ impl ReplayLog {
                         true,
                     )?
                     .transport
-                    != Transport::Event
+                    != Transport::Iox2Event
                 {
                     return Err(ReplayError::InvalidLog(
                         "input event ordinal is not an event endpoint".into(),

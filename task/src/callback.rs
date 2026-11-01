@@ -42,8 +42,8 @@ pub trait Callback: Send {
     }
     fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
     fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
-    fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
+    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {}
+    fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {}
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         Vec::new()
@@ -102,8 +102,8 @@ where
     }
     fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
     fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
-    fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedEvent)) {}
+    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {}
+    fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {}
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         Vec::new()

@@ -13,7 +13,7 @@ use std::{
 use task::{
     Callback, Context, LoanError,
     recording::{
-        Direction, EndpointDescriptor, ExecutionRecord, LoggedEvent, LoggedMessage, Transport,
+        Direction, EndpointDescriptor, ExecutionRecord, LoggedIox2Event, LoggedMessage, Transport,
     },
 };
 use task_graph::{BuiltGraph, GraphMetadata};
@@ -166,7 +166,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             }
             for endpoint in &descriptor.endpoints {
                 let key = (descriptor.name.clone(), endpoint.ordinal);
-                if endpoint.transport == Transport::Event {
+                if endpoint.transport == Transport::Iox2Event {
                     continue;
                 }
                 match endpoint.direction {
@@ -413,7 +413,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         for endpoint in descriptor
             .endpoints
             .iter()
-            .filter(|p| p.direction == Direction::Published && p.transport != Transport::Event)
+            .filter(|p| p.direction == Direction::Published && p.transport != Transport::Iox2Event)
         {
             self.detail_endpoint = Some((Direction::Published, endpoint.ordinal));
             self.detail_header = None;
@@ -594,7 +594,7 @@ struct Checked<'a> {
     callback: &'a mut dyn Callback,
     expected: &'a ExecutionRecord,
     hydration_error: &'a mut Option<usize>,
-    output_events: &'a mut Vec<LoggedEvent>,
+    output_events: &'a mut Vec<LoggedIox2Event>,
 }
 impl Callback for Checked<'_> {
     fn outputs_are_local(&self) -> bool {

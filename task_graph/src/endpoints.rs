@@ -30,9 +30,9 @@ impl PlannedEndpoint {
             channel: channel.into(),
             output,
             transport: if event {
-                Transport::Event
+                Transport::Iox2Event
             } else if ipc {
-                Transport::Ipc
+                Transport::Iox2Data
             } else {
                 Transport::Native
             },
@@ -224,7 +224,7 @@ impl GraphPlan {
         ordinal: usize,
     ) -> Result<task::iox2::Iox2SubscriberKey<T>, BuildError> {
         let endpoint = self.endpoint(callback, ordinal, false)?;
-        if endpoint.transport != Transport::Ipc {
+        if endpoint.transport != Transport::Iox2Data {
             return Err(BuildError("expected IPC data input".into()));
         }
         Ok(self
@@ -240,7 +240,7 @@ impl GraphPlan {
         ordinal: usize,
     ) -> Result<task::iox2::Iox2PublisherKey<T>, BuildError> {
         let endpoint = self.endpoint(callback, ordinal, true)?;
-        if endpoint.transport != Transport::Ipc {
+        if endpoint.transport != Transport::Iox2Data {
             return Err(BuildError("expected IPC data output".into()));
         }
         Ok(self

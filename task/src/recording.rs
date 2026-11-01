@@ -57,8 +57,8 @@ pub enum Direction {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Transport {
     Native,
-    Ipc,
-    Event,
+    Iox2Data,
+    Iox2Event,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -93,7 +93,7 @@ pub struct LoggedMessage {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct LoggedEvent {
+pub struct LoggedIox2Event {
     pub ordinal: usize,
     pub event_id: usize,
     pub count: u64,
@@ -105,7 +105,7 @@ pub struct LoggedEvent {
 pub struct ObservedEvent {
     pub callback_id: crate::string_interner::CallbackId,
     pub observed_at: FrameworkTime,
-    pub event: LoggedEvent,
+    pub event: LoggedIox2Event,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -126,8 +126,8 @@ pub struct ExecutionRecord {
     /// Measured body runtime, not simulator modeled occupancy.
     pub body_duration_ns: u64,
     pub inputs: Vec<LoggedMessage>,
-    pub events: Vec<LoggedEvent>,
-    pub output_events: Vec<LoggedEvent>,
+    pub events: Vec<LoggedIox2Event>,
+    pub output_events: Vec<LoggedIox2Event>,
     /// Committed outputs for Committed, attempts for CommitPanicked, otherwise empty.
     pub outputs: Vec<LoggedMessage>,
     pub outcome: Outcome,
@@ -293,10 +293,10 @@ impl Callback for Recorded<'_> {
     fn visit_pending_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
         self.callback.visit_pending_messages(visit);
     }
-    fn visit_prepared_events(&self, visit: &mut dyn FnMut(LoggedEvent)) {
+    fn visit_prepared_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
         self.callback.visit_prepared_events(visit);
     }
-    fn visit_pending_events(&self, visit: &mut dyn FnMut(LoggedEvent)) {
+    fn visit_pending_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
         self.callback.visit_pending_events(visit);
     }
     fn set_waker(&mut self, wake: crate::wake::WakeHandle) {
@@ -337,7 +337,7 @@ impl Callback for Recorded<'_> {
                 .iter()
                 .filter(|endpoint| {
                     endpoint.direction == Direction::Received
-                        && endpoint.transport == Transport::Event
+                        && endpoint.transport == Transport::Iox2Event
                 })
                 .cloned()
                 .collect()
@@ -363,7 +363,7 @@ impl Callback for Recorded<'_> {
                 recorder.observe_event(ObservedEvent {
                     callback_id,
                     observed_at,
-                    event: LoggedEvent {
+                    event: LoggedIox2Event {
                         ordinal,
                         event_id: event.event_id.as_value(),
                         count: event.count,

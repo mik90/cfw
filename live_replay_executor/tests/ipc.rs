@@ -141,7 +141,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
                     ordinal: 0,
                     channel: channel.clone(),
                     direction: Direction::Received,
-                    transport: Transport::Event,
+                    transport: Transport::Iox2Event,
                     payload_type: "()".into(),
                     publisher_index: None,
                 }],
@@ -154,7 +154,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
         let event = ObservedEvent {
             callback_id: task::string_interner::CallbackId::from_index(index).unwrap(),
             observed_at: FrameworkTime::from_nanoseconds(0),
-            event: LoggedEvent {
+            event: LoggedIox2Event {
                 ordinal: 0,
                 event_id: 0,
                 count,

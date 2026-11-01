@@ -1,6 +1,6 @@
 //! Test doubles for callbacks.
 
-use crate::recording::{EndpointDescriptor, LoggedEvent, LoggedMessage};
+use crate::recording::{EndpointDescriptor, LoggedIox2Event, LoggedMessage};
 use crate::time::FrameworkTime;
 use crate::wake::WakeHandle;
 use crate::{Callback, Context, LoanError};
@@ -72,8 +72,8 @@ impl Callback for FakeCallback {
         );
     }
     fn visit_pending_messages(&self, _visit: &mut dyn FnMut(LoggedMessage)) {}
-    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(LoggedEvent)) {}
-    fn visit_pending_events(&self, _visit: &mut dyn FnMut(LoggedEvent)) {}
+    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(LoggedIox2Event)) {}
+    fn visit_pending_events(&self, _visit: &mut dyn FnMut(LoggedIox2Event)) {}
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         Vec::new()

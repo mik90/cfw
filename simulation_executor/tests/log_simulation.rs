@@ -411,7 +411,7 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
                 ordinal: 0,
                 channel: channel.into(),
                 direction: Direction::Received,
-                transport: Transport::Event,
+                transport: Transport::Iox2Event,
                 payload_type: "()".into(),
                 publisher_index: None,
             }],
@@ -421,7 +421,7 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
     let event = ObservedEvent {
         callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
         observed_at: at(10),
-        event: LoggedEvent {
+        event: LoggedIox2Event {
             ordinal,
             event_id: 0,
             count: 1,
@@ -581,7 +581,7 @@ mod ipc {
                             ordinal: 0,
                             channel: name.clone(),
                             direction: Direction::Received,
-                            transport: Transport::Event,
+                            transport: Transport::Iox2Event,
                             payload_type: "()".into(),
                             publisher_index: None,
                         },
@@ -597,7 +597,7 @@ mod ipc {
                             ordinal: 2,
                             channel: name.clone(),
                             direction: Direction::Received,
-                            transport: Transport::Ipc,
+                            transport: Transport::Iox2Data,
                             payload_type: "u64".into(),
                             publisher_index: None,
                         },
@@ -615,7 +615,7 @@ mod ipc {
                     callback_id: task::string_interner::CallbackId::from_index(callback_index)
                         .unwrap(),
                     observed_at: at(10),
-                    event: LoggedEvent {
+                    event: LoggedIox2Event {
                         ordinal: 0,
                         event_id: 0,
                         count: 3,

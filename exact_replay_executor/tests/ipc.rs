@@ -139,7 +139,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         let observed = task::recording::ObservedEvent {
             callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
             observed_at: at(5),
-            event: task::recording::LoggedEvent {
+            event: task::recording::LoggedIox2Event {
                 ordinal: 2,
                 event_id: 9,
                 count: 5,
