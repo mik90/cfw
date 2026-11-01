@@ -33,10 +33,7 @@ pub mod testing;
 
 pub use capture::{Capture, CapturePlan};
 #[cfg(feature = "serde")]
-pub use execution_log::{
-    ExecutionLogBindings, ExecutionLogOptions, ExecutionLogPlan, StandaloneExecutionLog,
-    StandaloneExecutionLogPlan,
-};
+pub use execution_log::{ExecutionLogOptions, ExecutionLogPlan, ExecutionLogStorage};
 pub use replay_source::{ReplaySource, ReplaySourcePlan};
 pub use session::{LogSession, LogStatus};
 pub use task::execution_log_schema::{

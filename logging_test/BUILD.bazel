@@ -4,12 +4,27 @@ load("//bazel:rust.bzl", "miri_test", "rust_test")
 package(default_visibility = ["//visibility:public"])
 
 rust_test(
+    name = "execution_log_test",
+    srcs = ["tests/execution_log.rs"],
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
     name = "recording_test",
     srcs = ["tests/recording.rs"],
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
+)
+
+miri_test(
+    name = "execution_log_test_miri",
+    srcs = ["tests/execution_log.rs"],
+    deps = all_crate_deps(normal = True),
 )
 
 miri_test(

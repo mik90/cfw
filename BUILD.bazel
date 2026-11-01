@@ -14,6 +14,7 @@ test_suite(
         "//live_executor:live_executor_miri",
         "//live_replay_executor:live_replay_executor_miri",
         "//logging:logging_miri",
+        "//logging_test:execution_log_test_miri",
         "//logging_test:recording_test_miri",
         "//simulation_executor:simulation_executor_miri",
         "//task:task_miri",

@@ -1,4 +1,4 @@
-use logging::{ExecutionLogOptions, StandaloneExecutionLogPlan};
+use logging::{ExecutionLogOptions, ExecutionLogPlan};
 use std::time::Duration;
 use task::{LoanError, Publisher, RequiredInput, execution_log_schema::Direction};
 use task_graph::{CallbackSchedule, GraphPlan, Task};
@@ -97,8 +97,7 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
     let storage = plan.allocate().unwrap();
     let (graph, bindings) = storage.bind_and_build().unwrap();
     assert!(storage.build().is_err());
-    let log_plan =
-        StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(1, 1)).unwrap();
+    let log_plan = ExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(1, 1)).unwrap();
     let log_storage = log_plan.allocate().unwrap();
     let (graph, metadata, mut log_captures) = log_storage.attach(graph).unwrap();
     let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());

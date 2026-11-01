@@ -65,11 +65,12 @@ pub fn with_recording<R>(
         options = options.exclude(INTEGER_CHANNEL);
     }
     let captures = GraphCapturePlan::declare(&mut plan, &options)?;
-    let execution_log =
-        ExecutionLogPlan::declare(&mut plan, ExecutionLogOptions::new(CAPACITY, CAPACITY / 4))?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.bind_and_build()?;
-    let (graph, metadata, execution_captures) = execution_log.attach(graph, &bindings)?;
+    let execution_log =
+        ExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(CAPACITY, CAPACITY / 4))?;
+    let log_storage = execution_log.allocate()?;
+    let (graph, metadata, execution_captures) = log_storage.attach(graph)?;
     let mut captures = captures.bind(&bindings)?;
     captures.extend(execution_captures);
     let writer = logging::log_file_json::JsonLogFileWriter::new(std::io::BufWriter::new(

@@ -344,11 +344,9 @@ fn record_sort_and_simulate_current_format_end_to_end() {
     }
     let bytes = Bytes::default();
     with_graph(|graph, source, input_capture, output_capture| {
-        let log_plan = logging::StandaloneExecutionLogPlan::for_graph(
-            &graph,
-            logging::ExecutionLogOptions::new(8, 2),
-        )
-        .unwrap();
+        let log_plan =
+            logging::ExecutionLogPlan::for_graph(&graph, logging::ExecutionLogOptions::new(8, 2))
+                .unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         let mut captures = vec![input_capture, output_capture];

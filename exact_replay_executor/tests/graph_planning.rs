@@ -1,6 +1,6 @@
 use exact_replay_executor::{ExactReplayExecutor, ExactReplayPlan, OutputCapture, ReplayLog};
 use logging::{
-    CaptureOptions, ExecutionLogOptions, GraphCapturePlan, LogSession, StandaloneExecutionLogPlan,
+    CaptureOptions, ExecutionLogOptions, ExecutionLogPlan, GraphCapturePlan, LogSession,
 };
 use std::{
     io::Write,
@@ -85,8 +85,7 @@ fn recorded(logged: bool) -> ReplayLog {
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let graph = storage.build_with(&bindings).unwrap();
-        let log_plan =
-            StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(6, 1)).unwrap();
+        let log_plan = ExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(6, 1)).unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
@@ -318,8 +317,7 @@ fn heterogeneous_bundles_replay_logged_and_reproduced_sources() {
             let bindings = storage.bind().unwrap();
             let graph = storage.build_with(&bindings).unwrap();
             let log_plan =
-                StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(12, 1))
-                    .unwrap();
+                ExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(12, 1)).unwrap();
             let log_storage = log_plan.allocate().unwrap();
             let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
             graph.configure_schedules(|_, schedule| {
@@ -487,8 +485,7 @@ fn borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
             let bindings = storage.bind().unwrap();
             let graph = storage.build_with(&bindings).unwrap();
             let log_plan =
-                StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(9, 1))
-                    .unwrap();
+                ExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(9, 1)).unwrap();
             let log_storage = log_plan.allocate().unwrap();
             let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
             graph.configure_schedules(|_, schedule| {
@@ -608,8 +605,7 @@ fn contextual_output_capture_does_not_require_a_context_free_decoder() {
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let graph = storage.build_with(&bindings).unwrap();
-        let log_plan =
-            StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(1, 1)).unwrap();
+        let log_plan = ExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(1, 1)).unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {

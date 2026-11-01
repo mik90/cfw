@@ -1,15 +1,15 @@
-//! Declares and binds the execution-log channel before graph allocation.
+//! Declares and binds the execution-log channels before allocation.
 use crate::Capture;
 use std::collections::BTreeMap;
 use task::{
-    PublisherKey, SubscriberKey,
+    ChannelPlan, ChannelStorage, PublisherKey, SubscriberKey,
     execution_log_schema::{
         EXECUTION_LOG_CHANNEL, ExecutionLogMode, ExecutionLogModes, ExecutionRecord,
         IOX2_EVENT_RECORD_CHANNEL, Iox2EventRecord,
     },
 };
 use task_graph::{
-    BuildError, BuiltGraph, GraphBindings, GraphPlan,
+    BuildError, BuiltGraph,
     execution_log::{ExecutionLogMetadata, ExecutionLogPublishers},
 };
 
@@ -36,11 +36,25 @@ impl ExecutionLogOptions {
         self.modes = modes;
         self
     }
+    fn validate(&self) -> Result<(), BuildError> {
+        if self.execution_log_capacity == 0 {
+            return Err(BuildError("execution log capacity must be nonzero".into()));
+        }
+        if self.iox2_event_log_capacity == 0 {
+            return Err(BuildError("iox2 event log capacity must be nonzero".into()));
+        }
+        Ok(())
+    }
 }
 
 /// Pre-allocation declaration of execution-log publishers and captures.
+///
+/// Execution-log channels are independent of workload storage. Build the graph
+/// first, then create this plan from its callback metadata.
 pub struct ExecutionLogPlan {
     modes: ExecutionLogModes,
+    record_plan: ChannelPlan<ExecutionRecord>,
+    event_plan: ChannelPlan<Iox2EventRecord>,
     record_publishers: BTreeMap<String, PublisherKey<ExecutionRecord>>,
     event_publishers: BTreeMap<String, PublisherKey<Iox2EventRecord>>,
     record_capture: SubscriberKey<ExecutionRecord>,
@@ -48,44 +62,48 @@ pub struct ExecutionLogPlan {
 }
 
 impl ExecutionLogPlan {
-    /// Declare one publisher per recorded callback and one capture per log
-    /// stream. Call after registering tasks and before allocation.
-    pub fn declare(plan: &mut GraphPlan, options: ExecutionLogOptions) -> Result<Self, BuildError> {
-        if options.execution_log_capacity == 0 {
-            return Err(BuildError("execution log capacity must be nonzero".into()));
+    /// Build a plan from the graph's callback metadata.
+    pub fn for_graph(
+        graph: &BuiltGraph<'_>,
+        options: ExecutionLogOptions,
+    ) -> Result<Self, BuildError> {
+        options.validate()?;
+        for name in options.modes.callbacks.keys() {
+            if graph
+                .metadata()
+                .callback_names
+                .lookup_by_value(name)
+                .is_none()
+            {
+                return Err(BuildError(format!(
+                    "unknown execution log callback '{name}'"
+                )));
+            }
         }
-        if options.iox2_event_log_capacity == 0 {
-            return Err(BuildError("iox2 event log capacity must be nonzero".into()));
-        }
+
+        let mut record_plan = ChannelPlan::<ExecutionRecord>::new(EXECUTION_LOG_CHANNEL);
+        let mut event_plan = ChannelPlan::<Iox2EventRecord>::new(IOX2_EVENT_RECORD_CHANNEL);
         let mut record_publishers = BTreeMap::new();
         let mut event_publishers = BTreeMap::new();
-        for name in plan.task_names().map(str::to_owned).collect::<Vec<_>>() {
-            if options.modes.mode_for(&name) == ExecutionLogMode::Off {
+        for name in graph.metadata().callback_names.names() {
+            if options.modes.mode_for(name) == ExecutionLogMode::Off {
                 continue;
             }
-            record_publishers.insert(
-                name.clone(),
-                plan.native::<ExecutionRecord>(EXECUTION_LOG_CHANNEL)?
-                    .publisher(1),
-            );
-            event_publishers.insert(
-                name,
-                plan.native::<Iox2EventRecord>(IOX2_EVENT_RECORD_CHANNEL)?
-                    .publisher(1),
-            );
+            record_publishers.insert(name.to_owned(), record_plan.publisher(1));
+            event_publishers.insert(name.to_owned(), event_plan.publisher(1));
         }
         let policy = task::SubscriberPolicy {
             trigger: false,
             keep_across_runs: true,
         };
-        let record_capture = plan
-            .native::<ExecutionRecord>(EXECUTION_LOG_CHANNEL)?
-            .subscriber_with_policy(options.execution_log_capacity, policy);
-        let event_capture = plan
-            .native::<Iox2EventRecord>(IOX2_EVENT_RECORD_CHANNEL)?
-            .subscriber_with_policy(options.iox2_event_log_capacity, policy);
+        let record_capture =
+            record_plan.subscriber_with_policy(options.execution_log_capacity, policy);
+        let event_capture =
+            event_plan.subscriber_with_policy(options.iox2_event_log_capacity, policy);
         Ok(Self {
             modes: options.modes,
+            record_plan,
+            event_plan,
             record_publishers,
             event_publishers,
             record_capture,
@@ -93,170 +111,58 @@ impl ExecutionLogPlan {
         })
     }
 
-    /// Bind the publishers and capture. Call after `GraphStorage::bind`.
-    pub fn bind<'a>(
-        self,
-        bindings: &GraphBindings<'a>,
-    ) -> Result<ExecutionLogBindings<'a>, BuildError> {
-        let records = bindings.native::<ExecutionRecord>(EXECUTION_LOG_CHANNEL)?;
-        let events = bindings.native::<Iox2EventRecord>(IOX2_EVENT_RECORD_CHANNEL)?;
-        let mut record_publishers = BTreeMap::new();
-        for (name, key) in self.record_publishers {
-            record_publishers.insert(name, records.take_publisher(&key)?);
-        }
-        let mut event_publishers = BTreeMap::new();
-        for (name, key) in self.event_publishers {
-            event_publishers.insert(name, events.take_publisher(&key)?);
-        }
-        let record_capture = records.take_subscriber(&self.record_capture)?;
-        let event_capture = events.take_subscriber(&self.event_capture)?;
-        Ok(ExecutionLogBindings {
+    pub fn allocate(self) -> Result<ExecutionLogStorage, BuildError> {
+        Ok(ExecutionLogStorage {
+            records: self.record_plan.allocate()?,
+            events: self.event_plan.allocate()?,
             modes: self.modes,
-            publishers: ExecutionLogPublishers {
-                records: record_publishers,
-                iox2_events: event_publishers,
-            },
-            captures: vec![
-                Capture::native(record_capture),
-                Capture::native(event_capture),
-            ],
-        })
-    }
-
-    /// Bind and attach in one step.
-    pub fn attach<'a>(
-        self,
-        graph: BuiltGraph<'a>,
-        bindings: &GraphBindings<'a>,
-    ) -> Result<(BuiltGraph<'a>, ExecutionLogMetadata, Vec<Capture<'a>>), BuildError> {
-        self.bind(bindings)?.attach(graph)
-    }
-}
-
-/// Bound execution-log publishers and captures.
-pub struct ExecutionLogBindings<'a> {
-    modes: ExecutionLogModes,
-    publishers: ExecutionLogPublishers<'a>,
-    captures: Vec<Capture<'a>>,
-}
-
-impl<'a> ExecutionLogBindings<'a> {
-    /// Attach publishers to callbacks and return the log captures plus metadata.
-    pub fn attach(
-        self,
-        graph: BuiltGraph<'a>,
-    ) -> Result<(BuiltGraph<'a>, ExecutionLogMetadata, Vec<Capture<'a>>), BuildError> {
-        let (graph, metadata) = graph
-            .with_execution_log(self.modes, self.publishers)
-            .map_err(BuildError)?;
-        Ok((graph, metadata, self.captures))
-    }
-}
-
-/// Standalone execution-log plan for graphs built without a `GraphPlan`.
-///
-/// The workload graph and the execution-log channel allocate separately. Keep
-/// the resulting storage alive while the graph and log session borrow it.
-pub struct StandaloneExecutionLogPlan {
-    modes: ExecutionLogModes,
-    publishers: BTreeMap<String, task::PublisherKey<ExecutionRecord>>,
-    event_publishers: BTreeMap<String, task::PublisherKey<Iox2EventRecord>>,
-    capture: task::SubscriberKey<ExecutionRecord>,
-    event_capture: task::SubscriberKey<Iox2EventRecord>,
-    plan: task::ChannelPlan<ExecutionRecord>,
-    event_plan: task::ChannelPlan<Iox2EventRecord>,
-}
-
-impl StandaloneExecutionLogPlan {
-    pub fn for_graph(
-        graph: &BuiltGraph<'_>,
-        options: ExecutionLogOptions,
-    ) -> Result<Self, BuildError> {
-        if options.execution_log_capacity == 0 {
-            return Err(BuildError("execution log capacity must be nonzero".into()));
-        }
-        if options.iox2_event_log_capacity == 0 {
-            return Err(BuildError("iox2 event log capacity must be nonzero".into()));
-        }
-        let mut plan = task::ChannelPlan::<ExecutionRecord>::new(EXECUTION_LOG_CHANNEL);
-        let mut event_plan = task::ChannelPlan::<Iox2EventRecord>::new(IOX2_EVENT_RECORD_CHANNEL);
-        let mut publishers = BTreeMap::new();
-        let mut event_publishers = BTreeMap::new();
-        for name in graph.metadata().callback_names.names() {
-            if options.modes.mode_for(name) == ExecutionLogMode::Off {
-                continue;
-            }
-            publishers.insert(name.to_owned(), plan.publisher(1));
-            event_publishers.insert(name.to_owned(), event_plan.publisher(1));
-        }
-        let policy = task::SubscriberPolicy {
-            trigger: false,
-            keep_across_runs: true,
-        };
-        let capture = plan.subscriber_with_policy(options.execution_log_capacity, policy);
-        let event_capture =
-            event_plan.subscriber_with_policy(options.iox2_event_log_capacity, policy);
-        Ok(Self {
-            modes: options.modes,
-            publishers,
-            event_publishers,
-            capture,
-            event_capture,
-            plan,
-            event_plan,
-        })
-    }
-
-    pub fn allocate(self) -> Result<StandaloneExecutionLog, BuildError> {
-        Ok(StandaloneExecutionLog {
-            storage: self.plan.allocate()?,
-            event_storage: self.event_plan.allocate()?,
-            modes: self.modes,
-            publishers: self.publishers,
+            record_publishers: self.record_publishers,
             event_publishers: self.event_publishers,
-            capture: self.capture,
+            record_capture: self.record_capture,
             event_capture: self.event_capture,
         })
     }
 }
 
 /// Allocated execution-log storage plus its publisher and capture keys.
-pub struct StandaloneExecutionLog {
-    storage: task::ChannelStorage<ExecutionRecord>,
-    event_storage: task::ChannelStorage<Iox2EventRecord>,
+///
+/// Keep this alive while the attached graph and log session borrow it.
+pub struct ExecutionLogStorage {
+    records: ChannelStorage<ExecutionRecord>,
+    events: ChannelStorage<Iox2EventRecord>,
     modes: ExecutionLogModes,
-    publishers: BTreeMap<String, task::PublisherKey<ExecutionRecord>>,
-    event_publishers: BTreeMap<String, task::PublisherKey<Iox2EventRecord>>,
-    capture: task::SubscriberKey<ExecutionRecord>,
-    event_capture: task::SubscriberKey<Iox2EventRecord>,
+    record_publishers: BTreeMap<String, PublisherKey<ExecutionRecord>>,
+    event_publishers: BTreeMap<String, PublisherKey<Iox2EventRecord>>,
+    record_capture: SubscriberKey<ExecutionRecord>,
+    event_capture: SubscriberKey<Iox2EventRecord>,
 }
 
-impl StandaloneExecutionLog {
+impl ExecutionLogStorage {
     pub fn attach<'a>(
         &'a self,
         graph: BuiltGraph<'a>,
     ) -> Result<(BuiltGraph<'a>, ExecutionLogMetadata, Vec<Capture<'a>>), BuildError> {
-        let bindings = self.storage.bind();
-        let event_bindings = self.event_storage.bind();
-        let mut publishers = BTreeMap::new();
-        for (name, key) in &self.publishers {
-            publishers.insert(name.clone(), bindings.take_publisher(key)?);
+        let records = self.records.bind();
+        let events = self.events.bind();
+        let mut record_publishers = BTreeMap::new();
+        for (name, key) in &self.record_publishers {
+            record_publishers.insert(name.clone(), records.take_publisher(key)?);
         }
         let mut event_publishers = BTreeMap::new();
         for (name, key) in &self.event_publishers {
-            event_publishers.insert(name.clone(), event_bindings.take_publisher(key)?);
+            event_publishers.insert(name.clone(), events.take_publisher(key)?);
         }
-        let capture = Capture::native(bindings.take_subscriber(&self.capture)?);
-        let event_capture = Capture::native(event_bindings.take_subscriber(&self.event_capture)?);
+        let record_capture = Capture::native(records.take_subscriber(&self.record_capture)?);
+        let event_capture = Capture::native(events.take_subscriber(&self.event_capture)?);
         let (graph, metadata) = graph
             .with_execution_log(
                 self.modes.clone(),
                 ExecutionLogPublishers {
-                    records: publishers,
+                    records: record_publishers,
                     iox2_events: event_publishers,
                 },
             )
             .map_err(BuildError)?;
-        Ok((graph, metadata, vec![capture, event_capture]))
+        Ok((graph, metadata, vec![record_capture, event_capture]))
     }
 }
