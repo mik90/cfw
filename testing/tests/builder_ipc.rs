@@ -167,10 +167,10 @@ fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
     let name = format!("fixture_limits_{}", std::process::id());
     let mut plan = GraphPlan::default();
     let publisher = plan
-        .ipc::<u64>(&name)
+        .iox2::<u64>(&name)
         .unwrap()
         .publisher_with_notification(1, Iox2Notification::Silent);
-    let subscriber = plan.ipc::<u64>(&name).unwrap().subscriber(1024);
+    let subscriber = plan.iox2::<u64>(&name).unwrap().subscriber(1024);
     let limits = plan.ipc_service_limits().unwrap();
     assert_eq!(limits[&name].buffer_capacity, 1024);
     assert_eq!(limits[&name].max_borrowed_samples, 2048);
@@ -196,7 +196,7 @@ fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
     );
 
     let mut plan = GraphPlan::default();
-    plan.ipc::<u64>("too-small").unwrap().subscriber(2048);
+    plan.iox2::<u64>("too-small").unwrap().subscriber(2048);
     assert_eq!(
         plan.ipc_service_limits().unwrap()["too-small"].buffer_capacity,
         2048
@@ -209,10 +209,10 @@ fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
     );
     let mut counts = GraphPlan::default();
     for _ in 0..20 {
-        counts.ipc::<u64>("counts").unwrap().subscriber(1);
+        counts.iox2::<u64>("counts").unwrap().subscriber(1);
     }
     for _ in 0..10 {
-        counts.ipc::<u64>("counts").unwrap().publisher(1);
+        counts.iox2::<u64>("counts").unwrap().publisher(1);
     }
     counts.notifier("counts").unwrap();
     counts.event("counts", 1).unwrap();

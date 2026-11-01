@@ -1122,7 +1122,7 @@ fn generate_registration(
         let capture_method = match endpoint.kind {
             EndpointKind::IoxEvent | EndpointKind::IoxNotifier => None,
             EndpointKind::IoxInput | EndpointKind::IoxSpan | EndpointKind::IoxOutput => {
-                Some(quote!(register_ipc))
+                Some(quote!(register_iox2))
             }
             _ => Some(quote!(register_native)),
         };

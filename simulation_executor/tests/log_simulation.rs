@@ -633,7 +633,7 @@ mod ipc {
             log,
             [
                 source.bind(&gate).unwrap(),
-                logging::ReplaySource::ipc(events.take_publisher(&data_source).unwrap()),
+                logging::ReplaySource::iox2(events.take_publisher(&data_source).unwrap()),
             ],
             LogSimulationOptions {
                 simulation: Some(SimulationConfig {

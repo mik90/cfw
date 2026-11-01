@@ -193,15 +193,15 @@ pub(crate) trait Plan {
     fn any_mut(&mut self) -> &mut dyn Any;
     fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError>;
     #[cfg(feature = "iceoryx2")]
-    fn is_ipc(&self) -> bool {
+    fn is_iox2(&self) -> bool {
         false
     }
     #[cfg(feature = "iceoryx2")]
-    fn ipc_requirements(&self) -> Result<Option<task::iox2::Iox2ChannelConfig>, BuildError> {
+    fn iox2_requirements(&self) -> Result<Option<task::iox2::Iox2ChannelConfig>, BuildError> {
         Ok(None)
     }
     #[cfg(feature = "iceoryx2")]
-    fn set_ipc_config(&mut self, _: task::iox2::Iox2ChannelConfig) {}
+    fn set_iox2_config(&mut self, _: task::iox2::Iox2ChannelConfig) {}
 }
 pub(crate) trait Stored {
     fn bind(&self) -> Result<Box<dyn Binding<'_> + '_>, BuildError>;
@@ -214,7 +214,7 @@ pub(crate) trait Binding<'a> {
         None
     }
     #[cfg(feature = "iceoryx2")]
-    fn ipc_any(&self) -> Option<&dyn Any> {
+    fn iox2_any(&self) -> Option<&dyn Any> {
         None
     }
     #[cfg(feature = "iceoryx2")]
@@ -480,7 +480,7 @@ impl GraphPlan {
         #[cfg(feature = "iceoryx2")]
         for (name, config) in self.ipc_service_limits()? {
             if let Some(channel) = self.channels.get_mut(&name) {
-                channel.plan.set_ipc_config(config.clone());
+                channel.plan.set_iox2_config(config.clone());
             }
             if let Some((plan, _)) = self.events.get_mut(&name) {
                 plan.set_config(config);
@@ -638,16 +638,16 @@ mod ipc {
         fn payload_type(&self) -> &'static str {
             std::any::type_name::<T>()
         }
-        fn ipc_requirements(&self) -> Result<Option<Iox2ChannelConfig>, BuildError> {
+        fn iox2_requirements(&self) -> Result<Option<Iox2ChannelConfig>, BuildError> {
             Ok(Some(self.required_config()?))
         }
-        fn set_ipc_config(&mut self, config: Iox2ChannelConfig) {
+        fn set_iox2_config(&mut self, config: Iox2ChannelConfig) {
             self.set_config(config);
         }
         fn any_mut(&mut self) -> &mut dyn Any {
             self
         }
-        fn is_ipc(&self) -> bool {
+        fn is_iox2(&self) -> bool {
             true
         }
         fn allocate(self: Box<Self>) -> Result<Box<dyn Stored>, BuildError> {
@@ -671,7 +671,7 @@ mod ipc {
         fn payload(&self) -> TypeId {
             TypeId::of::<T>()
         }
-        fn ipc_any(&self) -> Option<&dyn Any> {
+        fn iox2_any(&self) -> Option<&dyn Any> {
             Some(self)
         }
     }
@@ -690,7 +690,7 @@ mod ipc {
                 })
                 .map(|endpoint| endpoint.index)
                 .collect();
-            let plan = self.ipc::<T>(name)?;
+            let plan = self.iox2::<T>(name)?;
             Ok(indices
                 .into_iter()
                 .map(|index| plan.publisher_key(index))
@@ -710,7 +710,7 @@ mod ipc {
         ) -> Result<BTreeMap<String, Iox2ChannelConfig>, BuildError> {
             let mut requirements = BTreeMap::new();
             for (name, channel) in &self.channels {
-                if let Some(config) = channel.plan.ipc_requirements()? {
+                if let Some(config) = channel.plan.iox2_requirements()? {
                     requirements.insert(name.clone(), config);
                 }
             }
@@ -767,7 +767,7 @@ mod ipc {
             }
             Ok(self.runtime.as_ref().unwrap().clone())
         }
-        pub fn ipc<T: Debug + ZeroCopySend + Send + Sync + 'static>(
+        pub fn iox2<T: Debug + ZeroCopySend + Send + Sync + 'static>(
             &mut self,
             name: &str,
         ) -> Result<&mut Iox2ChannelPlan<T>, BuildError> {
@@ -793,7 +793,7 @@ mod ipc {
             name: &str,
             capacity: usize,
         ) -> Result<Iox2PublisherKey<T>, BuildError> {
-            let key = self.ipc::<T>(name)?.publisher(capacity);
+            let key = self.iox2::<T>(name)?.publisher(capacity);
             self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
                 true,
@@ -819,7 +819,7 @@ mod ipc {
             keep_across_runs: bool,
         ) -> Result<Iox2SubscriberKey<T>, BuildError> {
             let key = self
-                .ipc::<T>(name)?
+                .iox2::<T>(name)?
                 .subscriber_with_keep(capacity, keep_across_runs);
             self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
@@ -836,7 +836,7 @@ mod ipc {
             &mut self,
             name: &str,
         ) -> Result<&mut (Iox2ChannelPlan<()>, usize), BuildError> {
-            if self.channels.get(name).is_some_and(|c| !c.plan.is_ipc()) {
+            if self.channels.get(name).is_some_and(|c| !c.plan.is_iox2()) {
                 return Err(BuildError(format!(
                     "channel '{name}': mixes native and IPC transports"
                 )));
@@ -890,14 +890,14 @@ mod ipc {
         ) -> Result<&Iox2Bindings<T>, BuildError> {
             self.channels
                 .get(name)
-                .and_then(|b| b.ipc_any())
+                .and_then(|b| b.iox2_any())
                 .and_then(|a| a.downcast_ref())
                 .ok_or_else(|| BuildError(format!("channel '{name}': IPC type/transport mismatch")))
         }
         pub fn events(&self, name: &str) -> Result<&Iox2Bindings<()>, BuildError> {
             self.events
                 .get(name)
-                .and_then(|b| b.ipc_any())
+                .and_then(|b| b.iox2_any())
                 .and_then(|a| a.downcast_ref())
                 .ok_or_else(|| BuildError(format!("channel '{name}': no event bindings")))
         }
@@ -914,7 +914,7 @@ mod tests {
     fn native_and_ipc_channels_cannot_claim_the_same_name() {
         let mut plan = GraphPlan::default();
         plan.native::<u64>("shared").unwrap();
-        assert!(plan.ipc::<u64>("shared").is_err());
+        assert!(plan.iox2::<u64>("shared").is_err());
     }
 
     #[test]

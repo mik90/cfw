@@ -228,7 +228,7 @@ impl GraphPlan {
             return Err(BuildError("expected IPC data input".into()));
         }
         Ok(self
-            .ipc::<T>(&endpoint.channel)?
+            .iox2::<T>(&endpoint.channel)?
             .subscriber_key(endpoint.index))
     }
     #[cfg(feature = "iceoryx2")]
@@ -244,7 +244,7 @@ impl GraphPlan {
             return Err(BuildError("expected IPC data output".into()));
         }
         Ok(self
-            .ipc::<T>(&endpoint.channel)?
+            .iox2::<T>(&endpoint.channel)?
             .publisher_key(endpoint.index))
     }
 }

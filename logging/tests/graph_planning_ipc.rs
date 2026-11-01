@@ -32,7 +32,7 @@ fn automatic_ipc_replay_injects_full_headers_without_notifications() {
         plan.replayable_channels().collect::<Vec<_>>(),
         [data.as_str()]
     );
-    let events = plan.ipc::<Wire>(&data).unwrap().events(4);
+    let events = plan.iox2::<Wire>(&data).unwrap().events(4);
     let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(2)).unwrap();
     let replay = GraphReplayPlan::declare(&mut plan, [&data], &ReplayOptions::new(1)).unwrap();
     let storage = plan.allocate().unwrap();

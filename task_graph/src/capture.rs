@@ -232,7 +232,7 @@ pub trait MaybeCapture {
         Ok(())
     }
     #[cfg(feature = "iceoryx2")]
-    fn register_ipc(&self, _plan: &mut GraphPlan, _channel: &str) -> Result<(), BuildError> {
+    fn register_iox2(&self, _plan: &mut GraphPlan, _channel: &str) -> Result<(), BuildError> {
         Ok(())
     }
 }
@@ -290,7 +290,7 @@ mod ipc {
         endpoint: &super::super::endpoints::PlannedEndpoint,
     ) -> Result<OutputBinding, BuildError> {
         let publisher = plan
-            .ipc::<T>(&endpoint.channel)?
+            .iox2::<T>(&endpoint.channel)?
             .publisher_key(endpoint.index);
         let channel = endpoint.channel.clone();
         Ok(OutputBinding::new(move |bindings, sink| {
@@ -307,7 +307,7 @@ mod ipc {
         channel: &str,
         capacity: usize,
     ) -> Result<CaptureBinding, BuildError> {
-        let subscriber = plan.ipc::<T>(channel)?.subscriber(capacity);
+        let subscriber = plan.iox2::<T>(channel)?.subscriber(capacity);
         let channel = channel.to_owned();
         Ok(Box::new(move |bindings| {
             Ok(Box::new(IpcCapture(
@@ -323,7 +323,7 @@ mod ipc {
             if !self.channels.contains_key(channel) {
                 return Err(BuildError(format!("unknown channel '{channel}'")));
             }
-            self.ipc::<T>(channel)?;
+            self.iox2::<T>(channel)?;
             self.channels
                 .get_mut(channel)
                 .unwrap()
@@ -336,7 +336,7 @@ mod ipc {
         }
     }
     impl<T: Loggable + Debug + ZeroCopySend + Send + Sync + 'static> CaptureProbe<T> {
-        pub fn register_ipc(&self, plan: &mut GraphPlan, channel: &str) -> Result<(), BuildError> {
+        pub fn register_iox2(&self, plan: &mut GraphPlan, channel: &str) -> Result<(), BuildError> {
             plan.register_loggable_ipc::<T>(channel)
         }
     }

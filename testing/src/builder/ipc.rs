@@ -56,7 +56,7 @@ fn input_fixture<T: Debug + ZeroCopySend + Send + Sync + 'static>(
 ) -> FixtureDeclaration {
     Box::new(move |plan| {
         plan.require(&channel, false)?;
-        let key = plan.ipc::<T>(&channel)?.publisher(1);
+        let key = plan.iox2::<T>(&channel)?.publisher(1);
         Ok(Box::new(move |bindings, executor| {
             executor.inputs.push(Box::new(IpcPump {
                 publisher: Arc::new(Mutex::new(
@@ -76,9 +76,9 @@ fn output_fixture<T: Debug + ZeroCopySend + Send + Sync + 'static>(
     Box::new(move |plan| {
         plan.require(&channel, true)?;
         let sources = plan.ipc_workload_publishers::<T>(&channel)?;
-        let key = plan.ipc::<T>(&channel)?.subscriber(capacity);
+        let key = plan.iox2::<T>(&channel)?.subscriber(capacity);
         if capture_sources == CaptureSources::TaskOutputs {
-            plan.ipc::<T>(&channel)?
+            plan.iox2::<T>(&channel)?
                 .restrict_subscriber_sources(&key, &sources)?;
         }
         Ok(Box::new(move |bindings, executor| {

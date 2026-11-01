@@ -186,7 +186,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
     let completion = LiveReplayExecutor::new(
         graph.build().unwrap(),
         reader,
-        [ReplaySource::ipc(input.take_publisher(&source).unwrap())],
+        [ReplaySource::iox2(input.take_publisher(&source).unwrap())],
         LiveReplayConfig::default(),
     )
     .unwrap()

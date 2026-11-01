@@ -90,7 +90,7 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
         },
     )
     .unwrap();
-    let mut replay = ReplaySource::ipc(input.take_publisher(&injection).unwrap());
+    let mut replay = ReplaySource::iox2(input.take_publisher(&injection).unwrap());
     replay
         .inject(
             MessageHeader::new(FrameworkTime::from_nanoseconds(7)),
@@ -262,7 +262,7 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
     });
     let recorder = ExecutionRecorder::new(4);
     let graph = graph.build().unwrap().with_recording(&recorder).unwrap();
-    ReplaySource::ipc(input.take_publisher(&data_key).unwrap())
+    ReplaySource::iox2(input.take_publisher(&data_key).unwrap())
         .inject(
             MessageHeader::new(FrameworkTime::from_nanoseconds(7)),
             b"42",

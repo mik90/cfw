@@ -204,14 +204,14 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         .add_input(
             "observe",
             0,
-            ReplaySource::ipc_input(input.replay_input(declaration.first_key()).unwrap()),
+            ReplaySource::iox2_input(input.replay_input(declaration.first_key()).unwrap()),
         )
         .unwrap();
     endpoints
         .add_input(
             "observe",
             1,
-            ReplaySource::ipc_input(input.replay_input(declaration.second_key()).unwrap()),
+            ReplaySource::iox2_input(input.replay_input(declaration.second_key()).unwrap()),
         )
         .unwrap();
     endpoints

@@ -36,7 +36,7 @@ impl<'a> ReplaySource<'a> {
     }
     /// Publish silently; replay drivers inject counted events separately.
     #[cfg(feature = "iceoryx2")]
-    pub fn ipc<T>(publisher: task::iox2::Iox2Publisher<T>) -> Self
+    pub fn iox2<T>(publisher: task::iox2::Iox2Publisher<T>) -> Self
     where
         T: std::fmt::Debug + iceoryx2::prelude::ZeroCopySend + Send + Sync + 'static,
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
@@ -47,12 +47,12 @@ impl<'a> ReplaySource<'a> {
             inject: Box::new(move |header, bytes| {
                 publisher
                     .publish_with_header(header, T::deserialize(bytes)?)
-                    .map_err(|e| format!("IPC replay publication failed: {e:?}").into())
+                    .map_err(|e| format!("iox2 replay publication failed: {e:?}").into())
             }),
         }
     }
     #[cfg(feature = "iceoryx2")]
-    pub fn ipc_input<T>(mut input: task::iox2::Iox2ReplayInput<T>) -> Self
+    pub fn iox2_input<T>(mut input: task::iox2::Iox2ReplayInput<T>) -> Self
     where
         T: Send + 'static,
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
@@ -63,7 +63,7 @@ impl<'a> ReplaySource<'a> {
             inject: Box::new(move |header, bytes| {
                 input
                     .inject(header, T::deserialize(bytes)?)
-                    .map_err(|e| format!("IPC replay input failed: {e:?}").into())
+                    .map_err(|e| format!("iox2 replay input failed: {e:?}").into())
             }),
         }
     }
@@ -219,7 +219,7 @@ pub trait MaybeDecode {
         Ok(())
     }
     #[cfg(feature = "iceoryx2")]
-    fn register_ipc(&self, _plan: &mut GraphPlan, _channel: &str) -> Result<(), BuildError> {
+    fn register_iox2(&self, _plan: &mut GraphPlan, _channel: &str) -> Result<(), BuildError> {
         Ok(())
     }
 }
@@ -234,7 +234,7 @@ where
 }
 
 #[cfg(feature = "iceoryx2")]
-mod ipc {
+mod iox2 {
     use super::*;
     use iceoryx2::prelude::ZeroCopySend;
     use std::fmt::Debug;
@@ -250,11 +250,11 @@ mod ipc {
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
     {
         let publisher = plan
-            .ipc::<T>(channel)?
+            .iox2::<T>(channel)?
             .publisher_with_notification(capacity, Iox2Notification::Silent);
         let channel = channel.to_owned();
         Ok(Box::new(move |bindings| {
-            Ok(ReplaySource::ipc(
+            Ok(ReplaySource::iox2(
                 bindings.ipc::<T>(&channel)?.take_publisher(&publisher)?,
             ))
         }))
@@ -269,17 +269,17 @@ mod ipc {
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
     {
         let subscriber = plan
-            .ipc::<T>(&endpoint.channel)?
+            .iox2::<T>(&endpoint.channel)?
             .subscriber_key(endpoint.index);
         let channel = endpoint.channel.clone();
         Ok(Box::new(move |bindings| {
-            Ok(ReplaySource::ipc_input(
+            Ok(ReplaySource::iox2_input(
                 bindings.ipc::<T>(&channel)?.replay_input(&subscriber)?,
             ))
         }))
     }
     impl GraphPlan {
-        pub fn register_replay_ipc<T>(&mut self, channel: &str) -> Result<(), BuildError>
+        pub fn register_replay_iox2<T>(&mut self, channel: &str) -> Result<(), BuildError>
         where
             T: Debug + ZeroCopySend + Send + Sync + 'static,
             for<'ctx> T: Loggable<Context<'ctx> = ()>,
@@ -287,7 +287,7 @@ mod ipc {
             if !self.channels.contains_key(channel) {
                 return Err(BuildError(format!("unknown channel '{channel}'")));
             }
-            self.ipc::<T>(channel)?;
+            self.iox2::<T>(channel)?;
             self.channels
                 .get_mut(channel)
                 .unwrap()
@@ -303,8 +303,8 @@ mod ipc {
     where
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
     {
-        pub fn register_ipc(&self, plan: &mut GraphPlan, channel: &str) -> Result<(), BuildError> {
-            plan.register_replay_ipc::<T>(channel)
+        pub fn register_iox2(&self, plan: &mut GraphPlan, channel: &str) -> Result<(), BuildError> {
+            plan.register_replay_iox2::<T>(channel)
         }
     }
 }
