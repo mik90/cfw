@@ -127,9 +127,9 @@ impl ReplayLog {
                 }
                 self.executions.push(record);
             }
-            EXECUTION_EVENT_CHANNEL => {
+            IOX2_EVENT_RECORD_CHANNEL => {
                 // Exact replay restores prepared event snapshots, not arrivals.
-                let event: ObservedEvent = serde_json::from_slice(bytes)
+                let event: Iox2EventRecord = serde_json::from_slice(bytes)
                     .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
                 if event.observed_at != header.published_at {
                     return Err(ReplayError::InvalidLog(
@@ -140,7 +140,7 @@ impl ReplayLog {
                     .endpoint(
                         event.callback_id.index(),
                         Direction::Received,
-                        event.event.ordinal,
+                        event.iox2_event.ordinal,
                         true,
                     )?
                     .transport
@@ -245,7 +245,7 @@ impl ReplayLog {
                     }
                 }
             }
-            for event in &record.events {
+            for event in &record.iox2_events {
                 if self
                     .endpoint(
                         record.callback_id.index(),
@@ -261,7 +261,7 @@ impl ReplayLog {
                     ));
                 }
             }
-            for event in &record.output_events {
+            for event in &record.output_iox2_events {
                 self.endpoint(
                     record.callback_id.index(),
                     Direction::Published,

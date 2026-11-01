@@ -1,7 +1,7 @@
 //! Name tables are the first artifact in a logging stream. Array positions are IDs.
 use crate::{BoxedLogError, LogFileWriter};
 use std::sync::{Arc, Mutex};
-use task::recording::{EXECUTION_EVENT_CHANNEL, EXECUTION_LOG_CHANNEL};
+use task::recording::{EXECUTION_LOG_CHANNEL, IOX2_EVENT_RECORD_CHANNEL};
 pub use task::recording::{INTERN_TABLES_ARTIFACT, InternTables};
 
 #[cfg(feature = "serde")]
@@ -67,7 +67,7 @@ impl Registry {
                 state.tables.channels.intern(channel);
             }
             state.tables.channels.intern(EXECUTION_LOG_CHANNEL);
-            state.tables.channels.intern(EXECUTION_EVENT_CHANNEL);
+            state.tables.channels.intern(IOX2_EVENT_RECORD_CHANNEL);
         }
         registry
     }

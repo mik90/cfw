@@ -134,14 +134,18 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
             .unwrap();
     use logging::LogFileReader;
     let entry = reader.entry(0).unwrap();
-    assert_eq!(entry.channel_name, task::recording::EXECUTION_EVENT_CHANNEL);
-    let activation: logging::ObservedEvent = serde_json::from_slice(entry.serialized_body).unwrap();
+    assert_eq!(
+        entry.channel_name,
+        task::recording::IOX2_EVENT_RECORD_CHANNEL
+    );
+    let activation: logging::Iox2EventRecord =
+        serde_json::from_slice(entry.serialized_body).unwrap();
     assert_eq!(activation.observed_at.to_nanoseconds(), 10);
     assert_eq!(
         (
             activation.callback_id.index(),
-            activation.event.ordinal,
-            activation.event.count
+            activation.iox2_event.ordinal,
+            activation.iox2_event.count
         ),
         (0, 1, 5)
     );
@@ -170,15 +174,15 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     );
     assert_eq!(
         (
-            record.events[0].ordinal,
-            record.events[0].event_id,
-            record.events[0].count
+            record.iox2_events[0].ordinal,
+            record.iox2_events[0].event_id,
+            record.iox2_events[0].count
         ),
         (1, 9, 5)
     );
     assert_eq!(
         record
-            .output_events
+            .output_iox2_events
             .iter()
             .map(|e| (e.ordinal, e.event_id, e.count))
             .collect::<Vec<_>>(),
@@ -296,7 +300,7 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
         })
         .unwrap();
     assert_eq!(records[0].outcome, Outcome::Committed);
-    let arrivals = recorder.drain_events();
+    let arrivals = recorder.drain_iox2_event_records();
     assert_eq!(arrivals.len(), 1);
     assert_eq!(
         arrivals[0].observed_at,
@@ -304,9 +308,9 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
     );
     assert_eq!(
         (
-            arrivals[0].event.ordinal,
-            arrivals[0].event.event_id,
-            arrivals[0].event.count
+            arrivals[0].iox2_event.ordinal,
+            arrivals[0].iox2_event.event_id,
+            arrivals[0].iox2_event.count
         ),
         (1, 9, 5)
     );

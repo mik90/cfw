@@ -4,17 +4,17 @@ use std::collections::{BTreeMap, HashSet};
 use task::{recording::*, time::FrameworkTime};
 enum Pending {
     Data(OwnedLogEntry),
-    Event {
+    Iox2Event {
         callback: String,
         channel: String,
-        event: ObservedEvent,
+        iox2_event: Iox2EventRecord,
     },
 }
 impl Pending {
     fn time(&self) -> FrameworkTime {
         match self {
             Self::Data(e) => e.header.published_at,
-            Self::Event { event, .. } => event.observed_at,
+            Self::Iox2Event { iox2_event, .. } => iox2_event.observed_at,
         }
     }
 }
@@ -40,7 +40,7 @@ impl<'a> ReplayFeed<'a> {
         let mut map = BTreeMap::new();
         for source in sources {
             let name = source.channel().to_owned();
-            if name == EXECUTION_LOG_CHANNEL || name == EXECUTION_EVENT_CHANNEL {
+            if name == EXECUTION_LOG_CHANNEL || name == IOX2_EVENT_RECORD_CHANNEL {
                 return Err(format!("reserved replay source channel '{name}'").into());
             }
             if map.insert(name.clone(), source).is_some() {
@@ -49,7 +49,7 @@ impl<'a> ReplayFeed<'a> {
         }
         for channel in reader.channel_names() {
             if channel != EXECUTION_LOG_CHANNEL
-                && channel != EXECUTION_EVENT_CHANNEL
+                && channel != IOX2_EVENT_RECORD_CHANNEL
                 && !denied.contains(channel)
                 && !map.contains_key(channel)
             {
@@ -133,8 +133,8 @@ impl<'a> ReplayFeed<'a> {
                         return Err("invalid execution record index or timestamp".into());
                     }
                 }
-                EXECUTION_EVENT_CHANNEL => {
-                    let event: ObservedEvent = serde_json::from_slice(&entry.serialized_body)?;
+                IOX2_EVENT_RECORD_CHANNEL => {
+                    let event: Iox2EventRecord = serde_json::from_slice(&entry.serialized_body)?;
                     if event.observed_at != entry.header.published_at {
                         return Err("event timestamp differs from log header".into());
                     }
@@ -144,7 +144,7 @@ impl<'a> ReplayFeed<'a> {
                         .and_then(|d| d.callbacks.get(event.callback_id.index()))
                         .ok_or("event record has no matching callback descriptor")?;
                     let mut endpoints = callback.endpoints.iter().filter(|p| {
-                        p.direction == Direction::Received && p.ordinal == event.event.ordinal
+                        p.direction == Direction::Received && p.ordinal == event.iox2_event.ordinal
                     });
                     let endpoint = endpoints
                         .next()
@@ -157,10 +157,10 @@ impl<'a> ReplayFeed<'a> {
                     if self.denied.contains(&endpoint.channel) {
                         continue;
                     }
-                    self.pending = Some(Pending::Event {
+                    self.pending = Some(Pending::Iox2Event {
                         callback: callback.name.clone(),
                         channel: endpoint.channel.clone(),
-                        event,
+                        iox2_event: event,
                     });
                     return Ok(());
                 }
@@ -177,7 +177,7 @@ impl<'a> ReplayFeed<'a> {
     pub fn inject_due(
         &mut self,
         time: FrameworkTime,
-        event: impl FnMut(&str, &str, &ObservedEvent) -> Result<(), BoxedLogError>,
+        event: impl FnMut(&str, &str, &Iox2EventRecord) -> Result<(), BoxedLogError>,
     ) -> Result<Option<FrameworkTime>, BoxedLogError> {
         self.inject_due_while(time, event, || true)
     }
@@ -186,7 +186,7 @@ impl<'a> ReplayFeed<'a> {
     pub fn inject_due_while(
         &mut self,
         time: FrameworkTime,
-        mut event: impl FnMut(&str, &str, &ObservedEvent) -> Result<(), BoxedLogError>,
+        mut event: impl FnMut(&str, &str, &Iox2EventRecord) -> Result<(), BoxedLogError>,
         mut running: impl FnMut() -> bool,
     ) -> Result<Option<FrameworkTime>, BoxedLogError> {
         if self.failed {
@@ -214,10 +214,10 @@ impl<'a> ReplayFeed<'a> {
                                 entry.channel_name, entry.header.published_at
                             )
                         })?,
-                    Pending::Event {
+                    Pending::Iox2Event {
                         callback,
                         channel,
-                        event: observed,
+                        iox2_event: observed,
                     } => event(&callback, &channel, &observed)?,
                 }
                 self.advance(&mut running)?;

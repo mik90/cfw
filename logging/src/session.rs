@@ -184,10 +184,10 @@ impl<'a> LogSession<'a> {
                     first.get_or_insert(error);
                 }
             }
-            for event in recorder.drain_events() {
+            for event in recorder.drain_iox2_event_records() {
                 let result = (|| {
                     self.writer.store_message(
-                        task::recording::EXECUTION_EVENT_CHANNEL,
+                        task::recording::IOX2_EVENT_RECORD_CHANNEL,
                         &task::message::MessageHeader::new(event.observed_at),
                         &serde_json::to_vec(&event)?,
                     )
@@ -196,7 +196,7 @@ impl<'a> LogSession<'a> {
                     self.report(
                         DiagnosticKind::Write,
                         Some(event.observed_at),
-                        Some(task::recording::EXECUTION_EVENT_CHANNEL),
+                        Some(task::recording::IOX2_EVENT_RECORD_CHANNEL),
                         &error,
                     );
                     first.get_or_insert(error);

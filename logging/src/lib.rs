@@ -33,7 +33,7 @@ pub use capture::{Capture, CapturePlan};
 pub use replay_source::{ReplaySource, ReplaySourcePlan};
 pub use session::{LogSession, LogStatus};
 pub use task::recording::{
-    ExecutionDescriptor, ExecutionRecord, ExecutionRecorder, ObservedEvent, RecordingMode,
+    ExecutionDescriptor, ExecutionRecord, ExecutionRecorder, Iox2EventRecord, RecordingMode,
     RecordingOptions,
 };
 #[cfg(feature = "testing")]

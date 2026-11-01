@@ -414,8 +414,8 @@ fn missing_and_ambiguous_payloads_and_failed_records_cannot_claim_exactness() {
             header: task::message::MessageHeader::new(at(0)),
         }],
         outputs: vec![],
-        events: vec![],
-        output_events: vec![],
+        iox2_events: vec![],
+        output_iox2_events: vec![],
         outcome: Outcome::Committed,
     };
     replay(
@@ -496,8 +496,8 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
         execution_time: at(0),
         body_duration_ns: 1,
         inputs: vec![],
-        events: vec![],
-        output_events: vec![],
+        iox2_events: vec![],
+        output_iox2_events: vec![],
         outputs: vec![LoggedMessage {
             ordinal: 0,
             header: task::message::MessageHeader::new(at(0)),
@@ -531,8 +531,8 @@ fn publisher_lookup_and_batch_headers_are_validated_before_execution() {
             execution_time: at(0),
             body_duration_ns: 0,
             inputs: vec![],
-            events: vec![],
-            output_events: vec![],
+            iox2_events: vec![],
+            output_iox2_events: vec![],
             outputs: vec![LoggedMessage { ordinal: 0, header }],
             outcome: Outcome::Committed,
         };

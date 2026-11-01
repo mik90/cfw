@@ -418,10 +418,10 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
         }],
         logged_channels: vec![],
     };
-    let event = ObservedEvent {
+    let event = Iox2EventRecord {
         callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
         observed_at: at(10),
-        event: LoggedIox2Event {
+        iox2_event: LoggedIox2Event {
             ordinal,
             event_id: 0,
             count: 1,
@@ -430,7 +430,7 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
     SortedLogStreamReader::from_entries(
         vec![entry(
             10,
-            EXECUTION_EVENT_CHANNEL,
+            IOX2_EVENT_RECORD_CHANNEL,
             &serde_json::to_vec(&event).unwrap(),
         )],
         descriptor_artifacts(&descriptor),
@@ -610,12 +610,12 @@ mod ipc {
         for callback_index in 0..2 {
             rows.push(entry(
                 10,
-                EXECUTION_EVENT_CHANNEL,
-                &serde_json::to_vec(&ObservedEvent {
+                IOX2_EVENT_RECORD_CHANNEL,
+                &serde_json::to_vec(&Iox2EventRecord {
                     callback_id: task::string_interner::CallbackId::from_index(callback_index)
                         .unwrap(),
                     observed_at: at(10),
-                    event: LoggedIox2Event {
+                    iox2_event: LoggedIox2Event {
                         ordinal: 0,
                         event_id: 0,
                         count: 3,

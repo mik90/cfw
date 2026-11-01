@@ -60,7 +60,7 @@ impl GraphReplayPlan {
             .collect();
         for channel in &channels {
             if channel == task::recording::EXECUTION_LOG_CHANNEL
-                || channel == task::recording::EXECUTION_EVENT_CHANNEL
+                || channel == task::recording::IOX2_EVENT_RECORD_CHANNEL
             {
                 return Err(BuildError(format!(
                     "reserved replay source channel '{channel}'"
@@ -87,7 +87,7 @@ impl GraphReplayPlan {
             plan,
             reader.channel_names().iter().filter(|channel| {
                 channel.as_str() != task::recording::EXECUTION_LOG_CHANNEL
-                    && channel.as_str() != task::recording::EXECUTION_EVENT_CHANNEL
+                    && channel.as_str() != task::recording::IOX2_EVENT_RECORD_CHANNEL
             }),
             options,
         )?)

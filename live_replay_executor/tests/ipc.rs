@@ -151,10 +151,10 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
     };
     let mut rows = vec![row(0, &channel, b"42")];
     for (index, count) in [(0, 3), (1, 5)] {
-        let event = ObservedEvent {
+        let event = Iox2EventRecord {
             callback_id: task::string_interner::CallbackId::from_index(index).unwrap(),
             observed_at: FrameworkTime::from_nanoseconds(0),
-            event: LoggedIox2Event {
+            iox2_event: LoggedIox2Event {
                 ordinal: 0,
                 event_id: 0,
                 count,
@@ -162,7 +162,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
         };
         rows.push(row(
             0,
-            EXECUTION_EVENT_CHANNEL,
+            IOX2_EVENT_RECORD_CHANNEL,
             &serde_json::to_vec(&event).unwrap(),
         ));
     }

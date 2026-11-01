@@ -232,11 +232,11 @@ fn play<C: TimeSource>(
                             .stop
                             .inject_event(
                                 callback,
-                                event.event.ordinal,
+                                event.iox2_event.ordinal,
                                 channel,
                                 control.now(),
-                                event.event.event_id,
-                                event.event.count,
+                                event.iox2_event.event_id,
+                                event.iox2_event.count,
                             )
                             .map_err(Into::into)
                     }

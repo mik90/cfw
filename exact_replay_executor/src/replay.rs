@@ -369,11 +369,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 self.report.record_reproduced(&endpoint.channel);
             }
         }
-        for event in &record.events {
+        for event in &record.iox2_events {
             self.detail_endpoint = Some((Direction::Received, event.ordinal));
             self.detail_header = None;
             self.callbacks[index]
-                .stage_replay_event(event.ordinal, event.event_id, event.count)
+                .stage_replay_iox2_event(event.ordinal, event.event_id, event.count)
                 .map_err(|e| ReplayError::Callback {
                     callback: name.clone(),
                     reason: format!("event hydration: {e:?}"),
@@ -404,9 +404,9 @@ impl<'storage> ExactReplayExecutor<'storage> {
             callback: name.clone(),
             reason: format!("{e:?}"),
         })?;
-        if output_events != record.output_events {
+        if output_events != record.output_iox2_events {
             self.mismatch(
-                "execution_events",
+                "output_iox2_events",
                 format!("'{name}' output event counts/IDs differ"),
             )?;
         }
@@ -622,8 +622,8 @@ impl Callback for Checked<'_> {
         }
         let mut events = Vec::new();
         self.callback
-            .visit_prepared_events(&mut |event| events.push(event));
-        if events != self.expected.events {
+            .visit_prepared_iox2_events(&mut |event| events.push(event));
+        if events != self.expected.iox2_events {
             return Err(LoanError::Transport(
                 "hydrated event snapshot differs".into(),
             ));
@@ -637,7 +637,7 @@ impl Callback for Checked<'_> {
     }
     fn flush_outputs(&mut self, time: task::time::FrameworkTime) {
         self.callback
-            .visit_pending_events(&mut |event| self.output_events.push(event));
+            .visit_pending_iox2_events(&mut |event| self.output_events.push(event));
         self.callback.flush_outputs(time);
     }
     fn discard_outputs(&mut self) {

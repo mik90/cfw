@@ -112,13 +112,13 @@ where
     fn visit_pending_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
         self.outputs.visit(&mut Messages { visit, ordinal: 0 });
     }
-    fn visit_prepared_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
+    fn visit_prepared_iox2_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
         self.inputs.visit(&mut Events { visit, ordinal: 0 });
     }
-    fn visit_pending_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
+    fn visit_pending_iox2_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
         self.outputs.visit(&mut Events { visit, ordinal: 0 });
     }
-    fn stage_replay_event(
+    fn stage_replay_iox2_event(
         &mut self,
         ordinal: usize,
         event_id: usize,
@@ -615,6 +615,6 @@ mod tests {
             },
         );
 
-        assert_that!(node.stage_replay_event(0, 1, 1), err(anything()));
+        assert_that!(node.stage_replay_iox2_event(0, 1, 1), err(anything()));
     }
 }

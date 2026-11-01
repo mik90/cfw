@@ -109,7 +109,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         let mut callback = Observe
             .bind(declaration, &input, &input, &input, &output, &notify)
             .unwrap();
-        callback.stage_replay_event(2, 9, 5).unwrap();
+        callback.stage_replay_iox2_event(2, 9, 5).unwrap();
         let mut graph = GraphBuilder::with_channel_names([
             storage.0.name(),
             storage.1.name(),
@@ -136,10 +136,10 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         writer
             .store_message(&input_name, &input_header(4, 1), b"11")
             .unwrap();
-        let observed = task::recording::ObservedEvent {
+        let observed = task::recording::Iox2EventRecord {
             callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
             observed_at: at(5),
-            event: task::recording::LoggedIox2Event {
+            iox2_event: task::recording::LoggedIox2Event {
                 ordinal: 2,
                 event_id: 9,
                 count: 5,
@@ -147,7 +147,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         };
         writer
             .store_message(
-                task::recording::EXECUTION_EVENT_CHANNEL,
+                task::recording::IOX2_EVENT_RECORD_CHANNEL,
                 &MessageHeader::new(at(5)),
                 &serde_json::to_vec(&observed).unwrap(),
             )

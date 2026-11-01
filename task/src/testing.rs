@@ -59,7 +59,7 @@ impl Callback for FakeCallback {
             "fake callback does not support replay input reset".into(),
         ))
     }
-    fn stage_replay_event(&mut self, _: usize, _: usize, _: u64) -> Result<(), LoanError> {
+    fn stage_replay_iox2_event(&mut self, _: usize, _: usize, _: u64) -> Result<(), LoanError> {
         Err(LoanError::Transport("unknown replay event endpoint".into()))
     }
     fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
@@ -72,8 +72,8 @@ impl Callback for FakeCallback {
         );
     }
     fn visit_pending_messages(&self, _visit: &mut dyn FnMut(LoggedMessage)) {}
-    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(LoggedIox2Event)) {}
-    fn visit_pending_events(&self, _visit: &mut dyn FnMut(LoggedIox2Event)) {}
+    fn visit_prepared_iox2_events(&self, _visit: &mut dyn FnMut(LoggedIox2Event)) {}
+    fn visit_pending_iox2_events(&self, _visit: &mut dyn FnMut(LoggedIox2Event)) {}
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         Vec::new()

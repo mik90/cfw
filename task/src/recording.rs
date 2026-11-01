@@ -6,7 +6,9 @@ use std::{
     time::Instant,
 };
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
-pub const EXECUTION_EVENT_CHANNEL: &str = "execution_events";
+/// Iox2 events observed at the readiness/injection boundary. Kept separate from
+/// [`ExecutionRecord`] because an observation may not produce an execution.
+pub const IOX2_EVENT_RECORD_CHANNEL: &str = "iox2_event_records";
 pub const EXECUTION_LOG_DESCRIPTOR_ARTIFACT: &str = "execution_log_descriptor";
 pub const INTERN_TABLES_ARTIFACT: &str = "intern_tables";
 
@@ -21,11 +23,11 @@ pub struct InternTables {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RecordingMode {
-    /// Execute normally without recording invocations or observed events.
+    /// Execute normally without recording invocations or iox2 event records.
     Off,
     /// Record callback identity, execution time, body duration and outcome only.
     DurationOnly,
-    /// Also record input/output publication identities and events for exact replay.
+    /// Also record input/output identities and inline iox2 events for exact replay.
     #[default]
     Full,
 }
@@ -98,14 +100,19 @@ pub struct LoggedIox2Event {
     pub event_id: usize,
     pub count: u64,
 }
-/// Per-recipient activation at the readiness/injection boundary, independently
-/// of when required inputs or pool capacity permit that callback to execute.
+/// An iox2 event seen at the readiness/injection boundary. This is not the event
+/// snapshot consumed by an invocation; those are recorded inline in
+/// [`ExecutionRecord::iox2_events`].
+///
+/// The observation is independent of when required inputs or pool capacity permit
+/// that callback to execute.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ObservedEvent {
+pub struct Iox2EventRecord {
     pub callback_id: crate::string_interner::CallbackId,
     pub observed_at: FrameworkTime,
-    pub event: LoggedIox2Event,
+    #[cfg_attr(feature = "serde", serde(alias = "event"))]
+    pub iox2_event: LoggedIox2Event,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -126,8 +133,13 @@ pub struct ExecutionRecord {
     /// Measured body runtime, not simulator modeled occupancy.
     pub body_duration_ns: u64,
     pub inputs: Vec<LoggedMessage>,
-    pub events: Vec<LoggedIox2Event>,
-    pub output_events: Vec<LoggedIox2Event>,
+    /// Iox2 events consumed by this invocation. Recorded inline because events
+    /// carry no payload and are too small to justify an identity lookup.
+    #[cfg_attr(feature = "serde", serde(alias = "events"))]
+    pub iox2_events: Vec<LoggedIox2Event>,
+    /// Iox2 events attempted by this invocation, with the same inline rationale.
+    #[cfg_attr(feature = "serde", serde(alias = "output_events"))]
+    pub output_iox2_events: Vec<LoggedIox2Event>,
     /// Committed outputs for Committed, attempts for CommitPanicked, otherwise empty.
     pub outputs: Vec<LoggedMessage>,
     pub outcome: Outcome,
@@ -137,7 +149,7 @@ struct State {
     attached: bool,
     descriptor: Option<ExecutionDescriptor>,
     records: VecDeque<ExecutionRecord>,
-    events: VecDeque<ObservedEvent>,
+    iox2_event_records: VecDeque<Iox2EventRecord>,
     capacity: usize,
     dropped: usize,
 }
@@ -154,7 +166,7 @@ impl ExecutionRecorder {
             intern_tables: None,
             descriptor: None,
             records: VecDeque::with_capacity(capacity),
-            events: VecDeque::new(),
+            iox2_event_records: VecDeque::new(),
             capacity,
             dropped: 0,
         })))
@@ -171,21 +183,26 @@ impl ExecutionRecorder {
     pub fn drain(&self) -> Vec<ExecutionRecord> {
         self.0.lock().unwrap().records.drain(..).collect()
     }
-    pub fn drain_events(&self) -> Vec<ObservedEvent> {
-        self.0.lock().unwrap().events.drain(..).collect()
+    pub fn drain_iox2_event_records(&self) -> Vec<Iox2EventRecord> {
+        self.0
+            .lock()
+            .unwrap()
+            .iox2_event_records
+            .drain(..)
+            .collect()
     }
     #[cfg(feature = "iceoryx2")]
-    fn observe_event(&self, event: ObservedEvent) {
+    fn observe_iox2_event(&self, event: Iox2EventRecord) {
         let mut state = self.0.lock().unwrap();
-        if state.records.len() + state.events.len() == state.capacity {
+        if state.records.len() + state.iox2_event_records.len() == state.capacity {
             state.dropped = state.dropped.saturating_add(1);
         } else {
-            state.events.push_back(event);
+            state.iox2_event_records.push_back(event);
         }
     }
     fn record(&self, record: ExecutionRecord) {
         let mut state = self.0.lock().unwrap();
-        if state.records.len() + state.events.len() == state.capacity {
+        if state.records.len() + state.iox2_event_records.len() == state.capacity {
             state.dropped = state.dropped.saturating_add(1);
         } else {
             state.records.push_back(record);
@@ -270,13 +287,14 @@ impl Callback for Recorded<'_> {
     fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
         self.callback.clear_replay_inputs()
     }
-    fn stage_replay_event(
+    fn stage_replay_iox2_event(
         &mut self,
         ordinal: usize,
         event_id: usize,
         count: u64,
     ) -> Result<(), LoanError> {
-        self.callback.stage_replay_event(ordinal, event_id, count)
+        self.callback
+            .stage_replay_iox2_event(ordinal, event_id, count)
     }
     fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
         self.callback.recording_endpoints()
@@ -293,11 +311,11 @@ impl Callback for Recorded<'_> {
     fn visit_pending_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
         self.callback.visit_pending_messages(visit);
     }
-    fn visit_prepared_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
-        self.callback.visit_prepared_events(visit);
+    fn visit_prepared_iox2_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
+        self.callback.visit_prepared_iox2_events(visit);
     }
-    fn visit_pending_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
-        self.callback.visit_pending_events(visit);
+    fn visit_pending_iox2_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
+        self.callback.visit_pending_iox2_events(visit);
     }
     fn set_waker(&mut self, wake: crate::wake::WakeHandle) {
         self.callback.set_waker(wake);
@@ -360,10 +378,10 @@ impl Callback for Recorded<'_> {
                 if let Some(previous) = &previous {
                     previous(observed_at, event);
                 }
-                recorder.observe_event(ObservedEvent {
+                recorder.observe_iox2_event(Iox2EventRecord {
                     callback_id,
                     observed_at,
-                    event: LoggedIox2Event {
+                    iox2_event: LoggedIox2Event {
                         ordinal,
                         event_id: event.event_id.as_value(),
                         count: event.count,
@@ -379,8 +397,8 @@ impl Callback for Recorded<'_> {
             execution_time: context.now(),
             body_duration_ns: 0,
             inputs: Vec::new(),
-            events: Vec::new(),
-            output_events: Vec::new(),
+            iox2_events: Vec::new(),
+            output_iox2_events: Vec::new(),
             outputs: Vec::new(),
             outcome: Outcome::Cancelled,
         };
@@ -388,7 +406,7 @@ impl Callback for Recorded<'_> {
             self.callback
                 .visit_prepared_messages(&mut |message| record.inputs.push(message));
             self.callback
-                .visit_prepared_events(&mut |event| record.events.push(event));
+                .visit_prepared_iox2_events(&mut |event| record.iox2_events.push(event));
         }
         let start = Instant::now();
         let result =
@@ -414,7 +432,7 @@ impl Callback for Recorded<'_> {
                 record.outputs.push(message);
             });
             self.callback
-                .visit_pending_events(&mut |event| record.output_events.push(event));
+                .visit_pending_iox2_events(&mut |event| record.output_iox2_events.push(event));
         }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.callback.flush_outputs(time)
@@ -434,7 +452,7 @@ impl Callback for Recorded<'_> {
     fn discard_outputs(&mut self) {
         if let Some(mut record) = self.active.take() {
             record.outputs.clear();
-            record.output_events.clear();
+            record.output_iox2_events.clear();
             self.recorder.record(record);
         }
         self.callback.discard_outputs();

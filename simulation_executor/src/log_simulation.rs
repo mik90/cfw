@@ -88,9 +88,9 @@ impl<'storage> LogSimulation<'storage> {
                 let next = source.lock().map_err(|e| e.to_string())?.inject_due(time, |callback, channel, event| {
                 #[cfg(feature = "iceoryx2")]
                 {
-                    let target = targets.get(&(callback.into(), event.event.ordinal)).ok_or_else(|| format!("unknown event recipient '{callback}' subscriber {}", event.event.ordinal))?;
+                    let target = targets.get(&(callback.into(), event.iox2_event.ordinal)).ok_or_else(|| format!("unknown event recipient '{callback}' subscriber {}", event.iox2_event.ordinal))?;
                     if target.channel != channel { return Err(format!("event recipient '{callback}' channel mismatch: recorded '{channel}', bound '{}'", target.channel).into()); }
-                    target.inject(event.observed_at, iceoryx2::prelude::EventId::new(event.event.event_id), event.event.count);
+                    target.inject(event.observed_at, iceoryx2::prelude::EventId::new(event.iox2_event.event_id), event.iox2_event.count);
                     Ok(())
                 }
                 #[cfg(not(feature = "iceoryx2"))]

@@ -21,7 +21,7 @@ pub trait Callback: Send {
             "callback does not support replay input reset".into(),
         ))
     }
-    fn stage_replay_event(
+    fn stage_replay_iox2_event(
         &mut self,
         _ordinal: usize,
         _event_id: usize,
@@ -42,8 +42,13 @@ pub trait Callback: Send {
     }
     fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
     fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {}
-    fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {}
+    fn visit_prepared_iox2_events(
+        &self,
+        _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event),
+    ) {
+    }
+    fn visit_pending_iox2_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {
+    }
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         Vec::new()
@@ -85,7 +90,7 @@ where
             "callback does not support replay input reset".into(),
         ))
     }
-    fn stage_replay_event(
+    fn stage_replay_iox2_event(
         &mut self,
         _ordinal: usize,
         _event_id: usize,
@@ -102,8 +107,13 @@ where
     }
     fn visit_prepared_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
     fn visit_pending_messages(&self, _visit: &mut dyn FnMut(crate::recording::LoggedMessage)) {}
-    fn visit_prepared_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {}
-    fn visit_pending_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {}
+    fn visit_prepared_iox2_events(
+        &self,
+        _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event),
+    ) {
+    }
+    fn visit_pending_iox2_events(&self, _visit: &mut dyn FnMut(crate::recording::LoggedIox2Event)) {
+    }
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events(&mut self) -> Vec<crate::iox2::Iox2EventRegistration> {
         Vec::new()
