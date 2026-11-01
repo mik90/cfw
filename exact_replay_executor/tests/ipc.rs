@@ -2,7 +2,8 @@
 use exact_replay_executor::{ExactReplayExecutor, OutputCapture, ReplayBindings, ReplayLog};
 use iceoryx2::prelude::ZeroCopySend;
 use logging::{
-    Capture, LogFileWriter, LogSession, RecordingOptions, ReplaySource, StandaloneExecutionLogPlan,
+    Capture, ExecutionLogOptions, LogFileWriter, LogSession, ReplaySource,
+    StandaloneExecutionLogPlan,
 };
 use std::{
     io::Write,
@@ -119,8 +120,11 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         ]);
         graph.add_callback("observe", || Ok(callback));
         let graph = graph.build().unwrap();
-        let log_plan =
-            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 2).unwrap();
+        let log_plan = StandaloneExecutionLogPlan::for_graph(
+            &graph,
+            ExecutionLogOptions::with_default_recording(2, 4),
+        )
+        .unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {

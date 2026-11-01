@@ -1,6 +1,6 @@
 #![cfg(all(feature = "serde", feature = "iceoryx2"))]
 use iceoryx2::prelude::{EventId, ZeroCopySend};
-use logging::{Capture, RecordingOptions, ReplaySource, StandaloneExecutionLogPlan};
+use logging::{Capture, ExecutionLogOptions, ReplaySource, StandaloneExecutionLogPlan};
 use std::time::Duration;
 use task::iox2::{
     Iox2ChannelPlan, Iox2Event, Iox2NotifyOutput, Iox2OptionalInput, Iox2Output, Iox2Runtime,
@@ -81,8 +81,11 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
         || Ok(Observe.bind(declaration, &input, &input, &gate, &output, &events)?),
     );
     let graph = graph.build().unwrap();
-    let log_plan =
-        StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 2).unwrap();
+    let log_plan = StandaloneExecutionLogPlan::for_graph(
+        &graph,
+        ExecutionLogOptions::with_default_recording(2, 4),
+    )
+    .unwrap();
     let log_storage = log_plan.allocate().unwrap();
     let (graph, metadata, mut log_captures) = log_storage.attach(graph).unwrap();
     let mut simulation = simulation_executor::SimulationState::with_config(
@@ -272,8 +275,11 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
         Ok(Observe.bind(declaration, &input, &input, &gate, &output, &events)?)
     });
     let graph = graph.build().unwrap();
-    let log_plan =
-        StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 4).unwrap();
+    let log_plan = StandaloneExecutionLogPlan::for_graph(
+        &graph,
+        ExecutionLogOptions::with_default_recording(4, 4),
+    )
+    .unwrap();
     let log_storage = log_plan.allocate().unwrap();
     let (graph, _metadata, mut log_captures) = log_storage.attach(graph).unwrap();
     ReplaySource::iox2(input.take_publisher(&data_key).unwrap())

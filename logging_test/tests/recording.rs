@@ -1,5 +1,5 @@
 use logging::{
-    CapturePlan, ExecutionRecord, InMemoryWriter, LogSession, RecordingOptions,
+    CapturePlan, ExecutionLogOptions, ExecutionRecord, InMemoryWriter, LogSession,
     StandaloneExecutionLogPlan,
 };
 use simulation_executor::{SimulationConfig, SimulationState};
@@ -37,9 +37,11 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
                 || Ok(Counter(0).bind(declaration, &values)?),
             );
             let graph = builder.build().unwrap();
-            let log_plan =
-                StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 8)
-                    .unwrap();
+            let log_plan = StandaloneExecutionLogPlan::for_graph(
+                &graph,
+                ExecutionLogOptions::with_default_recording(8, 1),
+            )
+            .unwrap();
             let log_storage = log_plan.allocate().unwrap();
             let (graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
             let mut captures: Vec<_> = capture

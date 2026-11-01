@@ -1,4 +1,4 @@
-use logging::{ExecutionLogPlan, InMemoryWriter, LogSession};
+use logging::{ExecutionLogOptions, ExecutionLogPlan, InMemoryWriter, LogSession};
 use std::time::Duration;
 use task::{execution_log_schema::ExecutionRecord, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
@@ -20,12 +20,9 @@ fn execution_log_publishers_feed_the_log_session() {
     )
     .register(&mut plan)
     .unwrap();
-    let execution_log = ExecutionLogPlan::declare(
-        &mut plan,
-        task::execution_log_schema::RecordingOptions::default(),
-        8,
-    )
-    .unwrap();
+    let execution_log =
+        ExecutionLogPlan::declare(&mut plan, ExecutionLogOptions::with_default_recording(8, 2))
+            .unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let (graph, metadata, captures) = execution_log
@@ -82,7 +79,8 @@ fn execution_log_plan_applies_per_callback_modes() {
             .with_callback("off", RecordingMode::Off)
             .with_callback("duration", RecordingMode::DurationOnly)
             .with_callback("full", RecordingMode::Full);
-        let execution_log = ExecutionLogPlan::declare(&mut plan, options, 8).unwrap();
+        let execution_log =
+            ExecutionLogPlan::declare(&mut plan, ExecutionLogOptions::new(options, 8, 2)).unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let (graph, metadata, mut captures) = execution_log

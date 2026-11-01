@@ -346,8 +346,7 @@ fn record_sort_and_simulate_current_format_end_to_end() {
     with_graph(|graph, source, input_capture, output_capture| {
         let log_plan = logging::StandaloneExecutionLogPlan::for_graph(
             &graph,
-            logging::RecordingOptions::default(),
-            8,
+            logging::ExecutionLogOptions::with_default_recording(8, 2),
         )
         .unwrap();
         let log_storage = log_plan.allocate().unwrap();

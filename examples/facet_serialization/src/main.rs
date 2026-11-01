@@ -33,13 +33,13 @@
 use clap::{Parser, Subcommand};
 use facet::Facet;
 use live_executor::LiveExecutor;
+use logging::ExecutionLogOptions;
 use logging::{CaptureOptions, ExecutionLogPlan, GraphCapturePlan, LogSession};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use task::Output;
-use task::execution_log_schema::RecordingOptions;
 use task::loggable::Loggable;
 use task_graph::{ApplicationBuilder, CallbackSchedule};
 use task_macros::task_callback;
@@ -169,7 +169,10 @@ fn run_live(
     );
     let mut plan = app.plan()?;
     let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(32))?;
-    let execution_log = ExecutionLogPlan::declare(&mut plan, RecordingOptions::default(), 32)?;
+    let execution_log = ExecutionLogPlan::declare(
+        &mut plan,
+        ExecutionLogOptions::with_default_recording(32, 8),
+    )?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.bind_and_build()?;
     let (graph, metadata, execution_captures) = execution_log.attach(graph, &bindings)?;

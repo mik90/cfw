@@ -2,8 +2,8 @@ use std::path::Path;
 
 use exact_replay_executor::{ExactReplayConfig, ExactReplayExecutor, ExactReplayPlan, ReplayLog};
 use logging::{
-    CaptureOptions, ExecutionLogPlan, GraphCapturePlan, GraphReplayPlan, LogSession,
-    RecordingOptions, ReplayOptions, ReplaySource,
+    CaptureOptions, ExecutionLogOptions, ExecutionLogPlan, GraphCapturePlan, GraphReplayPlan,
+    LogSession, ReplayOptions, ReplaySource,
 };
 use task_graph::{ApplicationBuilder, BuiltGraph};
 use test_tasks::{
@@ -65,8 +65,10 @@ pub fn with_recording<R>(
         options = options.exclude(INTEGER_CHANNEL);
     }
     let captures = GraphCapturePlan::declare(&mut plan, &options)?;
-    let execution_log =
-        ExecutionLogPlan::declare(&mut plan, RecordingOptions::default(), CAPACITY)?;
+    let execution_log = ExecutionLogPlan::declare(
+        &mut plan,
+        ExecutionLogOptions::with_default_recording(CAPACITY, CAPACITY / 4),
+    )?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.bind_and_build()?;
     let (graph, metadata, execution_captures) = execution_log.attach(graph, &bindings)?;

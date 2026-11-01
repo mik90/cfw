@@ -413,7 +413,7 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
 #[cfg(feature = "serde")]
 #[test]
 fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
-    use logging::{LogFileReader, LogSession, RecordingOptions, StandaloneExecutionLogPlan};
+    use logging::{ExecutionLogOptions, LogFileReader, LogSession, StandaloneExecutionLogPlan};
     use std::{
         io::Write,
         sync::{Arc, Mutex},
@@ -439,8 +439,11 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let graph = storage.build_with(&bindings).unwrap();
-        let log_plan =
-            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 1).unwrap();
+        let log_plan = StandaloneExecutionLogPlan::for_graph(
+            &graph,
+            ExecutionLogOptions::with_default_recording(1, 1),
+        )
+        .unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {

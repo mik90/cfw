@@ -328,8 +328,7 @@ fn shards_share_a_writer_and_record_only_workload_callbacks_once() {
     let graph = builder.build().unwrap();
     let log_plan = logging::StandaloneExecutionLogPlan::for_graph(
         &graph,
-        logging::RecordingOptions::default(),
-        8,
+        logging::ExecutionLogOptions::with_default_recording(8, 2),
     )
     .unwrap();
     let log_storage = log_plan.allocate().unwrap();

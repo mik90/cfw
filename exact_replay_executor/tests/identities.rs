@@ -1,7 +1,7 @@
 use exact_replay_executor::{
     ExactReplayExecutor, OutputCapture, ReplayBindings, ReplayInputPlan, ReplayLog, SourceCachePlan,
 };
-use logging::{CapturePlan, LogSession, RecordingOptions, StandaloneExecutionLogPlan};
+use logging::{CapturePlan, ExecutionLogOptions, LogSession, StandaloneExecutionLogPlan};
 use std::{
     io::Write,
     sync::{Arc, Mutex},
@@ -131,8 +131,11 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         graph.add_callback("observe", || Ok(Observe.bind(o, &source, &observed)?));
         graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
         let graph = graph.build().unwrap();
-        let log_plan =
-            StandaloneExecutionLogPlan::for_graph(&graph, RecordingOptions::default(), 10).unwrap();
+        let log_plan = StandaloneExecutionLogPlan::for_graph(
+            &graph,
+            ExecutionLogOptions::with_default_recording(10, 1),
+        )
+        .unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         let descriptor = metadata.descriptor.clone();
