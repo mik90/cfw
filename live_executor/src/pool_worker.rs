@@ -1,0 +1,41 @@
+use std::sync::Mutex;
+use task::execute_callback;
+use task::executor::TimeSource;
+use task_graph::{GraphMetadata, ScheduledCallback};
+
+use crate::ThreadFailure;
+use crate::pool_state::{PoolState, Scheduler};
+
+pub(crate) fn work<T: TimeSource>(
+    id: usize,
+    pool: &PoolState,
+    scheduler: &Scheduler,
+    nodes: &[Mutex<ScheduledCallback<'_>>],
+    metadata: &GraphMetadata,
+    clock: &T,
+) -> Result<(), ThreadFailure> {
+    while !scheduler.is_stopped() {
+        crossbeam::select! {
+            recv(scheduler.stop_rx) -> _ => return Ok(()),
+            recv(pool.work_rx) -> work => {
+                let index = work.expect("scheduler owns work sender");
+                if scheduler.is_stopped() { return Ok(()); }
+                scheduler.claim(index);
+                let executed = {
+                    let mut node = nodes[index].lock().unwrap();
+                    let context = metadata.context(clock.now());
+                    let executed = execute_callback(node.callback.as_mut(), &context).map_err(|source| ThreadFailure::Callback {
+                        worker: id, callback: node.name.clone(), source,
+                    })?;
+                    if executed && node.schedule.is_timed() {
+                        let next = node.schedule.next_after(clock.now()).map_err(|source| ThreadFailure::Timing { callback: node.name.clone(), source })?;
+                        scheduler.set_deadline(index, next);
+                    }
+                    executed
+                };
+                scheduler.finish(index, executed);
+            }
+        }
+    }
+    Ok(())
+}

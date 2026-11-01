@@ -3,6 +3,7 @@ pub mod error;
 pub mod executor;
 mod periodic;
 mod pool_state;
+mod pool_worker;
 #[cfg(feature = "iceoryx2")]
 mod readiness;
 pub mod stop_signal;

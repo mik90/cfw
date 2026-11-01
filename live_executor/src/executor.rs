@@ -2,12 +2,13 @@ use crate::clock::WallClock;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use task::execute_callback;
 use task::executor::TimeSource;
 use task_graph::{BuiltGraph, GraphMetadata, ScheduledCallback};
 
-use crate::pool_state::{PoolState, Scheduler};
-use crate::{LiveExecutorError, LiveExecutorStartError, StopSignal, ThreadFailure};
+use crate::pool_state::Scheduler;
+use crate::{
+    LiveExecutorError, LiveExecutorStartError, StopSignal, ThreadFailure, pool_worker::work,
+};
 
 /// Native live execution borrowing externally owned graph storage. `run_with`
 /// owns the thread scope and joins all workers before returning or unwinding.
@@ -225,7 +226,7 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
                                 scope,
                                 move || {
                                     let _stop_on_exit = StopOnExit(stop);
-                                    worker(id, pool, scheduler, nodes, metadata, clock)
+                                    work(id, pool, scheduler, nodes, metadata, clock)
                                 },
                             )
                         });
@@ -294,40 +295,6 @@ impl Drop for StopOnExit {
     fn drop(&mut self) {
         self.0.request_stop();
     }
-}
-
-fn worker<T: TimeSource>(
-    id: usize,
-    pool: &PoolState,
-    scheduler: &Scheduler,
-    nodes: &[Mutex<ScheduledCallback<'_>>],
-    metadata: &GraphMetadata,
-    clock: &T,
-) -> Result<(), ThreadFailure> {
-    while !scheduler.is_stopped() {
-        crossbeam::select! {
-            recv(scheduler.stop_rx) -> _ => return Ok(()),
-            recv(pool.work_rx) -> work => {
-                let index = work.expect("scheduler owns work sender");
-                if scheduler.is_stopped() { return Ok(()); }
-                scheduler.claim(index);
-                let executed = {
-                    let mut node = nodes[index].lock().unwrap();
-                    let context = metadata.context(clock.now());
-                    let executed = execute_callback(node.callback.as_mut(), &context).map_err(|source| ThreadFailure::Callback {
-                        worker: id, callback: node.name.clone(), source,
-                    })?;
-                    if executed && node.schedule.is_timed() {
-                        let next = node.schedule.next_after(clock.now()).map_err(|source| ThreadFailure::Timing { callback: node.name.clone(), source })?;
-                        scheduler.set_deadline(index, next);
-                    }
-                    executed
-                };
-                scheduler.finish(index, executed);
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
