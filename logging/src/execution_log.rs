@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use task::{
     PublisherKey, SubscriberKey,
     execution_log_schema::{
-        EXECUTION_LOG_CHANNEL, ExecutionRecord, IOX2_EVENT_RECORD_CHANNEL, Iox2EventRecord,
-        RecordingOptions,
+        EXECUTION_LOG_CHANNEL, ExecutionLogMode, ExecutionLogModes, ExecutionRecord,
+        IOX2_EVENT_RECORD_CHANNEL, Iox2EventRecord,
     },
 };
 use task_graph::{
@@ -20,37 +20,27 @@ use task_graph::{
 /// planner.
 #[derive(Clone, Debug)]
 pub struct ExecutionLogOptions {
-    pub recording: RecordingOptions,
+    pub modes: ExecutionLogModes,
     pub execution_log_capacity: usize,
     pub iox2_event_log_capacity: usize,
 }
 impl ExecutionLogOptions {
-    pub fn new(
-        recording: RecordingOptions,
-        execution_log_capacity: usize,
-        iox2_event_log_capacity: usize,
-    ) -> Self {
+    pub fn new(execution_log_capacity: usize, iox2_event_log_capacity: usize) -> Self {
         Self {
-            recording,
+            modes: ExecutionLogModes::default(),
             execution_log_capacity,
             iox2_event_log_capacity,
         }
     }
-    pub fn with_default_recording(
-        execution_log_capacity: usize,
-        iox2_event_log_capacity: usize,
-    ) -> Self {
-        Self::new(
-            RecordingOptions::default(),
-            execution_log_capacity,
-            iox2_event_log_capacity,
-        )
+    pub fn with_modes(mut self, modes: ExecutionLogModes) -> Self {
+        self.modes = modes;
+        self
     }
 }
 
 /// Pre-allocation declaration of execution-log publishers and captures.
 pub struct ExecutionLogPlan {
-    recording: RecordingOptions,
+    modes: ExecutionLogModes,
     record_publishers: BTreeMap<String, PublisherKey<ExecutionRecord>>,
     event_publishers: BTreeMap<String, PublisherKey<Iox2EventRecord>>,
     record_capture: SubscriberKey<ExecutionRecord>,
@@ -70,7 +60,7 @@ impl ExecutionLogPlan {
         let mut record_publishers = BTreeMap::new();
         let mut event_publishers = BTreeMap::new();
         for name in plan.task_names().map(str::to_owned).collect::<Vec<_>>() {
-            if options.recording.mode_for(&name) == task::execution_log_schema::RecordingMode::Off {
+            if options.modes.mode_for(&name) == ExecutionLogMode::Off {
                 continue;
             }
             record_publishers.insert(
@@ -95,7 +85,7 @@ impl ExecutionLogPlan {
             .native::<Iox2EventRecord>(IOX2_EVENT_RECORD_CHANNEL)?
             .subscriber_with_policy(options.iox2_event_log_capacity, policy);
         Ok(Self {
-            recording: options.recording,
+            modes: options.modes,
             record_publishers,
             event_publishers,
             record_capture,
@@ -121,7 +111,7 @@ impl ExecutionLogPlan {
         let record_capture = records.take_subscriber(&self.record_capture)?;
         let event_capture = events.take_subscriber(&self.event_capture)?;
         Ok(ExecutionLogBindings {
-            options: self.recording,
+            modes: self.modes,
             publishers: ExecutionLogPublishers {
                 records: record_publishers,
                 iox2_events: event_publishers,
@@ -145,7 +135,7 @@ impl ExecutionLogPlan {
 
 /// Bound execution-log publishers and captures.
 pub struct ExecutionLogBindings<'a> {
-    options: RecordingOptions,
+    modes: ExecutionLogModes,
     publishers: ExecutionLogPublishers<'a>,
     captures: Vec<Capture<'a>>,
 }
@@ -157,7 +147,7 @@ impl<'a> ExecutionLogBindings<'a> {
         graph: BuiltGraph<'a>,
     ) -> Result<(BuiltGraph<'a>, ExecutionLogMetadata, Vec<Capture<'a>>), BuildError> {
         let (graph, metadata) = graph
-            .with_execution_log(self.options, self.publishers)
+            .with_execution_log(self.modes, self.publishers)
             .map_err(BuildError)?;
         Ok((graph, metadata, self.captures))
     }
@@ -168,7 +158,7 @@ impl<'a> ExecutionLogBindings<'a> {
 /// The workload graph and the execution-log channel allocate separately. Keep
 /// the resulting storage alive while the graph and log session borrow it.
 pub struct StandaloneExecutionLogPlan {
-    recording: RecordingOptions,
+    modes: ExecutionLogModes,
     publishers: BTreeMap<String, task::PublisherKey<ExecutionRecord>>,
     event_publishers: BTreeMap<String, task::PublisherKey<Iox2EventRecord>>,
     capture: task::SubscriberKey<ExecutionRecord>,
@@ -193,7 +183,7 @@ impl StandaloneExecutionLogPlan {
         let mut publishers = BTreeMap::new();
         let mut event_publishers = BTreeMap::new();
         for name in graph.metadata().callback_names.names() {
-            if options.recording.mode_for(name) == task::execution_log_schema::RecordingMode::Off {
+            if options.modes.mode_for(name) == ExecutionLogMode::Off {
                 continue;
             }
             publishers.insert(name.to_owned(), plan.publisher(1));
@@ -207,7 +197,7 @@ impl StandaloneExecutionLogPlan {
         let event_capture =
             event_plan.subscriber_with_policy(options.iox2_event_log_capacity, policy);
         Ok(Self {
-            recording: options.recording,
+            modes: options.modes,
             publishers,
             event_publishers,
             capture,
@@ -221,7 +211,7 @@ impl StandaloneExecutionLogPlan {
         Ok(StandaloneExecutionLog {
             storage: self.plan.allocate()?,
             event_storage: self.event_plan.allocate()?,
-            options: self.recording,
+            modes: self.modes,
             publishers: self.publishers,
             event_publishers: self.event_publishers,
             capture: self.capture,
@@ -234,7 +224,7 @@ impl StandaloneExecutionLogPlan {
 pub struct StandaloneExecutionLog {
     storage: task::ChannelStorage<ExecutionRecord>,
     event_storage: task::ChannelStorage<Iox2EventRecord>,
-    options: RecordingOptions,
+    modes: ExecutionLogModes,
     publishers: BTreeMap<String, task::PublisherKey<ExecutionRecord>>,
     event_publishers: BTreeMap<String, task::PublisherKey<Iox2EventRecord>>,
     capture: task::SubscriberKey<ExecutionRecord>,
@@ -260,7 +250,7 @@ impl StandaloneExecutionLog {
         let event_capture = Capture::native(event_bindings.take_subscriber(&self.event_capture)?);
         let (graph, metadata) = graph
             .with_execution_log(
-                self.options.clone(),
+                self.modes.clone(),
                 ExecutionLogPublishers {
                     records: publishers,
                     iox2_events: event_publishers,

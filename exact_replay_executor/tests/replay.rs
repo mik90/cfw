@@ -124,11 +124,8 @@ fn recorded(log_source: bool) -> ReplayLog {
             Ok(Transform { factor: 2 }.bind(b, &source, &output)?)
         });
         let graph = graph.build().unwrap();
-        let log_plan = StandaloneExecutionLogPlan::for_graph(
-            &graph,
-            ExecutionLogOptions::with_default_recording(8, 2),
-        )
-        .unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(8, 2)).unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
@@ -647,11 +644,8 @@ fn subscribers_on_one_channel_restore_distinct_recorded_snapshots() {
             Ok(TwoInputs.bind(declaration, &shared, &shared, &result)?)
         });
         let graph = graph.build().unwrap();
-        let log_plan = StandaloneExecutionLogPlan::for_graph(
-            &graph,
-            ExecutionLogOptions::with_default_recording(1, 1),
-        )
-        .unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(1, 1)).unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
@@ -761,11 +755,8 @@ fn outputs_on_one_channel_are_attributed_to_the_actual_publisher() {
             Ok(TwoOutputs { swapped: false }.bind(declaration, &bindings, &bindings)?)
         });
         let graph = graph.build().unwrap();
-        let log_plan = StandaloneExecutionLogPlan::for_graph(
-            &graph,
-            ExecutionLogOptions::with_default_recording(1, 1),
-        )
-        .unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(1, 1)).unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {
@@ -896,11 +887,9 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 graph.add_callback("forward", || Ok(Forward.bind(b, &source, &forward)?));
                 graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
                 let graph = graph.build().unwrap();
-                let log_plan = StandaloneExecutionLogPlan::for_graph(
-                    &graph,
-                    ExecutionLogOptions::with_default_recording(8, 1),
-                )
-                .unwrap();
+                let log_plan =
+                    StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(8, 1))
+                        .unwrap();
                 let log_storage = log_plan.allocate().unwrap();
                 let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
                 graph.configure_schedules(|_, schedule| {

@@ -78,11 +78,8 @@ fn automatic_ipc_hydration_is_endpoint_local_and_preserves_event_ordinals() {
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let graph = storage.build_with(&bindings).unwrap();
-        let log_plan = StandaloneExecutionLogPlan::for_graph(
-            &graph,
-            ExecutionLogOptions::with_default_recording(16, 8),
-        )
-        .unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(16, 8)).unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {

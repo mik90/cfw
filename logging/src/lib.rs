@@ -40,7 +40,7 @@ pub use execution_log::{
 pub use replay_source::{ReplaySource, ReplaySourcePlan};
 pub use session::{LogSession, LogStatus};
 pub use task::execution_log_schema::{
-    ExecutionDescriptor, ExecutionRecord, Iox2EventRecord, RecordingMode, RecordingOptions,
+    ExecutionDescriptor, ExecutionLogMode, ExecutionLogModes, ExecutionRecord, Iox2EventRecord,
 };
 #[cfg(feature = "serde")]
 pub use task_graph::execution_log::ExecutionLogMetadata;

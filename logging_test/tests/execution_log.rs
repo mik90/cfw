@@ -21,8 +21,7 @@ fn execution_log_publishers_feed_the_log_session() {
     .register(&mut plan)
     .unwrap();
     let execution_log =
-        ExecutionLogPlan::declare(&mut plan, ExecutionLogOptions::with_default_recording(8, 2))
-            .unwrap();
+        ExecutionLogPlan::declare(&mut plan, ExecutionLogOptions::new(8, 2)).unwrap();
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let (graph, metadata, captures) = execution_log
@@ -59,11 +58,11 @@ fn execution_log_publishers_feed_the_log_session() {
 
 #[test]
 fn execution_log_plan_applies_per_callback_modes() {
-    use task::execution_log_schema::{RecordingMode, RecordingOptions};
+    use task::execution_log_schema::{ExecutionLogMode, ExecutionLogModes};
     for default in [
-        RecordingMode::Off,
-        RecordingMode::DurationOnly,
-        RecordingMode::Full,
+        ExecutionLogMode::Off,
+        ExecutionLogMode::DurationOnly,
+        ExecutionLogMode::Full,
     ] {
         let mut plan = GraphPlan::default();
         for name in ["default", "off", "duration", "full"] {
@@ -75,12 +74,13 @@ fn execution_log_plan_applies_per_callback_modes() {
             .register(&mut plan)
             .unwrap();
         }
-        let options = RecordingOptions::new(default)
-            .with_callback("off", RecordingMode::Off)
-            .with_callback("duration", RecordingMode::DurationOnly)
-            .with_callback("full", RecordingMode::Full);
+        let modes = ExecutionLogModes::new(default)
+            .with_callback("off", ExecutionLogMode::Off)
+            .with_callback("duration", ExecutionLogMode::DurationOnly)
+            .with_callback("full", ExecutionLogMode::Full);
         let execution_log =
-            ExecutionLogPlan::declare(&mut plan, ExecutionLogOptions::new(options, 8, 2)).unwrap();
+            ExecutionLogPlan::declare(&mut plan, ExecutionLogOptions::new(8, 2).with_modes(modes))
+                .unwrap();
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let (graph, metadata, mut captures) = execution_log
@@ -103,13 +103,17 @@ fn execution_log_plan_applies_per_callback_modes() {
             .collect();
         assert_eq!(
             records.len(),
-            if default == RecordingMode::Off { 2 } else { 3 }
+            if default == ExecutionLogMode::Off {
+                2
+            } else {
+                3
+            }
         );
         for record in records {
             assert_eq!(record.execution_time, FrameworkTime::from_nanoseconds(7));
             assert!(
-                metadata.descriptor.callbacks[record.callback_id.index()].recording_mode
-                    != RecordingMode::Off
+                metadata.descriptor.callbacks[record.callback_id.index()].mode
+                    != ExecutionLogMode::Off
             );
         }
     }

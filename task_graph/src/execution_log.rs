@@ -14,15 +14,15 @@ use std::{
 use task::{
     Callback, Context, LoanError, Publisher,
     execution_log_schema::{
-        CallbackDescriptor, Direction, EndpointDescriptor, ExecutionDescriptor, ExecutionRecord,
-        InternTables, Iox2EventRecord, LoggedIox2Event, LoggedMessage, Outcome, RecordingMode,
-        RecordingOptions, Transport,
+        CallbackDescriptor, Direction, EndpointDescriptor, ExecutionDescriptor, ExecutionLogMode,
+        ExecutionLogModes, ExecutionRecord, InternTables, Iox2EventRecord, LoggedIox2Event,
+        LoggedMessage, Outcome, Transport,
     },
     message::MessageHeader,
     time::FrameworkTime,
 };
 
-/// Publishers for every callbacks that has recording enabled.
+/// Publishers for every callback with execution logging enabled.
 pub struct ExecutionLogPublishers<'storage> {
     pub records: BTreeMap<String, Publisher<'storage, ExecutionRecord>>,
     pub iox2_events: BTreeMap<String, Publisher<'storage, Iox2EventRecord>>,
@@ -54,10 +54,10 @@ impl<'storage> BuiltGraph<'storage> {
     /// published instead of collected in a shared queue.
     pub fn with_execution_log(
         self,
-        options: RecordingOptions,
+        modes: ExecutionLogModes,
         mut publishers: ExecutionLogPublishers<'storage>,
     ) -> Result<(Self, ExecutionLogMetadata), String> {
-        for name in options.callbacks.keys() {
+        for name in modes.callbacks.keys() {
             if self
                 .metadata()
                 .callback_names
@@ -72,13 +72,9 @@ impl<'storage> BuiltGraph<'storage> {
         let dropped_iox2_event_records = Arc::new(AtomicUsize::new(0));
         let mut descriptors = Vec::new();
         let graph = self.try_map_callbacks(|_index, name, callback| {
-            let mode = options
-                .callbacks
-                .get(name)
-                .copied()
-                .unwrap_or(options.default_mode);
+            let mode = modes.mode_for(name);
             let endpoints = match (mode, callback.recording_endpoints()) {
-                (RecordingMode::Full, None) => {
+                (ExecutionLogMode::Full, None) => {
                     return Err(format!(
                         "callback '{name}' does not implement execution log metadata"
                     ));
@@ -87,10 +83,10 @@ impl<'storage> BuiltGraph<'storage> {
             };
             descriptors.push(CallbackDescriptor {
                 name: name.into(),
-                recording_mode: mode,
+                mode,
                 endpoints: endpoints.clone(),
             });
-            if mode == RecordingMode::Off {
+            if mode == ExecutionLogMode::Off {
                 return Ok(callback);
             }
             let record_publisher = publishers
@@ -149,7 +145,7 @@ struct ExecutionLogRecorded<'storage> {
     dropped_iox2_event_records: Arc<AtomicUsize>,
     event_endpoints: Vec<EndpointDescriptor>,
     callback_id: task::string_interner::CallbackId,
-    mode: RecordingMode,
+    mode: ExecutionLogMode,
     active: Option<ExecutionRecord>,
 }
 
@@ -232,7 +228,7 @@ impl Callback for ExecutionLogRecorded<'_> {
         let mut registrations = Vec::new();
         self.callback
             .take_iox2_events(&mut |registration| registrations.push(registration));
-        if self.mode != RecordingMode::Full {
+        if self.mode != ExecutionLogMode::Full {
             for registration in registrations {
                 visit(registration);
             }
@@ -287,7 +283,7 @@ impl Callback for ExecutionLogRecorded<'_> {
             outputs: Vec::new(),
             outcome: Outcome::Cancelled,
         };
-        if self.mode == RecordingMode::Full {
+        if self.mode == ExecutionLogMode::Full {
             self.callback
                 .visit_prepared_messages(&mut |message| record.inputs.push(message));
             self.callback
@@ -309,7 +305,7 @@ impl Callback for ExecutionLogRecorded<'_> {
         }
     }
     fn flush_outputs(&mut self, time: FrameworkTime) {
-        if self.mode == RecordingMode::Full
+        if self.mode == ExecutionLogMode::Full
             && let Some(record) = &mut self.active
         {
             self.callback.visit_pending_messages(&mut |mut message| {

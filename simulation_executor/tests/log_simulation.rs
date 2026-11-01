@@ -346,7 +346,7 @@ fn record_sort_and_simulate_current_format_end_to_end() {
     with_graph(|graph, source, input_capture, output_capture| {
         let log_plan = logging::StandaloneExecutionLogPlan::for_graph(
             &graph,
-            logging::ExecutionLogOptions::with_default_recording(8, 2),
+            logging::ExecutionLogOptions::new(8, 2),
         )
         .unwrap();
         let log_storage = log_plan.allocate().unwrap();
@@ -412,7 +412,7 @@ fn event_reader(channel: &str, ordinal: usize) -> SortedLogStreamReader {
     use task::execution_log_schema::*;
     let descriptor = ExecutionDescriptor {
         callbacks: vec![CallbackDescriptor {
-            recording_mode: RecordingMode::Full,
+            mode: ExecutionLogMode::Full,
             name: "absent".into(),
             endpoints: vec![EndpointDescriptor {
                 ordinal: 0,
@@ -581,7 +581,7 @@ mod ipc {
             callbacks: ["a", "b"]
                 .into_iter()
                 .map(|callback| CallbackDescriptor {
-                    recording_mode: RecordingMode::Full,
+                    mode: ExecutionLogMode::Full,
                     name: callback.into(),
                     endpoints: vec![
                         EndpointDescriptor {

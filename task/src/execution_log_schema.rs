@@ -1,4 +1,4 @@
-//! Persisted execution-log schema shared by recording and replay.
+//! Persisted execution-log schema shared by logging and replay.
 use crate::{message::MessageHeader, time::FrameworkTime};
 use std::collections::BTreeMap;
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
@@ -18,8 +18,8 @@ pub struct InternTables {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum RecordingMode {
-    /// Execute normally without recording invocations or iox2 event records.
+pub enum ExecutionLogMode {
+    /// Execute normally without logging invocations or iox2 event records.
     Off,
     /// Record callback identity, execution time, body duration and outcome only.
     DurationOnly,
@@ -27,23 +27,24 @@ pub enum RecordingMode {
     #[default]
     Full,
 }
+/// Per-callback execution-log mode selection.
 #[derive(Debug, Clone, Default)]
-pub struct RecordingOptions {
-    pub default_mode: RecordingMode,
-    pub callbacks: BTreeMap<String, RecordingMode>,
+pub struct ExecutionLogModes {
+    pub default_mode: ExecutionLogMode,
+    pub callbacks: BTreeMap<String, ExecutionLogMode>,
 }
-impl RecordingOptions {
-    pub fn new(default_mode: RecordingMode) -> Self {
+impl ExecutionLogModes {
+    pub fn new(default_mode: ExecutionLogMode) -> Self {
         Self {
             default_mode,
             callbacks: BTreeMap::new(),
         }
     }
-    pub fn with_callback(mut self, name: impl Into<String>, mode: RecordingMode) -> Self {
+    pub fn with_callback(mut self, name: impl Into<String>, mode: ExecutionLogMode) -> Self {
         self.callbacks.insert(name.into(), mode);
         self
     }
-    pub fn mode_for(&self, name: &str) -> RecordingMode {
+    pub fn mode_for(&self, name: &str) -> ExecutionLogMode {
         self.callbacks
             .get(name)
             .copied()
@@ -79,8 +80,9 @@ pub struct EndpointDescriptor {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CallbackDescriptor {
     pub name: String,
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub recording_mode: RecordingMode,
+    /// Mode used when this descriptor was written.
+    #[cfg_attr(feature = "serde", serde(default, alias = "recording_mode"))]
+    pub mode: ExecutionLogMode,
     pub endpoints: Vec<EndpointDescriptor>,
 }
 #[derive(Debug, Clone)]

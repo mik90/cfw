@@ -63,7 +63,7 @@ impl ReplayLog {
         let mut names = HashSet::new();
         let mut publishers = HashSet::new();
         for callback in &descriptor.callbacks {
-            if callback.recording_mode != RecordingMode::Full {
+            if callback.mode != ExecutionLogMode::Full {
                 return Err(ReplayError::InvalidLog(format!(
                     "callback '{}' was not fully recorded",
                     callback.name
@@ -307,26 +307,26 @@ impl ReplayLog {
 }
 
 #[cfg(test)]
-mod recording_mode_tests {
+mod execution_log_mode_tests {
     use super::*;
     #[test]
-    fn reduced_recording_is_not_an_exact_trace() {
+    fn reduced_logging_is_not_an_exact_trace() {
         for mode in [
-            RecordingMode::Off,
-            RecordingMode::DurationOnly,
-            RecordingMode::Full,
+            ExecutionLogMode::Off,
+            ExecutionLogMode::DurationOnly,
+            ExecutionLogMode::Full,
         ] {
             let descriptor = ExecutionDescriptor {
                 callbacks: vec![CallbackDescriptor {
                     name: "work".into(),
-                    recording_mode: mode,
+                    mode,
                     endpoints: vec![],
                 }],
                 logged_channels: vec![],
             };
             let bytes = serde_json::to_vec(&descriptor).unwrap();
             let result = ReplayLog::descriptor(Some(&bytes));
-            assert_eq!(result.is_ok(), mode == RecordingMode::Full);
+            assert_eq!(result.is_ok(), mode == ExecutionLogMode::Full);
             if let Err(error) = result {
                 assert!(error.to_string().contains("not fully recorded"));
             }

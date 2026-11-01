@@ -156,7 +156,7 @@ mod tests {
         let mut descriptor = ExecutionDescriptor {
             callbacks: vec![CallbackDescriptor {
                 name: "other".into(),
-                recording_mode: RecordingMode::Full,
+                mode: ExecutionLogMode::Full,
                 endpoints: vec![],
             }],
             logged_channels: vec![],

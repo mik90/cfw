@@ -439,11 +439,8 @@ fn automatic_captures_populate_session_descriptor_and_persist_overflow() {
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind().unwrap();
         let graph = storage.build_with(&bindings).unwrap();
-        let log_plan = StandaloneExecutionLogPlan::for_graph(
-            &graph,
-            ExecutionLogOptions::with_default_recording(1, 1),
-        )
-        .unwrap();
+        let log_plan =
+            StandaloneExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(1, 1)).unwrap();
         let log_storage = log_plan.allocate().unwrap();
         let (mut graph, metadata, log_captures) = log_storage.attach(graph).unwrap();
         graph.configure_schedules(|_, schedule| {

@@ -169,10 +169,7 @@ fn run_live(
     );
     let mut plan = app.plan()?;
     let captures = GraphCapturePlan::declare(&mut plan, &CaptureOptions::new(32))?;
-    let execution_log = ExecutionLogPlan::declare(
-        &mut plan,
-        ExecutionLogOptions::with_default_recording(32, 8),
-    )?;
+    let execution_log = ExecutionLogPlan::declare(&mut plan, ExecutionLogOptions::new(32, 8))?;
     let storage = plan.allocate()?;
     let (graph, bindings) = storage.bind_and_build()?;
     let (graph, metadata, execution_captures) = execution_log.attach(graph, &bindings)?;
