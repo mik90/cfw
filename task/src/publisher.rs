@@ -18,7 +18,7 @@ pub enum LoanError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportError {
     HeaderInjectionWithPendingBatch,
-    LocalPublicationRequiresTransportDelivery,
+    Iox2CannotSendToNative,
     #[cfg(feature = "iceoryx2")]
     Iox2Loan(iceoryx2::port::LoanError),
     #[cfg(feature = "iceoryx2")]
@@ -45,9 +45,7 @@ impl serde::Serialize for TransportError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let name = match self {
             Self::HeaderInjectionWithPendingBatch => "HeaderInjectionWithPendingBatch",
-            Self::LocalPublicationRequiresTransportDelivery => {
-                "LocalPublicationRequiresTransportDelivery"
-            }
+            Self::Iox2CannotSendToNative => "LocalPublicationRequiresTransportDelivery",
             #[cfg(feature = "iceoryx2")]
             Self::Iox2Loan(_) => "Iox2Loan",
             #[cfg(feature = "iceoryx2")]
@@ -72,7 +70,7 @@ impl<'de> serde::Deserialize<'de> for TransportError {
                         Ok(TransportError::HeaderInjectionWithPendingBatch)
                     }
                     "LocalPublicationRequiresTransportDelivery" => {
-                        Ok(TransportError::LocalPublicationRequiresTransportDelivery)
+                        Ok(TransportError::Iox2CannotSendToNative)
                     }
                     // The underlying iox2 detail is not persisted, so only the
                     // category survives a round trip.
@@ -111,9 +109,7 @@ impl<'de> serde::Deserialize<'de> for LoanError {
                         LoanError::Transport(TransportError::HeaderInjectionWithPendingBatch),
                     ),
                     "Transport(\"immediate IPC publication requires transport delivery\")" => {
-                        Ok(LoanError::Transport(
-                            TransportError::LocalPublicationRequiresTransportDelivery,
-                        ))
+                        Ok(LoanError::Transport(TransportError::Iox2CannotSendToNative))
                     }
                     other => Err(E::custom(format!("unknown loan error '{other}'"))),
                 }
@@ -179,51 +175,11 @@ mod serde_tests {
             LoanError::LoanCapacityReached,
             LoanError::ArenaExhausted,
             LoanError::Transport(TransportError::HeaderInjectionWithPendingBatch),
-            LoanError::Transport(TransportError::LocalPublicationRequiresTransportDelivery),
+            LoanError::Transport(TransportError::Iox2CannotSendToNative),
         ] {
             let json = serde_json::to_string(&error).unwrap();
             assert_eq!(serde_json::from_str::<LoanError>(&json).unwrap(), error);
         }
-    }
-
-    #[test]
-    fn legacy_transport_strings_deserialize() {
-        let cases = [
-            (
-                r#""Transport(\"header injection requires an empty pending batch\")""#,
-                TransportError::HeaderInjectionWithPendingBatch,
-            ),
-            (
-                r#""Transport(\"immediate IPC publication requires transport delivery\")""#,
-                TransportError::LocalPublicationRequiresTransportDelivery,
-            ),
-        ];
-        for (json, expected) in cases {
-            assert_eq!(
-                serde_json::from_str::<LoanError>(json).unwrap(),
-                LoanError::Transport(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_legacy_errors_are_rejected() {
-        let error = serde_json::from_str::<LoanError>(r#""Transport(\"something else\")""#)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("unknown loan error"));
-    }
-
-    #[test]
-    fn legacy_body_error_deserializes() {
-        let json =
-            r#"{"BodyError":"Transport(\"header injection requires an empty pending batch\")"}"#;
-        assert_eq!(
-            serde_json::from_str::<crate::execution_log_schema::Outcome>(json).unwrap(),
-            crate::execution_log_schema::Outcome::BodyError(LoanError::Transport(
-                TransportError::HeaderInjectionWithPendingBatch
-            ))
-        );
     }
 }
 

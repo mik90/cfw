@@ -982,9 +982,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     /// simulation/replay that schedules counted events independently.
     pub fn publish_with_header(&self, header: MessageHeader, value: T) -> Result<(), LoanError> {
         if self.delivery == OutputDelivery::Local {
-            return Err(LoanError::Transport(
-                TransportError::LocalPublicationRequiresTransportDelivery,
-            ));
+            return Err(LoanError::Transport(TransportError::Iox2CannotSendToNative));
         }
         self.port
             .loan_uninit()
