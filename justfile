@@ -24,7 +24,7 @@ no-features:
     #!/usr/bin/env bash
     set -euo pipefail
     export RUSTFLAGS="-D warnings"
-    cargo check --no-default-features
+    cargo check --no-default-features --all
 
 bazel-lint:
     #!/usr/bin/env bash
