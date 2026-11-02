@@ -410,10 +410,7 @@ impl Callback for LogTask<'_, '_> {
         if let Some(trigger) = &self.trigger {
             trigger.clear();
         }
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| LoanError::Transport("logging session poisoned".into()))?;
+        let mut session = self.session.lock().expect("logging session poisoned");
         // LogSession records and persists failures. Error policies are separate
         // from scheduling; a recoverable sink failure does not stop the workload.
         let _ = session

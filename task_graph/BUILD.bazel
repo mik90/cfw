@@ -37,6 +37,15 @@ rust_test(
     ),
 )
 
+rust_test(
+    name = "execution_log_no_alloc_test",
+    srcs = ["tests/execution_log_no_alloc.rs"],
+    deps = [":task_graph"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 
 miri_test(
     name = "task_graph_miri",

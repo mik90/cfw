@@ -3,7 +3,7 @@
 use crate::execution_log_schema::{EndpointDescriptor, LoggedIox2Event, LoggedMessage};
 use crate::time::FrameworkTime;
 use crate::wake::WakeHandle;
-use crate::{Callback, Context, LoanError};
+use crate::{Callback, Context, LoanError, ReplayError};
 
 /// Body invoked by [`Callback::run`] on a [`FakeCallback`].
 pub type FakeBody = Box<dyn FnMut(&Context) -> Result<(), LoanError> + Send>;
@@ -54,13 +54,13 @@ impl Callback for FakeCallback {
     fn outputs_are_local(&self) -> bool {
         self.outputs_are_local
     }
-    fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
-        Err(LoanError::Transport(
-            "fake callback does not support replay input reset".into(),
+    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
+        Err(ReplayError::new(
+            "fake callback does not support replay input reset",
         ))
     }
-    fn stage_replay_iox2_event(&mut self, _: usize, _: usize, _: u64) -> Result<(), LoanError> {
-        Err(LoanError::Transport("unknown replay event endpoint".into()))
+    fn stage_replay_iox2_event(&mut self, _: usize, _: usize, _: u64) -> Result<(), ReplayError> {
+        Err(ReplayError::new("unknown replay event endpoint"))
     }
     fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
         None

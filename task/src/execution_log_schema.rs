@@ -1,7 +1,11 @@
 //! Persisted execution-log schema shared by logging and replay.
-use crate::{message::MessageHeader, time::FrameworkTime};
+use crate::{LoanError, bounded::BoundedVec, message::MessageHeader, time::FrameworkTime};
 use std::collections::BTreeMap;
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
+/// Maximum number of input/output messages recorded per execution.
+pub const MAX_RECORDED_MESSAGES: usize = 16;
+/// Maximum number of input/output iox2 events recorded per execution.
+pub const MAX_RECORDED_EVENTS: usize = 16;
 /// Iox2 events observed at the readiness/injection boundary. Kept separate from
 /// [`ExecutionRecord`] because an observation may not produce an execution.
 pub const IOX2_EVENT_RECORD_CHANNEL: &str = "iox2_event_records";
@@ -91,13 +95,13 @@ pub struct ExecutionDescriptor {
     pub callbacks: Vec<CallbackDescriptor>,
     pub logged_channels: Vec<String>,
 }
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LoggedMessage {
     pub ordinal: usize,
     pub header: MessageHeader,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LoggedIox2Event {
     pub ordinal: usize,
@@ -122,7 +126,7 @@ pub struct Iox2EventRecord {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Outcome {
     Committed,
-    BodyError(String),
+    BodyError(LoanError),
     BodyPanicked,
     Cancelled,
     /// Some publications may already have escaped. Outputs list attempts; they
@@ -136,15 +140,18 @@ pub struct ExecutionRecord {
     pub execution_time: FrameworkTime,
     /// Measured body runtime, not simulator modeled occupancy.
     pub body_duration_ns: u64,
-    pub inputs: Vec<LoggedMessage>,
+    pub inputs: BoundedVec<LoggedMessage, MAX_RECORDED_MESSAGES>,
     /// Iox2 events consumed by this invocation. Recorded inline because events
     /// carry no payload and are too small to justify an identity lookup.
     #[cfg_attr(feature = "serde", serde(alias = "events"))]
-    pub iox2_events: Vec<LoggedIox2Event>,
+    pub iox2_events: BoundedVec<LoggedIox2Event, MAX_RECORDED_EVENTS>,
     /// Iox2 events attempted by this invocation, with the same inline rationale.
     #[cfg_attr(feature = "serde", serde(alias = "output_events"))]
-    pub output_iox2_events: Vec<LoggedIox2Event>,
+    pub output_iox2_events: BoundedVec<LoggedIox2Event, MAX_RECORDED_EVENTS>,
     /// Committed outputs for Committed, attempts for CommitPanicked, otherwise empty.
-    pub outputs: Vec<LoggedMessage>,
+    pub outputs: BoundedVec<LoggedMessage, MAX_RECORDED_MESSAGES>,
     pub outcome: Outcome,
+    /// Entries dropped because a recorded group reached its capacity.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub truncated: u16,
 }

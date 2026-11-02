@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use task::{ChannelPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task::{ChannelPlan, LoanError, Publisher, RequiredInput, TransportError, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 use testing::{UnitTestExecutor, UnitTestExecutorConfig};
@@ -190,7 +190,9 @@ struct Fails;
 impl Fails {
     fn run(&self, output: &mut Publisher<u64>) -> Result<(), LoanError> {
         output.publish(7)?;
-        Err(LoanError::Transport("expected failure".into()))
+        Err(LoanError::Transport(
+            TransportError::HeaderInjectionWithPendingBatch,
+        ))
     }
 }
 #[test]

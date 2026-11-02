@@ -11,9 +11,9 @@ use std::{
     },
 };
 use task::{
-    Callback, Context, LoanError,
+    Callback,
     execution_log_schema::{
-        Direction, EndpointDescriptor, ExecutionRecord, LoggedIox2Event, LoggedMessage, Transport,
+        Direction, EndpointDescriptor, ExecutionRecord, LoggedMessage, Transport,
     },
 };
 use task_graph::{BuiltGraph, GraphMetadata};
@@ -40,7 +40,7 @@ impl Default for ExactReplayConfig {
     }
 }
 #[derive(Debug)]
-pub enum ReplayError {
+pub enum ExactReplayStepError {
     InvalidLog(String),
     Setup(String),
     Divergence(String),
@@ -48,12 +48,12 @@ pub enum ReplayError {
     Callback { callback: String, reason: String },
     Poisoned,
 }
-impl std::fmt::Display for ReplayError {
+impl std::fmt::Display for ExactReplayStepError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "exact replay: {self:?}")
     }
 }
-impl std::error::Error for ReplayError {}
+impl std::error::Error for ExactReplayStepError {}
 #[derive(Clone, Default)]
 pub struct StopSignal(Arc<AtomicBool>);
 impl StopSignal {
@@ -102,7 +102,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         graph: BuiltGraph<'storage>,
         log: ReplayLog,
         bindings: ReplayBindings<'storage>,
-    ) -> Result<Self, ReplayError> {
+    ) -> Result<Self, ExactReplayStepError> {
         Self::with_config(graph, log, bindings, ExactReplayConfig::default())
     }
     pub fn with_config(
@@ -110,7 +110,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         log: ReplayLog,
         mut bindings: ReplayBindings<'storage>,
         config: ExactReplayConfig,
-    ) -> Result<Self, ReplayError> {
+    ) -> Result<Self, ExactReplayStepError> {
         let (nodes, mut metadata) = graph.into_parts();
         let mut callback_names = task::string_interner::CallbackNameInterner::new();
         for callback in &log.descriptor.callbacks {
@@ -118,7 +118,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         }
         metadata.callback_names = Arc::new(callback_names);
         if nodes.len() != log.descriptor.callbacks.len() {
-            return Err(ReplayError::Setup(
+            return Err(ExactReplayStepError::Setup(
                 "callback count differs from descriptor".into(),
             ));
         }
@@ -131,10 +131,10 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 .iter()
                 .position(|node| node.name == descriptor.name)
                 .ok_or_else(|| {
-                    ReplayError::Setup(format!("missing callback '{}'", descriptor.name))
+                    ExactReplayStepError::Setup(format!("missing callback '{}'", descriptor.name))
                 })?;
             let mut actual = nodes[index].callback.recording_endpoints().ok_or_else(|| {
-                ReplayError::Setup(format!(
+                ExactReplayStepError::Setup(format!(
                     "callback '{}' has no endpoint metadata",
                     descriptor.name
                 ))
@@ -159,7 +159,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 }
             }
             if actual != expected {
-                return Err(ReplayError::Setup(format!(
+                return Err(ExactReplayStepError::Setup(format!(
                     "endpoint layout differs for '{}'",
                     descriptor.name
                 )));
@@ -172,12 +172,14 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 match endpoint.direction {
                     Direction::Received => {
                         let source = bindings.inputs.get(&key).ok_or_else(|| {
-                            ReplayError::Setup(format!("missing hydration binding {key:?}"))
+                            ExactReplayStepError::Setup(format!(
+                                "missing hydration binding {key:?}"
+                            ))
                         })?;
                         if source.channel() != endpoint.channel
                             || source.payload_type() != endpoint.payload_type
                         {
-                            return Err(ReplayError::Setup(format!(
+                            return Err(ExactReplayStepError::Setup(format!(
                                 "hydration type/channel mismatch for {key:?}"
                             )));
                         }
@@ -185,12 +187,12 @@ impl<'storage> ExactReplayExecutor<'storage> {
                     }
                     Direction::Published => {
                         let capture = bindings.outputs.get(&key).ok_or_else(|| {
-                            ReplayError::Setup(format!("missing output capture {key:?}"))
+                            ExactReplayStepError::Setup(format!("missing output capture {key:?}"))
                         })?;
                         if capture.channel() != endpoint.channel
                             || capture.payload_type() != endpoint.payload_type
                         {
-                            return Err(ReplayError::Setup(format!(
+                            return Err(ExactReplayStepError::Setup(format!(
                                 "capture type/channel mismatch for {key:?}"
                             )));
                         }
@@ -199,7 +201,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 }
             }
             if !nodes[index].callback.outputs_are_local() {
-                return Err(ReplayError::Setup(format!(
+                return Err(ExactReplayStepError::Setup(format!(
                     "callback '{}': bind outputs with local delivery before exact replay",
                     descriptor.name
                 )));
@@ -208,14 +210,15 @@ impl<'storage> ExactReplayExecutor<'storage> {
             publishers.push(publisher_indices);
         }
         if inputs.len() != bindings.inputs.len() || outputs.len() != bindings.outputs.len() {
-            return Err(ReplayError::Setup(
+            return Err(ExactReplayStepError::Setup(
                 "extra or event-only data bindings".into(),
             ));
         }
         for ((channel, header), bytes) in &log.payloads {
             if let Some(load) = bindings.caches.get_mut(channel) {
-                load(*header, bytes)
-                    .map_err(|e| ReplayError::Setup(format!("source cache '{channel}': {e}")))?;
+                load(*header, bytes).map_err(|e| {
+                    ExactReplayStepError::Setup(format!("source cache '{channel}': {e}"))
+                })?;
             }
         }
         let mut report = ReplayReport::new(log.executions.len(), config.max_mismatch_details);
@@ -243,9 +246,9 @@ impl<'storage> ExactReplayExecutor<'storage> {
     pub fn replay_report(&self) -> ReplayReport {
         self.report.clone()
     }
-    pub fn step(&mut self) -> Result<Option<ReplayStep>, ReplayError> {
+    pub fn step(&mut self) -> Result<Option<ReplayStep>, ExactReplayStepError> {
         if self.failed {
-            return Err(ReplayError::Poisoned);
+            return Err(ExactReplayStepError::Poisoned);
         }
         if self.cursor == self.log.executions.len() || self.stop.0.load(Ordering::Acquire) {
             return Ok(None);
@@ -261,14 +264,17 @@ impl<'storage> ExactReplayExecutor<'storage> {
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.execute(&record)))
                 .unwrap_or_else(|_| {
-                    Err(ReplayError::Callback {
+                    Err(ExactReplayStepError::Callback {
                         callback,
                         reason: "execution or hydration panicked".into(),
                     })
                 });
         if let Err(error) = &result {
             self.failed = true;
-            if !matches!(error, ReplayError::Gap { .. } | ReplayError::Divergence(_)) {
+            if !matches!(
+                error,
+                ExactReplayStepError::Gap { .. } | ExactReplayStepError::Divergence(_)
+            ) {
                 self.report.record_error();
                 self.detail(
                     crate::report::ReplayDetailKind::Error,
@@ -279,11 +285,11 @@ impl<'storage> ExactReplayExecutor<'storage> {
         }
         result.map(Some)
     }
-    pub fn run(&mut self) -> Result<ReplayReport, ReplayError> {
+    pub fn run(&mut self) -> Result<ReplayReport, ExactReplayStepError> {
         while self.step()?.is_some() {}
         Ok(self.replay_report())
     }
-    fn gap(&mut self, channel: &str, reason: String) -> Result<(), ReplayError> {
+    fn gap(&mut self, channel: &str, reason: String) -> Result<(), ExactReplayStepError> {
         self.detail(
             crate::report::ReplayDetailKind::Gap,
             Some(channel),
@@ -292,7 +298,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         self.report.record_gap(channel);
         self.report.record_error();
         if self.config.divergence_policy == DivergencePolicy::Strict {
-            Err(ReplayError::Gap {
+            Err(ExactReplayStepError::Gap {
                 channel: channel.into(),
                 reason,
             })
@@ -300,7 +306,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
             Ok(())
         }
     }
-    fn mismatch(&mut self, channel: &str, detail: String) -> Result<(), ReplayError> {
+    fn mismatch(&mut self, channel: &str, detail: String) -> Result<(), ExactReplayStepError> {
         self.detail(
             crate::report::ReplayDetailKind::Mismatch,
             Some(channel),
@@ -309,12 +315,12 @@ impl<'storage> ExactReplayExecutor<'storage> {
         self.report.record_mismatch(channel, detail.clone());
         self.report.record_error();
         if self.config.divergence_policy == DivergencePolicy::Strict {
-            Err(ReplayError::Divergence(detail))
+            Err(ExactReplayStepError::Divergence(detail))
         } else {
             Ok(())
         }
     }
-    fn execute(&mut self, record: &ExecutionRecord) -> Result<ReplayStep, ReplayError> {
+    fn execute(&mut self, record: &ExecutionRecord) -> Result<ReplayStep, ExactReplayStepError> {
         let descriptor = self.log.descriptor.callbacks[record.callback_id.index()].clone();
         let name = descriptor.name;
         let index = self.mapping[record.callback_id.index()];
@@ -323,16 +329,26 @@ impl<'storage> ExactReplayExecutor<'storage> {
             time: record.execution_time,
             executed: false,
         };
-        self.callbacks[index]
-            .clear_replay_inputs()
-            .map_err(|e| ReplayError::Callback {
+        if record.truncated != 0 {
+            self.gap(
+                "execution_log",
+                format!(
+                    "'{name}' record dropped {} entries at capacity and is not exactly replayable",
+                    record.truncated
+                ),
+            )?;
+            return Ok(skipped());
+        }
+        self.callbacks[index].clear_replay_inputs().map_err(|e| {
+            ExactReplayStepError::Callback {
                 callback: name.clone(),
-                reason: format!("input reset: {e:?}"),
-            })?;
+                reason: format!("input reset: {e}"),
+            }
+        })?;
         for capture in self.bindings.outputs.values_mut() {
             capture.clear();
         }
-        for message in &record.inputs {
+        for message in record.inputs.iter() {
             self.detail_endpoint = Some((Direction::Received, message.ordinal));
             self.detail_header = Some(message.header);
             let endpoint = endpoint(&descriptor.endpoints, Direction::Received, message.ordinal);
@@ -369,29 +385,36 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 self.report.record_reproduced(&endpoint.channel);
             }
         }
-        for event in &record.iox2_events {
+        for event in record.iox2_events.iter() {
             self.detail_endpoint = Some((Direction::Received, event.ordinal));
             self.detail_header = None;
             self.callbacks[index]
                 .stage_replay_iox2_event(event.ordinal, event.event_id, event.count)
-                .map_err(|e| ReplayError::Callback {
+                .map_err(|e| ExactReplayStepError::Callback {
                     callback: name.clone(),
-                    reason: format!("event hydration: {e:?}"),
+                    reason: format!("event hydration: {e}"),
                 })?;
         }
-        let mut hydration_error = None;
         self.detail_endpoint = None;
         self.detail_header = None;
-        let mut output_events = Vec::new();
-        let mut checked = Checked {
-            callback: self.callbacks[index].as_mut(),
-            expected: record,
-            hydration_error: &mut hydration_error,
-            output_events: &mut output_events,
+        let Some(prepared) = task::callback::prepare_callback(self.callbacks[index].as_mut())
+        else {
+            return Err(ExactReplayStepError::Callback {
+                callback: name.clone(),
+                reason: "recorded snapshot does not satisfy required inputs".into(),
+            });
         };
-        let executed =
-            task::execute_callback(&mut checked, &self.metadata.context(record.execution_time));
-        if let Some(ordinal) = hydration_error {
+        let mut actual = Vec::new();
+        prepared.visit_prepared_messages(&mut |message| actual.push(message));
+        let actual_headers = headers(&actual);
+        let expected_headers = headers(&record.inputs);
+        if let Some(ordinal) = actual_headers
+            .keys()
+            .chain(expected_headers.keys())
+            .find(|ordinal| actual_headers.get(ordinal) != expected_headers.get(ordinal))
+        {
+            let ordinal = *ordinal;
+            drop(prepared);
             self.detail_endpoint = Some((Direction::Received, ordinal));
             let endpoint = endpoint(&descriptor.endpoints, Direction::Received, ordinal);
             self.gap(
@@ -400,11 +423,24 @@ impl<'storage> ExactReplayExecutor<'storage> {
             )?;
             return Ok(skipped());
         }
-        executed.map_err(|e| ReplayError::Callback {
-            callback: name.clone(),
-            reason: format!("{e:?}"),
-        })?;
-        if output_events != record.output_iox2_events {
+        let mut prepared_events = Vec::new();
+        prepared.visit_prepared_iox2_events(&mut |event| prepared_events.push(event));
+        if prepared_events.as_slice() != &record.iox2_events[..] {
+            return Err(ExactReplayStepError::Callback {
+                callback: name.clone(),
+                reason: "hydrated event snapshot differs".into(),
+            });
+        }
+        let completed = prepared
+            .run(&self.metadata.context(record.execution_time))
+            .map_err(|e| ExactReplayStepError::Callback {
+                callback: name.clone(),
+                reason: format!("{e:?}"),
+            })?;
+        let mut output_events = Vec::new();
+        completed.visit_pending_iox2_events(&mut |event| output_events.push(event));
+        completed.commit();
+        if output_events.as_slice() != &record.output_iox2_events[..] {
             self.mismatch(
                 "output_iox2_events",
                 format!("'{name}' output event counts/IDs differ"),
@@ -423,7 +459,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 .get_mut(&(name.clone(), endpoint.ordinal))
                 .unwrap()
                 .take()
-                .map_err(|e| ReplayError::Callback {
+                .map_err(|e| ExactReplayStepError::Callback {
                     callback: name.clone(),
                     reason: format!("capture: {e}"),
                 })?;
@@ -522,13 +558,13 @@ impl<'storage> ExactReplayExecutor<'storage> {
                 if !self.log.logged.contains(&endpoint.channel) {
                     let identity = (endpoint.channel.clone(), header);
                     if self.reproduced.insert(identity, body.clone()).is_some() {
-                        return Err(ReplayError::Callback {
+                        return Err(ExactReplayStepError::Callback {
                             callback: name.clone(),
                             reason: "ambiguous reproduced publication".into(),
                         });
                     }
                     if let Some(load) = self.bindings.caches.get_mut(&endpoint.channel) {
-                        load(header, &body).map_err(|e| ReplayError::Callback {
+                        load(header, &body).map_err(|e| ExactReplayStepError::Callback {
                             callback: name.clone(),
                             reason: format!("source cache: {e}"),
                         })?;
@@ -589,61 +625,4 @@ fn headers(messages: &[LoggedMessage]) -> BTreeMap<usize, Vec<task::message::Mes
             .push(message.header);
     }
     groups
-}
-struct Checked<'a> {
-    callback: &'a mut dyn Callback,
-    expected: &'a ExecutionRecord,
-    hydration_error: &'a mut Option<usize>,
-    output_events: &'a mut Vec<LoggedIox2Event>,
-}
-impl Callback for Checked<'_> {
-    fn outputs_are_local(&self) -> bool {
-        self.callback.outputs_are_local()
-    }
-    fn has_triggering_inputs(&self) -> bool {
-        self.callback.has_triggering_inputs()
-    }
-    fn update_inputs(&mut self) {
-        self.callback.update_inputs();
-    }
-    fn run(&mut self, context: &Context) -> Result<(), LoanError> {
-        let mut actual = Vec::new();
-        self.callback
-            .visit_prepared_messages(&mut |message| actual.push(message));
-        let actual = headers(&actual);
-        let expected = headers(&self.expected.inputs);
-        if let Some(ordinal) = actual
-            .keys()
-            .chain(expected.keys())
-            .find(|ordinal| actual.get(ordinal) != expected.get(ordinal))
-        {
-            *self.hydration_error = Some(*ordinal);
-            return Err(LoanError::Transport("hydration snapshot mismatch".into()));
-        }
-        let mut events = Vec::new();
-        self.callback
-            .visit_prepared_iox2_events(&mut |event| events.push(event));
-        if events != self.expected.iox2_events {
-            return Err(LoanError::Transport(
-                "hydrated event snapshot differs".into(),
-            ));
-        }
-        if !self.callback.required_inputs_ready() {
-            return Err(LoanError::Transport(
-                "recorded snapshot does not satisfy required inputs".into(),
-            ));
-        }
-        self.callback.run(context)
-    }
-    fn flush_outputs(&mut self, time: task::time::FrameworkTime) {
-        self.callback
-            .visit_pending_iox2_events(&mut |event| self.output_events.push(event));
-        self.callback.flush_outputs(time);
-    }
-    fn discard_outputs(&mut self) {
-        self.callback.discard_outputs();
-    }
-    fn finish_inputs(&mut self) {
-        self.callback.finish_inputs();
-    }
 }

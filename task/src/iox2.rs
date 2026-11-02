@@ -1,6 +1,6 @@
 //! Typed iceoryx2 channels. All processes must agree on service-wide settings.
 use crate::{
-    EndpointError, LoanError, StorageError,
+    EndpointError, LoanError, StorageError, TransportError,
     message::{Message, MessageHeader},
     time::FrameworkTime,
     wake::{Wake, WakeHandle},
@@ -983,18 +983,18 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     pub fn publish_with_header(&self, header: MessageHeader, value: T) -> Result<(), LoanError> {
         if self.delivery == OutputDelivery::Local {
             return Err(LoanError::Transport(
-                "immediate IPC publication requires transport delivery".into(),
+                TransportError::LocalPublicationRequiresTransportDelivery,
             ));
         }
         self.port
             .loan_uninit()
-            .map_err(|e| LoanError::Transport(e.to_string()))?
+            .map_err(|e| LoanError::Transport(TransportError::Iox2Loan(e)))?
             .write_payload(Message {
                 header,
                 message: value,
             })
             .send()
-            .map_err(|e| LoanError::Transport(e.to_string()))?;
+            .map_err(|e| LoanError::Transport(TransportError::Iox2Send(e)))?;
         Ok(())
     }
     pub fn channel_name(&self) -> &str {
@@ -1028,7 +1028,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
         let sample = self
             .port
             .loan_uninit()
-            .map_err(|e| LoanError::Transport(e.to_string()))?
+            .map_err(|e| LoanError::Transport(TransportError::Iox2Loan(e)))?
             .write_payload(Message {
                 header: MessageHeader::default(),
                 message: value,

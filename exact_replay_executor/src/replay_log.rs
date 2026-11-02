@@ -1,4 +1,4 @@
-use crate::ReplayError;
+use crate::ExactReplayStepError;
 use logging::{LogFileReader, SortedLogStreamReader};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use task::{execution_log_schema::*, message::MessageHeader, time::FrameworkTime};
@@ -13,85 +13,86 @@ pub struct ReplayLog {
     pub(crate) logged: HashSet<String>,
 }
 impl ReplayLog {
-    pub fn from_reader(reader: &dyn LogFileReader) -> Result<Self, ReplayError> {
+    pub fn from_reader(reader: &dyn LogFileReader) -> Result<Self, ExactReplayStepError> {
         logging::incompleteness::reject_incomplete_recording(
             reader.artifact(logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT),
         )
-        .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+        .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
         let mut log = Self::descriptor(reader.artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT))?;
         let tables = logging::read_intern_tables(reader)
-            .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+            .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
         logging::intern_tables::validate_descriptor_tables(&tables, &log.descriptor)
-            .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+            .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
         log.intern_tables = tables;
         for index in 0..reader.len() {
-            let entry = reader
-                .entry(index)
-                .ok_or_else(|| ReplayError::InvalidLog("reader length/entry mismatch".into()))?;
+            let entry = reader.entry(index).ok_or_else(|| {
+                ExactReplayStepError::InvalidLog("reader length/entry mismatch".into())
+            })?;
             log.push(entry.channel_name, entry.header, entry.serialized_body)?;
         }
         log.finish()?;
         Ok(log)
     }
-    pub fn from_sorted(mut reader: SortedLogStreamReader) -> Result<Self, ReplayError> {
+    pub fn from_sorted(mut reader: SortedLogStreamReader) -> Result<Self, ExactReplayStepError> {
         logging::incompleteness::reject_incomplete_recording(
             reader.artifact(logging::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT),
         )
-        .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+        .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
         let mut log = Self::descriptor(reader.artifact(EXECUTION_LOG_DESCRIPTOR_ARTIFACT))?;
         let tables =
             logging::intern_tables::decode_intern_tables(reader.artifact(INTERN_TABLES_ARTIFACT))
-                .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+                .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
         logging::intern_tables::validate_descriptor_tables(&tables, &log.descriptor)
-            .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+            .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
         log.intern_tables = tables;
         while let Some(entry) = reader
             .next_entry()
-            .map_err(|e| ReplayError::InvalidLog(e.to_string()))?
+            .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?
         {
             log.push(&entry.channel_name, entry.header, &entry.serialized_body)?;
         }
         log.finish()?;
         Ok(log)
     }
-    fn descriptor(bytes: Option<&[u8]>) -> Result<Self, ReplayError> {
-        let descriptor: ExecutionDescriptor =
-            serde_json::from_slice(bytes.ok_or_else(|| {
-                ReplayError::InvalidLog("execution descriptor is required".into())
-            })?)
-            .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+    fn descriptor(bytes: Option<&[u8]>) -> Result<Self, ExactReplayStepError> {
+        let descriptor: ExecutionDescriptor = serde_json::from_slice(bytes.ok_or_else(|| {
+            ExactReplayStepError::InvalidLog("execution descriptor is required".into())
+        })?)
+        .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
         let mut names = HashSet::new();
         let mut publishers = HashSet::new();
         for callback in &descriptor.callbacks {
             if callback.mode != ExecutionLogMode::Full {
-                return Err(ReplayError::InvalidLog(format!(
+                return Err(ExactReplayStepError::InvalidLog(format!(
                     "callback '{}' was not fully recorded",
                     callback.name
                 )));
             }
             if !names.insert(&callback.name) {
-                return Err(ReplayError::InvalidLog("duplicate callback name".into()));
+                return Err(ExactReplayStepError::InvalidLog(
+                    "duplicate callback name".into(),
+                ));
             }
             let mut endpoints = HashSet::new();
             for endpoint in &callback.endpoints {
                 let data_output = endpoint.direction == Direction::Published
                     && endpoint.transport != Transport::Iox2Event;
                 if data_output != endpoint.publisher_index.is_some() {
-                    return Err(ReplayError::InvalidLog(
+                    return Err(ExactReplayStepError::InvalidLog(
                         "publisher index must identify a data output endpoint".into(),
                     ));
                 }
                 if let Some(index) = endpoint.publisher_index
                     && !publishers.insert((endpoint.channel.clone(), index))
                 {
-                    return Err(ReplayError::InvalidLog(format!(
+                    return Err(ExactReplayStepError::InvalidLog(format!(
                         "duplicate publisher index on '{}'",
                         endpoint.channel
                     )));
                 }
                 if !endpoints.insert((endpoint.direction == Direction::Received, endpoint.ordinal))
                 {
-                    return Err(ReplayError::InvalidLog(format!(
+                    return Err(ExactReplayStepError::InvalidLog(format!(
                         "duplicate ordinal on '{}'",
                         callback.name
                     )));
@@ -112,16 +113,16 @@ impl ReplayLog {
         channel: &str,
         header: MessageHeader,
         bytes: &[u8],
-    ) -> Result<(), ReplayError> {
+    ) -> Result<(), ExactReplayStepError> {
         if header.published_at == FrameworkTime::INVALID {
-            return Err(ReplayError::InvalidLog("invalid timestamp".into()));
+            return Err(ExactReplayStepError::InvalidLog("invalid timestamp".into()));
         }
         match channel {
             EXECUTION_LOG_CHANNEL => {
                 let record: ExecutionRecord = serde_json::from_slice(bytes)
-                    .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+                    .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
                 if record.execution_time != header.published_at {
-                    return Err(ReplayError::InvalidLog(
+                    return Err(ExactReplayStepError::InvalidLog(
                         "execution timestamp differs from header".into(),
                     ));
                 }
@@ -130,9 +131,9 @@ impl ReplayLog {
             IOX2_EVENT_RECORD_CHANNEL => {
                 // Exact replay restores prepared event snapshots, not arrivals.
                 let event: Iox2EventRecord = serde_json::from_slice(bytes)
-                    .map_err(|e| ReplayError::InvalidLog(e.to_string()))?;
+                    .map_err(|e| ExactReplayStepError::InvalidLog(e.to_string()))?;
                 if event.observed_at != header.published_at {
-                    return Err(ReplayError::InvalidLog(
+                    return Err(ExactReplayStepError::InvalidLog(
                         "event timestamp differs from header".into(),
                     ));
                 }
@@ -146,20 +147,20 @@ impl ReplayLog {
                     .transport
                     != Transport::Iox2Event
                 {
-                    return Err(ReplayError::InvalidLog(
+                    return Err(ExactReplayStepError::InvalidLog(
                         "observed event is not addressed to an event endpoint".into(),
                     ));
                 }
             }
             _ => {
                 if !self.logged.contains(channel) {
-                    return Err(ReplayError::InvalidLog(format!(
+                    return Err(ExactReplayStepError::InvalidLog(format!(
                         "payload channel '{channel}' is not declared logged"
                     )));
                 }
                 let key = (channel.into(), header);
                 if self.payloads.insert(key, bytes.to_vec()).is_some() {
-                    return Err(ReplayError::InvalidLog(format!(
+                    return Err(ExactReplayStepError::InvalidLog(format!(
                         "ambiguous payload identity on '{channel}': {header:?}"
                     )));
                 }
@@ -173,7 +174,7 @@ impl ReplayLog {
         direction: Direction,
         ordinal: usize,
         event: bool,
-    ) -> Result<&EndpointDescriptor, ReplayError> {
+    ) -> Result<&EndpointDescriptor, ExactReplayStepError> {
         self.descriptor
             .callbacks
             .get(callback)
@@ -189,29 +190,31 @@ impl ReplayLog {
                 })
             })
             .ok_or_else(|| {
-                ReplayError::InvalidLog(format!(
+                ExactReplayStepError::InvalidLog(format!(
                     "unknown {:?} endpoint {ordinal} on callback {callback}",
                     direction
                 ))
             })
     }
-    fn finish(&mut self) -> Result<(), ReplayError> {
+    fn finish(&mut self) -> Result<(), ExactReplayStepError> {
         self.executions.sort_by_key(|record| record.execution_time);
         let mut produced = BTreeSet::new();
         for record in &self.executions {
             let mut batch_indices = BTreeMap::<usize, u32>::new();
             if record.outcome != Outcome::Committed {
-                return Err(ReplayError::InvalidLog(format!(
+                return Err(ExactReplayStepError::InvalidLog(format!(
                     "cannot exactly replay {:?} execution",
                     record.outcome
                 )));
             }
             if record.callback_id.index() >= self.descriptor.callbacks.len() {
-                return Err(ReplayError::InvalidLog("unknown callback index".into()));
+                return Err(ExactReplayStepError::InvalidLog(
+                    "unknown callback index".into(),
+                ));
             }
             for (direction, messages) in [
-                (Direction::Received, &record.inputs),
-                (Direction::Published, &record.outputs),
+                (Direction::Received, &record.inputs[..]),
+                (Direction::Published, &record.outputs[..]),
             ] {
                 for message in messages {
                     let endpoint = self.endpoint(
@@ -221,11 +224,13 @@ impl ReplayLog {
                         false,
                     )?;
                     if message.header.published_at == FrameworkTime::INVALID {
-                        return Err(ReplayError::InvalidLog("invalid message reference".into()));
+                        return Err(ExactReplayStepError::InvalidLog(
+                            "invalid message reference".into(),
+                        ));
                     }
                     if direction == Direction::Published {
                         if !produced.insert((endpoint.channel.clone(), message.header)) {
-                            return Err(ReplayError::InvalidLog(format!(
+                            return Err(ExactReplayStepError::InvalidLog(format!(
                                 "ambiguous publication identity on '{}': {:?}",
                                 endpoint.channel, message.header
                             )));
@@ -235,17 +240,19 @@ impl ReplayLog {
                             || message.header.batch_index != *next
                             || message.header.published_at != record.execution_time
                         {
-                            return Err(ReplayError::InvalidLog(
+                            return Err(ExactReplayStepError::InvalidLog(
                                 "output header differs from publisher/batch metadata".into(),
                             ));
                         }
                         *next = next.checked_add(1).ok_or_else(|| {
-                            ReplayError::InvalidLog("publisher batch index overflow".into())
+                            ExactReplayStepError::InvalidLog(
+                                "publisher batch index overflow".into(),
+                            )
                         })?;
                     }
                 }
             }
-            for event in &record.iox2_events {
+            for event in record.iox2_events.iter() {
                 if self
                     .endpoint(
                         record.callback_id.index(),
@@ -256,12 +263,12 @@ impl ReplayLog {
                     .transport
                     != Transport::Iox2Event
                 {
-                    return Err(ReplayError::InvalidLog(
+                    return Err(ExactReplayStepError::InvalidLog(
                         "input event ordinal is not an event endpoint".into(),
                     ));
                 }
             }
-            for event in &record.output_iox2_events {
+            for event in record.output_iox2_events.iter() {
                 self.endpoint(
                     record.callback_id.index(),
                     Direction::Published,
@@ -285,7 +292,7 @@ impl ReplayLog {
             .map(|(_, header)| *header)
             .collect();
         for record in &self.executions {
-            for output in &record.outputs {
+            for output in record.outputs.iter() {
                 if self
                     .endpoint(
                         record.callback_id.index(),

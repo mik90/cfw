@@ -1,6 +1,6 @@
 use exact_replay_executor::{
-    DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, OutputCapture, ReplayBindings,
-    ReplayError, ReplayInputPlan, ReplayLog,
+    DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, ExactReplayStepError, OutputCapture,
+    ReplayBindings, ReplayInputPlan, ReplayLog,
 };
 use logging::{CapturePlan, ExecutionLogOptions, ExecutionLogPlan, LogSession};
 use std::{
@@ -14,6 +14,16 @@ use task_macros::task_callback;
 
 fn at(n: i64) -> FrameworkTime {
     FrameworkTime::from_nanoseconds(n)
+}
+
+fn bounded<T: Copy + Default, const N: usize>(
+    items: impl IntoIterator<Item = T>,
+) -> task::BoundedVec<T, N> {
+    let mut values = task::BoundedVec::new();
+    for item in items {
+        assert!(values.push(item));
+    }
+    values
 }
 #[derive(Default, Clone)]
 struct Bytes(Arc<Mutex<Vec<u8>>>);
@@ -242,7 +252,10 @@ fn publisher_translation_does_not_mask_invalid_publisher_time_or_batch_indices()
             mode,
             DivergencePolicy::Strict,
             |mut executor| {
-                assert!(matches!(executor.run(), Err(ReplayError::Divergence(_))));
+                assert!(matches!(
+                    executor.run(),
+                    Err(ExactReplayStepError::Divergence(_))
+                ));
                 assert!(!executor.replay_report().is_exact());
             },
         );
@@ -277,8 +290,11 @@ fn strict_stops_and_best_effort_collects_byte_count_and_missing_output_mismatche
             mode,
             DivergencePolicy::Strict,
             |mut replay| {
-                assert!(matches!(replay.run(), Err(ReplayError::Divergence(_))));
-                assert!(matches!(replay.step(), Err(ReplayError::Poisoned)));
+                assert!(matches!(
+                    replay.run(),
+                    Err(ExactReplayStepError::Divergence(_))
+                ));
+                assert!(matches!(replay.step(), Err(ExactReplayStepError::Poisoned)));
                 assert!(!replay.replay_report().is_exact());
             },
         );
@@ -329,8 +345,11 @@ fn panic_is_terminal_even_in_best_effort_and_stop_is_scope_local_metadata() {
             mode,
             DivergencePolicy::BestEffort,
             |mut replay| {
-                assert!(matches!(replay.run(), Err(ReplayError::Callback { .. })));
-                assert!(matches!(replay.step(), Err(ReplayError::Poisoned)));
+                assert!(matches!(
+                    replay.run(),
+                    Err(ExactReplayStepError::Callback { .. })
+                ));
+                assert!(matches!(replay.step(), Err(ExactReplayStepError::Poisoned)));
                 assert_eq!(replay.replay_report().error_count(), 1);
                 assert_eq!(
                     replay.replay_report().details()[0].kind,
@@ -356,7 +375,7 @@ fn log_from(
     descriptor: task::execution_log_schema::ExecutionDescriptor,
     records: Vec<task::execution_log_schema::ExecutionRecord>,
     payloads: Vec<(&str, i64, Vec<u8>)>,
-) -> Result<ReplayLog, ReplayError> {
+) -> Result<ReplayLog, ExactReplayStepError> {
     use task::{execution_log_schema::*, message::MessageHeader};
     let mut tables = InternTables::default();
     for callback in &descriptor.callbacks {
@@ -412,14 +431,15 @@ fn missing_and_ambiguous_payloads_and_failed_records_cannot_claim_exactness() {
         callback_id: task::string_interner::CallbackId::from_index(1).unwrap(),
         execution_time: at(0),
         body_duration_ns: 1,
-        inputs: vec![LoggedMessage {
+        inputs: bounded([LoggedMessage {
             ordinal: 0,
             header: task::message::MessageHeader::new(at(0)),
-        }],
-        outputs: vec![],
-        iox2_events: vec![],
-        output_iox2_events: vec![],
+        }]),
+        outputs: bounded([]),
+        iox2_events: bounded([]),
+        output_iox2_events: bounded([]),
         outcome: Outcome::Committed,
+        truncated: 0,
     };
     replay(
         log_from(descriptor.clone(), vec![record.clone()], vec![]).unwrap(),
@@ -427,7 +447,10 @@ fn missing_and_ambiguous_payloads_and_failed_records_cannot_claim_exactness() {
         0,
         DivergencePolicy::Strict,
         |mut replay| {
-            assert!(matches!(replay.run(), Err(ReplayError::Gap { .. })));
+            assert!(matches!(
+                replay.run(),
+                Err(ExactReplayStepError::Gap { .. })
+            ));
         },
     );
     replay(
@@ -457,7 +480,7 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
     let empty = logging::log_file_json::JsonLogFileReader::from_reader(b"".as_slice()).unwrap();
     assert!(matches!(
         ReplayLog::from_reader(&empty),
-        Err(ReplayError::InvalidLog(_))
+        Err(ExactReplayStepError::InvalidLog(_))
     ));
     assert!(matches!(
         ExactReplayExecutor::new(
@@ -465,7 +488,7 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
             recorded(true),
             ReplayBindings::new()
         ),
-        Err(ReplayError::Setup(_))
+        Err(ExactReplayStepError::Setup(_))
     ));
 
     let mut source = ChannelPlan::new("source");
@@ -490,7 +513,7 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
     .err()
     .unwrap();
     assert!(
-        matches!(error, ReplayError::Setup(reason) if reason.contains("missing output capture"))
+        matches!(error, ExactReplayStepError::Setup(reason) if reason.contains("missing output capture"))
     );
 
     let descriptor = recorded(true).descriptor_ref().clone();
@@ -498,17 +521,18 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
         callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
         execution_time: at(0),
         body_duration_ns: 1,
-        inputs: vec![],
-        iox2_events: vec![],
-        output_iox2_events: vec![],
-        outputs: vec![LoggedMessage {
+        inputs: bounded([]),
+        iox2_events: bounded([]),
+        output_iox2_events: bounded([]),
+        outputs: bounded([LoggedMessage {
             ordinal: 0,
             header: task::message::MessageHeader::new(at(0)),
-        }],
+        }]),
         outcome: Outcome::Committed,
+        truncated: 0,
     };
     assert!(
-        matches!(log_from(descriptor, vec![record.clone(), record], vec![]), Err(ReplayError::InvalidLog(reason)) if reason.contains("ambiguous publication"))
+        matches!(log_from(descriptor, vec![record.clone(), record], vec![]), Err(ExactReplayStepError::InvalidLog(reason)) if reason.contains("ambiguous publication"))
     );
 }
 
@@ -533,15 +557,16 @@ fn publisher_lookup_and_batch_headers_are_validated_before_execution() {
             callback_id: task::string_interner::CallbackId::from_index(0).unwrap(),
             execution_time: at(0),
             body_duration_ns: 0,
-            inputs: vec![],
-            iox2_events: vec![],
-            output_iox2_events: vec![],
-            outputs: vec![LoggedMessage { ordinal: 0, header }],
+            inputs: bounded([]),
+            iox2_events: bounded([]),
+            output_iox2_events: bounded([]),
+            outputs: bounded([LoggedMessage { ordinal: 0, header }]),
             outcome: Outcome::Committed,
+            truncated: 0,
         };
         assert!(matches!(
             log_from(descriptor.clone(), vec![record], vec![]),
-            Err(ReplayError::InvalidLog(_))
+            Err(ExactReplayStepError::InvalidLog(_))
         ));
     }
     let mut duplicate = descriptor.clone();
@@ -549,13 +574,13 @@ fn publisher_lookup_and_batch_headers_are_validated_before_execution() {
     output.ordinal = 1;
     duplicate.callbacks[0].endpoints.push(output);
     assert!(
-        matches!(log_from(duplicate, vec![], vec![]), Err(ReplayError::InvalidLog(reason)) if reason.contains("duplicate publisher index"))
+        matches!(log_from(duplicate, vec![], vec![]), Err(ExactReplayStepError::InvalidLog(reason)) if reason.contains("duplicate publisher index"))
     );
     let mut absent = descriptor;
     absent.callbacks[0].endpoints[0].publisher_index = None;
     assert!(matches!(
         log_from(absent, vec![], vec![]),
-        Err(ReplayError::InvalidLog(_))
+        Err(ExactReplayStepError::InvalidLog(_))
     ));
 }
 
@@ -586,7 +611,7 @@ fn incomplete_logs_are_rejected_even_when_the_surviving_trace_is_valid() {
         let reader =
             logging::log_file_json::JsonLogFileReader::from_reader(raw.as_slice()).unwrap();
         assert!(
-            matches!(ReplayLog::from_reader(&reader), Err(ReplayError::InvalidLog(reason)) if reason.contains("incomplete"))
+            matches!(ReplayLog::from_reader(&reader), Err(ExactReplayStepError::InvalidLog(reason)) if reason.contains("incomplete"))
         );
         #[cfg(not(miri))]
         let reader = logging::SortedLogStreamReader::from_reader(raw.as_slice(), 1).unwrap();
@@ -597,7 +622,7 @@ fn incomplete_logs_are_rejected_even_when_the_surviving_trace_is_valid() {
         )
         .unwrap();
         assert!(
-            matches!(ReplayLog::from_sorted(reader), Err(ReplayError::InvalidLog(reason)) if reason.contains("incomplete"))
+            matches!(ReplayLog::from_sorted(reader), Err(ExactReplayStepError::InvalidLog(reason)) if reason.contains("incomplete"))
         );
     }
 }

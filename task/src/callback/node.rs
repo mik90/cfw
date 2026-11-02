@@ -1,6 +1,6 @@
 use super::{Callback, endpoints::*};
 use crate::{
-    Context, LoanError,
+    Context, LoanError, ReplayError,
     execution_log_schema::{
         Direction, EndpointDescriptor, LoggedIox2Event, LoggedMessage, Transport,
     },
@@ -43,7 +43,7 @@ where
     fn finish_inputs(&mut self) {
         self.inputs.visit_mut(&mut Finish);
     }
-    fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
+    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
         self.inputs.visit_mut(&mut Clear);
         Ok(())
     }
@@ -125,7 +125,7 @@ where
         ordinal: usize,
         event_id: usize,
         count: u64,
-    ) -> Result<(), LoanError> {
+    ) -> Result<(), ReplayError> {
         let mut stage = StageEvent {
             remaining: ordinal,
             event_id,
@@ -135,7 +135,7 @@ where
         self.inputs.visit_mut(&mut stage);
         stage
             .result
-            .unwrap_or_else(|| Err(LoanError::Transport("unknown replay event endpoint".into())))
+            .unwrap_or_else(|| Err(ReplayError::new("unknown replay event endpoint")))
     }
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events<'a>(
@@ -322,7 +322,7 @@ struct StageEvent {
     remaining: usize,
     event_id: usize,
     count: u64,
-    result: Option<Result<(), LoanError>>,
+    result: Option<Result<(), ReplayError>>,
 }
 impl InputVisitorMut for StageEvent {
     fn visit(&mut self, endpoint: &mut impl InputEndpoint) {

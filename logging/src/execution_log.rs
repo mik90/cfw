@@ -17,7 +17,8 @@ use task_graph::{
 ///
 /// Capacities are capture subscriber depths. Publisher loan capacity is one
 /// message per publisher, so the channel arena is derived by the normal pub/sub
-/// planner.
+/// planner. Records store messages and events inline with fixed caps, so a slot
+/// is sized for the whole record rather than a heap-backed payload.
 #[derive(Clone, Debug)]
 pub struct ExecutionLogOptions {
     pub modes: ExecutionLogModes,

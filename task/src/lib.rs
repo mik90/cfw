@@ -1,3 +1,4 @@
+pub mod bounded;
 pub mod callback;
 pub mod channel;
 pub mod context;
@@ -24,6 +25,7 @@ pub mod time;
 pub mod wake;
 
 pub use base::arena::ArenaReaderPtr;
+pub use bounded::BoundedVec;
 pub use callback::{Callback, CallbackNode, Inputs, Outputs, Required, execute_callback};
 pub use channel::{
     ChannelBindings, ChannelPlan, ChannelStorage, DeclarationError, EndpointError, PublisherKey,
@@ -33,6 +35,6 @@ pub use context::Context;
 pub use forwarded_message::{Forwarded, ForwardedSources};
 pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, RequiredInput};
 pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};
-pub use publisher::{LoanError, Publisher};
+pub use publisher::{LoanError, Publisher, ReplayError, TransportError};
 pub use storage::StorageError;
 pub use subscriber::{Subscriber, SubscriberPolicy};

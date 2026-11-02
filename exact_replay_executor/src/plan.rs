@@ -1,4 +1,4 @@
-use crate::{OutputCapture, ReplayError};
+use crate::{ExactReplayStepError, OutputCapture};
 use logging::{BoxedLogError, ReplaySource};
 use std::collections::BTreeMap;
 use task::{
@@ -196,10 +196,10 @@ impl<'a> ReplayBindings<'a> {
         callback: impl Into<String>,
         ordinal: usize,
         source: ReplaySource<'a>,
-    ) -> Result<(), ReplayError> {
+    ) -> Result<(), ExactReplayStepError> {
         let key = (callback.into(), ordinal);
         if self.inputs.contains_key(&key) {
-            return Err(ReplayError::Setup(format!(
+            return Err(ExactReplayStepError::Setup(format!(
                 "duplicate input binding {key:?}"
             )));
         }
@@ -211,10 +211,10 @@ impl<'a> ReplayBindings<'a> {
         callback: impl Into<String>,
         ordinal: usize,
         capture: OutputCapture,
-    ) -> Result<(), ReplayError> {
+    ) -> Result<(), ExactReplayStepError> {
         let key = (callback.into(), ordinal);
         if self.outputs.contains_key(&key) {
-            return Err(ReplayError::Setup(format!(
+            return Err(ExactReplayStepError::Setup(format!(
                 "duplicate output binding {key:?}"
             )));
         }
@@ -228,10 +228,10 @@ impl<'a> ReplayBindings<'a> {
         &mut self,
         channel: impl Into<String>,
         load: impl FnMut(MessageHeader, &[u8]) -> Result<(), BoxedLogError> + Send + 'a,
-    ) -> Result<(), ReplayError> {
+    ) -> Result<(), ExactReplayStepError> {
         let channel = channel.into();
         if self.caches.contains_key(&channel) {
-            return Err(ReplayError::Setup(format!(
+            return Err(ExactReplayStepError::Setup(format!(
                 "duplicate source cache '{channel}'"
             )));
         }

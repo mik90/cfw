@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 
+use crate::execution_log_schema::{LoggedIox2Event, LoggedMessage};
 use crate::time::FrameworkTime;
-use crate::{Context, LoanError};
+use crate::{Context, LoanError, ReplayError};
 mod endpoints;
 mod node;
 pub use endpoints::*;
@@ -16,9 +17,9 @@ pub trait Callback: Send {
         false
     }
     /// Clear prepared and incoming snapshots before exact-replay hydration.
-    fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
-        Err(LoanError::Transport(
-            "callback does not support replay input reset".into(),
+    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
+        Err(ReplayError::new(
+            "callback does not support replay input reset",
         ))
     }
     fn stage_replay_iox2_event(
@@ -26,8 +27,8 @@ pub trait Callback: Send {
         _ordinal: usize,
         _event_id: usize,
         _count: u64,
-    ) -> Result<(), LoanError> {
-        Err(LoanError::Transport("unknown replay event endpoint".into()))
+    ) -> Result<(), ReplayError> {
+        Err(ReplayError::new("unknown replay event endpoint"))
     }
     /// Whether this callback has endpoints on a non-native transport.
     fn has_iox2_endpoints(&self) -> bool {
@@ -100,9 +101,9 @@ where
         false
     }
     /// Clear prepared and incoming snapshots before exact-replay hydration.
-    fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
-        Err(LoanError::Transport(
-            "callback does not support replay input reset".into(),
+    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
+        Err(ReplayError::new(
+            "callback does not support replay input reset",
         ))
     }
     fn stage_replay_iox2_event(
@@ -110,8 +111,8 @@ where
         _ordinal: usize,
         _event_id: usize,
         _count: u64,
-    ) -> Result<(), LoanError> {
-        Err(LoanError::Transport("unknown replay event endpoint".into()))
+    ) -> Result<(), ReplayError> {
+        Err(ReplayError::new("unknown replay event endpoint"))
     }
     /// Whether this callback has endpoints on a non-native transport.
     fn has_iox2_endpoints(&self) -> bool {
@@ -170,6 +171,9 @@ where
 /// Update inputs, check required inputs, execute, and publish successful outputs.
 /// Returns false when required inputs are missing. Error/panic paths discard
 /// pending outputs. Publications from earlier callbacks remain committed.
+///
+/// Replay harnesses may instead drive [`prepare_callback`] and the phase handles
+/// directly to inspect snapshots between phases.
 pub fn execute_callback(callback: &mut dyn Callback, context: &Context) -> Result<bool, LoanError> {
     let Some(prepared) = prepare_callback(callback) else {
         return Ok(false);
@@ -226,6 +230,17 @@ pub fn prepare_callback(callback: &mut dyn Callback) -> Option<PreparedCallback<
         .then_some(PreparedCallback(invocation))
 }
 
+impl PreparedCallback<'_> {
+    pub fn visit_prepared_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
+        self.0.callback.visit_prepared_messages(visit);
+    }
+    pub fn visit_prepared_iox2_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
+        self.0.callback.visit_prepared_iox2_events(visit);
+    }
+    pub fn required_inputs_ready(&self) -> bool {
+        self.0.callback.required_inputs_ready()
+    }
+}
 impl<'a> PreparedCallback<'a> {
     pub fn run(mut self, context: &Context) -> Result<CompletedCallback<'a>, LoanError> {
         self.0.ran = true;
@@ -237,6 +252,9 @@ impl<'a> PreparedCallback<'a> {
     }
 }
 impl CompletedCallback<'_> {
+    pub fn visit_pending_iox2_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
+        self.invocation.callback.visit_pending_iox2_events(visit);
+    }
     pub fn commit(self) {
         self.invocation.callback.flush_outputs(self.timestamp);
     }

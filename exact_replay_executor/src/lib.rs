@@ -13,7 +13,8 @@ pub use plan::{
     BundleReplayInputPlan, ReplayBindings, ReplayInputPlan, SourceCache, SourceCachePlan,
 };
 pub use replay::{
-    DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, ReplayError, ReplayStep, StopSignal,
+    DivergencePolicy, ExactReplayConfig, ExactReplayExecutor, ExactReplayStepError, ReplayStep,
+    StopSignal,
 };
 pub use replay_log::ReplayLog;
 pub use report::{ChannelStats, ReplayDetail, ReplayDetailKind, ReplayReport};

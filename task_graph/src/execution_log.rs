@@ -16,7 +16,7 @@ use task::{
     execution_log_schema::{
         CallbackDescriptor, Direction, EndpointDescriptor, ExecutionDescriptor, ExecutionLogMode,
         ExecutionLogModes, ExecutionRecord, InternTables, Iox2EventRecord, LoggedIox2Event,
-        LoggedMessage, Outcome, Transport,
+        LoggedMessage, MAX_RECORDED_EVENTS, MAX_RECORDED_MESSAGES, Outcome, Transport,
     },
     message::MessageHeader,
     time::FrameworkTime,
@@ -81,6 +81,9 @@ impl<'storage> BuiltGraph<'storage> {
                 }
                 (_, endpoints) => endpoints.unwrap_or_default(),
             };
+            if mode == ExecutionLogMode::Full {
+                validate_record_capacity(name, &endpoints)?;
+            }
             descriptors.push(CallbackDescriptor {
                 name: name.into(),
                 mode,
@@ -137,6 +140,49 @@ impl<'storage> BuiltGraph<'storage> {
     }
 }
 
+/// Reject endpoint layouts whose recorded groups exceed the record capacity.
+fn validate_record_capacity(name: &str, endpoints: &[EndpointDescriptor]) -> Result<(), String> {
+    let count = |direction, events: bool| {
+        endpoints
+            .iter()
+            .filter(|endpoint| {
+                endpoint.direction == direction
+                    && (endpoint.transport == Transport::Iox2Event) == events
+            })
+            .count()
+    };
+    let groups = [
+        (
+            "received message",
+            count(Direction::Received, false),
+            MAX_RECORDED_MESSAGES,
+        ),
+        (
+            "published message",
+            count(Direction::Published, false),
+            MAX_RECORDED_MESSAGES,
+        ),
+        (
+            "received event",
+            count(Direction::Received, true),
+            MAX_RECORDED_EVENTS,
+        ),
+        (
+            "published event",
+            count(Direction::Published, true),
+            MAX_RECORDED_EVENTS,
+        ),
+    ];
+    for (group, count, cap) in groups {
+        if count > cap {
+            return Err(format!(
+                "callback '{name}' has {count} {group} endpoints; execution log records at most {cap}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 struct ExecutionLogRecorded<'storage> {
     callback: Box<dyn Callback + 'storage>,
     record_publisher: Publisher<'storage, ExecutionRecord>,
@@ -172,7 +218,7 @@ impl Callback for ExecutionLogRecorded<'_> {
     fn outputs_are_local(&self) -> bool {
         self.callback.outputs_are_local()
     }
-    fn clear_replay_inputs(&mut self) -> Result<(), LoanError> {
+    fn clear_replay_inputs(&mut self) -> Result<(), task::ReplayError> {
         self.callback.clear_replay_inputs()
     }
     fn stage_replay_iox2_event(
@@ -180,7 +226,7 @@ impl Callback for ExecutionLogRecorded<'_> {
         ordinal: usize,
         event_id: usize,
         count: u64,
-    ) -> Result<(), LoanError> {
+    ) -> Result<(), task::ReplayError> {
         self.callback
             .stage_replay_iox2_event(ordinal, event_id, count)
     }
@@ -283,19 +329,26 @@ impl Callback for ExecutionLogRecorded<'_> {
             callback_id: self.callback_id,
             execution_time: context.now(),
             body_duration_ns: 0,
-            inputs: Vec::new(),
-            iox2_events: Vec::new(),
-            output_iox2_events: Vec::new(),
-            outputs: Vec::new(),
+            inputs: Default::default(),
+            iox2_events: Default::default(),
+            output_iox2_events: Default::default(),
+            outputs: Default::default(),
             // Pessimistic until the body returns; a panic leaves this outcome
             // for the drop path to publish.
             outcome: Outcome::BodyPanicked,
+            truncated: 0,
         };
         if self.mode == ExecutionLogMode::Full {
-            self.callback
-                .visit_prepared_messages(&mut |message| record.inputs.push(message));
-            self.callback
-                .visit_prepared_iox2_events(&mut |event| record.iox2_events.push(event));
+            self.callback.visit_prepared_messages(&mut |message| {
+                if !record.inputs.push(message) {
+                    record.truncated += 1;
+                }
+            });
+            self.callback.visit_prepared_iox2_events(&mut |event| {
+                if !record.iox2_events.push(event) {
+                    record.truncated += 1;
+                }
+            });
         }
         self.active = Some(ActiveExecution {
             record,
@@ -311,7 +364,7 @@ impl Callback for ExecutionLogRecorded<'_> {
                 started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
             active.record.outcome = match &result {
                 Ok(()) => Outcome::Cancelled,
-                Err(error) => Outcome::BodyError(format!("{error:?}")),
+                Err(error) => Outcome::BodyError(*error),
             };
         }
         result
@@ -322,10 +375,14 @@ impl Callback for ExecutionLogRecorded<'_> {
             if self.mode == ExecutionLogMode::Full {
                 self.callback.visit_pending_messages(&mut |mut message| {
                     message.header.published_at = time;
-                    active.record.outputs.push(message);
+                    if !active.record.outputs.push(message) {
+                        active.record.truncated += 1;
+                    }
                 });
                 self.callback.visit_pending_iox2_events(&mut |event| {
-                    active.record.output_iox2_events.push(event)
+                    if !active.record.output_iox2_events.push(event) {
+                        active.record.truncated += 1;
+                    }
                 });
             }
         }

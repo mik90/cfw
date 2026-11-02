@@ -16,7 +16,9 @@
 //!     Ok(())
 //! }
 //! ```
-use crate::{OutputCapture, ReplayBindings, ReplayError, ReplayLog, SourceCache, SourceCachePlan};
+use crate::{
+    ExactReplayStepError, OutputCapture, ReplayBindings, ReplayLog, SourceCache, SourceCachePlan,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use task::execution_log_schema::{Direction, Transport};
 use task_graph::{GraphBindings, GraphPlan, capture::OutputBinding, replay::SourceBinding};
@@ -76,7 +78,7 @@ pub struct ExactReplayPlan {
     local_outputs: Vec<(String, usize, bool)>,
 }
 impl ExactReplayPlan {
-    pub fn declare(plan: &mut GraphPlan, log: &ReplayLog) -> Result<Self, ReplayError> {
+    pub fn declare(plan: &mut GraphPlan, log: &ReplayLog) -> Result<Self, ExactReplayStepError> {
         Self::declare_with_explicit(plan, log, &BTreeSet::new())
     }
     /// Keep selected endpoints explicit for custom/contextual decoders. Add their
@@ -85,10 +87,10 @@ impl ExactReplayPlan {
         plan: &mut GraphPlan,
         log: &ReplayLog,
         endpoints: &std::collections::BTreeSet<ExplicitReplayEndpoint>,
-    ) -> Result<Self, ReplayError> {
+    ) -> Result<Self, ExactReplayStepError> {
         let descriptor = log.descriptor_ref();
         if plan.task_names().count() != descriptor.callbacks.len() {
-            return Err(ReplayError::Setup(
+            return Err(ExactReplayStepError::Setup(
                 "replay task count differs from descriptor".into(),
             ));
         }
@@ -99,15 +101,15 @@ impl ExactReplayPlan {
         let mut names = BTreeSet::new();
         for callback in &descriptor.callbacks {
             if !names.insert(&callback.name) {
-                return Err(ReplayError::Setup(
+                return Err(ExactReplayStepError::Setup(
                     "duplicate recorded callback name".into(),
                 ));
             }
             let actual = plan
                 .task_endpoints(&callback.name)
-                .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                .map_err(|e| ExactReplayStepError::Setup(e.to_string()))?;
             if actual.len() != callback.endpoints.len() {
-                return Err(ReplayError::Setup(format!(
+                return Err(ExactReplayStepError::Setup(format!(
                     "endpoint count differs for '{}'",
                     callback.name
                 )));
@@ -122,7 +124,7 @@ impl ExactReplayPlan {
             for expected in &callback.endpoints {
                 let output = expected.direction == Direction::Published;
                 let endpoint = mapped.remove(&(output, expected.ordinal)).ok_or_else(|| {
-                    ReplayError::Setup(format!(
+                    ExactReplayStepError::Setup(format!(
                         "unknown/duplicate endpoint for '{}' ordinal {}",
                         callback.name, expected.ordinal
                     ))
@@ -131,7 +133,7 @@ impl ExactReplayPlan {
                     || endpoint.payload_type != expected.payload_type
                     || endpoint.transport != expected.transport
                 {
-                    return Err(ReplayError::Setup(format!(
+                    return Err(ExactReplayStepError::Setup(format!(
                         "endpoint layout differs for '{}' ordinal {}",
                         callback.name, expected.ordinal
                     )));
@@ -159,9 +161,9 @@ impl ExactReplayPlan {
                 } else {
                     plan.can_inject_input(&callback.name, expected.ordinal)
                 }
-                .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                .map_err(|e| ExactReplayStepError::Setup(e.to_string()))?;
                 if !capable {
-                    return Err(ReplayError::Setup(format!(
+                    return Err(ExactReplayStepError::Setup(format!(
                         "channel '{}': missing {} capability; use an explicit endpoint binding",
                         endpoint.channel,
                         if output {
@@ -173,9 +175,9 @@ impl ExactReplayPlan {
                 }
                 if plan
                     .endpoint_is_configured(&callback.name, expected.ordinal, output)
-                    .map_err(|e| ReplayError::Setup(e.to_string()))?
+                    .map_err(|e| ExactReplayStepError::Setup(e.to_string()))?
                 {
-                    return Err(ReplayError::Setup(format!(
+                    return Err(ExactReplayStepError::Setup(format!(
                         "replay endpoint '{}' ordinal {} already configured",
                         callback.name, expected.ordinal
                     )));
@@ -197,7 +199,7 @@ impl ExactReplayPlan {
             }
         }
         if !remaining.is_empty() {
-            return Err(ReplayError::Setup(format!(
+            return Err(ExactReplayStepError::Setup(format!(
                 "explicit replay endpoints do not identify data endpoints: {remaining:?}"
             )));
         }
@@ -209,7 +211,7 @@ impl ExactReplayPlan {
                     let bind = plan
                         .inject_input(&name, ordinal, 1)
                         .map(EndpointBinding::Input)
-                        .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                        .map_err(|e| ExactReplayStepError::Setup(e.to_string()))?;
                     (name, ordinal, bind)
                 }
                 Request::Output {
@@ -221,7 +223,7 @@ impl ExactReplayPlan {
                 } => {
                     let binding = plan
                         .observe_output(&name, ordinal)
-                        .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                        .map_err(|e| ExactReplayStepError::Setup(e.to_string()))?;
                     (
                         name,
                         ordinal,
@@ -245,7 +247,10 @@ impl ExactReplayPlan {
     /// Bind before task factories consume their endpoints. No publisher indices
     /// are changed; the executor translates them into recorded identity space.
     /// IPC publishers and notifiers, including explicit outputs, use local delivery.
-    pub fn bind<'a>(self, bindings: &GraphBindings<'a>) -> Result<ReplayBindings<'a>, ReplayError> {
+    pub fn bind<'a>(
+        self,
+        bindings: &GraphBindings<'a>,
+    ) -> Result<ReplayBindings<'a>, ExactReplayStepError> {
         #[cfg(feature = "iceoryx2")]
         for (channel, index, notifier) in self.local_outputs {
             bindings
@@ -255,7 +260,7 @@ impl ExactReplayPlan {
                     notifier,
                     task::iox2::OutputDelivery::Local,
                 )
-                .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                .map_err(|e| ExactReplayStepError::Setup(e.to_string()))?;
         }
         let mut replay = ReplayBindings::new();
         for (name, ordinal, endpoint) in self.endpoints {
@@ -263,7 +268,7 @@ impl ExactReplayPlan {
                 EndpointBinding::Input(bind) => replay.add_input(
                     name,
                     ordinal,
-                    bind(bindings).map_err(|e| ReplayError::Setup(e.to_string()))?,
+                    bind(bindings).map_err(|e| ExactReplayStepError::Setup(e.to_string()))?,
                 )?,
                 EndpointBinding::Output {
                     binding,
@@ -274,7 +279,7 @@ impl ExactReplayPlan {
                     let capture = OutputCapture::new(channel, payload_type, capacity);
                     binding
                         .attach(bindings, capture.sink())
-                        .map_err(|e| ReplayError::Setup(e.to_string()))?;
+                        .map_err(|e| ExactReplayStepError::Setup(e.to_string()))?;
                     replay.add_output(name, ordinal, capture)?;
                 }
             }
@@ -287,12 +292,14 @@ impl ExactReplayPlan {
         plan: &mut GraphPlan,
         log: &ReplayLog,
         channel: &str,
-    ) -> Result<GraphSourceCachePlan<T>, ReplayError> {
+    ) -> Result<GraphSourceCachePlan<T>, ExactReplayStepError> {
         let plan = plan
             .native::<T>(channel)
-            .map_err(|error| ReplayError::Setup(error.to_string()))?;
-        let cache = SourceCachePlan::declare(plan, log.source_capacity(channel))
-            .map_err(|error| ReplayError::Setup(format!("source cache '{channel}': {error:?}")))?;
+            .map_err(|error| ExactReplayStepError::Setup(error.to_string()))?;
+        let cache =
+            SourceCachePlan::declare(plan, log.source_capacity(channel)).map_err(|error| {
+                ExactReplayStepError::Setup(format!("source cache '{channel}': {error:?}"))
+            })?;
         Ok(GraphSourceCachePlan {
             channel: channel.into(),
             cache,
@@ -314,15 +321,15 @@ where
         self,
         bindings: &GraphBindings<'a>,
         replay: &mut ReplayBindings<'a>,
-    ) -> Result<SourceCache<'a, T>, ReplayError> {
+    ) -> Result<SourceCache<'a, T>, ExactReplayStepError> {
         let cache = self
             .cache
             .bind(
                 bindings
                     .native::<T>(&self.channel)
-                    .map_err(|error| ReplayError::Setup(error.to_string()))?,
+                    .map_err(|error| ExactReplayStepError::Setup(error.to_string()))?,
             )
-            .map_err(|error| ReplayError::Setup(error.to_string()))?;
+            .map_err(|error| ExactReplayStepError::Setup(error.to_string()))?;
         let loader = cache.clone();
         replay.add_cache(self.channel, move |header, bytes| {
             loader.load(header, bytes)

@@ -6,11 +6,136 @@ use super::Subscriber;
 use crate::message::{Message, MessageHeader};
 use crate::time::FrameworkTime;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum LoanError {
     LoanCapacityReached,
     ArenaExhausted,
-    Transport(String),
+    Transport(TransportError),
+}
+
+/// Failure reported by a real message transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportError {
+    HeaderInjectionWithPendingBatch,
+    LocalPublicationRequiresTransportDelivery,
+    #[cfg(feature = "iceoryx2")]
+    Iox2Loan(iceoryx2::port::LoanError),
+    #[cfg(feature = "iceoryx2")]
+    Iox2Send(iceoryx2::port::SendError),
+}
+
+/// Failure from replay-only operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayError(String);
+impl ReplayError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+impl std::fmt::Display for ReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ReplayError {}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for TransportError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let name = match self {
+            Self::HeaderInjectionWithPendingBatch => "HeaderInjectionWithPendingBatch",
+            Self::LocalPublicationRequiresTransportDelivery => {
+                "LocalPublicationRequiresTransportDelivery"
+            }
+            #[cfg(feature = "iceoryx2")]
+            Self::Iox2Loan(_) => "Iox2Loan",
+            #[cfg(feature = "iceoryx2")]
+            Self::Iox2Send(_) => "Iox2Send",
+        };
+        serializer.serialize_str(name)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for TransportError {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = TransportError;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a transport error variant name")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                match value {
+                    "HeaderInjectionWithPendingBatch" => {
+                        Ok(TransportError::HeaderInjectionWithPendingBatch)
+                    }
+                    "LocalPublicationRequiresTransportDelivery" => {
+                        Ok(TransportError::LocalPublicationRequiresTransportDelivery)
+                    }
+                    // The underlying iox2 detail is not persisted, so only the
+                    // category survives a round trip.
+                    #[cfg(feature = "iceoryx2")]
+                    "Iox2Loan" => Ok(TransportError::Iox2Loan(
+                        iceoryx2::port::LoanError::InternalFailure,
+                    )),
+                    #[cfg(feature = "iceoryx2")]
+                    "Iox2Send" => Ok(TransportError::Iox2Send(
+                        iceoryx2::port::SendError::InternalError,
+                    )),
+                    other => Err(E::custom(format!(
+                        "unknown transport error variant '{other}'"
+                    ))),
+                }
+            }
+        }
+        deserializer.deserialize_str(Visitor)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for LoanError {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = LoanError;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a loan error")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                match value {
+                    "LoanCapacityReached" => Ok(LoanError::LoanCapacityReached),
+                    "ArenaExhausted" => Ok(LoanError::ArenaExhausted),
+                    "Transport(\"header injection requires an empty pending batch\")" => Ok(
+                        LoanError::Transport(TransportError::HeaderInjectionWithPendingBatch),
+                    ),
+                    "Transport(\"immediate IPC publication requires transport delivery\")" => {
+                        Ok(LoanError::Transport(
+                            TransportError::LocalPublicationRequiresTransportDelivery,
+                        ))
+                    }
+                    other => Err(E::custom(format!("unknown loan error '{other}'"))),
+                }
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let Some(key) = map.next_key::<String>()? else {
+                    return Err(serde::de::Error::custom("empty loan error"));
+                };
+                if key != "Transport" {
+                    return Err(serde::de::Error::custom(format!(
+                        "unknown loan error variant '{key}'"
+                    )));
+                }
+                let error = map.next_value::<TransportError>()?;
+                Ok(LoanError::Transport(error))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// A typed publisher borrowing storage allocated before connection/execution.
@@ -43,6 +168,64 @@ impl<'storage, T> std::fmt::Debug for Publisher<'storage, T> {
 }
 
 type PublishObserver<'a, T> = Box<dyn FnMut(&Message<T>) + Send + 'a>;
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn loan_error_round_trips() {
+        for error in [
+            LoanError::LoanCapacityReached,
+            LoanError::ArenaExhausted,
+            LoanError::Transport(TransportError::HeaderInjectionWithPendingBatch),
+            LoanError::Transport(TransportError::LocalPublicationRequiresTransportDelivery),
+        ] {
+            let json = serde_json::to_string(&error).unwrap();
+            assert_eq!(serde_json::from_str::<LoanError>(&json).unwrap(), error);
+        }
+    }
+
+    #[test]
+    fn legacy_transport_strings_deserialize() {
+        let cases = [
+            (
+                r#""Transport(\"header injection requires an empty pending batch\")""#,
+                TransportError::HeaderInjectionWithPendingBatch,
+            ),
+            (
+                r#""Transport(\"immediate IPC publication requires transport delivery\")""#,
+                TransportError::LocalPublicationRequiresTransportDelivery,
+            ),
+        ];
+        for (json, expected) in cases {
+            assert_eq!(
+                serde_json::from_str::<LoanError>(json).unwrap(),
+                LoanError::Transport(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_legacy_errors_are_rejected() {
+        let error = serde_json::from_str::<LoanError>(r#""Transport(\"something else\")""#)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown loan error"));
+    }
+
+    #[test]
+    fn legacy_body_error_deserializes() {
+        let json =
+            r#"{"BodyError":"Transport(\"header injection requires an empty pending batch\")"}"#;
+        assert_eq!(
+            serde_json::from_str::<crate::execution_log_schema::Outcome>(json).unwrap(),
+            crate::execution_log_schema::Outcome::BodyError(LoanError::Transport(
+                TransportError::HeaderInjectionWithPendingBatch
+            ))
+        );
+    }
+}
 
 impl<'storage, T> Publisher<'storage, T> {
     pub fn new(allocator: ArenaAllocator<'storage, Message<T>>, loan_capacity: usize) -> Self {
@@ -170,7 +353,7 @@ impl<'storage, T> Publisher<'storage, T> {
     ) -> Result<(), LoanError> {
         if !self.pending.is_empty() {
             return Err(LoanError::Transport(
-                "header injection requires an empty pending batch".into(),
+                TransportError::HeaderInjectionWithPendingBatch,
             ));
         }
         self.publish(value)?;
