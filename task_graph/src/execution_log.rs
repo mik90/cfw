@@ -146,7 +146,13 @@ struct ExecutionLogRecorded<'storage> {
     event_endpoints: Vec<EndpointDescriptor>,
     callback_id: task::string_interner::CallbackId,
     mode: ExecutionLogMode,
-    active: Option<ExecutionRecord>,
+    active: Option<ActiveExecution>,
+}
+
+struct ActiveExecution {
+    record: ExecutionRecord,
+    /// Wall-clock body start, cleared once the body returns normally.
+    body_started: Option<Instant>,
 }
 
 impl ExecutionLogRecorded<'_> {
@@ -281,7 +287,9 @@ impl Callback for ExecutionLogRecorded<'_> {
             iox2_events: Vec::new(),
             output_iox2_events: Vec::new(),
             outputs: Vec::new(),
-            outcome: Outcome::Cancelled,
+            // Pessimistic until the body returns; a panic leaves this outcome
+            // for the drop path to publish.
+            outcome: Outcome::BodyPanicked,
         };
         if self.mode == ExecutionLogMode::Full {
             self.callback
@@ -289,52 +297,55 @@ impl Callback for ExecutionLogRecorded<'_> {
             self.callback
                 .visit_prepared_iox2_events(&mut |event| record.iox2_events.push(event));
         }
-        let start = Instant::now();
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.callback.run(context)));
-        record.body_duration_ns = start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
-        record.outcome = match &result {
-            Ok(Ok(())) => Outcome::Cancelled,
-            Ok(Err(error)) => Outcome::BodyError(format!("{error:?}")),
-            Err(_) => Outcome::BodyPanicked,
-        };
-        self.active = Some(record);
-        match result {
-            Ok(result) => result,
-            Err(panic) => std::panic::resume_unwind(panic),
+        self.active = Some(ActiveExecution {
+            record,
+            body_started: Some(Instant::now()),
+        });
+        let result = self.callback.run(context);
+        if let Some(active) = &mut self.active {
+            let started = active
+                .body_started
+                .take()
+                .expect("body must still be active");
+            active.record.body_duration_ns =
+                started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
+            active.record.outcome = match &result {
+                Ok(()) => Outcome::Cancelled,
+                Err(error) => Outcome::BodyError(format!("{error:?}")),
+            };
         }
+        result
     }
     fn flush_outputs(&mut self, time: FrameworkTime) {
-        if self.mode == ExecutionLogMode::Full
-            && let Some(record) = &mut self.active
-        {
-            self.callback.visit_pending_messages(&mut |mut message| {
-                message.header.published_at = time;
-                record.outputs.push(message);
-            });
-            self.callback
-                .visit_pending_iox2_events(&mut |event| record.output_iox2_events.push(event));
+        if let Some(active) = &mut self.active {
+            active.record.outcome = Outcome::CommitPanicked;
+            if self.mode == ExecutionLogMode::Full {
+                self.callback.visit_pending_messages(&mut |mut message| {
+                    message.header.published_at = time;
+                    active.record.outputs.push(message);
+                });
+                self.callback.visit_pending_iox2_events(&mut |event| {
+                    active.record.output_iox2_events.push(event)
+                });
+            }
         }
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.callback.flush_outputs(time)
-        }));
-        if let Some(mut record) = self.active.take() {
-            record.outcome = if result.is_ok() {
-                Outcome::Committed
-            } else {
-                Outcome::CommitPanicked
-            };
-            self.publish_record(record);
-        }
-        if let Err(panic) = result {
-            std::panic::resume_unwind(panic);
+        self.callback.flush_outputs(time);
+        if let Some(mut active) = self.active.take() {
+            active.record.outcome = Outcome::Committed;
+            self.publish_record(active.record);
         }
     }
     fn discard_outputs(&mut self) {
-        if let Some(mut record) = self.active.take() {
-            record.outputs.clear();
-            record.output_iox2_events.clear();
-            self.publish_record(record);
+        if let Some(mut active) = self.active.take() {
+            if let Some(started) = active.body_started.take() {
+                active.record.body_duration_ns =
+                    started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX);
+            }
+            if active.record.outcome != Outcome::CommitPanicked {
+                active.record.outputs.clear();
+                active.record.output_iox2_events.clear();
+            }
+            self.publish_record(active.record);
         }
         self.callback.discard_outputs();
     }

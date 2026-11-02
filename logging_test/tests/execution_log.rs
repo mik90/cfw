@@ -2,14 +2,15 @@ use logging::{ExecutionLogOptions, ExecutionLogPlan, InMemoryWriter, LogSession}
 use simulation_executor::{SimulationConfig, SimulationState};
 use std::time::Duration;
 use task::{
-    Output,
+    Callback, ChannelPlan, Context, LoanError, Output, Publisher,
     execution_log_schema::{
-        EXECUTION_LOG_CHANNEL, ExecutionDescriptor, ExecutionLogMode, ExecutionLogModes,
-        ExecutionRecord, Outcome,
+        Direction, EXECUTION_LOG_CHANNEL, EndpointDescriptor, ExecutionDescriptor,
+        ExecutionLogMode, ExecutionLogModes, ExecutionRecord, LoggedMessage, Outcome, Transport,
     },
+    testing::FakeCallback,
     time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
+use task_graph::{CallbackSchedule, GraphBuilder, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 
 struct Counter;
@@ -78,6 +79,40 @@ fn run(plan: GraphPlan, options: ExecutionLogOptions) -> Run {
     }
 }
 
+fn run_builder<'build, 'storage>(
+    builder: GraphBuilder<'build, 'storage>,
+    options: ExecutionLogOptions,
+) -> (
+    Result<simulation_executor::StepResult, simulation_executor::StepError>,
+    Vec<ExecutionRecord>,
+) {
+    let graph = builder.build().unwrap();
+    let execution_log = ExecutionLogPlan::for_graph(&graph, options).unwrap();
+    let log_storage = execution_log.allocate().unwrap();
+    let (graph, _metadata, mut captures) = log_storage.attach(graph).unwrap();
+    let mut simulation = SimulationState::with_config(
+        graph,
+        SimulationConfig {
+            poll_external_events: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let result = simulation.step();
+    let records = captures[0]
+        .drain_to_vec()
+        .unwrap()
+        .iter()
+        .map(|(_, body)| serde_json::from_slice(body).unwrap())
+        .collect();
+    (result, records)
+}
+
+fn duration_only() -> ExecutionLogOptions {
+    ExecutionLogOptions::new(8, 2)
+        .with_modes(ExecutionLogModes::new(ExecutionLogMode::DurationOnly))
+}
+
 #[test]
 fn full_mode_records_each_callback() {
     let run = run(start_plan(&["a", "b"]), ExecutionLogOptions::new(8, 2));
@@ -144,4 +179,105 @@ fn plan_rejects_invalid_capacities_and_callback_names() {
         ExecutionLogPlan::for_graph(&graph, ExecutionLogOptions::new(1, 1).with_modes(modes))
             .is_err()
     );
+}
+
+#[test]
+fn body_panic_records_body_panicked() {
+    let mut builder = GraphBuilder::new();
+    builder.add_scheduled_callback(
+        "worker",
+        CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
+        || {
+            Ok(FakeCallback {
+                run_hook: Box::new(|_| -> Result<(), LoanError> { panic!("body failed") }),
+                ..Default::default()
+            })
+        },
+    );
+
+    let (result, records) = run_builder(builder, duration_only());
+
+    assert!(result.is_err());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].outcome, Outcome::BodyPanicked);
+}
+
+#[test]
+fn body_error_records_body_error() {
+    let mut builder = GraphBuilder::new();
+    builder.add_scheduled_callback(
+        "worker",
+        CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
+        || {
+            Ok(FakeCallback {
+                run_hook: Box::new(|_| Err(LoanError::LoanCapacityReached)),
+                ..Default::default()
+            })
+        },
+    );
+
+    let (result, records) = run_builder(builder, duration_only());
+
+    assert!(result.is_err());
+    assert_eq!(records.len(), 1);
+    assert!(matches!(records[0].outcome, Outcome::BodyError(_)));
+}
+
+struct CommitPanic<'a> {
+    output: Publisher<'a, u64>,
+}
+
+impl Callback for CommitPanic<'_> {
+    fn outputs_are_local(&self) -> bool {
+        true
+    }
+    fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
+        Some(vec![EndpointDescriptor {
+            ordinal: 0,
+            channel: "output".into(),
+            direction: Direction::Published,
+            transport: Transport::Native,
+            payload_type: std::any::type_name::<u64>().into(),
+            publisher_index: Some(self.output.publisher_index()),
+        }])
+    }
+    fn run(&mut self, _: &Context) -> Result<(), LoanError> {
+        self.output.publish(7)
+    }
+    fn visit_pending_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
+        self.output.visit_pending_headers(|header| {
+            visit(LoggedMessage { ordinal: 0, header });
+        });
+    }
+    fn flush_outputs(&mut self, _: FrameworkTime) {
+        panic!("commit failed");
+    }
+    fn discard_outputs(&mut self) {
+        self.output.discard_pending();
+    }
+}
+
+#[test]
+fn commit_panic_records_attempts() {
+    let mut outputs = ChannelPlan::new("output");
+    let key = outputs.publisher(1);
+    let storage = outputs.allocate().unwrap();
+    let bindings = storage.bind();
+    let mut builder = GraphBuilder::with_channel_names([storage.name()]);
+    builder.add_scheduled_callback(
+        "worker",
+        CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
+        || {
+            Ok(CommitPanic {
+                output: bindings.take_publisher(&key)?,
+            })
+        },
+    );
+
+    let (result, records) = run_builder(builder, ExecutionLogOptions::new(8, 2));
+
+    assert!(result.is_err());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].outcome, Outcome::CommitPanicked);
+    assert_eq!(records[0].outputs.len(), 1);
 }
