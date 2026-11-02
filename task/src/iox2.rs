@@ -1,6 +1,6 @@
 //! Typed iceoryx2 channels. All processes must agree on service-wide settings.
 use crate::{
-    EndpointError, LoanError, StorageError, TransportError,
+    EndpointError, LoanError, StorageError,
     message::{Message, MessageHeader},
     time::FrameworkTime,
     wake::{Wake, WakeHandle},
@@ -982,17 +982,17 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
     /// simulation/replay that schedules counted events independently.
     pub fn publish_with_header(&self, header: MessageHeader, value: T) -> Result<(), LoanError> {
         if self.delivery == OutputDelivery::Local {
-            return Err(LoanError::Transport(TransportError::Iox2CannotSendToNative));
+            return Err(LoanError::Iox2CannotSendToNative);
         }
         self.port
             .loan_uninit()
-            .map_err(|e| LoanError::Transport(TransportError::Iox2Loan(e)))?
+            .map_err(LoanError::Iox2Loan)?
             .write_payload(Message {
                 header,
                 message: value,
             })
             .send()
-            .map_err(|e| LoanError::Transport(TransportError::Iox2Send(e)))?;
+            .map_err(LoanError::Iox2Send)?;
         Ok(())
     }
     pub fn channel_name(&self) -> &str {
@@ -1026,7 +1026,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Publisher<T> {
         let sample = self
             .port
             .loan_uninit()
-            .map_err(|e| LoanError::Transport(TransportError::Iox2Loan(e)))?
+            .map_err(LoanError::Iox2Loan)?
             .write_payload(Message {
                 header: MessageHeader::default(),
                 message: value,

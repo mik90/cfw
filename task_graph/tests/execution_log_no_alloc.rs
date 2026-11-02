@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use task::{
-    Callback, ChannelPlan, Context, LoanError, SubscriberPolicy, TransportError,
+    Callback, ChannelPlan, Context, LoanError, SubscriberPolicy,
     execution_log_schema::{
         Direction, EXECUTION_LOG_CHANNEL, EndpointDescriptor, ExecutionLogMode, ExecutionLogModes,
         ExecutionRecord, IOX2_EVENT_RECORD_CHANNEL, Iox2EventRecord, LoggedMessage, Outcome,
@@ -93,9 +93,7 @@ impl Recorded {
 impl Callback for Recorded {
     fn run(&mut self, _context: &Context) -> Result<(), LoanError> {
         if self.fail {
-            Err(LoanError::Transport(
-                TransportError::HeaderInjectionWithPendingBatch,
-            ))
+            Err(LoanError::PendingBatchNotEmpty)
         } else {
             Ok(())
         }
@@ -228,9 +226,7 @@ fn execution_recording_is_allocation_free() {
     assert_eq!(published[0].truncated, 0);
     assert_eq!(
         published[1].outcome,
-        Outcome::BodyError(LoanError::Transport(
-            TransportError::HeaderInjectionWithPendingBatch
-        ))
+        Outcome::BodyError(LoanError::PendingBatchNotEmpty)
     );
     assert!(published[1].outputs.is_empty());
     assert_eq!(published[1].truncated, 0);

@@ -7,17 +7,13 @@ use crate::message::{Message, MessageHeader};
 use crate::time::FrameworkTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum LoanError {
     LoanCapacityReached,
     ArenaExhausted,
-    Transport(TransportError),
-}
-
-/// Failure reported by a real message transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransportError {
-    HeaderInjectionWithPendingBatch,
+    /// `Publisher::publish_with_header` requires an empty pending batch.
+    PendingBatchNotEmpty,
+    /// Immediate IPC publication requires transport delivery.
+    #[cfg(feature = "iceoryx2")]
     Iox2CannotSendToNative,
     #[cfg(feature = "iceoryx2")]
     Iox2Loan(iceoryx2::port::LoanError),
@@ -41,11 +37,14 @@ impl std::fmt::Display for ReplayError {
 impl std::error::Error for ReplayError {}
 
 #[cfg(feature = "serde")]
-impl serde::Serialize for TransportError {
+impl serde::Serialize for LoanError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let name = match self {
-            Self::HeaderInjectionWithPendingBatch => "HeaderInjectionWithPendingBatch",
-            Self::Iox2CannotSendToNative => "LocalPublicationRequiresTransportDelivery",
+            Self::LoanCapacityReached => "LoanCapacityReached",
+            Self::ArenaExhausted => "ArenaExhausted",
+            Self::PendingBatchNotEmpty => "PendingBatchNotEmpty",
+            #[cfg(feature = "iceoryx2")]
+            Self::Iox2CannotSendToNative => "Iox2CannotSendToNative",
             #[cfg(feature = "iceoryx2")]
             Self::Iox2Loan(_) => "Iox2Loan",
             #[cfg(feature = "iceoryx2")]
@@ -56,45 +55,39 @@ impl serde::Serialize for TransportError {
 }
 
 #[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for TransportError {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl serde::de::Visitor<'_> for Visitor {
-            type Value = TransportError;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("a transport error variant name")
-            }
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                match value {
-                    "HeaderInjectionWithPendingBatch" => {
-                        Ok(TransportError::HeaderInjectionWithPendingBatch)
-                    }
-                    "LocalPublicationRequiresTransportDelivery" => {
-                        Ok(TransportError::Iox2CannotSendToNative)
-                    }
-                    // The underlying iox2 detail is not persisted, so only the
-                    // category survives a round trip.
-                    #[cfg(feature = "iceoryx2")]
-                    "Iox2Loan" => Ok(TransportError::Iox2Loan(
-                        iceoryx2::port::LoanError::InternalFailure,
-                    )),
-                    #[cfg(feature = "iceoryx2")]
-                    "Iox2Send" => Ok(TransportError::Iox2Send(
-                        iceoryx2::port::SendError::InternalError,
-                    )),
-                    other => Err(E::custom(format!(
-                        "unknown transport error variant '{other}'"
-                    ))),
-                }
-            }
-        }
-        deserializer.deserialize_str(Visitor)
-    }
-}
-
-#[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for LoanError {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        fn parse<E: serde::de::Error>(value: &str) -> Result<LoanError, E> {
+            match value {
+                "LoanCapacityReached" => Ok(LoanError::LoanCapacityReached),
+                "ArenaExhausted" => Ok(LoanError::ArenaExhausted),
+                "PendingBatchNotEmpty" | "HeaderInjectionWithPendingBatch" => {
+                    Ok(LoanError::PendingBatchNotEmpty)
+                }
+                "Transport(\"header injection requires an empty pending batch\")" => {
+                    Ok(LoanError::PendingBatchNotEmpty)
+                }
+                #[cfg(feature = "iceoryx2")]
+                "Iox2CannotSendToNative" | "LocalPublicationRequiresTransportDelivery" => {
+                    Ok(LoanError::Iox2CannotSendToNative)
+                }
+                #[cfg(feature = "iceoryx2")]
+                "Transport(\"immediate IPC publication requires transport delivery\")" => {
+                    Ok(LoanError::Iox2CannotSendToNative)
+                }
+                // The underlying iox2 detail is not persisted, so only the
+                // category survives a round trip.
+                #[cfg(feature = "iceoryx2")]
+                "Iox2Loan" => Ok(LoanError::Iox2Loan(
+                    iceoryx2::port::LoanError::InternalFailure,
+                )),
+                #[cfg(feature = "iceoryx2")]
+                "Iox2Send" => Ok(LoanError::Iox2Send(
+                    iceoryx2::port::SendError::InternalError,
+                )),
+                other => Err(E::custom(format!("unknown loan error '{other}'"))),
+            }
+        }
         struct Visitor;
         impl<'de> serde::de::Visitor<'de> for Visitor {
             type Value = LoanError;
@@ -102,17 +95,7 @@ impl<'de> serde::Deserialize<'de> for LoanError {
                 f.write_str("a loan error")
             }
             fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                match value {
-                    "LoanCapacityReached" => Ok(LoanError::LoanCapacityReached),
-                    "ArenaExhausted" => Ok(LoanError::ArenaExhausted),
-                    "Transport(\"header injection requires an empty pending batch\")" => Ok(
-                        LoanError::Transport(TransportError::HeaderInjectionWithPendingBatch),
-                    ),
-                    "Transport(\"immediate IPC publication requires transport delivery\")" => {
-                        Ok(LoanError::Transport(TransportError::Iox2CannotSendToNative))
-                    }
-                    other => Err(E::custom(format!("unknown loan error '{other}'"))),
-                }
+                parse(value)
             }
             fn visit_map<A: serde::de::MapAccess<'de>>(
                 self,
@@ -126,8 +109,8 @@ impl<'de> serde::Deserialize<'de> for LoanError {
                         "unknown loan error variant '{key}'"
                     )));
                 }
-                let error = map.next_value::<TransportError>()?;
-                Ok(LoanError::Transport(error))
+                let value = map.next_value::<String>()?;
+                parse(&value)
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -171,12 +154,14 @@ mod serde_tests {
 
     #[test]
     fn loan_error_round_trips() {
-        for error in [
+        let mut errors = vec![
             LoanError::LoanCapacityReached,
             LoanError::ArenaExhausted,
-            LoanError::Transport(TransportError::HeaderInjectionWithPendingBatch),
-            LoanError::Transport(TransportError::Iox2CannotSendToNative),
-        ] {
+            LoanError::PendingBatchNotEmpty,
+        ];
+        #[cfg(feature = "iceoryx2")]
+        errors.push(LoanError::Iox2CannotSendToNative);
+        for error in errors {
             let json = serde_json::to_string(&error).unwrap();
             assert_eq!(serde_json::from_str::<LoanError>(&json).unwrap(), error);
         }
@@ -308,9 +293,7 @@ impl<'storage, T> Publisher<'storage, T> {
         value: T,
     ) -> Result<(), LoanError> {
         if !self.pending.is_empty() {
-            return Err(LoanError::Transport(
-                TransportError::HeaderInjectionWithPendingBatch,
-            ));
+            return Err(LoanError::PendingBatchNotEmpty);
         }
         self.publish(value)?;
         self.flush_headers(|_| header);

@@ -35,6 +35,6 @@ pub use context::Context;
 pub use forwarded_message::{Forwarded, ForwardedSources};
 pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, RequiredInput};
 pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};
-pub use publisher::{LoanError, Publisher, ReplayError, TransportError};
+pub use publisher::{LoanError, Publisher, ReplayError};
 pub use storage::StorageError;
 pub use subscriber::{Subscriber, SubscriberPolicy};
