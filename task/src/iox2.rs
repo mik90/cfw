@@ -213,6 +213,7 @@ pub trait Iox2EventBindings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Iox2Notification {
     Silent,
+    /// Event with ID
     Event(usize),
 }
 
