@@ -130,6 +130,7 @@ dependencies = [
  "criterion",
  "crossbeam-queue",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,17 +1,49 @@
 //! Fixed-capacity inline sequence.
+use std::mem;
 use std::ops::Deref;
+use std::slice;
 
 /// Inline sequence of at most `N` entries. Never allocates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StaticVec<T: Copy + Default, const N: usize> {
-    entries: [T; N],
+#[derive(Debug)]
+pub struct StaticVec<T, const N: usize> {
+    /// Array of possibly initialized entries
+    entries: [mem::MaybeUninit<T>; N],
     len: usize,
 }
 
-impl<T: Copy + Default, const N: usize> StaticVec<T, N> {
+impl<T: Clone, const N: usize> Clone for StaticVec<T, N> {
+    fn clone(&self) -> Self {
+        let mut cloned = Self::new();
+        cloned.len = self.len;
+
+        // The len invariants enforces that these entries are already initialized
+        // so we can safely know how to clone them.
+        let initialized_entries = self.as_slice().iter();
+
+        for (i, entry) in initialized_entries.enumerate() {
+            cloned.entries[i] = mem::MaybeUninit::new(entry.clone());
+        }
+
+        cloned
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq for StaticVec<T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        let initialized_iter = self.as_slice().iter();
+
+        let other_initialized_iter = other.as_slice().iter();
+
+        initialized_iter.eq(other_initialized_iter)
+    }
+}
+
+impl<T, const N: usize> StaticVec<T, N> {
     pub fn new() -> Self {
         Self {
-            entries: [T::default(); N],
+            // Const block allows this to build for some reason, presumably because
+            // it creates a new uninit instead of copying the same uninit repeatedly.
+            entries: [const { mem::MaybeUninit::uninit() }; N],
             len: 0,
         }
     }
@@ -21,12 +53,19 @@ impl<T: Copy + Default, const N: usize> StaticVec<T, N> {
         if self.len == N {
             return false;
         }
-        self.entries[self.len] = value;
+        self.entries[self.len] = mem::MaybeUninit::new(value);
         self.len += 1;
         true
     }
 
     pub fn clear(&mut self) {
+        for elem in self.entries.iter_mut().take(self.len) {
+            // SAFETY:  Len is our invariant that tells us how many elements are initialized, and if they're initialized
+            // then we must drop them to clear them
+            unsafe {
+                elem.assume_init_drop();
+            };
+        }
         self.len = 0;
     }
 
@@ -38,8 +77,47 @@ impl<T: Copy + Default, const N: usize> StaticVec<T, N> {
         self.len == 0
     }
 
-    fn as_slice(&self) -> &[T] {
-        &self.entries[..self.len]
+    /// Pointer as contained type
+    pub fn as_ptr(&self) -> *const T {
+        let uninit_ptr = self.entries.as_ptr();
+
+        uninit_ptr as *const T
+    }
+
+    /// Slice of initialized data
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: Length determines how much data is initialized
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
+
+    /// Pointer as contained type
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        let uninit_ptr = self.entries.as_mut_ptr();
+
+        uninit_ptr as *mut T
+    }
+
+    /// Slice of initialized data
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: Length determines how much data is initialized
+        unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+    }
+}
+
+impl<T, const N: usize> Drop for StaticVec<T, N> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+impl<T: Clone, const N: usize> StaticVec<T, N> {
+    pub fn push_cloned(&mut self, value: &T) -> bool {
+        if self.len == N {
+            return false;
+        }
+        self.entries[self.len] = mem::MaybeUninit::new(value.clone());
+        self.len += 1;
+        true
     }
 }
 
