@@ -6,6 +6,8 @@ edition = "2024"
 
 [features]
 serde = ["dep:serde"]
+default = ["serde"]
+
 
 [dependencies]
 crossbeam-queue = "0.3"                       # Used for thread-safe pub/sub queues
@@ -14,6 +16,7 @@ serde = { workspace = true, optional = true } # Allows serde loggability for tas
 [dev-dependencies]
 criterion = "0.5"
 serde_json = { workspace = true }
+googletest.workspace = true
 
 [[bench]]
 name = "mpsc_benchmark"

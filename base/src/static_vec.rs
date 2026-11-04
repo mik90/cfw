@@ -53,9 +53,87 @@ impl<T, const N: usize> StaticVec<T, N> {
         if self.len == N {
             return false;
         }
-        self.entries[self.len] = mem::MaybeUninit::new(value);
         self.len += 1;
+        self.entries[self.len - 1] = mem::MaybeUninit::new(value);
         true
+    }
+
+    /// Removes element from back
+    pub fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let back_uninit = mem::replace(&mut self.entries[self.len - 1], mem::MaybeUninit::uninit());
+        self.len -= 1;
+
+        // SAFETY: Length ensures that this value is initialized
+        Some(unsafe { back_uninit.assume_init() })
+    }
+
+    pub const fn capacity(&self) -> usize {
+        N
+    }
+
+    pub fn front(&self) -> Option<&T> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let front_uninit = &self.entries[0];
+
+        // SAFETY: Length ensures that this value is initialized
+        Some(unsafe { front_uninit.assume_init_ref() })
+    }
+
+    pub fn front_mut(&mut self) -> Option<&mut T> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let front_uninit = &mut self.entries[0];
+
+        // SAFETY: Length ensures that this value is initialized
+        Some(unsafe { front_uninit.assume_init_mut() })
+    }
+
+    pub fn back(&self) -> Option<&T> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let back_uninit = &self.entries[self.len - 1];
+
+        // SAFETY: Length ensures that this value is initialized
+        Some(unsafe { back_uninit.assume_init_ref() })
+    }
+
+    pub fn back_mut(&mut self) -> Option<&mut T> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let back_uninit = &mut self.entries[self.len - 1];
+
+        // SAFETY: Length ensures that this value is initialized
+        Some(unsafe { back_uninit.assume_init_mut() })
+    }
+
+    /// Removes element from back
+    pub fn pop_into(&mut self, slot: &mut Option<T>) {
+        if self.len == 0 {
+            // Nothing to write into option
+            return;
+        }
+
+        let back_uninit = &mut self.entries[self.len - 1];
+
+        // SAFETY: Length ensures that this value is initialized
+        unsafe {
+            slot.replace(back_uninit.assume_init_read());
+        }
+
+        self.len -= 1;
     }
 
     pub fn clear(&mut self) {
@@ -115,7 +193,7 @@ impl<T: Clone, const N: usize> StaticVec<T, N> {
         if self.len == N {
             return false;
         }
-        self.entries[self.len] = mem::MaybeUninit::new(value.clone());
+        self.entries[self.len - 1] = mem::MaybeUninit::new(value.clone());
         self.len += 1;
         true
     }
@@ -180,32 +258,97 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-    #[test]
+    use super::*;
+    use googletest::prelude::*;
+
+    #[gtest]
     fn push_clear_and_deref() {
         let mut values = StaticVec::<u32, 3>::new();
-        assert!(values.is_empty());
-        assert!(values.push(1));
-        assert!(values.push(2));
+        expect_true!(values.is_empty());
+        expect_true!(values.push(1));
+        expect_true!(values.push(2));
         assert_eq!(values.len(), 2);
+
         assert_eq!(&*values, &[1, 2]);
+
         values.clear();
-        assert!(values.is_empty());
+        assert_true!(values.is_empty());
         assert_eq!(values.len(), 0);
     }
 
-    #[test]
+    #[gtest]
     fn full_push_returns_false() {
         let mut values = StaticVec::<u32, 2>::new();
-        assert!(values.push(1));
-        assert!(values.push(2));
-        assert!(!values.push(3));
+        assert_true!(values.push(1));
+        assert_true!(values.push(2));
+        assert_true!(!values.push(3));
         assert_eq!(&*values, &[1, 2]);
     }
 
+    #[gtest]
+    fn test_pop() {
+        let mut values = StaticVec::<u32, 2>::new();
+        assert_true!(values.push(1));
+        assert_true!(values.push(2));
+
+        expect_that!(values.pop(), eq(Some(2)));
+        expect_that!(values.pop(), eq(Some(1)));
+        expect_that!(values.pop(), eq(None));
+    }
+
+    #[gtest]
+    fn test_drop() {
+        struct BumpsCountOnDrop<'a> {
+            counter: &'a AtomicUsize,
+        }
+
+        impl<'a> Drop for BumpsCountOnDrop<'a> {
+            fn drop(&mut self) {
+                self.counter.fetch_add(1, Relaxed);
+            }
+        }
+
+        let drop_counter = AtomicUsize::new(0);
+
+        let mut values = StaticVec::<BumpsCountOnDrop, 3>::new();
+
+        // Fill up to capacity
+        for _ in 0..values.capacity() {
+            assert_true!(values.push(BumpsCountOnDrop {
+                counter: &drop_counter
+            }));
+        }
+        expect_eq!(drop_counter.load(Relaxed), 0);
+
+        assert_false!(values.push(BumpsCountOnDrop {
+            counter: &drop_counter
+        }));
+        expect_eq!(
+            drop_counter.load(Relaxed),
+            1,
+            "A failed push of a temporary would result in it being dropped"
+        );
+
+        values.pop();
+        expect_eq!(drop_counter.load(Relaxed), 2);
+
+        assert_that!(
+            values.len,
+            eq(2),
+            "We expect two elements to be left in the vec"
+        );
+        values.clear();
+        expect_eq!(
+            drop_counter.load(Relaxed),
+            4,
+            "Clearing two elements should bump us to 4"
+        );
+    }
+
     #[cfg(feature = "serde")]
-    #[test]
+    #[gtest]
     fn serde_round_trip() {
         let mut values = StaticVec::<u32, 3>::new();
         values.push(1);
@@ -217,14 +360,14 @@ mod tests {
     }
 
     #[cfg(feature = "serde")]
-    #[test]
+    #[gtest]
     fn serde_rejects_over_capacity() {
         let error = serde_json::from_str::<StaticVec<u32, 2>>("[1,2,3]").unwrap_err();
-        assert!(error.to_string().contains("capacity 2"));
+        assert_true!(error.to_string().contains("capacity 2"));
     }
 
     #[cfg(feature = "serde")]
-    #[test]
+    #[gtest]
     fn empty_serializes_as_array() {
         let values = StaticVec::<u32, 2>::new();
         assert_eq!(serde_json::to_string(&values).unwrap(), "[]");
