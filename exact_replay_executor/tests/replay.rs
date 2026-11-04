@@ -18,8 +18,8 @@ fn at(n: i64) -> FrameworkTime {
 
 fn bounded<T: Copy + Default, const N: usize>(
     items: impl IntoIterator<Item = T>,
-) -> task::BoundedVec<T, N> {
-    let mut values = task::BoundedVec::new();
+) -> task::StaticVec<T, N> {
+    let mut values = task::StaticVec::new();
     for item in items {
         assert!(values.push(item));
     }

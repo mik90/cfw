@@ -3,12 +3,12 @@ use std::ops::Deref;
 
 /// Inline sequence of at most `N` entries. Never allocates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BoundedVec<T: Copy + Default, const N: usize> {
+pub struct StaticVec<T: Copy + Default, const N: usize> {
     entries: [T; N],
     len: usize,
 }
 
-impl<T: Copy + Default, const N: usize> BoundedVec<T, N> {
+impl<T: Copy + Default, const N: usize> StaticVec<T, N> {
     pub fn new() -> Self {
         Self {
             entries: [T::default(); N],
@@ -43,13 +43,13 @@ impl<T: Copy + Default, const N: usize> BoundedVec<T, N> {
     }
 }
 
-impl<T: Copy + Default, const N: usize> Default for BoundedVec<T, N> {
+impl<T: Copy + Default, const N: usize> Default for StaticVec<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Copy + Default, const N: usize> Deref for BoundedVec<T, N> {
+impl<T: Copy + Default, const N: usize> Deref for StaticVec<T, N> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -58,14 +58,14 @@ impl<T: Copy + Default, const N: usize> Deref for BoundedVec<T, N> {
 }
 
 #[cfg(feature = "serde")]
-impl<T: Copy + Default + serde::Serialize, const N: usize> serde::Serialize for BoundedVec<T, N> {
+impl<T: Copy + Default + serde::Serialize, const N: usize> serde::Serialize for StaticVec<T, N> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serde::Serialize::serialize(self.as_slice(), serializer)
     }
 }
 
 #[cfg(feature = "serde")]
-impl<'de, T, const N: usize> serde::Deserialize<'de> for BoundedVec<T, N>
+impl<'de, T, const N: usize> serde::Deserialize<'de> for StaticVec<T, N>
 where
     T: Copy + Default + serde::Deserialize<'de>,
 {
@@ -75,7 +75,7 @@ where
         where
             T: Copy + Default + serde::Deserialize<'de>,
         {
-            type Value = BoundedVec<T, N>;
+            type Value = StaticVec<T, N>;
 
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "a sequence of at most {N} entries")
@@ -85,11 +85,11 @@ where
                 self,
                 mut seq: A,
             ) -> Result<Self::Value, A::Error> {
-                let mut values = BoundedVec::new();
+                let mut values = StaticVec::new();
                 while let Some(value) = seq.next_element()? {
                     if !values.push(value) {
                         return Err(serde::de::Error::custom(format!(
-                            "sequence exceeds BoundedVec capacity {N}"
+                            "sequence exceeds StaticVec capacity {N}"
                         )));
                     }
                 }
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn push_clear_and_deref() {
-        let mut values = BoundedVec::<u32, 3>::new();
+        let mut values = StaticVec::<u32, 3>::new();
         assert!(values.is_empty());
         assert!(values.push(1));
         assert!(values.push(2));
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn full_push_returns_false() {
-        let mut values = BoundedVec::<u32, 2>::new();
+        let mut values = StaticVec::<u32, 2>::new();
         assert!(values.push(1));
         assert!(values.push(2));
         assert!(!values.push(3));
@@ -129,26 +129,26 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn serde_round_trip() {
-        let mut values = BoundedVec::<u32, 3>::new();
+        let mut values = StaticVec::<u32, 3>::new();
         values.push(1);
         values.push(2);
         let json = serde_json::to_string(&values).unwrap();
         assert_eq!(json, "[1,2]");
-        let round_trip: BoundedVec<u32, 3> = serde_json::from_str(&json).unwrap();
+        let round_trip: StaticVec<u32, 3> = serde_json::from_str(&json).unwrap();
         assert_eq!(round_trip, values);
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn serde_rejects_over_capacity() {
-        let error = serde_json::from_str::<BoundedVec<u32, 2>>("[1,2,3]").unwrap_err();
+        let error = serde_json::from_str::<StaticVec<u32, 2>>("[1,2,3]").unwrap_err();
         assert!(error.to_string().contains("capacity 2"));
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn empty_serializes_as_array() {
-        let values = BoundedVec::<u32, 2>::new();
+        let values = StaticVec::<u32, 2>::new();
         assert_eq!(serde_json::to_string(&values).unwrap(), "[]");
     }
 }

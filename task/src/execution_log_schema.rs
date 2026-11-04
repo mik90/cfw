@@ -1,5 +1,5 @@
 //! Persisted execution-log schema shared by logging and replay.
-use crate::{LoanError, bounded::BoundedVec, message::MessageHeader, time::FrameworkTime};
+use crate::{LoanError, StaticVec, message::MessageHeader, time::FrameworkTime};
 use std::collections::BTreeMap;
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
 /// Maximum number of input/output messages recorded per execution.
@@ -140,16 +140,16 @@ pub struct ExecutionRecord {
     pub execution_time: FrameworkTime,
     /// Measured body runtime, not simulator modeled occupancy.
     pub body_duration_ns: u64,
-    pub inputs: BoundedVec<LoggedMessage, MAX_RECORDED_MESSAGES>,
+    pub inputs: StaticVec<LoggedMessage, MAX_RECORDED_MESSAGES>,
     /// Iox2 events consumed by this invocation. Recorded inline because events
     /// carry no payload and are too small to justify an identity lookup.
     #[cfg_attr(feature = "serde", serde(alias = "events"))]
-    pub iox2_events: BoundedVec<LoggedIox2Event, MAX_RECORDED_EVENTS>,
+    pub iox2_events: StaticVec<LoggedIox2Event, MAX_RECORDED_EVENTS>,
     /// Iox2 events attempted by this invocation, with the same inline rationale.
     #[cfg_attr(feature = "serde", serde(alias = "output_events"))]
-    pub output_iox2_events: BoundedVec<LoggedIox2Event, MAX_RECORDED_EVENTS>,
+    pub output_iox2_events: StaticVec<LoggedIox2Event, MAX_RECORDED_EVENTS>,
     /// Committed outputs for Committed, attempts for CommitPanicked, otherwise empty.
-    pub outputs: BoundedVec<LoggedMessage, MAX_RECORDED_MESSAGES>,
+    pub outputs: StaticVec<LoggedMessage, MAX_RECORDED_MESSAGES>,
     pub outcome: Outcome,
     /// Entries dropped because a recorded group reached its capacity.
     #[cfg_attr(feature = "serde", serde(default))]

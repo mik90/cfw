@@ -6,6 +6,9 @@ package(default_visibility = ["//visibility:public"])
 rust_library(
     name = "base",
     srcs = glob(["src/**/*.rs"]),
+    crate_features = [
+        "serde",
+    ],
     include_default_features = False,
     deps = all_crate_deps(normal = True),
 )
@@ -13,6 +16,9 @@ rust_library(
 rust_test(
     name = "base_unit_tests",
     crate = ":base",
+    crate_features = [
+        "serde",
+    ],
     include_default_features = False,
     deps = all_crate_deps(normal_dev = True),
 )
@@ -29,5 +35,9 @@ rust_benchmark(
 miri_test(
     name = "base_miri",
     srcs = glob(["src/**/*.rs"]),
+    rustc_flags = [
+        "--cfg",
+        'feature="serde"',
+    ],
     deps = all_crate_deps(normal = True),
 )

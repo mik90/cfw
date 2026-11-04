@@ -3,8 +3,13 @@ name = "base"
 version = "0.1.0"
 edition = "2024"
 
+
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
-crossbeam-queue = "0.3" # Used for thread-safe pub/sub queues
+crossbeam-queue = "0.3"                       # Used for thread-safe pub/sub queues
+serde = { workspace = true, optional = true } # Allows serde loggability for task types
 
 [dev-dependencies]
 criterion = "0.5"

@@ -1,4 +1,3 @@
-pub mod bounded;
 pub mod callback;
 pub mod channel;
 pub mod context;
@@ -24,8 +23,7 @@ pub mod testing_time;
 pub mod time;
 pub mod wake;
 
-pub use base::arena::ArenaReaderPtr;
-pub use bounded::BoundedVec;
+pub use base::{ArenaReaderPtr, StaticVec};
 pub use callback::{Callback, CallbackNode, Inputs, Outputs, Required, execute_callback};
 pub use channel::{
     ChannelBindings, ChannelPlan, ChannelStorage, DeclarationError, EndpointError, PublisherKey,
