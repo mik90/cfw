@@ -1,7 +1,7 @@
 //! High-level test construction with scoped, externally owned arena storage.
 use crate::{
-    DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages, TestSubscriber, UnitTestExecutor,
-    UnitTestExecutorConfig,
+    DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages, TestSubscriber, TimeSource,
+    UnitTestExecutor, UnitTestExecutorConfig,
 };
 use std::{
     any::Any,
@@ -14,9 +14,7 @@ use std::{
     },
     time::Duration,
 };
-use task::{
-    Publisher, SubscriberPolicy, message::Message, testing_time::TimeSource, time::FrameworkTime,
-};
+use task::{Publisher, SubscriberPolicy, message::Message, time::FrameworkTime};
 use task_graph::{
     ApplicationBuilder, BuildError, CallbackSchedule, GraphBindings, GraphPlan, GraphStorage, Task,
 };

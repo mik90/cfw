@@ -1,3 +1,4 @@
+use crate::TimeSource;
 pub use crate::builder::UnitTestExecutorBuilder;
 pub use crate::testing_subscriber::{
     DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages, TestSubscriber,
@@ -8,7 +9,7 @@ use std::{
     num::Saturating,
     sync::{Arc, Mutex},
 };
-use task::{Publisher, Subscriber, testing_time::TimeSource, time::FrameworkTime};
+use task::{Publisher, Subscriber, time::FrameworkTime};
 use task_graph::BuiltGraph;
 
 /// Typed fixture publisher sharing the executor's clock and scheduled input queue.

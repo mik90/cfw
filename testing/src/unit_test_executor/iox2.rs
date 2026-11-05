@@ -1,4 +1,5 @@
 use super::UnitTestExecutor;
+use crate::TimeSource;
 use iceoryx2::prelude::{EventId, ZeroCopySend};
 use std::{
     fmt::Debug,
@@ -8,7 +9,6 @@ use task::{
     LoanError,
     iox2::{Iox2OptionalInput, Iox2Publisher, Iox2SpanInput, Iox2Subscriber},
     message::{Message, MessageHeader},
-    testing_time::TimeSource,
 };
 
 type Events = Mutex<Vec<(String, EventId, u64)>>;
@@ -83,6 +83,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + Clone + 'static> Iox2TestSubscriber
     }
 }
 
+/// If iox2 is enabled, add-in some extra iox2 features to the unit test executor.
 impl UnitTestExecutor<'_> {
     pub fn add_iox2_test_publisher<T: Debug + ZeroCopySend + Send + Sync + 'static>(
         &self,
