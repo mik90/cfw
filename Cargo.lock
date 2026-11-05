@@ -1626,6 +1626,7 @@ dependencies = [
 name = "testing"
 version = "0.1.0"
 dependencies = [
+ "base",
  "iceoryx2",
  "logging",
  "serde_json",

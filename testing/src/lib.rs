@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod builder;
+pub mod testing_subscriber;
 pub mod unit_test_executor;
 pub use builder::{
     CaptureSources, ExecutionDuration, TestInput, TestOutput, UnitTestExecutorBuilder,

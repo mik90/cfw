@@ -126,10 +126,17 @@ impl<'storage, MessageType> Subscriber<'storage, MessageType> {
         self.buffer.read_buffer().is_empty()
     }
 
+    /// How many messages were dropped on the writer side and never got a chance to be
+    /// exposed to the callback.
+    /// These may occur if a callback isn't able to be run enough due to either triggering semantics
+    /// or a lack of available CPU time.
     pub fn writer_drops(&self) -> usize {
         self.buffer.writer_drops()
     }
 
+    /// How many messages were dropped on the reader buffer but had a chance to be exposed to the callback.
+    /// These are not generally concerning if `keep_across_runs` is false, since writer buffer data will overwrite
+    /// reader buffer data whenever the callback comes in.
     pub fn reader_drops(&self) -> usize {
         self.buffer.read_buffer().drops()
     }

@@ -1,12 +1,12 @@
 pub use crate::builder::UnitTestExecutorBuilder;
+pub use crate::testing_subscriber::{
+    DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages, TestSubscriber,
+};
 pub use simulation_executor::{SimulationConfig as UnitTestExecutorConfig, StepResult};
 use simulation_executor::{SimulationState, StepError};
 use std::{
     num::Saturating,
     sync::{Arc, Mutex},
-};
-pub use task::testing_subscriber::{
-    DEFAULT_TEST_SUBSCRIBER_CAPACITY, DroppedMessages, TestSubscriber,
 };
 use task::{Publisher, Subscriber, testing_time::TimeSource, time::FrameworkTime};
 use task_graph::BuiltGraph;

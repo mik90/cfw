@@ -17,8 +17,6 @@ pub mod subscriber;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 #[cfg(feature = "testing")]
-pub mod testing_subscriber;
-#[cfg(feature = "testing")]
 pub mod testing_time;
 pub mod time;
 pub mod wake;

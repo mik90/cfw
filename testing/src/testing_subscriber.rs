@@ -1,5 +1,5 @@
-use crate::{Subscriber, message::Message};
 use base::arena::ArenaReaderPtr;
+use task::{Subscriber, message::Message};
 
 pub const DEFAULT_TEST_SUBSCRIBER_CAPACITY: usize = 10;
 
@@ -9,7 +9,12 @@ pub struct DroppedMessages {
     pub writer: usize,
     pub reader: usize,
 }
+
 impl DroppedMessages {
+    /// Whether any writer or reader data has been lost. Unlike normal callback execution, we can treat these
+    /// as errors by default since we can expect test subscribers to try consuming all data emitted in a test.
+    /// This may not be suitable for _all_ tests, so we have both `try_*` and non-try variants in the test subscriber
+    /// for when drops are fine.
     pub fn any(&self) -> bool {
         self.writer > 0 || self.reader > 0
     }
@@ -38,7 +43,7 @@ impl<'storage, T> TestSubscriber<'storage, T> {
 
     pub fn messages(&mut self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
         let (count, dropped) = self.try_messages(inspect);
-        assert!(!dropped.any(), "test subscriber overflow: {dropped:?}");
+        assert!(!dropped.any(), "test subscriber drops: {dropped:?}");
         count
     }
 
@@ -58,7 +63,7 @@ impl<'storage, T> TestSubscriber<'storage, T> {
 
     pub fn take_messages(&mut self) -> Vec<ArenaReaderPtr<'storage, Message<T>>> {
         let (messages, dropped) = self.try_take_messages();
-        assert!(!dropped.any(), "test subscriber overflow: {dropped:?}");
+        assert!(!dropped.any(), "test subscriber drops: {dropped:?}");
         messages
     }
 }
