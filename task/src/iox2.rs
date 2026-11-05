@@ -1475,4 +1475,7 @@ impl Wake for ShutdownWake {
     fn wake(&self) {
         let _ = self.notifier.notify();
     }
+    fn readiness_changed(&self) {
+        // no-op, shutdown gets ready/notified once
+    }
 }
