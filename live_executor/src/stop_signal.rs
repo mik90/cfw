@@ -6,6 +6,7 @@ use std::sync::{Arc, OnceLock};
 /// Event targets borrow callback publishers; the router lives only while the
 /// executor graph storage is alive.
 #[cfg(feature = "iceoryx2")]
+#[derive(Debug)]
 pub(crate) struct EventRouter<'storage> {
     pub targets: BTreeMap<(String, usize), task::iox2::Iox2EventTarget<'storage>>,
 }

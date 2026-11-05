@@ -18,6 +18,7 @@ use task::{
         ExecutionLogModes, ExecutionRecord, InternTables, Iox2EventRecord, LoggedIox2Event,
         LoggedMessage, MAX_RECORDED_EVENTS, MAX_RECORDED_MESSAGES, Outcome, Transport,
     },
+    iox2::EventObserver,
     message::MessageHeader,
     time::FrameworkTime,
 };
@@ -301,7 +302,7 @@ impl Callback for ExecutionLogRecorded<'_> {
             let dropped = Arc::clone(&self.dropped_iox2_event_records);
             let callback_id = self.callback_id;
             let ordinal = endpoint.ordinal;
-            registration.observer = Some(Arc::new(move |observed_at, event| {
+            registration.observer = Some(EventObserver::new(move |observed_at, event| {
                 if let Some(previous) = &previous {
                     previous(observed_at, event);
                 }

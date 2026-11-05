@@ -184,13 +184,11 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
             Some(shutdown)
         };
         #[cfg(feature = "iceoryx2")]
-        assert!(
-            events
-                .set(crate::stop_signal::EventRouter {
-                    targets: event_targets,
-                })
-                .is_ok()
-        );
+        events
+            .set(crate::stop_signal::EventRouter {
+                targets: event_targets,
+            })
+            .expect("Event router storage was already set!");
         let initial: Vec<_> = nodes
             .iter()
             .enumerate()

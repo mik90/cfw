@@ -1328,7 +1328,28 @@ pub struct Iox2EventRegistration<'a> {
     pub wake: WakeHandle,
     _runtime: Arc<Iox2Runtime>,
 }
-pub type EventObserver<'a> = Arc<dyn Fn(FrameworkTime, EventRecord) + Send + Sync + 'a>;
+/// Observer callback for a registration; supports `Debug` printing of its address.
+#[derive(Clone)]
+pub struct EventObserver<'a>(Arc<dyn Fn(FrameworkTime, EventRecord) + Send + Sync + 'a>);
+impl<'a> EventObserver<'a> {
+    pub fn new(f: impl Fn(FrameworkTime, EventRecord) + Send + Sync + 'a) -> Self {
+        Self(Arc::new(f))
+    }
+}
+impl<'a> std::ops::Deref for EventObserver<'a> {
+    type Target = dyn Fn(FrameworkTime, EventRecord) + Send + Sync + 'a;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl std::fmt::Debug for EventObserver<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("EventObserver")
+            .field(&format_args!("{:p}", &**self))
+            .finish()
+    }
+}
 
 /// Owned event staging state, independent of callback and arena borrows.
 #[derive(Clone)]
@@ -1350,6 +1371,18 @@ impl<'a> Iox2EventTarget<'a> {
         }
     }
 }
+
+impl std::fmt::Debug for Iox2EventTarget<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Iox2EventTarget")
+            .field("channel", &self.channel)
+            .field("staging", &self.staging)
+            .field("wake", &format_args!("{:p}", self.wake))
+            .field("observer", &self.observer)
+            .finish()
+    }
+}
+
 impl<'a> Iox2EventRegistration<'a> {
     pub fn target(&self) -> Iox2EventTarget<'a> {
         Iox2EventTarget {
