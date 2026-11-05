@@ -1,5 +1,5 @@
 use std::{
-    ops::{Add, AddAssign},
+    ops::{Add, AddAssign, Sub, SubAssign},
     sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
@@ -17,6 +17,7 @@ pub struct FrameworkTime {
 
 impl FrameworkTime {
     pub const MAX: FrameworkTime = FrameworkTime::from_nanoseconds(i64::MAX);
+    pub const MIN: FrameworkTime = FrameworkTime::from_nanoseconds(i64::MIN + 1);
     pub const INVALID: FrameworkTime = FrameworkTime::from_nanoseconds(i64::MIN);
 
     // Convert nanoseconds to an instant
@@ -65,17 +66,39 @@ impl FrameworkTime {
 impl Add<std::time::Duration> for FrameworkTime {
     type Output = FrameworkTime;
     fn add(self, rhs: std::time::Duration) -> Self::Output {
-        let rhs_nanos = rhs.as_nanos();
-        if rhs_nanos > FrameworkTime::MAX.to_nanoseconds() as u128 {
-            return FrameworkTime::MAX;
-        };
-        let sum_nanos = self.to_nanoseconds() + rhs_nanos as i64;
+        // Naively attempt to clamp duration to i64 even though we'd just overflow anyways if we add
+        let rhs_nanos = rhs
+            .as_nanos()
+            .min(FrameworkTime::MAX.to_nanoseconds() as u128);
+
+        let sum_nanos = self.to_nanoseconds() + (rhs_nanos as i64);
         FrameworkTime::from_nanoseconds(sum_nanos)
     }
 }
+
 impl AddAssign<std::time::Duration> for FrameworkTime {
     fn add_assign(&mut self, rhs: std::time::Duration) {
         self.nanoseconds = self.add(rhs).nanoseconds;
+    }
+}
+
+impl Sub<std::time::Duration> for FrameworkTime {
+    type Output = FrameworkTime;
+
+    fn sub(self, rhs: std::time::Duration) -> Self::Output {
+        // Naively attempt to clamp duration to i64 even though we'd just overflow anyways if we add
+        let rhs_nanos = rhs
+            .as_nanos()
+            .min(FrameworkTime::MAX.to_nanoseconds() as u128);
+
+        let sum_nanos = self.to_nanoseconds() - (rhs_nanos as i64);
+        FrameworkTime::from_nanoseconds(sum_nanos)
+    }
+}
+
+impl SubAssign<std::time::Duration> for FrameworkTime {
+    fn sub_assign(&mut self, rhs: std::time::Duration) {
+        self.nanoseconds = self.sub(rhs).nanoseconds
     }
 }
 
@@ -126,10 +149,35 @@ impl From<FrameworkTime> for AtomicFrameworkTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use googletest::prelude::*;
 
-    // TODO test all the add/substract/etc
+    #[gtest]
+    fn time_add() {
+        let time = FrameworkTime::from_nanoseconds(1);
+        expect_eq!((time + Duration::from_nanos(2)).to_nanoseconds(), 3);
+    }
 
-    #[test]
+    #[gtest]
+    fn time_add_assign() {
+        let mut time = FrameworkTime::from_nanoseconds(1);
+        time += Duration::from_nanos(2);
+        expect_eq!(time.to_nanoseconds(), 3);
+    }
+
+    #[gtest]
+    fn time_sub() {
+        let time = FrameworkTime::from_nanoseconds(1);
+        expect_eq!((time - Duration::from_nanos(2)).to_nanoseconds(), -1);
+    }
+
+    #[gtest]
+    fn time_sub_assign() {
+        let mut time = FrameworkTime::from_nanoseconds(1);
+        time -= Duration::from_nanos(2);
+        expect_eq!(time.to_nanoseconds(), -1);
+    }
+
+    #[gtest]
     fn atomic_framework_time_round_trips() {
         let t = AtomicFrameworkTime::new(FrameworkTime::from_nanoseconds(1234));
         assert_eq!(
@@ -150,7 +198,7 @@ mod tests {
         assert_eq!(t.load(Ordering::Relaxed), FrameworkTime::INVALID);
     }
 
-    #[test]
+    #[gtest]
     fn atomic_framework_time_from_conversion() {
         let t: AtomicFrameworkTime = FrameworkTime::from_nanoseconds(-42).into();
         assert_eq!(
