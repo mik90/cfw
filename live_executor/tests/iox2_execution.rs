@@ -177,6 +177,7 @@ fn event_is_retained_until_required_native_input_allows_execution() {
     struct Noop;
     impl task::wake::Wake for Noop {
         fn wake(&self) {}
+        fn readiness_changed(&self) {}
     }
     let runtime = Iox2Runtime::new().unwrap();
     let mut event = Iox2ChannelPlan::<u64>::new(name(), &runtime);

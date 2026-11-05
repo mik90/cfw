@@ -19,6 +19,7 @@ fn automatic_ipc_replay_injects_full_headers_without_notifications() {
     struct NoWake;
     impl task::wake::Wake for NoWake {
         fn wake(&self) {}
+        fn readiness_changed(&self) {}
     }
     let (data, event) = names();
     let mut plan = GraphPlan::default();

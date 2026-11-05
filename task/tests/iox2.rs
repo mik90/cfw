@@ -17,6 +17,12 @@ fn name() -> String {
     )
 }
 
+struct NoWake;
+impl task::wake::Wake for NoWake {
+    fn wake(&self) {}
+    fn readiness_changed(&self) {}
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn keep_across_runs_controls_the_iox2_read_buffer() {
@@ -152,11 +158,6 @@ fn type_and_service_setting_mismatches_are_reported() {
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn data_notification_policy_preserves_deferred_commit_and_silent_explicit_signalling() {
-    struct NoWake;
-    impl task::wake::Wake for NoWake {
-        fn wake(&self) {}
-    }
-
     for policy in [
         Iox2Notification::Silent,
         Iox2Notification::Event(0),
@@ -274,11 +275,6 @@ fn notification_plan_checks_ids_keys_and_only_budgets_enabled_notifiers() {
 #[test]
 #[cfg_attr(miri, ignore = "requires OS shared memory and IPC")]
 fn split_data_and_event_plans_share_service_notifications() {
-    struct NoWake;
-    impl task::wake::Wake for NoWake {
-        fn wake(&self) {}
-    }
-
     let runtime = Iox2Runtime::new().unwrap();
     let channel = name();
     let config = Iox2ChannelConfig {
