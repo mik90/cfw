@@ -106,7 +106,7 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
     let mut graph = testing::UnitTestExecutor::new_with_graph(
         graph,
         testing::UnitTestExecutorConfig {
-            start_time: FrameworkTime::from_nanoseconds(7),
+            start_time: FrameworkTime::from_nanos(7),
             virtual_pool_threads: vec![2],
             ..Default::default()
         },
@@ -130,7 +130,7 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
     assert!(
         messages
             .iter()
-            .all(|(h, _)| h.published_at == FrameworkTime::from_nanoseconds(7))
+            .all(|(h, _)| h.published_at == FrameworkTime::from_nanos(7))
     );
 }
 
@@ -158,7 +158,7 @@ fn capture_subscribers_do_not_satisfy_task_wiring_requirements_and_can_rebind() 
         .take_publisher(&publisher)
         .unwrap();
     publisher.publish(Value(42)).unwrap();
-    publisher.flush(FrameworkTime::from_nanoseconds(0));
+    publisher.flush(FrameworkTime::from_nanos(0));
     assert_eq!(a[0].drain_to_vec().unwrap(), b[0].drain_to_vec().unwrap());
     drop((a, b, publisher, bindings));
     assert!(storage.bind().is_ok());
@@ -221,13 +221,13 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
     let mut graph = testing::UnitTestExecutor::new_with_graph(
         graph,
         testing::UnitTestExecutorConfig {
-            start_time: FrameworkTime::from_nanoseconds(10),
+            start_time: FrameworkTime::from_nanos(10),
             virtual_pool_threads: vec![2],
             ..Default::default()
         },
     );
     let header = task::message::MessageHeader {
-        published_at: FrameworkTime::from_nanoseconds(9),
+        published_at: FrameworkTime::from_nanos(9),
         publisher_index: 12,
         batch_index: 3,
     };
@@ -320,7 +320,7 @@ fn log_driven_source_selection_carries_exclusions_into_replay_feed() {
         .register(&mut plan)
         .unwrap();
     let header = task::message::MessageHeader {
-        published_at: FrameworkTime::from_nanoseconds(5),
+        published_at: FrameworkTime::from_nanos(5),
         publisher_index: 2,
         batch_index: 1,
     };

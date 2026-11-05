@@ -87,25 +87,17 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     let mut simulation = simulation_executor::SimulationState::with_config(
         graph,
         simulation_executor::SimulationConfig {
-            start_time: FrameworkTime::from_nanoseconds(10),
+            start_time: FrameworkTime::from_nanos(10),
             ..Default::default()
         },
     )
     .unwrap();
     let mut replay = ReplaySource::iox2(input.take_publisher(&injection).unwrap());
     replay
-        .inject(
-            MessageHeader::new(FrameworkTime::from_nanoseconds(7)),
-            b"42",
-        )
+        .inject(MessageHeader::new(FrameworkTime::from_nanos(7)), b"42")
         .unwrap();
     simulation
-        .schedule_event(
-            FrameworkTime::from_nanoseconds(10),
-            &name,
-            EventId::new(9),
-            5,
-        )
+        .schedule_event(FrameworkTime::from_nanos(10), &name, EventId::new(9), 5)
         .unwrap();
     assert!(simulation.step().unwrap().executed.is_empty());
     assert!(
@@ -125,7 +117,7 @@ fn recording_preserves_counted_events_gated_inputs_and_output_notifier_ids() {
     }
     let mut publisher = gate.take_publisher(&gate_key).unwrap();
     simulation
-        .schedule_at(FrameworkTime::from_nanoseconds(20), move |time| {
+        .schedule_at(FrameworkTime::from_nanos(20), move |time| {
             publisher.publish(3).map_err(|e| format!("{e:?}"))?;
             publisher.flush(time);
             Ok(())
@@ -218,7 +210,7 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
     struct Fixed;
     impl task::executor::TimeSource for Fixed {
         fn now(&self) -> FrameworkTime {
-            FrameworkTime::from_nanoseconds(100)
+            FrameworkTime::from_nanos(100)
         }
     }
     let runtime = Iox2Runtime::new().unwrap();
@@ -275,18 +267,15 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
     let log_storage = log_plan.allocate().unwrap();
     let (graph, _metadata, mut log_captures) = log_storage.attach(graph).unwrap();
     ReplaySource::iox2(input.take_publisher(&data_key).unwrap())
-        .inject(
-            MessageHeader::new(FrameworkTime::from_nanoseconds(7)),
-            b"42",
-        )
+        .inject(MessageHeader::new(FrameworkTime::from_nanos(7)), b"42")
         .unwrap();
     let mut publisher = gate.take_publisher(&gate_key).unwrap();
     publisher.publish(3).unwrap();
-    publisher.flush(FrameworkTime::from_nanoseconds(7));
+    publisher.flush(FrameworkTime::from_nanos(7));
     let mut notifier = input.take_notifier(&event_key).unwrap();
     for _ in 0..5 {
         Iox2NotifyOutput::new(&mut notifier).send();
-        notifier.flush(FrameworkTime::from_nanoseconds(7));
+        notifier.flush(FrameworkTime::from_nanos(7));
     }
     let executor =
         live_executor::LiveExecutor::new_multi_pool_with_time(vec![1], graph, Fixed).unwrap();
@@ -318,10 +307,7 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
         .map(|(_, body)| serde_json::from_slice(body).unwrap())
         .collect();
     assert_eq!(arrivals.len(), 1);
-    assert_eq!(
-        arrivals[0].observed_at,
-        FrameworkTime::from_nanoseconds(100)
-    );
+    assert_eq!(arrivals[0].observed_at, FrameworkTime::from_nanos(100));
     assert_eq!(
         (
             arrivals[0].iox2_event.ordinal,

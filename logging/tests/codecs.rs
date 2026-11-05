@@ -33,7 +33,7 @@ fn custom_codec_and_nonclone_payload_work_without_serde() {
     let mut replay = replay.bind(&bindings).unwrap();
     let mut capture = capture.bind(&bindings).unwrap();
     let header = MessageHeader {
-        published_at: FrameworkTime::from_nanoseconds(123),
+        published_at: FrameworkTime::from_nanos(123),
         publisher_index: 7,
         batch_index: 3,
     };
@@ -61,7 +61,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
     let mut publisher = source_bindings.take_publisher(&publisher).unwrap();
     let tap = source_bindings.take_subscriber(&tap).unwrap();
     publisher.publish(Source("not Clone".into())).unwrap();
-    publisher.flush(FrameworkTime::from_nanoseconds(5));
+    publisher.flush(FrameworkTime::from_nanos(5));
     tap.update();
     let source = tap.input_forwardable().pop().unwrap();
     let forward = Forwarded::new(true, source.clone());
@@ -88,10 +88,7 @@ fn forwarded_decode_retains_source_arena_without_cloning_payload_or_owning_log()
             })
             .unwrap();
         replay
-            .inject(
-                MessageHeader::new(FrameworkTime::from_nanoseconds(10)),
-                &encoded,
-            )
+            .inject(MessageHeader::new(FrameworkTime::from_nanos(10)), &encoded)
             .unwrap();
     }
     assert_eq!(

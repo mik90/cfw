@@ -104,9 +104,7 @@ fn recorded(logged: bool) -> ReplayLog {
         )
         .with_execution_log(metadata)
         .unwrap();
-        graph
-            .run_until(FrameworkTime::from_nanoseconds(11), 32)
-            .unwrap();
+        graph.run_until(FrameworkTime::from_nanos(11), 32).unwrap();
         session.finish().unwrap();
     }
     ReplayLog::from_reader(
@@ -336,9 +334,7 @@ fn heterogeneous_bundles_replay_logged_and_reproduced_sources() {
             )
             .with_execution_log(metadata)
             .unwrap();
-            graph
-                .run_until(FrameworkTime::from_nanoseconds(4), 32)
-                .unwrap();
+            graph.run_until(FrameworkTime::from_nanos(4), 32).unwrap();
             session.finish().unwrap();
         }
         let log = ReplayLog::from_reader(
@@ -504,9 +500,7 @@ fn borrowed_forwarding_replays_logged_and_reproduced_source_caches() {
             )
             .with_execution_log(metadata)
             .unwrap();
-            graph
-                .run_until(FrameworkTime::from_nanoseconds(3), 32)
-                .unwrap();
+            graph.run_until(FrameworkTime::from_nanos(3), 32).unwrap();
             log.finish().unwrap();
         }
         let log = ReplayLog::from_reader(

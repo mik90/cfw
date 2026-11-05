@@ -15,7 +15,7 @@ fn ns(n: u64) -> Duration {
     Duration::from_nanos(n)
 }
 fn at(n: i64) -> FrameworkTime {
-    FrameworkTime::from_nanoseconds(n)
+    FrameworkTime::from_nanos(n)
 }
 struct Double;
 #[task_callback]

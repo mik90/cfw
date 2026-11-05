@@ -12,7 +12,7 @@ use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 fn at(n: i64) -> FrameworkTime {
-    FrameworkTime::from_nanoseconds(n)
+    FrameworkTime::from_nanos(n)
 }
 fn entry(n: i64, channel: &str, body: &[u8]) -> OwnedLogEntry {
     OwnedLogEntry {

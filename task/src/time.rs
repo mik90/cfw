@@ -16,13 +16,32 @@ pub struct FrameworkTime {
 }
 
 impl FrameworkTime {
-    pub const MAX: FrameworkTime = FrameworkTime::from_nanoseconds(i64::MAX);
-    pub const MIN: FrameworkTime = FrameworkTime::from_nanoseconds(i64::MIN + 1);
-    pub const INVALID: FrameworkTime = FrameworkTime::from_nanoseconds(i64::MIN);
+    pub const MAX: FrameworkTime = FrameworkTime::from_nanos(i64::MAX);
+    pub const MIN: FrameworkTime = FrameworkTime::from_nanos(i64::MIN + 1);
+    pub const INVALID: FrameworkTime = FrameworkTime::from_nanos(i64::MIN);
 
     // Convert nanoseconds to an instant
-    pub const fn from_nanoseconds(nanoseconds: i64) -> FrameworkTime {
+    pub const fn from_nanos(nanoseconds: i64) -> FrameworkTime {
         FrameworkTime { nanoseconds }
+    }
+
+    pub const fn from_millis(milliseconds: i64) -> FrameworkTime {
+        FrameworkTime::from_nanos(milliseconds * 1000)
+    }
+
+    pub const fn from_micros(microseconds: i64) -> FrameworkTime {
+        FrameworkTime::from_millis(microseconds * 1000)
+    }
+
+    pub const fn from_secs(seconds: i64) -> FrameworkTime {
+        FrameworkTime::from_micros(seconds * 1000)
+    }
+
+    /// Formats as $SECONDS.$NANOSECONDS, kidna like journalctl's `-o short-monotonic` but more sig figs
+    pub fn fmt_as_fractional_sec(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let seconds = self.nanoseconds / 1_000_000_000;
+        let nanos = (self.nanoseconds % 1_000_000_000).abs();
+        write!(f, "{}.{}", seconds, nanos)
     }
 
     // Get current time via monotonic libc clock
@@ -37,7 +56,7 @@ impl FrameworkTime {
         if result == 0 {
             // TODO handle wrapping/overflow
             let nanoseconds = timespec.tv_nsec + (timespec.tv_sec * 1_000_000_000);
-            FrameworkTime::from_nanoseconds(nanoseconds)
+            FrameworkTime::from_nanos(nanoseconds)
         } else {
             FrameworkTime::INVALID
         }
@@ -50,7 +69,7 @@ impl FrameworkTime {
     pub fn checked_add_duration(self, duration: Duration) -> Option<Self> {
         let nanos =
             i128::from(self.nanoseconds).checked_add(i128::try_from(duration.as_nanos()).ok()?)?;
-        Some(Self::from_nanoseconds(i64::try_from(nanos).ok()?))
+        Some(Self::from_nanos(i64::try_from(nanos).ok()?))
     }
 
     pub fn checked_duration_since(&self, earlier: FrameworkTime) -> Option<Duration> {
@@ -72,7 +91,7 @@ impl Add<std::time::Duration> for FrameworkTime {
             .min(FrameworkTime::MAX.to_nanoseconds() as u128);
 
         let sum_nanos = self.to_nanoseconds() + (rhs_nanos as i64);
-        FrameworkTime::from_nanoseconds(sum_nanos)
+        FrameworkTime::from_nanos(sum_nanos)
     }
 }
 
@@ -92,7 +111,7 @@ impl Sub<std::time::Duration> for FrameworkTime {
             .min(FrameworkTime::MAX.to_nanoseconds() as u128);
 
         let sum_nanos = self.to_nanoseconds() - (rhs_nanos as i64);
-        FrameworkTime::from_nanoseconds(sum_nanos)
+        FrameworkTime::from_nanos(sum_nanos)
     }
 }
 
@@ -104,8 +123,7 @@ impl SubAssign<std::time::Duration> for FrameworkTime {
 
 impl std::fmt::Display for FrameworkTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO: split by SECONDS.NANOS w/ fixed width nanos when formatting?
-        write!(f, "{}ns", self.to_nanoseconds())
+        self.fmt_as_fractional_sec(f)
     }
 }
 
@@ -128,7 +146,7 @@ impl AtomicFrameworkTime {
     }
 
     pub fn load(&self, ordering: Ordering) -> FrameworkTime {
-        FrameworkTime::from_nanoseconds(self.0.load(ordering))
+        FrameworkTime::from_nanos(self.0.load(ordering))
     }
 
     pub fn store(&self, time: FrameworkTime, ordering: Ordering) {
@@ -136,7 +154,7 @@ impl AtomicFrameworkTime {
     }
 
     pub fn swap(&self, time: FrameworkTime, ordering: Ordering) -> FrameworkTime {
-        FrameworkTime::from_nanoseconds(self.0.swap(time.to_nanoseconds(), ordering))
+        FrameworkTime::from_nanos(self.0.swap(time.to_nanoseconds(), ordering))
     }
 }
 
@@ -153,58 +171,68 @@ mod tests {
 
     #[gtest]
     fn time_add() {
-        let time = FrameworkTime::from_nanoseconds(1);
+        let time = FrameworkTime::from_nanos(1);
         expect_eq!((time + Duration::from_nanos(2)).to_nanoseconds(), 3);
     }
 
     #[gtest]
     fn time_add_assign() {
-        let mut time = FrameworkTime::from_nanoseconds(1);
+        let mut time = FrameworkTime::from_nanos(1);
         time += Duration::from_nanos(2);
         expect_eq!(time.to_nanoseconds(), 3);
     }
 
     #[gtest]
     fn time_sub() {
-        let time = FrameworkTime::from_nanoseconds(1);
+        let time = FrameworkTime::from_nanos(1);
         expect_eq!((time - Duration::from_nanos(2)).to_nanoseconds(), -1);
     }
 
     #[gtest]
     fn time_sub_assign() {
-        let mut time = FrameworkTime::from_nanoseconds(1);
+        let mut time = FrameworkTime::from_nanos(1);
         time -= Duration::from_nanos(2);
         expect_eq!(time.to_nanoseconds(), -1);
     }
 
     #[gtest]
-    fn atomic_framework_time_round_trips() {
-        let t = AtomicFrameworkTime::new(FrameworkTime::from_nanoseconds(1234));
-        assert_eq!(
-            t.load(Ordering::Relaxed),
-            FrameworkTime::from_nanoseconds(1234)
+    fn format_output() {
+        expect_eq!(format!("{}", FrameworkTime::from_nanos(1)), "0.1");
+
+        expect_eq!(
+            format!("{}", FrameworkTime::from_nanos(1) + Duration::from_secs(1)),
+            "1.1"
         );
 
-        t.store(FrameworkTime::from_nanoseconds(5678), Ordering::Release);
-        assert_eq!(
-            t.load(Ordering::Acquire),
-            FrameworkTime::from_nanoseconds(5678)
+        expect_eq!(format!("{}", FrameworkTime::MAX), "9223372036.854775807");
+
+        expect_eq!(format!("{}", FrameworkTime::MIN), "-9223372036.854775807");
+
+        expect_eq!(
+            format!("{}", FrameworkTime::INVALID),
+            "-9223372036.854775808"
         );
+    }
+
+    #[gtest]
+    fn atomic_framework_time_round_trips() {
+        let t = AtomicFrameworkTime::new(FrameworkTime::from_nanos(1234));
+        assert_eq!(t.load(Ordering::Relaxed), FrameworkTime::from_nanos(1234));
+
+        t.store(FrameworkTime::from_nanos(5678), Ordering::Release);
+        assert_eq!(t.load(Ordering::Acquire), FrameworkTime::from_nanos(5678));
 
         assert_eq!(
             t.swap(FrameworkTime::INVALID, Ordering::AcqRel),
-            FrameworkTime::from_nanoseconds(5678)
+            FrameworkTime::from_nanos(5678)
         );
         assert_eq!(t.load(Ordering::Relaxed), FrameworkTime::INVALID);
     }
 
     #[gtest]
     fn atomic_framework_time_from_conversion() {
-        let t: AtomicFrameworkTime = FrameworkTime::from_nanoseconds(-42).into();
-        assert_eq!(
-            t.load(Ordering::Relaxed),
-            FrameworkTime::from_nanoseconds(-42)
-        );
+        let t: AtomicFrameworkTime = FrameworkTime::from_nanos(-42).into();
+        assert_eq!(t.load(Ordering::Relaxed), FrameworkTime::from_nanos(-42));
         assert_eq!(
             t.load(Ordering::Relaxed).to_nanoseconds(),
             AtomicFrameworkTime::from_nanoseconds(-42)

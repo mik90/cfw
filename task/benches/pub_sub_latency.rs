@@ -17,7 +17,7 @@ fn bench_publish_to_receive(c: &mut Criterion) {
         b.iter(|| {
             value = value.wrapping_add(1);
             publisher.loan(value).unwrap().send();
-            publisher.flush(FrameworkTime::from_nanoseconds(value as i64));
+            publisher.flush(FrameworkTime::from_nanos(value as i64));
             subscriber.update();
             black_box(subscriber.input_forwardable().pop().unwrap().message)
         })

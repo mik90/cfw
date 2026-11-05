@@ -142,7 +142,7 @@ mod tests {
     use task::time::FrameworkTime;
 
     fn make_header(ns: i64) -> MessageHeader {
-        MessageHeader::new(FrameworkTime::from_nanoseconds(ns))
+        MessageHeader::new(FrameworkTime::from_nanos(ns))
     }
 
     #[test]
@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(entries[0].serialized_body, b"hello");
         assert_eq!(
             entries[0].header.published_at,
-            FrameworkTime::from_nanoseconds(100)
+            FrameworkTime::from_nanos(100)
         );
 
         assert_eq!(entries[1].channel_name, "orders");
@@ -201,15 +201,15 @@ mod tests {
         let entries: Vec<_> = reader.iter().collect();
         assert_eq!(
             entries[0].header.published_at,
-            FrameworkTime::from_nanoseconds(100)
+            FrameworkTime::from_nanos(100)
         );
         assert_eq!(
             entries[1].header.published_at,
-            FrameworkTime::from_nanoseconds(200)
+            FrameworkTime::from_nanos(200)
         );
         assert_eq!(
             entries[2].header.published_at,
-            FrameworkTime::from_nanoseconds(300)
+            FrameworkTime::from_nanos(300)
         );
     }
 

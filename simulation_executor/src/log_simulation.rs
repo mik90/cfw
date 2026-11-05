@@ -68,7 +68,7 @@ impl<'storage> LogSimulation<'storage> {
         let config = options.simulation.unwrap_or_else(|| SimulationConfig {
             start_time: reader
                 .first_log_time()
-                .unwrap_or_else(|| FrameworkTime::from_nanoseconds(0)),
+                .unwrap_or_else(|| FrameworkTime::from_nanos(0)),
             poll_external_events: false,
             ..Default::default()
         });

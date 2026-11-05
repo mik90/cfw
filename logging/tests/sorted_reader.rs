@@ -8,7 +8,7 @@ use task::{message::MessageHeader, time::FrameworkTime};
 
 fn entry(time: i64, value: u8) -> OwnedLogEntry {
     OwnedLogEntry {
-        header: MessageHeader::new(FrameworkTime::from_nanoseconds(time)),
+        header: MessageHeader::new(FrameworkTime::from_nanos(time)),
         channel_name: "input".into(),
         serialized_body: vec![value],
     }
@@ -20,18 +20,13 @@ fn memory_reader_is_stable_and_preserves_artifacts() {
         HashMap::from([("metadata".into(), b"{\"key\":42}".to_vec())]),
     )
     .unwrap();
-    assert_eq!(
-        reader.first_log_time(),
-        Some(FrameworkTime::from_nanoseconds(10))
-    );
+    assert_eq!(reader.first_log_time(), Some(FrameworkTime::from_nanos(10)));
     assert_eq!(reader.len(), 3);
     assert_eq!(
         reader.artifact("metadata"),
         Some(b"{\"key\":42}".as_slice())
     );
-    let (batch, next) = reader
-        .read_until(FrameworkTime::from_nanoseconds(10))
-        .unwrap();
+    let (batch, next) = reader.read_until(FrameworkTime::from_nanos(10)).unwrap();
     assert_eq!(
         batch
             .iter()
@@ -39,7 +34,7 @@ fn memory_reader_is_stable_and_preserves_artifacts() {
             .collect::<Vec<_>>(),
         [1, 2]
     );
-    assert_eq!(next, Some(FrameworkTime::from_nanoseconds(30)));
+    assert_eq!(next, Some(FrameworkTime::from_nanos(30)));
     assert_eq!(reader.next_entry().unwrap().unwrap().serialized_body, [3]);
     assert!(reader.next_entry().unwrap().is_none());
 }
@@ -62,14 +57,9 @@ fn external_sort_handles_artifacts_and_stable_ties_across_many_runs() {
     for batch_size in [1, 2, 3, 100] {
         let mut reader =
             SortedLogStreamReader::from_reader(Cursor::new(&bytes), batch_size).unwrap();
-        assert_eq!(
-            reader.first_log_time(),
-            Some(FrameworkTime::from_nanoseconds(5))
-        );
+        assert_eq!(reader.first_log_time(), Some(FrameworkTime::from_nanos(5)));
         assert_eq!(reader.artifact("middle"), Some(b"[1,2]".as_slice()));
-        let (batch, next) = reader
-            .read_until(FrameworkTime::from_nanoseconds(100))
-            .unwrap();
+        let (batch, next) = reader.read_until(FrameworkTime::from_nanos(100)).unwrap();
         assert_eq!(
             batch
                 .iter()
@@ -94,7 +84,7 @@ fn external_sort_handles_artifacts_and_stable_ties_across_many_runs() {
     let mut reader = SortedLogStreamReader::from_reader(sorted.as_slice(), 1).unwrap();
     assert_eq!(
         reader
-            .read_until(FrameworkTime::from_nanoseconds(100))
+            .read_until(FrameworkTime::from_nanos(100))
             .unwrap()
             .0
             .len(),

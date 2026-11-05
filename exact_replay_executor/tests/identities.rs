@@ -173,9 +173,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         )
         .with_execution_log(metadata)
         .unwrap();
-        graph
-            .run_until(FrameworkTime::from_nanoseconds(11), 32)
-            .unwrap();
+        graph.run_until(FrameworkTime::from_nanos(11), 32).unwrap();
         assert_eq!(
             descriptor.callbacks[0].endpoints[0].publisher_index,
             Some(0)

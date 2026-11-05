@@ -98,9 +98,7 @@ fn automatic_ipc_hydration_is_endpoint_local_and_preserves_event_ordinals() {
         )
         .with_execution_log(metadata)
         .unwrap();
-        graph
-            .run_until(FrameworkTime::from_nanoseconds(11), 32)
-            .unwrap();
+        graph.run_until(FrameworkTime::from_nanos(11), 32).unwrap();
         session.finish().unwrap();
     }
     let log = ReplayLog::from_reader(

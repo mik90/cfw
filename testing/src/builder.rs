@@ -56,7 +56,7 @@ impl Session {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             phase: AtomicU8::new(0),
-            time: Arc::new(TimeSource::new(FrameworkTime::from_nanoseconds(0))),
+            time: Arc::new(TimeSource::new(FrameworkTime::from_nanos(0))),
         })
     }
     fn check(&self) -> Result<(), BuildError> {

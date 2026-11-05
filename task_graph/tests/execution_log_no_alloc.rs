@@ -69,7 +69,7 @@ struct Recorded {
 fn message(ordinal: usize, at: i64) -> LoggedMessage {
     LoggedMessage {
         ordinal,
-        header: MessageHeader::new(FrameworkTime::from_nanoseconds(at)),
+        header: MessageHeader::new(FrameworkTime::from_nanos(at)),
     }
 }
 
@@ -197,7 +197,7 @@ fn execution_recording_is_allocation_free() {
         )
         .unwrap();
     let (mut nodes, metadata) = graph.into_parts();
-    let context = metadata.context(FrameworkTime::from_nanoseconds(1));
+    let context = metadata.context(FrameworkTime::from_nanos(1));
 
     ALLOCATIONS.store(0, Ordering::Relaxed);
     ARMED.store(true, Ordering::Relaxed);

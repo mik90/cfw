@@ -558,7 +558,7 @@ mod tests {
             Err(EndpointError::AlreadyTaken)
         ));
         publisher.publish(42).unwrap();
-        publisher.flush(crate::time::FrameworkTime::from_nanoseconds(0));
+        publisher.flush(crate::time::FrameworkTime::from_nanos(0));
         subscriber.update();
         assert_eq!(subscriber.input_forwardable().value(), Some(&42));
     }

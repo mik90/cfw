@@ -330,7 +330,7 @@ mod tests {
     struct Clock;
     impl TimeSource for Clock {
         fn now(&self) -> task::time::FrameworkTime {
-            task::time::FrameworkTime::from_nanoseconds(0)
+            task::time::FrameworkTime::from_nanos(0)
         }
     }
     struct Probe(Arc<AtomicUsize>);

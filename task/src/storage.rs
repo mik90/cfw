@@ -117,7 +117,7 @@ mod tests {
     };
 
     fn timestamp() -> FrameworkTime {
-        FrameworkTime::from_nanoseconds(1)
+        FrameworkTime::from_nanos(1)
     }
 
     #[test]

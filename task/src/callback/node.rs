@@ -433,7 +433,7 @@ mod tests {
 
         let mut callback_node = CallbackNode::new(required_subscriber, big_number_publisher, body);
 
-        let now = FrameworkTime::from_nanoseconds(42);
+        let now = FrameworkTime::from_nanos(42);
         small_number_publisher.publish(7).unwrap();
         small_number_publisher.flush(now);
 
@@ -530,7 +530,7 @@ mod tests {
              -> Result<(), LoanError> { Ok(()) },
         );
 
-        let now = FrameworkTime::from_nanoseconds(10);
+        let now = FrameworkTime::from_nanos(10);
         test_number_publisher.publish(42).unwrap();
         test_number_publisher.flush(now);
         test_label_publisher.publish("label".into()).unwrap();
@@ -588,7 +588,7 @@ mod tests {
             },
         );
 
-        let now = FrameworkTime::from_nanoseconds(10);
+        let now = FrameworkTime::from_nanos(10);
         let names = ChannelNameInterner::new();
         let callbacks = CallbackNameInterner::new();
         let context = Context::new(now, &names, &callbacks);

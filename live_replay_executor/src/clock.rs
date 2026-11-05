@@ -12,7 +12,7 @@ impl Default for MonotonicClock {
 }
 impl TimeSource for MonotonicClock {
     fn now(&self) -> FrameworkTime {
-        FrameworkTime::from_nanoseconds(self.0.elapsed().as_nanos().min(i64::MAX as u128) as i64)
+        FrameworkTime::from_nanos(self.0.elapsed().as_nanos().min(i64::MAX as u128) as i64)
     }
 }
 struct State {
@@ -75,7 +75,7 @@ impl<C: TimeSource> ReplayTimeSource<C> {
         let time = i128::from(state.anchor_log.to_nanoseconds())
             .saturating_add(scaled)
             .clamp(i128::from(i64::MIN) + 1, i128::from(i64::MAX));
-        state.last = state.last.max(FrameworkTime::from_nanoseconds(time as i64));
+        state.last = state.last.max(FrameworkTime::from_nanos(time as i64));
         state.last
     }
     /// Start at worker/controller readiness, excluding graph startup wall time.

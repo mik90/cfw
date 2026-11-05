@@ -12,7 +12,7 @@ use task_macros::task_callback;
 struct Clock;
 impl TimeSource for Clock {
     fn now(&self) -> FrameworkTime {
-        FrameworkTime::from_nanoseconds(1234)
+        FrameworkTime::from_nanos(1234)
     }
 }
 fn wait<T>(receiver: &Receiver<T>) -> T {
@@ -39,7 +39,7 @@ impl Increment {
         }
         let id = ctx.callback_names().lookup_by_value("increment").unwrap();
         assert_eq!(ctx.callback_names().lookup_by_id(id), "increment");
-        assert_eq!(ctx.now(), FrameworkTime::from_nanoseconds(1234));
+        assert_eq!(ctx.now(), FrameworkTime::from_nanos(1234));
         assert_eq!(std::thread::current().name(), Some("cfw_pool_1_t_0"));
         *output = *input + 1;
         input.clear();
@@ -79,7 +79,7 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
     drop((input, output));
     // A pre-start publication must not be lost when notifications are installed.
     source.publish(40).unwrap();
-    source.flush(FrameworkTime::from_nanoseconds(0));
+    source.flush(FrameworkTime::from_nanos(0));
     let executor = LiveExecutor::new_multi_pool_with_time(vec![2, 1], graph, Clock).unwrap();
     let stop = executor.stop_signal();
     let main = std::thread::current().id();
@@ -88,7 +88,7 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
             assert_eq!(std::thread::current().id(), main);
             wait(&completed);
             source.publish(41).unwrap();
-            source.flush(FrameworkTime::from_nanoseconds(0));
+            source.flush(FrameworkTime::from_nanos(0));
             wait(&completed);
             17
         })
@@ -105,7 +105,7 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
     assert!(
         messages
             .iter()
-            .all(|m| m.header.published_at == FrameworkTime::from_nanoseconds(1234))
+            .all(|m| m.header.published_at == FrameworkTime::from_nanos(1234))
     );
     stop.request_stop(); // Safe after all borrowed execution objects are destroyed.
 }
@@ -158,11 +158,11 @@ fn trigger_during_run_is_requeued_without_concurrent_invocations() {
     executor
         .run_with(|_| {
             source.publish(1).unwrap();
-            source.flush(FrameworkTime::from_nanoseconds(0));
+            source.flush(FrameworkTime::from_nanos(0));
             assert_eq!(wait(&entry), 1);
             for value in 2..=4 {
                 source.publish(value).unwrap();
-                source.flush(FrameworkTime::from_nanoseconds(0));
+                source.flush(FrameworkTime::from_nanos(0));
             }
             assert_eq!(active.load(Ordering::SeqCst), 1);
             release.send(()).unwrap();
@@ -264,7 +264,7 @@ fn periodic_callbacks_run_until_controller_requests_stop() {
     struct AdvancingClock(std::time::Instant);
     impl TimeSource for AdvancingClock {
         fn now(&self) -> FrameworkTime {
-            FrameworkTime::from_nanoseconds(self.0.elapsed().as_nanos() as i64)
+            FrameworkTime::from_nanos(self.0.elapsed().as_nanos() as i64)
         }
     }
     let calls = Arc::new(AtomicUsize::new(0));
@@ -304,7 +304,7 @@ fn custom_deadline_uses_injected_clock_and_can_disable_its_timer() {
     let count = calls.clone();
     let schedule =
         CallbackSchedule::input_triggered().with_next_execution_time_callback(move |now| {
-            assert_eq!(now, FrameworkTime::from_nanoseconds(1234));
+            assert_eq!(now, FrameworkTime::from_nanos(1234));
             (count.load(Ordering::Acquire) == 0).then_some(now)
         });
     let (done, completed) = channel::bounded(1);

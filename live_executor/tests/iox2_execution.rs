@@ -67,7 +67,7 @@ fn pre_start_notification_wakes_each_listener_without_periodic_polling() {
         .bind(second, &bindings, &bindings)?)
     });
     let graph = graph.build().unwrap();
-    let stamp = FrameworkTime::from_nanoseconds(77);
+    let stamp = FrameworkTime::from_nanos(77);
     publisher.loan(42).unwrap().send();
     publisher.flush(stamp);
     let executor = LiveExecutor::new(2, graph).unwrap();
@@ -200,7 +200,7 @@ fn event_is_retained_until_required_native_input_allows_execution() {
     });
     let channels = Default::default();
     let callbacks = Default::default();
-    let context = task::Context::new(FrameworkTime::from_nanoseconds(0), &channels, &callbacks);
+    let context = task::Context::new(FrameworkTime::from_nanos(0), &channels, &callbacks);
     assert!(!task::execute_callback(&mut callback, &context).unwrap());
     for expected in [3, 0] {
         source.publish(1).unwrap();

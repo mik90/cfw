@@ -42,7 +42,7 @@ impl Receive {
 }
 fn row(time: i64, channel: &str, bytes: &[u8]) -> OwnedLogEntry {
     OwnedLogEntry {
-        header: MessageHeader::new(FrameworkTime::from_nanoseconds(time)),
+        header: MessageHeader::new(FrameworkTime::from_nanos(time)),
         channel_name: channel.into(),
         serialized_body: bytes.into(),
     }
@@ -153,7 +153,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
     for (index, count) in [(0, 3), (1, 5)] {
         let event = Iox2EventRecord {
             callback_id: task::string_interner::CallbackId::from_index(index).unwrap(),
-            observed_at: FrameworkTime::from_nanoseconds(0),
+            observed_at: FrameworkTime::from_nanos(0),
             iox2_event: LoggedIox2Event {
                 ordinal: 0,
                 event_id: 0,

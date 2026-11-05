@@ -138,7 +138,7 @@ impl<'storage, C: TimeSource> LiveReplayExecutor<'storage, C> {
         }
         let first = reader
             .first_log_time()
-            .unwrap_or_else(|| FrameworkTime::from_nanoseconds(0));
+            .unwrap_or_else(|| FrameworkTime::from_nanos(0));
         let clock = ReplayTimeSource::new(base, first, config.speed, config.start_paused)
             .map_err(LiveReplayError::Setup)?;
         let feed = ReplayFeed::new(reader, sources, std::mem::take(&mut config.denylist))

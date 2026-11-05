@@ -47,7 +47,7 @@ fn automatic_ipc_replay_injects_full_headers_without_notifications() {
     let mut sources = replay.bind(&bindings).unwrap();
     let mut captures = captures.bind(&bindings).unwrap();
     let header = task::message::MessageHeader {
-        published_at: FrameworkTime::from_nanoseconds(17),
+        published_at: FrameworkTime::from_nanos(17),
         publisher_index: 8,
         batch_index: 2,
     };
@@ -127,7 +127,7 @@ fn ipc_data_is_discovered_and_captured_without_capturing_notifier_endpoints() {
     let mut graph = testing::UnitTestExecutor::new_with_graph(
         graph,
         testing::UnitTestExecutorConfig {
-            start_time: FrameworkTime::from_nanoseconds(9),
+            start_time: FrameworkTime::from_nanos(9),
             ..Default::default()
         },
     );
@@ -135,10 +135,7 @@ fn ipc_data_is_discovered_and_captured_without_capturing_notifier_endpoints() {
     let messages = captures[0].drain_to_vec().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(Wire::deserialize(&messages[0].1).unwrap().0, 42);
-    assert_eq!(
-        messages[0].0.published_at,
-        FrameworkTime::from_nanoseconds(9)
-    );
+    assert_eq!(messages[0].0.published_at, FrameworkTime::from_nanos(9));
     assert_eq!(
         (messages[0].0.publisher_index, messages[0].0.batch_index),
         (0, 0)

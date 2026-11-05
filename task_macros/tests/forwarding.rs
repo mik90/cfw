@@ -134,7 +134,7 @@ fn bundle_budgets_channels_and_repeated_fields_and_drops_sources() {
         });
         let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
         for value in 0..32 {
-            let now = FrameworkTime::from_nanoseconds(value as i64);
+            let now = FrameworkTime::from_nanos(value as i64);
             a.publish(Tracked {
                 value,
                 drops: drops.clone(),
@@ -223,10 +223,10 @@ fn derive_has_no_eight_field_limit_and_validates_all_mappings() {
     let mut pb = b.take_publisher(&pb).unwrap();
     let sb = b.take_subscriber(&sb).unwrap();
     pa.publish(42).unwrap();
-    pa.flush(FrameworkTime::from_nanoseconds(0));
+    pa.flush(FrameworkTime::from_nanos(0));
     sa.update();
     pb.publish(7).unwrap();
-    pb.flush(FrameworkTime::from_nanoseconds(0));
+    pb.flush(FrameworkTime::from_nanos(0));
     sb.update();
     let a = sa.input_forwardable().pop().unwrap();
     let b = sb.input_forwardable().pop().unwrap();
@@ -353,7 +353,7 @@ fn nested_bundle_retention_propagates_to_original_sources() {
     let mut executor = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
     let drops = Arc::new(AtomicUsize::new(0));
     for index in 0..80 {
-        let now = FrameworkTime::from_nanoseconds(index);
+        let now = FrameworkTime::from_nanos(index);
         a.publish(Tracked {
             value: 2,
             drops: drops.clone(),
@@ -417,7 +417,7 @@ fn bundle_rebinds_after_separately_owned_sources_are_destroyed() {
                 input.clone(),
             ))
             .unwrap();
-        let now = FrameworkTime::from_nanoseconds(value as i64);
+        let now = FrameworkTime::from_nanos(value as i64);
         source_publisher.publish(value).unwrap();
         source_publisher.flush(now);
         source_subscriber.update();

@@ -28,7 +28,7 @@ impl Write for Bytes {
     }
 }
 fn at(n: i64) -> FrameworkTime {
-    FrameworkTime::from_nanoseconds(n)
+    FrameworkTime::from_nanos(n)
 }
 fn input_header(publisher_index: u32, batch_index: u32) -> MessageHeader {
     MessageHeader {

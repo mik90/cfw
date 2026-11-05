@@ -158,7 +158,7 @@ impl Scheduler {
         let _ = self.timer_tx.try_send(());
     }
     pub fn deadline(&self, node: usize) -> Option<task::time::FrameworkTime> {
-        let time = task::time::FrameworkTime::from_nanoseconds(
+        let time = task::time::FrameworkTime::from_nanos(
             self.nodes[node].deadline.load(Ordering::Acquire),
         );
         (time != task::time::FrameworkTime::INVALID).then_some(time)

@@ -942,7 +942,7 @@ mod tests {
         let mut publisher = channel.take_publisher(&publisher).unwrap();
         let subscriber = channel.take_subscriber(&subscriber).unwrap();
         publisher.publish(42).unwrap();
-        publisher.flush(task::time::FrameworkTime::from_nanoseconds(1));
+        publisher.flush(task::time::FrameworkTime::from_nanos(1));
         subscriber.update();
         assert_eq!(subscriber.input_forwardable().pop().unwrap().message, 42);
     }

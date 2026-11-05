@@ -6,7 +6,7 @@ use task::{ChannelPlan, EndpointError, Forwarded, LoanError, StorageError};
 use task_graph::{GraphBuildError, GraphBuilder};
 
 fn timestamp() -> FrameworkTime {
-    FrameworkTime::from_nanoseconds(100)
+    FrameworkTime::from_nanos(100)
 }
 
 #[test]

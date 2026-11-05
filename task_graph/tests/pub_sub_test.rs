@@ -36,19 +36,16 @@ fn executor_updates_inputs_and_flushes_hand_written_callback_outputs() {
     let mut graph = testing::UnitTestExecutor::new_with_graph(
         graph,
         testing::UnitTestExecutorConfig {
-            start_time: FrameworkTime::from_nanoseconds(2),
+            start_time: FrameworkTime::from_nanos(2),
             ..Default::default()
         },
     );
     fixture.publish(41).unwrap();
-    fixture.flush(FrameworkTime::from_nanoseconds(1));
+    fixture.flush(FrameworkTime::from_nanos(1));
     graph.run_until_idle(8).unwrap();
     capture.update();
     let retained = capture.input_forwardable().pop().unwrap();
     drop((graph, source, output, fixture, capture));
     assert_eq!(retained.message, 42);
-    assert_eq!(
-        retained.header.published_at,
-        FrameworkTime::from_nanoseconds(2)
-    );
+    assert_eq!(retained.header.published_at, FrameworkTime::from_nanos(2));
 }

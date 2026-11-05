@@ -49,7 +49,7 @@ fn timestamped_data_and_counted_events_are_injected_without_duplicate_notificati
     );
     let mut simulation = SimulationState::new(builder.build().unwrap()).unwrap();
     for (time, value, count) in [(10, 42, 3), (20, 84, 2)] {
-        let time = FrameworkTime::from_nanoseconds(time);
+        let time = FrameworkTime::from_nanos(time);
         simulation
             .schedule_iox2_input(time, publisher.clone(), value)
             .unwrap();

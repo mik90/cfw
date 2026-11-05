@@ -15,7 +15,7 @@ impl Drop for Counted {
 }
 
 fn timestamp() -> FrameworkTime {
-    FrameworkTime::from_nanoseconds(123)
+    FrameworkTime::from_nanos(123)
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn header_injection_preserves_identity_without_flushing_an_existing_batch() {
     publisher.publish(100).unwrap();
     publisher.discard_pending();
     publisher.publish(11).unwrap();
-    publisher.flush(FrameworkTime::from_nanoseconds(124));
+    publisher.flush(FrameworkTime::from_nanos(124));
     subscriber.update();
     assert_eq!(
         subscriber
@@ -106,7 +106,7 @@ fn span_inspection_retains_headers_and_payloads_until_consumed_or_evicted() {
         subscriber.finish_iteration();
         assert_eq!(drops.load(Ordering::Relaxed), 0);
         publisher.publish(Value(2, Counted(drops.clone()))).unwrap();
-        publisher.flush(FrameworkTime::from_nanoseconds(456));
+        publisher.flush(FrameworkTime::from_nanos(456));
         subscriber.update();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert_eq!(subscriber.reader_drops(), 1);

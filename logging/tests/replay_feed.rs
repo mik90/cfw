@@ -23,7 +23,7 @@ fn incomplete_recordings_fail_before_any_replay_injection() {
     let reader = SortedLogStreamReader::from_entries(
         vec![OwnedLogEntry {
             channel_name: "input".into(),
-            header: MessageHeader::new(FrameworkTime::from_nanoseconds(0)),
+            header: MessageHeader::new(FrameworkTime::from_nanos(0)),
             serialized_body: b"1".to_vec(),
         }],
         HashMap::from([(
@@ -55,7 +55,7 @@ fn paused_batch_preserves_cursor_without_claiming_eof_or_duplicating_inputs() {
             Ok(value)
         })
         .unwrap();
-    let time = FrameworkTime::from_nanoseconds(0);
+    let time = FrameworkTime::from_nanos(0);
     let entries = [
         ("input", b"1".as_slice()),
         ("ignored", b"ignored".as_slice()),

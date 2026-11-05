@@ -59,13 +59,13 @@ fn real_ipc_event_requests_a_flush_without_data_arrival_triggering_it() {
         )
         .unwrap();
     publisher.publish(42).unwrap();
-    publisher.flush(FrameworkTime::from_nanoseconds(0));
+    publisher.flush(FrameworkTime::from_nanos(0));
     live_executor::LiveExecutor::new(1, graph)
         .unwrap()
         .run_with(|stop| {
             assert_eq!(messages.load(Ordering::SeqCst), 0);
             Iox2NotifyOutput::new(&mut notifier).send();
-            notifier.flush(FrameworkTime::from_nanoseconds(1));
+            notifier.flush(FrameworkTime::from_nanos(1));
             let start = std::time::Instant::now();
             while messages.load(Ordering::SeqCst) == 0 {
                 assert!(start.elapsed() < Duration::from_secs(5));

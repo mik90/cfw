@@ -20,7 +20,7 @@ impl Increment {
         #[channel("out")] mut output: Output<i32>,
         ctx: &Context,
     ) {
-        assert_eq!(ctx.now(), FrameworkTime::from_nanoseconds(10));
+        assert_eq!(ctx.now(), FrameworkTime::from_nanos(10));
         *output = *input + 10;
         input.clear();
         output.send();
@@ -53,7 +53,7 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
             testing::UnitTestExecutor::new_with_graph(
                 graph,
                 testing::UnitTestExecutorConfig {
-                    start_time: FrameworkTime::from_nanoseconds(10),
+                    start_time: FrameworkTime::from_nanos(10),
                     ..Default::default()
                 },
             ),
@@ -61,7 +61,7 @@ fn generated_callback_declares_then_binds_and_runs_with_executor_owned_io() {
             capture,
         )
     };
-    let time = FrameworkTime::from_nanoseconds(10);
+    let time = FrameworkTime::from_nanos(10);
     graph.run_until_idle(8).unwrap(); // Required input is empty; no output is loaned.
     capture.update();
     assert!(capture.input_forwardable().pop().is_none());
@@ -143,12 +143,12 @@ fn arrival_after_input_snapshot_does_not_make_an_empty_required_view_ready() {
         inner: Increment.bind(declaration, &input, &output).unwrap(),
         publish: move || {
             source.publish(32).unwrap();
-            source.flush(FrameworkTime::from_nanoseconds(0));
+            source.flush(FrameworkTime::from_nanos(0));
         },
     };
     let channels = Default::default();
     let callbacks = Default::default();
-    let context = Context::new(FrameworkTime::from_nanoseconds(10), &channels, &callbacks);
+    let context = Context::new(FrameworkTime::from_nanos(10), &channels, &callbacks);
     assert!(!task::execute_callback(&mut callback, &context).unwrap());
     assert!(task::Callback::required_inputs_available(&callback));
     assert!(!task::Callback::required_inputs_ready(&callback));
@@ -201,7 +201,7 @@ fn generated_pending_outputs_are_discarded_on_error_and_panic() {
             task::execute_callback(
                 &mut callback,
                 &Context::new(
-                    FrameworkTime::from_nanoseconds(0),
+                    FrameworkTime::from_nanos(0),
                     &Default::default(),
                     &Default::default(),
                 ),
@@ -220,7 +220,7 @@ fn generated_pending_outputs_are_discarded_on_error_and_panic() {
             task::execute_callback(
                 &mut callback,
                 &Context::new(
-                    FrameworkTime::from_nanoseconds(1),
+                    FrameworkTime::from_nanos(1),
                     &Default::default(),
                     &Default::default(),
                 ),
@@ -307,17 +307,17 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
     let mut graph = testing::UnitTestExecutor::new_with_graph(
         graph,
         testing::UnitTestExecutorConfig {
-            start_time: FrameworkTime::from_nanoseconds(200),
+            start_time: FrameworkTime::from_nanos(200),
             ..Default::default()
         },
     );
     for (index, value) in [5, 7, 11].into_iter().enumerate() {
         source.publish(SpanValue(value)).unwrap();
-        source.flush(FrameworkTime::from_nanoseconds(100 + index as i64));
+        source.flush(FrameworkTime::from_nanos(100 + index as i64));
     }
     assert!(capture.input_forwardable().is_empty());
     for time in [200, 201] {
-        assert_eq!(graph.step().before, FrameworkTime::from_nanoseconds(time));
+        assert_eq!(graph.step().before, FrameworkTime::from_nanos(time));
         capture.update();
         let values: Vec<_> = capture
             .input_forwardable()
@@ -368,7 +368,7 @@ fn generated_span_outputs_cancel_sent_and_unsent_loans_on_failure() {
                 task::execute_callback(
                     &mut callback,
                     &Context::new(
-                        FrameworkTime::from_nanoseconds(invocation),
+                        FrameworkTime::from_nanos(invocation),
                         &Default::default(),
                         &Default::default(),
                     ),
@@ -407,7 +407,7 @@ fn generated_uninitialized_output_publishes_on_success() {
     task::execute_callback(
         &mut callback,
         &Context::new(
-            FrameworkTime::from_nanoseconds(3),
+            FrameworkTime::from_nanos(3),
             &Default::default(),
             &Default::default(),
         ),
@@ -456,11 +456,11 @@ fn generated_forwarding_retains_storage_without_static_payload_bounds() {
     let capture = destination.take_subscriber(&capture_key).unwrap();
     let mut callback = Forward.bind(declaration, &source, &destination).unwrap();
     fixture.publish(42).unwrap();
-    fixture.flush(FrameworkTime::from_nanoseconds(0));
+    fixture.flush(FrameworkTime::from_nanos(0));
     task::execute_callback(
         &mut callback,
         &Context::new(
-            FrameworkTime::from_nanoseconds(1),
+            FrameworkTime::from_nanos(1),
             &Default::default(),
             &Default::default(),
         ),
@@ -530,11 +530,8 @@ fn forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
     let mut graph = testing::UnitTestExecutor::new_with_graph(graph, Default::default());
     for value in 0..32 {
         source.publish(value).unwrap();
-        source.flush(FrameworkTime::from_nanoseconds(value as i64));
-        assert_eq!(
-            graph.step().before,
-            FrameworkTime::from_nanoseconds(value as i64)
-        );
+        source.flush(FrameworkTime::from_nanos(value as i64));
+        assert_eq!(graph.step().before, FrameworkTime::from_nanos(value as i64));
         capture.update();
         fanout.update();
     }
@@ -585,11 +582,11 @@ fn explicit_keys_allow_input_and_output_on_the_same_channel() {
     let capture = bindings.take_subscriber(&capture_key).unwrap();
     let mut callback = Feedback.bind(declaration, &bindings, &bindings).unwrap();
     fixture.publish(1).unwrap();
-    fixture.flush(FrameworkTime::from_nanoseconds(0));
+    fixture.flush(FrameworkTime::from_nanos(0));
     task::execute_callback(
         &mut callback,
         &Context::new(
-            FrameworkTime::from_nanoseconds(1),
+            FrameworkTime::from_nanos(1),
             &Default::default(),
             &Default::default(),
         ),

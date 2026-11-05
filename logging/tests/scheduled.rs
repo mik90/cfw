@@ -74,7 +74,7 @@ impl Source {
     }
 }
 fn at(n: i64) -> FrameworkTime {
-    FrameworkTime::from_nanoseconds(n)
+    FrameworkTime::from_nanos(n)
 }
 
 #[test]

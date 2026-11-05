@@ -255,7 +255,7 @@ mod tests {
                     kind: ReplayDetailKind::Gap,
                     callback: task::string_interner::CallbackId::from_index(0).unwrap(),
                     channel: None,
-                    time: task::time::FrameworkTime::from_nanoseconds(0),
+                    time: task::time::FrameworkTime::from_nanos(0),
                     endpoint: None,
                     publication: None,
                     reason: "界".repeat(1000),

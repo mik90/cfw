@@ -282,7 +282,7 @@ mod tests {
 
         let completed_callback = {
             let context_builder = crate::context::testing::ContextBuilder {
-                now: FrameworkTime::from_nanoseconds(42),
+                now: FrameworkTime::from_nanos(42),
                 ..Default::default()
             };
 
@@ -294,7 +294,7 @@ mod tests {
         };
         expect_that!(
             completed_callback.timestamp,
-            eq(FrameworkTime::from_nanoseconds(42))
+            eq(FrameworkTime::from_nanos(42))
         );
 
         let invocation = &completed_callback.invocation;
@@ -304,7 +304,7 @@ mod tests {
 
         expect_that!(
             fake_callback.output_flush_timestamps,
-            container_eq(vec![FrameworkTime::from_nanoseconds(42)]),
+            container_eq(vec![FrameworkTime::from_nanos(42)]),
             "One a callback has been committed, we should see the flushed outputs that we queued up"
         );
     }

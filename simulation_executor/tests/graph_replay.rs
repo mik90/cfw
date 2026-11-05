@@ -27,7 +27,7 @@ fn automatic_sources_drive_log_simulation_through_overridden_input_names() {
     registration.input_channel("input", "wire");
     registration.register(&mut plan).unwrap();
     let header = MessageHeader {
-        published_at: FrameworkTime::from_nanoseconds(13),
+        published_at: FrameworkTime::from_nanos(13),
         publisher_index: 7,
         batch_index: 2,
     };

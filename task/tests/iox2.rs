@@ -32,7 +32,7 @@ fn keep_across_runs_controls_the_iox2_read_buffer() {
 
         publisher.loan(1).unwrap().send();
         publisher.loan(2).unwrap().send();
-        publisher.flush(FrameworkTime::from_nanoseconds(1));
+        publisher.flush(FrameworkTime::from_nanos(1));
         subscriber.update();
         assert_eq!(Iox2SpanInput::new(&subscriber).len(), 2);
 
@@ -65,7 +65,7 @@ fn unsent_and_cancelled_loans_release_capacity_and_success_stamps_headers() {
         Err(LoanError::LoanCapacityReached)
     ));
     publisher.discard_pending();
-    let stamp = FrameworkTime::from_nanoseconds(77);
+    let stamp = FrameworkTime::from_nanos(77);
     publisher.loan(42).unwrap().send();
     publisher.flush(stamp);
     subscriber.update();
@@ -88,7 +88,7 @@ fn same_timestamp_ipc_batches_preserve_publisher_indices_and_send_order() {
     let mut first = bindings.take_publisher(&first).unwrap();
     let mut second = bindings.take_publisher(&second).unwrap();
     let capture = bindings.take_subscriber(&capture).unwrap();
-    let stamp = FrameworkTime::from_nanoseconds(77);
+    let stamp = FrameworkTime::from_nanos(77);
     first.loan(10).unwrap().send();
     first.loan(11).unwrap().send();
     second.loan(20).unwrap().send();
@@ -209,11 +209,11 @@ fn data_notification_policy_preserves_deferred_commit_and_silent_explicit_signal
         assert!(Iox2OptionalInput::new(&subscriber).value().is_none());
         assert!(poll().is_empty());
         publisher.discard_pending();
-        publisher.flush(FrameworkTime::from_nanoseconds(1));
+        publisher.flush(FrameworkTime::from_nanos(1));
         assert!(poll().is_empty());
 
         publisher.loan(42).unwrap().send();
-        publisher.flush(FrameworkTime::from_nanoseconds(2));
+        publisher.flush(FrameworkTime::from_nanos(2));
         subscriber.update();
         assert_eq!(Iox2OptionalInput::new(&subscriber).value(), Some(&42));
         assert_eq!(
@@ -233,10 +233,10 @@ fn data_notification_policy_preserves_deferred_commit_and_silent_explicit_signal
         );
 
         Iox2NotifyOutput::new(&mut signal).send();
-        signal.flush(FrameworkTime::from_nanoseconds(2));
+        signal.flush(FrameworkTime::from_nanos(2));
         assert_eq!(poll(), [3]);
         local.loan(99).unwrap().send();
-        local.flush(FrameworkTime::from_nanoseconds(3));
+        local.flush(FrameworkTime::from_nanos(3));
         subscriber.update();
         assert_eq!(Iox2OptionalInput::new(&subscriber).value(), Some(&42));
         assert!(poll().is_empty());
@@ -310,7 +310,7 @@ fn split_data_and_event_plans_share_service_notifications() {
     let registration = events.take_registration().unwrap();
 
     publisher.loan(42).unwrap().send();
-    publisher.flush(FrameworkTime::from_nanoseconds(1));
+    publisher.flush(FrameworkTime::from_nanos(1));
     let mut ids = Vec::new();
     registration
         .listener

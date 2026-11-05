@@ -12,7 +12,7 @@ use task_macros::task_callback;
 type Trace<T> = Arc<Mutex<Vec<T>>>;
 
 fn at(n: i64) -> FrameworkTime {
-    FrameworkTime::from_nanoseconds(n)
+    FrameworkTime::from_nanos(n)
 }
 fn ns(n: u64) -> Duration {
     Duration::from_nanos(n)

@@ -58,7 +58,7 @@ mod tests {
             assert_eq!(index, 0);
             assert_eq!(
                 message.header.published_at,
-                task::time::FrameworkTime::from_nanoseconds(0)
+                task::time::FrameworkTime::from_nanos(0)
             );
             for (index, element) in message.message.big_array.iter().enumerate() {
                 assert_eq!(*element, 42, "Index {} was not 42", index);

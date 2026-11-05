@@ -56,7 +56,7 @@ fn run(plan: GraphPlan, options: ExecutionLogOptions) -> Run {
     let mut simulation = SimulationState::with_config(
         graph,
         SimulationConfig {
-            start_time: FrameworkTime::from_nanoseconds(7),
+            start_time: FrameworkTime::from_nanos(7),
             virtual_pool_threads: vec![4],
             ..Default::default()
         },
@@ -120,7 +120,7 @@ fn full_mode_records_each_callback() {
     assert_eq!(run.records.len(), 2);
     assert_eq!(run.descriptor.callbacks.len(), 2);
     for record in &run.records {
-        assert_eq!(record.execution_time, FrameworkTime::from_nanoseconds(7));
+        assert_eq!(record.execution_time, FrameworkTime::from_nanos(7));
         assert_eq!(record.outcome, Outcome::Committed);
         assert_eq!(record.outputs.len(), 1);
         assert_eq!(

@@ -318,7 +318,7 @@ mod tests {
         let mut publisher = channel.take_publisher(&publisher).unwrap();
         let first = channel.take_subscriber(&first).unwrap();
         let second = channel.take_subscriber(&second).unwrap();
-        let now = FrameworkTime::from_nanoseconds(1);
+        let now = FrameworkTime::from_nanos(1);
         publisher.publish(Value(3)).unwrap();
         publisher.flush(now);
         source.inject(MessageHeader::new(now), &[7]).unwrap();
@@ -358,7 +358,7 @@ mod tests {
         let mut first = channel.take_publisher(&first).unwrap();
         let mut second = channel.take_publisher(&second).unwrap();
         let input = channel.take_subscriber(&input).unwrap();
-        let now = FrameworkTime::from_nanoseconds(1);
+        let now = FrameworkTime::from_nanos(1);
         first.publish(Value(3)).unwrap();
         first.flush(now);
         second.publish(Value(7)).unwrap();

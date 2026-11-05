@@ -19,7 +19,7 @@ fn rejected_batch_commit_cancels_outputs_before_single_callback_reuse() {
     );
     let channels = Default::default();
     let callbacks = Default::default();
-    let context = Context::new(FrameworkTime::from_nanoseconds(7), &channels, &callbacks);
+    let context = Context::new(FrameworkTime::from_nanos(7), &channels, &callbacks);
     let result = execute_callback_batch(
         [(17, &mut callback as &mut dyn Callback)],
         &context,
@@ -55,7 +55,7 @@ fn batch_failure_reports_the_supplied_id_after_skipping_unready_callbacks() {
     let mut failing = |_| Err(LoanError::ArenaExhausted);
     let channels = Default::default();
     let callbacks = Default::default();
-    let context = Context::new(FrameworkTime::from_nanoseconds(0), &channels, &callbacks);
+    let context = Context::new(FrameworkTime::from_nanos(0), &channels, &callbacks);
     let result = execute_callback_batch(
         [
             (10, &mut gated as &mut dyn Callback),

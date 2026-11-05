@@ -135,7 +135,7 @@ fn shared_registration_resolves_once_and_keeps_callback_ordinals_independent() {
         .take_subscriber(&capture)
         .unwrap();
     sender.publish(42).unwrap();
-    sender.flush(task::time::FrameworkTime::from_nanoseconds(0));
+    sender.flush(task::time::FrameworkTime::from_nanos(0));
     graph.run_until_idle(8).unwrap();
     capture.update();
     assert_eq!(capture.input_forwardable().value(), Some(&42));

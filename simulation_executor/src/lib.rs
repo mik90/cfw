@@ -34,7 +34,7 @@ pub struct SimulationConfig {
 impl Default for SimulationConfig {
     fn default() -> Self {
         Self {
-            start_time: FrameworkTime::from_nanoseconds(0),
+            start_time: FrameworkTime::from_nanos(0),
             virtual_pool_threads: vec![1],
             node_executor_thread_count: 1,
             poll_external_events: true,

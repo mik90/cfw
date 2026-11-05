@@ -86,7 +86,7 @@ fn ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
             executor.step().executed.is_empty(),
             "silent publication must not duplicate event notifications"
         );
-        let deadline = task::time::FrameworkTime::from_nanoseconds(20);
+        let deadline = task::time::FrameworkTime::from_nanos(20);
         input.send_at(deadline, 78);
         events.notify_at(deadline, EventId::new(4), 2);
         executor.run_until(deadline, 8).unwrap();
@@ -182,9 +182,7 @@ fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
     for value in 0..1024 {
         publisher
             .publish_with_header(
-                task::message::MessageHeader::new(task::time::FrameworkTime::from_nanoseconds(
-                    value,
-                )),
+                task::message::MessageHeader::new(task::time::FrameworkTime::from_nanos(value)),
                 value as u64,
             )
             .unwrap();

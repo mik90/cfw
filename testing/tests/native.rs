@@ -10,7 +10,7 @@ use task_macros::task_callback;
 use testing::{UnitTestExecutor, UnitTestExecutorConfig};
 
 fn at(n: i64) -> FrameworkTime {
-    FrameworkTime::from_nanoseconds(n)
+    FrameworkTime::from_nanos(n)
 }
 
 struct Double;
