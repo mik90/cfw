@@ -116,9 +116,12 @@ impl<'arena, T> ArenaPtrUninit<'arena, T> {
     ) -> Option<Self> {
         let index = free_list.pop()?;
         let slot = &storage[index];
-        // A queued index exclusively reserves a free slot. Acquire also pairs
-        // with the previous owner's Release after its destructor completed.
-        assert_eq!(slot.ref_count.swap(1, atomic::Ordering::Acquire), 0);
+        // Acquire also pairs with the previous owner's Release after its destructor completed.
+        let old_ref_count = slot.ref_count.swap(1, atomic::Ordering::Acquire);
+        // A queued index implies that the slot is free but if it wasn't, then that's really unexpected
+        if old_ref_count != 0 {
+            panic!("Slot from free list was not actually free, had a ref count of {old_ref_count}");
+        }
         Some(Self {
             ptr: slot,
             index,

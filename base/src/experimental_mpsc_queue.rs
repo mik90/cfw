@@ -71,6 +71,7 @@ pub struct ExperimentalMpscQueue<T> {
 
 impl<T> ExperimentalMpscQueue<T> {
     pub fn new(capacity: usize) -> Self {
+        // ast-grep-ignore: non-test-assert (Experimental queue is WIP)
         assert!(
             capacity >= 2,
             "ExperimentalMpscQueue requires capacity >= 2"

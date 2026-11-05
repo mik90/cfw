@@ -1,0 +1,29 @@
+id: non-test-assert
+language: rust
+
+# There is clippy disallowed_macros but we should be able to use asserts in tests.
+message: "Avoid using assert outside of test code"
+
+# Exclude integration tests, benchmark files, and local test modules
+ignores:
+  - "**/tests/**"
+  - "benches/**"
+  - "**/tests.rs"
+
+rule:
+  all:
+    # 1. Exclude anything inside a #[cfg(test)] module
+    - not:
+        inside:
+          kind: mod_item
+          follows:
+            kind: attribute_item
+            regex: '^#\[cfg\(.*\btest\b.*\)\]$'
+          stopBy: end
+
+    # 2. The target: any assert!/assert_eq!/assert_ne! macro call
+    - kind: macro_invocation
+      has:
+        kind: identifier
+        regex: '^assert(_eq|_ne)?$'
+    
