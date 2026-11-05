@@ -11,33 +11,6 @@ pub struct StaticVec<T, const N: usize> {
     len: usize,
 }
 
-impl<T: Clone, const N: usize> Clone for StaticVec<T, N> {
-    fn clone(&self) -> Self {
-        let mut cloned = Self::new();
-        cloned.len = self.len;
-
-        // The len invariants enforces that these entries are already initialized
-        // so we can safely know how to clone them.
-        let initialized_entries = self.as_slice().iter();
-
-        for (i, entry) in initialized_entries.enumerate() {
-            cloned.entries[i] = mem::MaybeUninit::new(entry.clone());
-        }
-
-        cloned
-    }
-}
-
-impl<T: PartialEq, const N: usize> PartialEq for StaticVec<T, N> {
-    fn eq(&self, other: &Self) -> bool {
-        let initialized_iter = self.as_slice().iter();
-
-        let other_initialized_iter = other.as_slice().iter();
-
-        initialized_iter.eq(other_initialized_iter)
-    }
-}
-
 impl<T, const N: usize> StaticVec<T, N> {
     pub fn new() -> Self {
         Self {
@@ -182,9 +155,20 @@ impl<T, const N: usize> StaticVec<T, N> {
     }
 }
 
-impl<T, const N: usize> Drop for StaticVec<T, N> {
-    fn drop(&mut self) {
-        self.clear();
+impl<T: Clone, const N: usize> Clone for StaticVec<T, N> {
+    fn clone(&self) -> Self {
+        let mut cloned = Self::new();
+        cloned.len = self.len;
+
+        // The len invariants enforces that these entries are already initialized
+        // so we can safely know how to clone them.
+        let initialized_entries = self.as_slice().iter();
+
+        for (i, entry) in initialized_entries.enumerate() {
+            cloned.entries[i] = mem::MaybeUninit::new(entry.clone());
+        }
+
+        cloned
     }
 }
 
@@ -196,6 +180,22 @@ impl<T: Clone, const N: usize> StaticVec<T, N> {
         self.entries[self.len - 1] = mem::MaybeUninit::new(value.clone());
         self.len += 1;
         true
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq for StaticVec<T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        let initialized_iter = self.as_slice().iter();
+
+        let other_initialized_iter = other.as_slice().iter();
+
+        initialized_iter.eq(other_initialized_iter)
+    }
+}
+
+impl<T, const N: usize> Drop for StaticVec<T, N> {
+    fn drop(&mut self) {
+        self.clear();
     }
 }
 
