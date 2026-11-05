@@ -14,6 +14,7 @@ pub mod publisher;
 pub mod storage;
 pub mod string_interner;
 pub mod subscriber;
+// Either internal or external code can use our testing support
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod time;
