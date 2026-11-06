@@ -305,11 +305,7 @@ impl GraphPlan {
     pub fn topology(&self) -> Topology {
         let mut snapshot = Topology {
             forwarding: self.forwarding_edges.clone(),
-            callbacks: self
-                .tasks
-                .keys()
-                .map(|name| name.as_str().to_owned())
-                .collect(),
+            callbacks: self.tasks.keys().cloned().collect(),
             channels: self
                 .channels
                 .values()
@@ -333,11 +329,11 @@ impl GraphPlan {
                 ordinals[usize::from(endpoint.output)] += 1;
                 snapshot.endpoints.push(topology::EndpointTopology {
                     forwardable: endpoint.forwardable,
-                    callback: callback.as_str().to_owned(),
+                    callback: callback.clone(),
                     name: endpoint.name.clone().unwrap_or_else(|| ordinal.to_string()),
                     ordinal,
                     output: endpoint.output,
-                    channel: endpoint.channel.as_str().to_owned(),
+                    channel: endpoint.channel.clone(),
                     transport: endpoint.transport,
                     payload_type: endpoint.payload_type,
                     capacity: endpoint.capacity,

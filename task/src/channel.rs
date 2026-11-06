@@ -82,7 +82,7 @@ struct SubscriberSpec {
 #[derive(Clone, Debug)]
 pub struct ChannelTopology {
     pub forwarding_retention_per_publisher: usize,
-    pub name: String,
+    pub name: ChannelName,
     pub payload_type: &'static str,
     pub transport: crate::execution_log_schema::Transport,
     /// Per-publisher loan capacities, in declaration order.
@@ -113,7 +113,7 @@ impl<T> ChannelPlan<T> {
     pub fn topology(&self) -> ChannelTopology {
         ChannelTopology {
             forwarding_retention_per_publisher: self.forwarding_retention,
-            name: self.name.to_string(),
+            name: self.name.as_ref().clone(),
             payload_type: std::any::type_name::<T>(),
             transport: crate::execution_log_schema::Transport::Native,
             publishers: self

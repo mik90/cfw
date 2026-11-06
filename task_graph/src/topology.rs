@@ -1,15 +1,15 @@
 //! Owned, deterministic graph inspection before or after storage allocation.
-use task::execution_log_schema::Transport;
+use task::{CallbackName, ChannelName, execution_log_schema::Transport};
 
 pub use task::channel::ChannelTopology;
 #[derive(Clone, Debug)]
 pub struct EndpointTopology {
     pub forwardable: bool,
-    pub callback: String,
+    pub callback: CallbackName,
     pub name: String,
     pub ordinal: usize,
     pub output: bool,
-    pub channel: String,
+    pub channel: ChannelName,
     pub transport: Transport,
     pub payload_type: &'static str,
     pub capacity: usize,
@@ -18,7 +18,7 @@ pub struct EndpointTopology {
 #[derive(Clone, Debug, Default)]
 pub struct Topology {
     pub forwarding: Vec<crate::bundle::ForwardingEdge>,
-    pub callbacks: Vec<String>,
+    pub callbacks: Vec<CallbackName>,
     pub channels: Vec<ChannelTopology>,
     pub endpoints: Vec<EndpointTopology>,
 }
@@ -28,7 +28,7 @@ impl std::fmt::Display for Topology {
             writeln!(
                 f,
                 "forward {}.{} -> {}.{}: {} -> {}",
-                edge.callback,
+                edge.callback.as_deref().unwrap_or("?"),
                 edge.input,
                 edge.output,
                 edge.field,
@@ -37,12 +37,12 @@ impl std::fmt::Display for Topology {
             )?;
         }
         for callback in &self.callbacks {
-            writeln!(f, "callback {callback:?}")?;
+            writeln!(f, "callback {callback}")?;
         }
         for channel in &self.channels {
             writeln!(
                 f,
-                "channel {:?}: {:?} {} publishers={:?} subscribers={:?} sources={:?}",
+                "channel {}: {:?} {} publishers={:?} subscribers={:?} sources={:?}",
                 channel.name,
                 channel.transport,
                 channel.payload_type,
@@ -85,14 +85,19 @@ impl Topology {
                 "  {:?} -> {:?} [style=dashed,label={:?}];",
                 format!("channel:{}", edge.source_channel),
                 format!("channel:{}", edge.output_channel),
-                format!("{}.{}.{}", edge.callback, edge.output, edge.field)
+                format!(
+                    "{}.{}.{}",
+                    edge.callback.as_deref().unwrap_or("?"),
+                    edge.output,
+                    edge.field
+                )
             )
             .unwrap();
         }
         for callback in &self.callbacks {
             writeln!(
                 text,
-                "  {:?} [shape=box,label={callback:?}];",
+                "  {:?} [shape=box,label={callback}];",
                 format!("task:{callback}")
             )
             .unwrap();

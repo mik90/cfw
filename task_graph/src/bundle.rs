@@ -72,7 +72,9 @@ impl<'a, M: 'static, S: ForwardedSources> Binding<'a> for BundleBinding<'a, M, S
 
 #[derive(Clone, Debug)]
 pub struct ForwardingEdge {
-    pub callback: String,
+    /// The task that mapped this forwarding edge; absent for mappings declared
+    /// outside task registration (e.g. manual test graphs).
+    pub callback: Option<task::CallbackName>,
     pub output: String,
     pub field: String,
     pub input: String,
@@ -187,11 +189,7 @@ impl GraphPlan {
         }
         for &(field, input, source_channel, _) in fields {
             self.forwarding_edges.push(ForwardingEdge {
-                callback: self
-                    .active_task
-                    .as_ref()
-                    .map(|name| name.as_str().to_owned())
-                    .unwrap_or_default(),
+                callback: self.active_task.clone(),
                 output: output.into(),
                 field: field.into(),
                 input: input.into(),

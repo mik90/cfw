@@ -243,7 +243,7 @@ impl<T> Iox2ChannelPlan<T> {
     pub fn topology(&self) -> crate::channel::ChannelTopology {
         crate::channel::ChannelTopology {
             forwarding_retention_per_publisher: 0,
-            name: self.name.to_string(),
+            name: crate::ChannelName::new(&*self.name),
             payload_type: std::any::type_name::<T>(),
             transport: crate::execution_log_schema::Transport::Iox2Data,
             publishers: self
