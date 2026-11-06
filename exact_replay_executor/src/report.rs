@@ -16,8 +16,7 @@
 //! reproduced exactly.
 
 use std::collections::HashMap;
-
-type ChannelName = String;
+use task::ChannelName;
 
 /// Default cap on the number of mismatch details retained in a report. Pass a
 /// different value to [`ReplayReport::new`] to override.
@@ -135,25 +134,19 @@ impl ReplayReport {
     }
 
     pub(crate) fn record_logged(&mut self, channel: &str) {
-        self.channels.entry(channel.to_owned()).or_default().logged += 1;
+        self.channels.entry(channel.into()).or_default().logged += 1;
     }
 
     pub(crate) fn record_reproduced(&mut self, channel: &str) {
-        self.channels
-            .entry(channel.to_owned())
-            .or_default()
-            .reproduced += 1;
+        self.channels.entry(channel.into()).or_default().reproduced += 1;
     }
 
     pub(crate) fn record_gap(&mut self, channel: &str) {
-        self.channels.entry(channel.to_owned()).or_default().gaps += 1;
+        self.channels.entry(channel.into()).or_default().gaps += 1;
     }
 
     pub(crate) fn record_mismatch(&mut self, channel: &str, detail: String) {
-        self.channels
-            .entry(channel.to_owned())
-            .or_default()
-            .mismatches += 1;
+        self.channels.entry(channel.into()).or_default().mismatches += 1;
         if self.mismatch_details.len() < self.max_mismatch_details {
             self.mismatch_details.push(truncate_detail(detail));
         }

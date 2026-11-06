@@ -72,13 +72,13 @@ fn selected_payloads_and_execution_snapshots_survive_simulation_shutdown() {
         let payloads: Vec<_> = data
             .messages()
             .iter()
-            .filter(|m| m.channel() == "values")
+            .filter(|m| m.channel().as_ref() == "values")
             .collect();
         assert_eq!(payloads.len(), if capture_payload { 4 } else { 0 });
         let records: Vec<ExecutionRecord> = data
             .messages()
             .iter()
-            .filter(|m| m.channel() == task::execution_log_schema::EXECUTION_LOG_CHANNEL)
+            .filter(|m| m.channel().as_ref() == task::execution_log_schema::EXECUTION_LOG_CHANNEL)
             .map(|m| serde_json::from_slice(m.body()).unwrap())
             .collect();
         assert_eq!(records.len(), 4);
