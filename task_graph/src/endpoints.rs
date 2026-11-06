@@ -7,7 +7,7 @@ pub struct PlannedEndpoint {
     configured: bool,
     pub forwardable: bool,
     pub name: Option<String>,
-    pub channel: String,
+    pub channel: task::ChannelName,
     pub output: bool,
     pub transport: Transport,
     pub payload_type: &'static str,
@@ -45,7 +45,7 @@ impl PlannedEndpoint {
 impl GraphPlan {
     /// Registered task names, including tasks without endpoints.
     pub fn task_names(&self) -> impl Iterator<Item = &str> {
-        self.tasks.keys().map(String::as_str)
+        self.tasks.keys().map(|name| name.as_str())
     }
 
     /// Endpoints in declaration order for a registered task.

@@ -172,8 +172,8 @@ fn ipc_service_limits_cover_large_captures_and_explicit_limits_are_checked() {
         .publisher_with_notification(1, Iox2Notification::Silent);
     let subscriber = plan.iox2::<u64>(&name).unwrap().subscriber(1024);
     let limits = plan.ipc_service_limits().unwrap();
-    assert_eq!(limits[&name].buffer_capacity, 1024);
-    assert_eq!(limits[&name].max_borrowed_samples, 2048);
+    assert_eq!(limits[name.as_str()].buffer_capacity, 1024);
+    assert_eq!(limits[name.as_str()].max_borrowed_samples, 2048);
     let storage = plan.allocate().unwrap();
     let bindings = storage.bind().unwrap();
     let endpoints = bindings.ipc::<u64>(&name).unwrap();

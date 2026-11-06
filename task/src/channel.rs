@@ -3,10 +3,13 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use super::{Publisher, Subscriber};
-use crate::storage::{PublisherStorage, PublisherStoragePlan, StorageError};
+use crate::{
+    ChannelName,
+    storage::{PublisherStorage, PublisherStoragePlan, StorageError},
+};
 
 struct Key<T> {
-    channel: Arc<str>,
+    channel: Arc<ChannelName>,
     index: usize,
     payload: PhantomData<fn(T) -> T>,
 }
@@ -100,7 +103,7 @@ pub struct ChannelTopology {
 /// must be unique within the graph.
 pub struct ChannelPlan<T> {
     forwarding_retention: usize,
-    name: Arc<str>,
+    name: Arc<ChannelName>,
     publishers: Vec<PublisherSpec>,
     subscribers: Vec<SubscriberSpec>,
     payload: PhantomData<fn(T) -> T>,
@@ -148,7 +151,7 @@ impl<T> ChannelPlan<T> {
             payload: PhantomData,
         })
     }
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(name: impl Into<ChannelName>) -> Self {
         Self {
             forwarding_retention: 0,
             name: name.into().into(),
@@ -325,14 +328,14 @@ impl<T> ChannelPlan<T> {
 /// Fixed arenas and endpoint configuration for one channel.
 #[derive(Debug)]
 pub struct ChannelStorage<T> {
-    name: Arc<str>,
+    name: Arc<ChannelName>,
     publishers: Vec<PublisherStorage<T>>,
     subscribers: Vec<SubscriberSpec>,
 }
 
 impl<T> ChannelStorage<T> {
     pub fn name(&self) -> &str {
-        &self.name
+        self.name.as_str()
     }
 
     /// Allocated arena capacity for a declared publisher, for budgeting checks.
@@ -451,7 +454,7 @@ impl std::error::Error for EndpointError {}
 /// Temporary construction bindings. Taken endpoints borrow storage, not this
 /// table, so it can be dropped immediately after building callbacks and fixtures.
 pub struct ChannelBindings<'graph_storage, T> {
-    channel: Arc<str>,
+    channel: Arc<ChannelName>,
     publishers: Vec<RefCell<Option<Publisher<'graph_storage, T>>>>,
     subscribers: Vec<RefCell<Option<Subscriber<'graph_storage, T>>>>,
 }
@@ -509,7 +512,7 @@ mod tests {
     use super::*;
     fn key<T>(name: &str, index: usize) -> Key<T> {
         Key {
-            channel: Arc::from(name),
+            channel: Arc::new(name.into()),
             index,
             payload: PhantomData,
         }

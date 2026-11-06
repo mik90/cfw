@@ -76,8 +76,8 @@ pub struct ForwardingEdge {
     pub output: String,
     pub field: String,
     pub input: String,
-    pub source_channel: String,
-    pub output_channel: String,
+    pub source_channel: task::ChannelName,
+    pub output_channel: task::ChannelName,
 }
 impl GraphPlan {
     pub fn bundle_input_key<M: Send + Sync + 'static, S: ForwardedSources>(
@@ -187,7 +187,11 @@ impl GraphPlan {
         }
         for &(field, input, source_channel, _) in fields {
             self.forwarding_edges.push(ForwardingEdge {
-                callback: self.active_task.clone().unwrap_or_default(),
+                callback: self
+                    .active_task
+                    .as_ref()
+                    .map(|name| name.as_str().to_owned())
+                    .unwrap_or_default(),
                 output: output.into(),
                 field: field.into(),
                 input: input.into(),

@@ -27,7 +27,7 @@ enum EndpointBinding {
     Input(SourceBinding),
     Output {
         binding: OutputBinding,
-        channel: String,
+        channel: task::ChannelName,
         payload_type: String,
         capacity: usize,
     },
@@ -41,7 +41,7 @@ enum Request {
     Output {
         name: task::CallbackName,
         ordinal: usize,
-        channel: String,
+        channel: task::ChannelName,
         payload_type: String,
         capacity: usize,
     },
@@ -75,7 +75,7 @@ impl ExplicitReplayEndpoint {
 pub struct ExactReplayPlan {
     endpoints: Vec<(task::CallbackName, usize, EndpointBinding)>,
     #[cfg(feature = "iceoryx2")]
-    local_outputs: Vec<(String, usize, bool)>,
+    local_outputs: Vec<(task::ChannelName, usize, bool)>,
 }
 impl ExactReplayPlan {
     pub fn declare(plan: &mut GraphPlan, log: &ReplayLog) -> Result<Self, ExactReplayStepError> {

@@ -18,4 +18,5 @@ pub use plan::{
     BuildError, ChannelOverrides, EndpointDirection, GraphBindings, GraphPlan, GraphStorage, Task,
     TaskBinding, TaskRegistration,
 };
+pub use task::ChannelName;
 pub use topology::Topology;

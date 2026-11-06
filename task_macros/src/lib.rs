@@ -1042,7 +1042,7 @@ fn generate_registration(
         schema.push(quote!((stringify!(#name), ::task_graph::EndpointDirection::#direction)));
         channel_names.push(quote!(__cfw_overrides.resolve(stringify!(#name), ::task_graph::EndpointDirection::#direction, || {
             let value = #channel;
-            ::core::convert::AsRef::<str>::as_ref(&value).to_owned()
+            ::task_graph::ChannelName::new(::core::convert::AsRef::<str>::as_ref(&value))
         })?));
         let family = endpoint
             .forwarded
@@ -1137,7 +1137,7 @@ fn generate_registration(
         impl ::task_graph::Task for #self_ty {
             fn register(self: Box<Self>, __cfw_plan: &mut ::task_graph::GraphPlan, __cfw_overrides: &::task_graph::ChannelOverrides) -> Result<::task_graph::TaskBinding, ::task_graph::BuildError> {
                 __cfw_overrides.validate(&[#(#schema),*])?;
-                let __cfw_names: Vec<String> = vec![#(#channel_names),*];
+                let __cfw_names: Vec<::task_graph::ChannelName> = vec![#(#channel_names),*];
                 let __cfw_declaration = #declaration::from_keys(#(#keys),*);
                 use ::task_graph::capture::MaybeCapture as _;
                 use ::task_graph::replay::MaybeDecode as _;

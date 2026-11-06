@@ -8,7 +8,10 @@ use std::{
     ops::Range,
     sync::Arc,
 };
-use task::{Callback, ChannelBindings, ChannelName, ChannelPlan, ChannelStorage, SubscriberPolicy};
+use task::{
+    Callback, CallbackName, ChannelBindings, ChannelName, ChannelPlan, ChannelStorage,
+    SubscriberPolicy,
+};
 use topology::Topology;
 
 #[derive(Debug)]
@@ -62,13 +65,13 @@ impl EndpointDirection {
 /// channel endpoint indices. Resolution precedes all endpoint registration.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelOverrides {
-    channels: BTreeMap<(EndpointDirection, String), String>,
+    channels: BTreeMap<(EndpointDirection, String), ChannelName>,
 }
 impl ChannelOverrides {
     pub fn input_channel(
         &mut self,
         endpoint: impl Into<String>,
-        channel: impl Into<String>,
+        channel: impl Into<ChannelName>,
     ) -> &mut Self {
         self.channels
             .insert((EndpointDirection::Input, endpoint.into()), channel.into());
@@ -77,7 +80,7 @@ impl ChannelOverrides {
     pub fn output_channel(
         &mut self,
         endpoint: impl Into<String>,
-        channel: impl Into<String>,
+        channel: impl Into<ChannelName>,
     ) -> &mut Self {
         self.channels
             .insert((EndpointDirection::Output, endpoint.into()), channel.into());
@@ -98,7 +101,7 @@ impl ChannelOverrides {
                     direction.name()
                 )));
             }
-            if channel.is_empty() {
+            if channel.as_str().is_empty() {
                 return Err(BuildError(format!(
                     "endpoint '{name}' has an empty channel override"
                 )));
@@ -110,14 +113,14 @@ impl ChannelOverrides {
         &self,
         endpoint: &str,
         direction: EndpointDirection,
-        default: impl FnOnce() -> String,
-    ) -> Result<String, BuildError> {
+        default: impl FnOnce() -> ChannelName,
+    ) -> Result<ChannelName, BuildError> {
         let name = self
             .channels
-            .get(&(direction, endpoint.into()))
+            .get(&(direction, endpoint.to_owned()))
             .cloned()
             .unwrap_or_else(default);
-        if name.is_empty() {
+        if name.as_str().is_empty() {
             return Err(BuildError(format!(
                 "endpoint '{endpoint}' has an empty channel name"
             )));
@@ -150,7 +153,7 @@ impl TaskRegistration {
     pub fn input_channel(
         &mut self,
         endpoint: impl Into<String>,
-        channel: impl Into<String>,
+        channel: impl Into<ChannelName>,
     ) -> &mut Self {
         self.channels.input_channel(endpoint, channel);
         self
@@ -158,17 +161,17 @@ impl TaskRegistration {
     pub fn output_channel(
         &mut self,
         endpoint: impl Into<String>,
-        channel: impl Into<String>,
+        channel: impl Into<ChannelName>,
     ) -> &mut Self {
         self.channels.output_channel(endpoint, channel);
         self
     }
     pub fn register(self, plan: &mut GraphPlan) -> Result<(), BuildError> {
-        if plan.tasks.contains_key(&self.name) {
+        if plan.tasks.contains_key(self.name.as_str()) {
             return Err(BuildError(format!("duplicate task '{}'", self.name)));
         }
         let start = plan.endpoints.len();
-        plan.active_task = Some(self.name.clone());
+        plan.active_task = Some(self.name.clone().into());
         let binding = self
             .task
             .register(plan, &self.channels)
@@ -176,7 +179,7 @@ impl TaskRegistration {
         plan.active_task = None;
         let binding = binding?;
         plan.tasks
-            .insert(self.name.clone(), start..plan.endpoints.len());
+            .insert(self.name.clone().into(), start..plan.endpoints.len());
         plan.callbacks.push((self.name, self.schedule, binding));
         Ok(())
     }
@@ -268,7 +271,7 @@ impl<'a, T: 'static> Binding<'a> for ChannelBindings<'a, T> {
 pub(crate) struct Channel {
     pub(crate) capture: Option<capture::CaptureDeclaration>,
     pub(crate) replay: Option<replay::SourceDeclaration>,
-    pub(crate) origin: Option<String>,
+    pub(crate) origin: Option<CallbackName>,
     pub(crate) plan: Box<dyn Plan>,
     pub(crate) publishers: usize,
     pub(crate) subscribers: usize,
@@ -276,17 +279,17 @@ pub(crate) struct Channel {
 #[derive(Default)]
 pub struct GraphPlan {
     pub(crate) forwarding_edges: Vec<bundle::ForwardingEdge>,
-    pub(crate) active_task: Option<String>,
-    pub(crate) channels: BTreeMap<String, Channel>,
+    pub(crate) active_task: Option<CallbackName>,
+    pub(crate) channels: BTreeMap<ChannelName, Channel>,
     pub(crate) endpoints: Vec<endpoints::PlannedEndpoint>,
-    pub(crate) tasks: BTreeMap<String, Range<usize>>,
+    pub(crate) tasks: BTreeMap<CallbackName, Range<usize>>,
     callbacks: Vec<TaskDefinition>,
     #[cfg(feature = "iceoryx2")]
-    pub(crate) events: BTreeMap<String, (task::iox2::Iox2ChannelPlan<()>, usize)>,
+    pub(crate) events: BTreeMap<ChannelName, (task::iox2::Iox2ChannelPlan<()>, usize)>,
     #[cfg(feature = "iceoryx2")]
     runtime: Option<Arc<task::iox2::Iox2Runtime>>,
     #[cfg(feature = "iceoryx2")]
-    ipc_limits: BTreeMap<String, task::iox2::Iox2ChannelConfig>,
+    ipc_limits: BTreeMap<ChannelName, task::iox2::Iox2ChannelConfig>,
 }
 impl GraphPlan {
     /// Generated registration annotates each endpoint after its checked declaration.
@@ -302,7 +305,11 @@ impl GraphPlan {
     pub fn topology(&self) -> Topology {
         let mut snapshot = Topology {
             forwarding: self.forwarding_edges.clone(),
-            callbacks: self.tasks.keys().cloned().collect(),
+            callbacks: self
+                .tasks
+                .keys()
+                .map(|name| name.as_str().to_owned())
+                .collect(),
             channels: self
                 .channels
                 .values()
@@ -326,11 +333,11 @@ impl GraphPlan {
                 ordinals[usize::from(endpoint.output)] += 1;
                 snapshot.endpoints.push(topology::EndpointTopology {
                     forwardable: endpoint.forwardable,
-                    callback: callback.clone(),
+                    callback: callback.as_str().to_owned(),
                     name: endpoint.name.clone().unwrap_or_else(|| ordinal.to_string()),
                     ordinal,
                     output: endpoint.output,
-                    channel: endpoint.channel.clone(),
+                    channel: endpoint.channel.as_str().to_owned(),
                     transport: endpoint.transport,
                     payload_type: endpoint.payload_type,
                     capacity: endpoint.capacity,
@@ -379,7 +386,11 @@ impl GraphPlan {
             subscribers: 0,
         });
         let existing = entry.plan.payload_type();
-        let origin = entry.origin.as_deref().unwrap_or("direct declaration");
+        let origin = entry
+            .origin
+            .as_ref()
+            .map(|task| task.as_str())
+            .unwrap_or("direct declaration");
         entry.plan.any_mut().downcast_mut().ok_or_else(|| {
             BuildError(format!(
                 "channel '{name}': incompatible payload type or transport (first declared by '{origin}' as {existing}, requested native {})",
@@ -448,7 +459,7 @@ impl GraphPlan {
         let mut channels: BTreeMap<ChannelName, Box<dyn Stored>> = BTreeMap::new();
         for (name, channel) in self.channels {
             names.intern(&name);
-            channels.insert(name.into(), channel.plan.allocate()?);
+            channels.insert(name, channel.plan.allocate()?);
         }
         #[cfg(feature = "iceoryx2")]
         let events = self
@@ -479,10 +490,10 @@ impl GraphPlan {
         self.prepare_forwarding()?;
         #[cfg(feature = "iceoryx2")]
         for (name, config) in self.ipc_service_limits()? {
-            if let Some(channel) = self.channels.get_mut(&name) {
+            if let Some(channel) = self.channels.get_mut(name.as_str()) {
                 channel.plan.set_iox2_config(config.clone());
             }
-            if let Some((plan, _)) = self.events.get_mut(&name) {
+            if let Some((plan, _)) = self.events.get_mut(name.as_str()) {
                 plan.set_config(config);
                 plan.validate()?;
             }
@@ -513,7 +524,7 @@ pub struct GraphStorage {
     channels: BTreeMap<task::ChannelName, Box<dyn Stored>>,
     names: Arc<task::ChannelNameInterner>,
     #[cfg(feature = "iceoryx2")]
-    events: BTreeMap<String, Box<dyn Stored>>,
+    events: BTreeMap<ChannelName, Box<dyn Stored>>,
 }
 impl GraphStorage {
     pub fn topology(&self) -> &Topology {
@@ -570,7 +581,7 @@ impl GraphStorage {
 pub struct GraphBindings<'a> {
     pub(crate) channels: BTreeMap<ChannelName, Box<dyn Binding<'a> + 'a>>,
     #[cfg(feature = "iceoryx2")]
-    events: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
+    events: BTreeMap<ChannelName, Box<dyn Binding<'a> + 'a>>,
 }
 impl<'a> GraphBindings<'a> {
     /// Select delivery for one IPC output before its endpoint is taken by a task.
@@ -700,14 +711,14 @@ mod ipc {
         /// the defaults to cover every task, capture and fixture endpoint.
         pub fn set_ipc_service_limits(
             &mut self,
-            channel: impl Into<String>,
+            channel: impl Into<ChannelName>,
             limits: Iox2ChannelConfig,
         ) {
             self.ipc_limits.insert(channel.into(), limits);
         }
         pub fn ipc_service_limits(
             &self,
-        ) -> Result<BTreeMap<String, Iox2ChannelConfig>, BuildError> {
+        ) -> Result<BTreeMap<ChannelName, Iox2ChannelConfig>, BuildError> {
             let mut requirements = BTreeMap::new();
             for (name, channel) in &self.channels {
                 if let Some(config) = channel.plan.iox2_requirements()? {
@@ -781,7 +792,11 @@ mod ipc {
                 subscribers: 0,
             });
             let existing = channel.plan.payload_type();
-            let origin = channel.origin.as_deref().unwrap_or("direct declaration");
+            let origin = channel
+                .origin
+                .as_ref()
+                .map(|task| task.as_str())
+                .unwrap_or("direct declaration");
             channel.plan.any_mut().downcast_mut().ok_or_else(|| {
                 BuildError(format!(
                     "channel '{name}': incompatible payload type or transport (first declared by '{origin}' as {existing}, requested IPC {})", std::any::type_name::<T>()
