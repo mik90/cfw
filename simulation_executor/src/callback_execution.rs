@@ -29,8 +29,8 @@ pub enum BatchExecutionError<E> {
 /// state and consumed inputs are not rolled back. Preparation/validation/commit
 /// panics propagate with the same cleanup; a commit panic cannot retract an
 /// already-published prefix. Phase handles remain internal to this utility.
-pub fn execute_callback_batch<'a, 'storage: 'a, R, E>(
-    callbacks: impl IntoIterator<Item = (usize, &'a mut (dyn Callback + 'storage))>,
+pub fn execute_callback_batch<'a, 'graph_storage: 'a, R, E>(
+    callbacks: impl IntoIterator<Item = (usize, &'a mut (dyn Callback + 'graph_storage))>,
     context: &Context,
     workers: usize,
     before_commit: impl FnOnce(&[usize]) -> Result<R, E>,

@@ -22,11 +22,11 @@ impl DroppedMessages {
 
 /// Capture endpoint whose messages may outlive both the fixture and executor.
 /// The application must retain graph storage until all messages are dropped.
-pub struct TestSubscriber<'storage, T> {
-    subscriber: Subscriber<'storage, T>,
+pub struct TestSubscriber<'graph_storage, T> {
+    subscriber: Subscriber<'graph_storage, T>,
 }
-impl<'storage, T> TestSubscriber<'storage, T> {
-    pub fn new(subscriber: Subscriber<'storage, T>) -> Self {
+impl<'graph_storage, T> TestSubscriber<'graph_storage, T> {
+    pub fn new(subscriber: Subscriber<'graph_storage, T>) -> Self {
         Self { subscriber }
     }
 
@@ -49,7 +49,10 @@ impl<'storage, T> TestSubscriber<'storage, T> {
 
     pub fn try_take_messages(
         &mut self,
-    ) -> (Vec<ArenaReaderPtr<'storage, Message<T>>>, DroppedMessages) {
+    ) -> (
+        Vec<ArenaReaderPtr<'graph_storage, Message<T>>>,
+        DroppedMessages,
+    ) {
         self.subscriber.update();
         let dropped = DroppedMessages {
             writer: self.subscriber.writer_drops(),
@@ -61,7 +64,7 @@ impl<'storage, T> TestSubscriber<'storage, T> {
         )
     }
 
-    pub fn take_messages(&mut self) -> Vec<ArenaReaderPtr<'storage, Message<T>>> {
+    pub fn take_messages(&mut self) -> Vec<ArenaReaderPtr<'graph_storage, Message<T>>> {
         let (messages, dropped) = self.try_take_messages();
         assert!(!dropped.any(), "test subscriber drops: {dropped:?}");
         messages

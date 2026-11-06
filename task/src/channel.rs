@@ -450,17 +450,17 @@ impl std::error::Error for EndpointError {}
 
 /// Temporary construction bindings. Taken endpoints borrow storage, not this
 /// table, so it can be dropped immediately after building callbacks and fixtures.
-pub struct ChannelBindings<'storage, T> {
+pub struct ChannelBindings<'graph_storage, T> {
     channel: Arc<str>,
-    publishers: Vec<RefCell<Option<Publisher<'storage, T>>>>,
-    subscribers: Vec<RefCell<Option<Subscriber<'storage, T>>>>,
+    publishers: Vec<RefCell<Option<Publisher<'graph_storage, T>>>>,
+    subscribers: Vec<RefCell<Option<Subscriber<'graph_storage, T>>>>,
 }
 
-impl<'storage, T> ChannelBindings<'storage, T> {
+impl<'graph_storage, T> ChannelBindings<'graph_storage, T> {
     pub fn configure_publisher<R>(
         &self,
         key: &PublisherKey<T>,
-        configure: impl FnOnce(&mut Publisher<'storage, T>) -> R,
+        configure: impl FnOnce(&mut Publisher<'graph_storage, T>) -> R,
     ) -> Result<R, EndpointError> {
         if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
@@ -476,7 +476,7 @@ impl<'storage, T> ChannelBindings<'storage, T> {
     pub fn take_publisher(
         &self,
         key: &PublisherKey<T>,
-    ) -> Result<Publisher<'storage, T>, EndpointError> {
+    ) -> Result<Publisher<'graph_storage, T>, EndpointError> {
         if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
         }
@@ -491,7 +491,7 @@ impl<'storage, T> ChannelBindings<'storage, T> {
     pub fn take_subscriber(
         &self,
         key: &SubscriberKey<T>,
-    ) -> Result<Subscriber<'storage, T>, EndpointError> {
+    ) -> Result<Subscriber<'graph_storage, T>, EndpointError> {
         if self.channel != key.0.channel {
             return Err(EndpointError::WrongChannel);
         }

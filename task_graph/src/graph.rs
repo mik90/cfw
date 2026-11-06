@@ -7,9 +7,9 @@ use task::time::FrameworkTime;
 use task::{Callback, Context};
 
 pub type FactoryError = Box<dyn std::error::Error + Send + Sync>;
-type StoredCallback<'storage> = Box<dyn Callback + 'storage>;
-type Factory<'build, 'storage> =
-    Box<dyn FnOnce() -> Result<StoredCallback<'storage>, FactoryError> + 'build>;
+type StoredCallback<'graph_storage> = Box<dyn Callback + 'graph_storage>;
+type Factory<'build, 'graph_storage> =
+    Box<dyn FnOnce() -> Result<StoredCallback<'graph_storage>, FactoryError> + 'build>;
 
 #[derive(Debug)]
 pub enum GraphBuildError {
@@ -44,19 +44,19 @@ impl std::error::Error for GraphBuildError {}
 
 /// Deferred callback construction after storage and typed bindings exist.
 /// Factories can borrow temporary bindings for `'build`; returned callbacks only
-/// retain their storage borrows for `'storage` and can move to scoped workers.
-pub struct GraphBuilder<'build, 'storage> {
-    factories: Vec<(String, CallbackSchedule, Factory<'build, 'storage>)>,
+/// retain their storage borrows for `'graph_storage` and can move to scoped workers.
+pub struct GraphBuilder<'build, 'graph_storage> {
+    factories: Vec<(String, CallbackSchedule, Factory<'build, 'graph_storage>)>,
     channel_names: Arc<ChannelNameInterner>,
 }
 
-impl<'build, 'storage> Default for GraphBuilder<'build, 'storage> {
+impl<'build, 'graph_storage> Default for GraphBuilder<'build, 'graph_storage> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'build, 'storage> GraphBuilder<'build, 'storage> {
+impl<'build, 'graph_storage> GraphBuilder<'build, 'graph_storage> {
     pub fn new() -> Self {
         Self {
             factories: Vec::new(),
@@ -87,7 +87,7 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
     pub fn add_callback<F, C>(&mut self, name: impl Into<String>, factory: F)
     where
         F: FnOnce() -> Result<C, FactoryError> + 'build,
-        C: Callback + 'storage,
+        C: Callback + 'graph_storage,
     {
         self.add_scheduled_callback(name, CallbackSchedule::input_triggered(), factory);
     }
@@ -99,20 +99,20 @@ impl<'build, 'storage> GraphBuilder<'build, 'storage> {
         factory: F,
     ) where
         F: FnOnce() -> Result<C, FactoryError> + 'build,
-        C: Callback + 'storage,
+        C: Callback + 'graph_storage,
     {
         self.factories.push((
             name.into(),
             schedule,
             Box::new(move || {
-                factory().map(|callback| Box::new(callback) as StoredCallback<'storage>)
+                factory().map(|callback| Box::new(callback) as StoredCallback<'graph_storage>)
             }),
         ));
     }
 
     /// Validate names before running factories. Failure drops all successfully
     /// constructed callbacks and the unexecuted factories by normal destruction.
-    pub fn build(self) -> Result<BuiltGraph<'storage>, GraphBuildError> {
+    pub fn build(self) -> Result<BuiltGraph<'graph_storage>, GraphBuildError> {
         validate_callbacks(
             self.factories
                 .iter()
@@ -151,15 +151,15 @@ pub(crate) fn validate_callbacks<'a>(
 
 /// Callbacks and their metadata, ready to hand to an executor. Typed endpoints
 /// retain their storage borrows independently of temporary construction bindings.
-pub struct BuiltGraph<'storage> {
-    callbacks: Vec<ScheduledCallback<'storage>>,
+pub struct BuiltGraph<'graph_storage> {
+    callbacks: Vec<ScheduledCallback<'graph_storage>>,
     metadata: GraphMetadata,
 }
 
-impl<'storage> BuiltGraph<'storage> {
+impl<'graph_storage> BuiltGraph<'graph_storage> {
     /// Names and schedules must be validated before constructing callbacks.
     pub(crate) fn from_callbacks(
-        callbacks: Vec<ScheduledCallback<'storage>>,
+        callbacks: Vec<ScheduledCallback<'graph_storage>>,
         channel_names: Arc<ChannelNameInterner>,
     ) -> Self {
         let mut graph = Self {
@@ -174,7 +174,7 @@ impl<'storage> BuiltGraph<'storage> {
         graph
     }
 
-    fn extend(&mut self, callbacks: Vec<ScheduledCallback<'storage>>) {
+    fn extend(&mut self, callbacks: Vec<ScheduledCallback<'graph_storage>>) {
         for node in &callbacks {
             Arc::make_mut(&mut self.metadata.callback_names).intern(&node.name);
             node.callback.visit_channel_names(&mut |channel| {
@@ -206,7 +206,7 @@ impl<'storage> BuiltGraph<'storage> {
     /// Append infrastructure callbacks without changing existing callback indices.
     pub fn append_callbacks(
         mut self,
-        callbacks: impl IntoIterator<Item = ScheduledCallback<'storage>>,
+        callbacks: impl IntoIterator<Item = ScheduledCallback<'graph_storage>>,
     ) -> Result<Self, GraphBuildError> {
         let callbacks: Vec<_> = callbacks.into_iter().collect();
         validate_callbacks(
@@ -223,8 +223,8 @@ impl<'storage> BuiltGraph<'storage> {
         mut map: impl FnMut(
             usize,
             &str,
-            Box<dyn Callback + 'storage>,
-        ) -> Result<Box<dyn Callback + 'storage>, E>,
+            Box<dyn Callback + 'graph_storage>,
+        ) -> Result<Box<dyn Callback + 'graph_storage>, E>,
     ) -> Result<Self, E> {
         let callbacks = self
             .callbacks
@@ -252,7 +252,7 @@ impl<'storage> BuiltGraph<'storage> {
             configure(&callback.name, &mut callback.schedule);
         }
     }
-    pub fn into_parts(self) -> (Vec<ScheduledCallback<'storage>>, GraphMetadata) {
+    pub fn into_parts(self) -> (Vec<ScheduledCallback<'graph_storage>>, GraphMetadata) {
         (self.callbacks, self.metadata)
     }
 }
@@ -386,9 +386,9 @@ impl CallbackSchedule {
     }
 }
 
-pub struct ScheduledCallback<'storage> {
+pub struct ScheduledCallback<'graph_storage> {
     pub name: String,
-    pub callback: Box<dyn Callback + 'storage>,
+    pub callback: Box<dyn Callback + 'graph_storage>,
     pub schedule: CallbackSchedule,
 }
 

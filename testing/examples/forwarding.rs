@@ -24,22 +24,27 @@ struct Detection {
 }
 
 #[derive(ForwardedSources)]
-struct DetectionSources<'storage> {
-    image: ArenaReaderPtr<'storage, Message<Image>>,
-    calibration: ArenaReaderPtr<'storage, Message<Calibration>>,
+struct DetectionSources<'graph_storage> {
+    image: ArenaReaderPtr<'graph_storage, Message<Image>>,
+    calibration: ArenaReaderPtr<'graph_storage, Message<Calibration>>,
 }
 
 struct Detect;
 #[task_callback]
 impl Detect {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &self,
-        #[trigger(true)] mut images: RequiredInput<'_, 'storage, Image, Forwardable>,
-        #[trigger(true)] mut calibration: RequiredInput<'_, 'storage, Calibration, Forwardable>,
+        #[trigger(true)] mut images: RequiredInput<'_, 'graph_storage, Image, Forwardable>,
+        #[trigger(true)] mut calibration: RequiredInput<
+            '_,
+            'graph_storage,
+            Calibration,
+            Forwardable,
+        >,
         #[forwards(image = images, calibration = calibration)] detections: OutputUninit<
             '_,
-            'storage,
-            Forwarded<Detection, DetectionSources<'storage>>,
+            'graph_storage,
+            Forwarded<Detection, DetectionSources<'graph_storage>>,
         >,
     ) {
         let image = images.forward().unwrap();
@@ -58,15 +63,15 @@ impl Detect {
 struct Retain(Arc<AtomicUsize>);
 #[task_callback]
 impl Retain {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &self,
         #[capacity(32)]
         #[keep_across_runs(true)]
         #[trigger(true)]
         detections: InputSpan<
             '_,
-            'storage,
-            Forwarded<Detection, DetectionSources<'storage>>,
+            'graph_storage,
+            Forwarded<Detection, DetectionSources<'graph_storage>>,
         >,
     ) {
         for detection in detections.inputs() {

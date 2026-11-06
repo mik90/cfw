@@ -196,7 +196,7 @@ pub fn with_fizzer_graph<R>(
     channel: &str,
     count: usize,
     published: Arc<AtomicUsize>,
-    run: impl for<'storage> FnOnce(BuiltGraph<'storage>) -> R,
+    run: impl for<'graph_storage> FnOnce(BuiltGraph<'graph_storage>) -> R,
 ) -> Result<R, Box<dyn std::error::Error>> {
     let acknowledgment = format!("{channel}_ack");
     let mut app = ApplicationBuilder::new();
@@ -222,7 +222,7 @@ pub fn with_buzzer_graph<R>(
     count: usize,
     complete: Arc<AtomicBool>,
     printed: Arc<AtomicUsize>,
-    run: impl for<'storage> FnOnce(BuiltGraph<'storage>) -> R,
+    run: impl for<'graph_storage> FnOnce(BuiltGraph<'graph_storage>) -> R,
 ) -> Result<R, Box<dyn std::error::Error>> {
     let acknowledgment = format!("{channel}_ack");
     let mut app = ApplicationBuilder::new();

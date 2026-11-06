@@ -10,15 +10,15 @@ use std::ops::{Deref, DerefMut};
 /// Exclusive in-place output reservation. A normal drop releases the slot
 /// without dropping a potentially partially initialized payload. It is up
 /// to the user to handle initialization failure.
-pub struct OutputUninit<'output, 'storage, T> {
-    publisher: &'output mut Publisher<'storage, T>,
-    ptr: ArenaPtrUninit<'storage, Message<T>>,
+pub struct OutputUninit<'output, 'graph_storage, T> {
+    publisher: &'output mut Publisher<'graph_storage, T>,
+    ptr: ArenaPtrUninit<'graph_storage, Message<T>>,
 }
 
-impl<'output, 'storage, T> OutputUninit<'output, 'storage, T> {
+impl<'output, 'graph_storage, T> OutputUninit<'output, 'graph_storage, T> {
     pub fn new(
-        publisher: &'output mut Publisher<'storage, T>,
-        ptr: ArenaPtrUninit<'storage, Message<T>>,
+        publisher: &'output mut Publisher<'graph_storage, T>,
+        ptr: ArenaPtrUninit<'graph_storage, Message<T>>,
     ) -> Self {
         Self { publisher, ptr }
     }
@@ -33,7 +33,7 @@ impl<'output, 'storage, T> OutputUninit<'output, 'storage, T> {
         unsafe { &mut *(&raw mut (*message).message).cast::<MaybeUninit<T>>() }
     }
 
-    pub fn write(mut self, value: T) -> Output<'output, 'storage, T> {
+    pub fn write(mut self, value: T) -> Output<'output, 'graph_storage, T> {
         self.payload_uninit().write(value);
         // SAFETY: write initialized T and loan_uninit initialized the header.
         unsafe { self.assume_init() }
@@ -41,7 +41,7 @@ impl<'output, 'storage, T> OutputUninit<'output, 'storage, T> {
 
     /// # Safety
     /// The payload must be fully initialized.
-    pub unsafe fn assume_init(self) -> Output<'output, 'storage, T> {
+    pub unsafe fn assume_init(self) -> Output<'output, 'graph_storage, T> {
         Output {
             publisher: self.publisher,
             // SAFETY: The caller initialized T; loan_uninit initialized the header.
@@ -52,9 +52,9 @@ impl<'output, 'storage, T> OutputUninit<'output, 'storage, T> {
 
 /// Exclusive initialized output. Sending transfers it into the pending batch;
 /// dropping without sending destroys the payload and releases its slot.
-pub struct Output<'output, 'storage, T> {
-    publisher: &'output mut Publisher<'storage, T>,
-    ptr: ArenaPtr<'storage, Message<T>>,
+pub struct Output<'output, 'graph_storage, T> {
+    publisher: &'output mut Publisher<'graph_storage, T>,
+    ptr: ArenaPtr<'graph_storage, Message<T>>,
 }
 
 impl<T> Output<'_, '_, T> {
@@ -91,16 +91,16 @@ impl<T> DerefMut for Output<'_, '_, T> {
 /// A callback-local span borrowing one publisher. Each reservation owns a
 /// distinct arena slot. Outstanding and sent loans share the publisher's quota.
 /// Drop unsent handles to return their slots and quota before reserving again.
-pub struct OutputSpan<'output, 'storage, T> {
-    allocator: &'output ArenaAllocator<'storage, Message<T>>,
-    pending: &'output Cell<Vec<ArenaPtr<'storage, Message<T>>>>,
+pub struct OutputSpan<'output, 'graph_storage, T> {
+    allocator: &'output ArenaAllocator<'graph_storage, Message<T>>,
+    pending: &'output Cell<Vec<ArenaPtr<'graph_storage, Message<T>>>>,
     loan_capacity: usize,
     pending_len: Cell<usize>,
     outstanding: Cell<usize>,
 }
 
-impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
-    pub(super) fn new(publisher: &'output mut Publisher<'storage, T>) -> Self {
+impl<'output, 'graph_storage, T> OutputSpan<'output, 'graph_storage, T> {
+    pub(super) fn new(publisher: &'output mut Publisher<'graph_storage, T>) -> Self {
         Self {
             allocator: &publisher.allocator,
             loan_capacity: publisher.loan_capacity(),
@@ -110,7 +110,9 @@ impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
         }
     }
 
-    pub fn loan_uninit(&self) -> Result<OutputUninitSpan<'_, 'output, 'storage, T>, LoanError> {
+    pub fn loan_uninit(
+        &self,
+    ) -> Result<OutputUninitSpan<'_, 'output, 'graph_storage, T>, LoanError> {
         if self.outstanding.get() >= (self.loan_capacity - self.pending_len.get()) {
             return Err(LoanError::LoanCapacityReached);
         }
@@ -122,11 +124,14 @@ impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
         })
     }
 
-    pub fn loan(&self, value: T) -> Result<OutputSpanEntry<'_, 'output, 'storage, T>, LoanError> {
+    pub fn loan(
+        &self,
+        value: T,
+    ) -> Result<OutputSpanEntry<'_, 'output, 'graph_storage, T>, LoanError> {
         self.loan_uninit().map(|loan| loan.write(value))
     }
 
-    fn enqueue(&self, ptr: ArenaPtr<'storage, Message<T>>) {
+    fn enqueue(&self, ptr: ArenaPtr<'graph_storage, Message<T>>) {
         // The publisher exclusively lends its queue for the span's lifetime.
         // Reservations enforce (pending + outstanding) <= loan_capacity, and the
         // queue is preallocated to that capacity. Pushing this reserved slot
@@ -138,8 +143,8 @@ impl<'output, 'storage, T> OutputSpan<'output, 'storage, T> {
     }
 }
 
-struct Reservation<'span, 'output, 'storage, T> {
-    span: &'span OutputSpan<'output, 'storage, T>,
+struct Reservation<'span, 'output, 'graph_storage, T> {
+    span: &'span OutputSpan<'output, 'graph_storage, T>,
 }
 
 impl<T> Drop for Reservation<'_, '_, '_, T> {
@@ -150,12 +155,12 @@ impl<T> Drop for Reservation<'_, '_, '_, T> {
 
 /// Exclusive span reservation whose payload may be initialized in place.
 /// Dropping it releases the slot without dropping a partially initialized T.
-pub struct OutputUninitSpan<'span, 'output, 'storage, T> {
-    ptr: ArenaPtrUninit<'storage, Message<T>>,
-    reservation: Reservation<'span, 'output, 'storage, T>,
+pub struct OutputUninitSpan<'span, 'output, 'graph_storage, T> {
+    ptr: ArenaPtrUninit<'graph_storage, Message<T>>,
+    reservation: Reservation<'span, 'output, 'graph_storage, T>,
 }
 
-impl<'span, 'output, 'storage, T> OutputUninitSpan<'span, 'output, 'storage, T> {
+impl<'span, 'output, 'graph_storage, T> OutputUninitSpan<'span, 'output, 'graph_storage, T> {
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
         let message = self.ptr.payload_uninit().as_mut_ptr();
         // SAFETY: This reservation exclusively owns its slot. MaybeUninit<T>
@@ -163,7 +168,7 @@ impl<'span, 'output, 'storage, T> OutputUninitSpan<'span, 'output, 'storage, T> 
         unsafe { &mut *(&raw mut (*message).message).cast::<MaybeUninit<T>>() }
     }
 
-    pub fn write(mut self, value: T) -> OutputSpanEntry<'span, 'output, 'storage, T> {
+    pub fn write(mut self, value: T) -> OutputSpanEntry<'span, 'output, 'graph_storage, T> {
         self.payload_uninit().write(value);
         // SAFETY: write initialized the payload; Publisher initialized the header.
         unsafe { self.assume_init() }
@@ -171,7 +176,7 @@ impl<'span, 'output, 'storage, T> OutputUninitSpan<'span, 'output, 'storage, T> 
 
     /// # Safety
     /// The entire payload must be initialized.
-    pub unsafe fn assume_init(self) -> OutputSpanEntry<'span, 'output, 'storage, T> {
+    pub unsafe fn assume_init(self) -> OutputSpanEntry<'span, 'output, 'graph_storage, T> {
         OutputSpanEntry {
             // SAFETY: The caller initialized T; Publisher initialized the header.
             ptr: unsafe { self.ptr.assume_init() },
@@ -182,9 +187,9 @@ impl<'span, 'output, 'storage, T> OutputUninitSpan<'span, 'output, 'storage, T> 
 
 /// Exclusive initialized reservation. Sending enqueues it in send order;
 /// dropping it without sending destroys the payload and returns its quota.
-pub struct OutputSpanEntry<'span, 'output, 'storage, T> {
-    ptr: ArenaPtr<'storage, Message<T>>,
-    reservation: Reservation<'span, 'output, 'storage, T>,
+pub struct OutputSpanEntry<'span, 'output, 'graph_storage, T> {
+    ptr: ArenaPtr<'graph_storage, Message<T>>,
+    reservation: Reservation<'span, 'output, 'graph_storage, T>,
 }
 
 impl<T> OutputSpanEntry<'_, '_, '_, T> {

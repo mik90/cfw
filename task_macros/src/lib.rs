@@ -68,14 +68,14 @@ fn derive_sources(item: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStrea
         let Type::Path(path) = &field.ty else {
             return Err(syn::Error::new_spanned(
                 field,
-                "expected ArenaReaderPtr<'storage, Message<T>>",
+                "expected ArenaReaderPtr<'graph_storage, Message<T>>",
             ));
         };
         let segment = path.path.segments.last().unwrap();
         let PathArguments::AngleBracketed(args) = &segment.arguments else {
             return Err(syn::Error::new_spanned(
                 field,
-                "expected ArenaReaderPtr<'storage, Message<T>>",
+                "expected ArenaReaderPtr<'graph_storage, Message<T>>",
             ));
         };
         if segment.ident != "ArenaReaderPtr"
@@ -206,7 +206,7 @@ struct StorageLifetimes;
 impl VisitMut for StorageLifetimes {
     fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
         if lifetime.ident != "static" {
-            *lifetime = parse_quote!('storage);
+            *lifetime = parse_quote!('graph_storage);
         }
     }
 }

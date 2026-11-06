@@ -39,9 +39,9 @@ pub trait Task {
 }
 /// A single-use binding operation valid for any borrow of the allocated storage.
 pub type TaskBinding = Box<
-    dyn for<'storage> FnOnce(
-        &GraphBindings<'storage>,
-    ) -> Result<Box<dyn Callback + 'storage>, BuildError>,
+    dyn for<'graph_storage> FnOnce(
+        &GraphBindings<'graph_storage>,
+    ) -> Result<Box<dyn Callback + 'graph_storage>, BuildError>,
 >;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

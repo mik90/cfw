@@ -66,10 +66,14 @@ struct NodeState {
     next: Option<FrameworkTime>,
 }
 
-enum Action<'storage> {
-    Once(Box<dyn FnOnce(FrameworkTime) -> Result<(), String> + Send + 'storage>),
+enum Action<'graph_storage> {
+    Once(Box<dyn FnOnce(FrameworkTime) -> Result<(), String> + Send + 'graph_storage>),
     Stream(
-        Box<dyn FnMut(FrameworkTime) -> Result<Option<FrameworkTime>, String> + Send + 'storage>,
+        Box<
+            dyn FnMut(FrameworkTime) -> Result<Option<FrameworkTime>, String>
+                + Send
+                + 'graph_storage,
+        >,
     ),
 }
 
@@ -79,9 +83,9 @@ pub(crate) use task::iox2::Iox2EventTarget as EventTarget;
 /// Borrowed, discrete-event simulation with deterministic batch commits.
 /// A failed step poisons the session: callback state and consumed inputs cannot
 /// be rolled back. Retained message handles remain valid for their storage borrow.
-pub struct SimulationState<'storage> {
+pub struct SimulationState<'graph_storage> {
     timers: Arc<std::sync::atomic::AtomicBool>,
-    callbacks: Vec<Box<dyn Callback + 'storage>>,
+    callbacks: Vec<Box<dyn Callback + 'graph_storage>>,
     names: Vec<String>,
     schedules: Vec<CallbackSchedule>,
     nodes: Vec<NodeState>,
@@ -91,21 +95,21 @@ pub struct SimulationState<'storage> {
     time: FrameworkTime,
     step_count: Saturating<usize>,
     failed: bool,
-    actions: BTreeMap<(FrameworkTime, usize), Action<'storage>>,
+    actions: BTreeMap<(FrameworkTime, usize), Action<'graph_storage>>,
     action_sequence: usize,
     #[cfg(feature = "iceoryx2")]
-    events: Vec<task::iox2::Iox2EventRegistration<'storage>>,
+    events: Vec<task::iox2::Iox2EventRegistration<'graph_storage>>,
     #[cfg(feature = "iceoryx2")]
-    event_targets: BTreeMap<(String, usize), EventTarget<'storage>>,
+    event_targets: BTreeMap<(String, usize), EventTarget<'graph_storage>>,
 }
 
-impl<'storage> SimulationState<'storage> {
-    pub fn new(graph: BuiltGraph<'storage>) -> Result<Self, StepError> {
+impl<'graph_storage> SimulationState<'graph_storage> {
+    pub fn new(graph: BuiltGraph<'graph_storage>) -> Result<Self, StepError> {
         Self::with_config(graph, SimulationConfig::default())
     }
 
     pub fn with_config(
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         config: SimulationConfig,
     ) -> Result<Self, StepError> {
         if config.node_executor_thread_count == 0
@@ -225,7 +229,7 @@ impl<'storage> SimulationState<'storage> {
     pub fn schedule_at(
         &mut self,
         at: FrameworkTime,
-        action: impl FnOnce(FrameworkTime) -> Result<(), String> + Send + 'storage,
+        action: impl FnOnce(FrameworkTime) -> Result<(), String> + Send + 'graph_storage,
     ) -> Result<(), StepError> {
         self.insert_action(at, Action::Once(Box::new(action)))
     }
@@ -235,14 +239,16 @@ impl<'storage> SimulationState<'storage> {
     pub fn schedule_stream(
         &mut self,
         at: FrameworkTime,
-        action: impl FnMut(FrameworkTime) -> Result<Option<FrameworkTime>, String> + Send + 'storage,
+        action: impl FnMut(FrameworkTime) -> Result<Option<FrameworkTime>, String>
+        + Send
+        + 'graph_storage,
     ) -> Result<(), StepError> {
         self.insert_action(at, Action::Stream(Box::new(action)))
     }
     fn insert_action(
         &mut self,
         at: FrameworkTime,
-        action: Action<'storage>,
+        action: Action<'graph_storage>,
     ) -> Result<(), StepError> {
         if self.failed {
             return Err(StepError::Poisoned);
@@ -263,7 +269,7 @@ impl<'storage> SimulationState<'storage> {
         &self,
         callback: &str,
         ordinal: usize,
-    ) -> Result<EventTarget<'storage>, StepError> {
+    ) -> Result<EventTarget<'graph_storage>, StepError> {
         self.event_targets
             .get(&(callback.into(), ordinal))
             .cloned()
@@ -274,7 +280,9 @@ impl<'storage> SimulationState<'storage> {
             })
     }
     #[cfg(feature = "iceoryx2")]
-    pub(crate) fn replay_event_targets(&self) -> BTreeMap<(String, usize), EventTarget<'storage>> {
+    pub(crate) fn replay_event_targets(
+        &self,
+    ) -> BTreeMap<(String, usize), EventTarget<'graph_storage>> {
         self.event_targets.clone()
     }
 

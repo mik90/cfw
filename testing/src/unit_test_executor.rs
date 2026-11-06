@@ -13,8 +13,8 @@ use task::{Publisher, Subscriber, time::FrameworkTime};
 use task_graph::BuiltGraph;
 
 /// Typed fixture publisher sharing the executor's clock and scheduled input queue.
-pub struct TestPublisher<'storage, T> {
-    publisher: Arc<Mutex<Publisher<'storage, T>>>,
+pub struct TestPublisher<'graph_storage, T> {
+    publisher: Arc<Mutex<Publisher<'graph_storage, T>>>,
     queue: std::sync::Weak<Mutex<std::collections::VecDeque<(FrameworkTime, T)>>>,
     time: Arc<TimeSource>,
 }
@@ -65,24 +65,27 @@ pub use iox2::{Iox2TestNotifier, Iox2TestPublisher, Iox2TestSubscriber};
 /// Deterministic callback testing over externally owned graph storage.
 /// Fixture endpoints must be reserved in channel plans before storage allocation.
 /// Fixtures and retained native messages can outlive this executor, but not storage.
-pub struct UnitTestExecutor<'storage> {
-    simulation: SimulationState<'storage>,
+pub struct UnitTestExecutor<'graph_storage> {
+    simulation: SimulationState<'graph_storage>,
     pub(crate) time: Arc<TimeSource>,
-    pub(crate) inputs: Vec<Box<dyn crate::builder::InputPump<'storage> + 'storage>>,
-    pub(crate) captures: Vec<Box<dyn crate::builder::Capture + 'storage>>,
+    pub(crate) inputs: Vec<Box<dyn crate::builder::InputPump<'graph_storage> + 'graph_storage>>,
+    pub(crate) captures: Vec<Box<dyn crate::builder::Capture + 'graph_storage>>,
     pub(crate) session: Option<crate::builder::SessionGuard>,
     failed: bool,
     #[cfg(feature = "iceoryx2")]
     pub(crate) events: iox2::PendingEvents,
 }
 
-impl<'storage> UnitTestExecutor<'storage> {
+impl<'graph_storage> UnitTestExecutor<'graph_storage> {
     /// Execute an existing graph while its storage remains externally owned.
-    pub fn new_with_graph(graph: BuiltGraph<'storage>, config: UnitTestExecutorConfig) -> Self {
+    pub fn new_with_graph(
+        graph: BuiltGraph<'graph_storage>,
+        config: UnitTestExecutorConfig,
+    ) -> Self {
         Self::try_new_with_graph(graph, config).expect("could not build unit test executor")
     }
     pub fn try_new_with_graph(
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         config: UnitTestExecutorConfig,
     ) -> Result<Self, StepError> {
         let time = Arc::new(TimeSource::new(config.start_time));
@@ -99,10 +102,10 @@ impl<'storage> UnitTestExecutor<'storage> {
     }
     /// Attach an endpoint reserved before storage allocation. The returned handle
     /// borrows storage, not the executor; scheduled sends require a live executor.
-    pub fn add_test_publisher<T: Send + Sync + 'storage>(
+    pub fn add_test_publisher<T: Send + Sync + 'graph_storage>(
         &mut self,
-        publisher: Publisher<'storage, T>,
-    ) -> TestPublisher<'storage, T> {
+        publisher: Publisher<'graph_storage, T>,
+    ) -> TestPublisher<'graph_storage, T> {
         let publisher = Arc::new(Mutex::new(publisher));
         let queue: crate::builder::Queue<T> = Default::default();
         let handle = TestPublisher {
@@ -121,8 +124,8 @@ impl<'storage> UnitTestExecutor<'storage> {
     /// Captured messages may outlive the executor, but not their channel storage.
     pub fn add_test_subscriber<T>(
         &self,
-        subscriber: Subscriber<'storage, T>,
-    ) -> TestSubscriber<'storage, T> {
+        subscriber: Subscriber<'graph_storage, T>,
+    ) -> TestSubscriber<'graph_storage, T> {
         TestSubscriber::new(subscriber)
     }
     pub fn step(&mut self) -> StepResult {
@@ -169,7 +172,7 @@ impl<'storage> UnitTestExecutor<'storage> {
     pub fn schedule_at(
         &mut self,
         at: FrameworkTime,
-        action: impl FnOnce(FrameworkTime) -> Result<(), String> + Send + 'storage,
+        action: impl FnOnce(FrameworkTime) -> Result<(), String> + Send + 'graph_storage,
     ) -> Result<(), StepError> {
         if self.failed {
             return Err(StepError::Poisoned);

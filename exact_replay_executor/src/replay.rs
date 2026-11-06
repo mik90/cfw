@@ -84,15 +84,15 @@ struct PublisherIndices {
     recorded: u32,
 }
 
-pub struct ExactReplayExecutor<'storage> {
+pub struct ExactReplayExecutor<'graph_storage> {
     detail_endpoint: Option<(Direction, usize)>,
     detail_header: Option<task::message::MessageHeader>,
-    callbacks: Vec<Box<dyn Callback + 'storage>>,
+    callbacks: Vec<Box<dyn Callback + 'graph_storage>>,
     mapping: Vec<usize>,
     publishers: Vec<BTreeMap<usize, PublisherIndices>>,
     metadata: GraphMetadata,
     log: ReplayLog,
-    bindings: ReplayBindings<'storage>,
+    bindings: ReplayBindings<'graph_storage>,
     reproduced: BTreeMap<Identity, Vec<u8>>,
     config: ExactReplayConfig,
     report: ReplayReport,
@@ -100,21 +100,21 @@ pub struct ExactReplayExecutor<'storage> {
     failed: bool,
     stop: StopSignal,
 }
-impl<'storage> ExactReplayExecutor<'storage> {
+impl<'graph_storage> ExactReplayExecutor<'graph_storage> {
     /// Construct replay over callbacks whose outputs are already bound locally.
     /// `ExactReplayPlan::bind` configures graph-planned IPC outputs. For explicit
     /// IPC bindings, use `Iox2ChannelStorage::bind_with_delivery(OutputDelivery::Local)`.
     pub fn new(
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         log: ReplayLog,
-        bindings: ReplayBindings<'storage>,
+        bindings: ReplayBindings<'graph_storage>,
     ) -> Result<Self, ExactReplayStepError> {
         Self::with_config(graph, log, bindings, ExactReplayConfig::default())
     }
     pub fn with_config(
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         log: ReplayLog,
-        mut bindings: ReplayBindings<'storage>,
+        mut bindings: ReplayBindings<'graph_storage>,
         config: ExactReplayConfig,
     ) -> Result<Self, ExactReplayStepError> {
         let (nodes, mut metadata) = graph.into_parts();

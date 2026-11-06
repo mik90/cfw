@@ -52,9 +52,9 @@ impl std::fmt::Display for LiveReplayError {
     }
 }
 impl std::error::Error for LiveReplayError {}
-pub struct ReplayControl<'storage, C: TimeSource = MonotonicClock> {
+pub struct ReplayControl<'graph_storage, C: TimeSource = MonotonicClock> {
     clock: ReplayTimeSource<C>,
-    stop: StopSignal<'storage>,
+    stop: StopSignal<'graph_storage>,
     exhausted: Arc<AtomicBool>,
 }
 impl<C: TimeSource> Clone for ReplayControl<'_, C> {
@@ -101,33 +101,33 @@ pub struct ReplayCompletion {
     pub drained: bool,
     pub final_time: FrameworkTime,
 }
-pub struct LiveReplayExecutor<'storage, C: TimeSource = MonotonicClock> {
-    inner: LiveExecutor<'storage, ReplayTimeSource<C>>,
-    feed: ReplayFeed<'storage>,
-    control: ReplayControl<'storage, C>,
+pub struct LiveReplayExecutor<'graph_storage, C: TimeSource = MonotonicClock> {
+    inner: LiveExecutor<'graph_storage, ReplayTimeSource<C>>,
+    feed: ReplayFeed<'graph_storage>,
+    control: ReplayControl<'graph_storage, C>,
     config: LiveReplayConfig,
 }
-impl<'storage> LiveReplayExecutor<'storage> {
+impl<'graph_storage> LiveReplayExecutor<'graph_storage> {
     pub fn new(
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         reader: SortedLogStreamReader,
-        sources: impl IntoIterator<Item = ReplaySource<'storage>>,
+        sources: impl IntoIterator<Item = ReplaySource<'graph_storage>>,
         config: LiveReplayConfig,
     ) -> Result<Self, LiveReplayError> {
         Self::with_clock(graph, reader, sources, config, MonotonicClock::default())
     }
 }
-struct StopOnDrop<'storage>(StopSignal<'storage>);
+struct StopOnDrop<'graph_storage>(StopSignal<'graph_storage>);
 impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
         self.0.request_stop();
     }
 }
-impl<'storage, C: TimeSource> LiveReplayExecutor<'storage, C> {
+impl<'graph_storage, C: TimeSource> LiveReplayExecutor<'graph_storage, C> {
     pub fn with_clock(
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         reader: SortedLogStreamReader,
-        sources: impl IntoIterator<Item = ReplaySource<'storage>>,
+        sources: impl IntoIterator<Item = ReplaySource<'graph_storage>>,
         mut config: LiveReplayConfig,
         base: C,
     ) -> Result<Self, LiveReplayError> {
@@ -161,7 +161,7 @@ impl<'storage, C: TimeSource> LiveReplayExecutor<'storage, C> {
             config,
         })
     }
-    pub fn control(&self) -> ReplayControl<'storage, C> {
+    pub fn control(&self) -> ReplayControl<'graph_storage, C> {
         self.control.clone()
     }
     pub fn run(self) -> Result<ReplayCompletion, LiveReplayError> {
@@ -172,7 +172,7 @@ impl<'storage, C: TimeSource> LiveReplayExecutor<'storage, C> {
     /// are scoped and joined, including when the controller panics or returns early.
     pub fn run_with<R>(
         self,
-        controller: impl FnOnce(&ReplayControl<'storage, C>) -> R,
+        controller: impl FnOnce(&ReplayControl<'graph_storage, C>) -> R,
     ) -> Result<(R, ReplayCompletion), LiveReplayError> {
         let Self {
             inner,

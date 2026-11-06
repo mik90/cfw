@@ -252,12 +252,17 @@ struct BorrowingForward;
 type BorrowedSourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<BorrowedSource>>;
 #[task_callback]
 impl BorrowingForward {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &self,
-        #[trigger(true)] mut input: task::Input<'_, 'storage, BorrowedSource, task::Forwardable>,
+        #[trigger(true)] mut input: task::Input<
+            '_,
+            'graph_storage,
+            BorrowedSource,
+            task::Forwardable,
+        >,
         #[forwards(source = input)] output: &mut Publisher<
-            'storage,
-            task::Forwarded<bool, BorrowedSourcePtr<'storage>>,
+            'graph_storage,
+            task::Forwarded<bool, BorrowedSourcePtr<'graph_storage>>,
         >,
     ) -> Result<(), LoanError> {
         for source in input.drain() {
@@ -269,12 +274,16 @@ impl BorrowingForward {
 struct RetainForwarded(Arc<AtomicUsize>);
 #[task_callback]
 impl RetainForwarded {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &self,
         #[capacity(32)]
         #[keep_across_runs(true)]
         #[trigger(true)]
-        input: InputSpan<'_, 'storage, task::Forwarded<bool, BorrowedSourcePtr<'storage>>>,
+        input: InputSpan<
+            '_,
+            'graph_storage,
+            task::Forwarded<bool, BorrowedSourcePtr<'graph_storage>>,
+        >,
     ) {
         let sum = input
             .inputs()

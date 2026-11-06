@@ -24,9 +24,9 @@ use task::{
 };
 
 /// Publishers for every callback with execution logging enabled.
-pub struct ExecutionLogPublishers<'storage> {
-    pub records: BTreeMap<String, Publisher<'storage, ExecutionRecord>>,
-    pub iox2_events: BTreeMap<String, Publisher<'storage, Iox2EventRecord>>,
+pub struct ExecutionLogPublishers<'graph_storage> {
+    pub records: BTreeMap<String, Publisher<'graph_storage, ExecutionRecord>>,
+    pub iox2_events: BTreeMap<String, Publisher<'graph_storage, Iox2EventRecord>>,
 }
 
 /// Persisted execution-log metadata. Contains no live records.
@@ -50,13 +50,13 @@ impl ExecutionLogMetadata {
     }
 }
 
-impl<'storage> BuiltGraph<'storage> {
+impl<'graph_storage> BuiltGraph<'graph_storage> {
     /// Wrap callbacks so their execution records and observed iox2 events are
     /// published instead of collected in a shared queue.
     pub fn with_execution_log(
         self,
         modes: ExecutionLogModes,
-        mut publishers: ExecutionLogPublishers<'storage>,
+        mut publishers: ExecutionLogPublishers<'graph_storage>,
     ) -> Result<(Self, ExecutionLogMetadata), String> {
         for name in modes.callbacks.keys() {
             if self
@@ -123,7 +123,7 @@ impl<'storage> BuiltGraph<'storage> {
                 callback_id,
                 mode,
                 active: None,
-            }) as Box<dyn Callback + 'storage>)
+            }) as Box<dyn Callback + 'graph_storage>)
         })?;
         if !publishers.records.is_empty() || !publishers.iox2_events.is_empty() {
             return Err("execution log publishers do not match graph callbacks".into());
@@ -184,10 +184,10 @@ fn validate_record_capacity(name: &str, endpoints: &[EndpointDescriptor]) -> Res
     Ok(())
 }
 
-struct ExecutionLogRecorded<'storage> {
-    callback: Box<dyn Callback + 'storage>,
-    record_publisher: Publisher<'storage, ExecutionRecord>,
-    event_publisher: Arc<Mutex<Publisher<'storage, Iox2EventRecord>>>,
+struct ExecutionLogRecorded<'graph_storage> {
+    callback: Box<dyn Callback + 'graph_storage>,
+    record_publisher: Publisher<'graph_storage, ExecutionRecord>,
+    event_publisher: Arc<Mutex<Publisher<'graph_storage, Iox2EventRecord>>>,
     dropped_records: Arc<AtomicUsize>,
     dropped_iox2_event_records: Arc<AtomicUsize>,
     event_endpoints: Vec<EndpointDescriptor>,

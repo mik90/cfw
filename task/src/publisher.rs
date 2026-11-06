@@ -119,21 +119,21 @@ impl<'de> serde::Deserialize<'de> for LoanError {
 
 /// A typed publisher borrowing storage allocated before connection/execution.
 /// Connection does not resize its arena: the graph plan owns capacity decisions.
-pub struct Publisher<'storage, MessageType> {
+pub struct Publisher<'graph_storage, MessageType> {
     /// pub(crate) so that Output can borrow the minimm amount needed
-    pub(crate) allocator: ArenaAllocator<'storage, Message<MessageType>>,
+    pub(crate) allocator: ArenaAllocator<'graph_storage, Message<MessageType>>,
     /// Amount of loans that this publisher is allowed to give
     loan_capacity: usize,
     /// pub(crate) so that Output can borrow the minimm amount needed
-    pub(crate) pending: Vec<ArenaPtr<'storage, Message<MessageType>>>,
+    pub(crate) pending: Vec<ArenaPtr<'graph_storage, Message<MessageType>>>,
     /// Subscribers to send data to
-    subscribers: Vec<SubscriberWriter<'storage, MessageType>>,
+    subscribers: Vec<SubscriberWriter<'graph_storage, MessageType>>,
     channel: String,
     publisher_index: u32,
-    observers: Vec<PublishObserver<'storage, MessageType>>,
+    observers: Vec<PublishObserver<'graph_storage, MessageType>>,
 }
 
-impl<'storage, T> std::fmt::Debug for Publisher<'storage, T> {
+impl<'graph_storage, T> std::fmt::Debug for Publisher<'graph_storage, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Publisher")
             .field("allocator_capacity", &self.allocator.capacity())
@@ -168,8 +168,11 @@ mod serde_tests {
     }
 }
 
-impl<'storage, T> Publisher<'storage, T> {
-    pub fn new(allocator: ArenaAllocator<'storage, Message<T>>, loan_capacity: usize) -> Self {
+impl<'graph_storage, T> Publisher<'graph_storage, T> {
+    pub fn new(
+        allocator: ArenaAllocator<'graph_storage, Message<T>>,
+        loan_capacity: usize,
+    ) -> Self {
         assert!(
             u32::try_from(loan_capacity).is_ok(),
             "publisher batch capacity exceeds u32"
@@ -207,17 +210,17 @@ impl<'storage, T> Publisher<'storage, T> {
         self.publisher_index = index;
     }
 
-    pub fn connect(&mut self, subscriber: &Subscriber<'storage, T>) {
+    pub fn connect(&mut self, subscriber: &Subscriber<'graph_storage, T>) {
         self.subscribers.push(subscriber.writer());
     }
 
     /// Observe this publisher's initialized, stamped outputs before fan-out.
     /// References are scoped to the observer call and cannot escape it.
-    pub fn observe(&mut self, observer: impl FnMut(&Message<T>) + Send + 'storage) {
+    pub fn observe(&mut self, observer: impl FnMut(&Message<T>) + Send + 'graph_storage) {
         self.observers.push(Box::new(observer));
     }
 
-    pub fn loan_uninit(&mut self) -> Result<OutputUninit<'_, 'storage, T>, LoanError> {
+    pub fn loan_uninit(&mut self) -> Result<OutputUninit<'_, 'graph_storage, T>, LoanError> {
         if self.pending.len() >= self.loan_capacity {
             return Err(LoanError::LoanCapacityReached);
         }
@@ -225,7 +228,7 @@ impl<'storage, T> Publisher<'storage, T> {
         Ok(OutputUninit::new(self, ptr))
     }
 
-    pub fn loan(&mut self, value: T) -> Result<Output<'_, 'storage, T>, LoanError> {
+    pub fn loan(&mut self, value: T) -> Result<Output<'_, 'graph_storage, T>, LoanError> {
         self.loan_uninit().map(|loan| loan.write(value))
     }
 
@@ -254,7 +257,7 @@ impl<'storage, T> Publisher<'storage, T> {
     /// }
     /// publisher.flush(FrameworkTime::from_nanos(123));
     /// ```
-    pub fn span(&mut self) -> OutputSpan<'_, 'storage, T> {
+    pub fn span(&mut self) -> OutputSpan<'_, 'graph_storage, T> {
         OutputSpan::new(self)
     }
 
@@ -317,9 +320,9 @@ impl<'storage, T> Publisher<'storage, T> {
     }
 }
 
-pub(crate) fn allocate_output<'storage, T>(
-    allocator: &ArenaAllocator<'storage, Message<T>>,
-) -> Result<ArenaPtrUninit<'storage, Message<T>>, LoanError> {
+pub(crate) fn allocate_output<'graph_storage, T>(
+    allocator: &ArenaAllocator<'graph_storage, Message<T>>,
+) -> Result<ArenaPtrUninit<'graph_storage, Message<T>>, LoanError> {
     let mut ptr = allocator
         .try_allocate_uninit()
         .ok_or(LoanError::ArenaExhausted)?;

@@ -40,20 +40,20 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned> Loggable for T {
         serde_json::from_slice(bytes).map_err(Into::into)
     }
 }
-pub trait MessageLog<'storage, T> {
-    fn lookup(&self, header: &MessageHeader) -> Option<ArenaReaderPtr<'storage, Message<T>>>;
+pub trait MessageLog<'graph_storage, T> {
+    fn lookup(&self, header: &MessageHeader) -> Option<ArenaReaderPtr<'graph_storage, Message<T>>>;
 }
 /// Retains source messages without requiring Clone on their payloads.
-pub struct ReplayMessageLog<'storage, T> {
-    messages: Vec<ArenaReaderPtr<'storage, Message<T>>>,
+pub struct ReplayMessageLog<'graph_storage, T> {
+    messages: Vec<ArenaReaderPtr<'graph_storage, Message<T>>>,
 }
-impl<'storage, T> ReplayMessageLog<'storage, T> {
-    pub fn new(messages: Vec<ArenaReaderPtr<'storage, Message<T>>>) -> Self {
+impl<'graph_storage, T> ReplayMessageLog<'graph_storage, T> {
+    pub fn new(messages: Vec<ArenaReaderPtr<'graph_storage, Message<T>>>) -> Self {
         Self { messages }
     }
 }
-impl<'storage, T> MessageLog<'storage, T> for ReplayMessageLog<'storage, T> {
-    fn lookup(&self, header: &MessageHeader) -> Option<ArenaReaderPtr<'storage, Message<T>>> {
+impl<'graph_storage, T> MessageLog<'graph_storage, T> for ReplayMessageLog<'graph_storage, T> {
+    fn lookup(&self, header: &MessageHeader) -> Option<ArenaReaderPtr<'graph_storage, Message<T>>> {
         let mut matches = self.messages.iter().filter(|m| m.header == *header);
         let found = matches.next()?;
         if matches.next().is_some() {

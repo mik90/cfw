@@ -79,7 +79,7 @@ def _task_api_src_impl(ctx):
         if endpoint.has_payload:
             alias = "%s::%s::Payload" % (ctx.attr.payloads_module, endpoint.field)
             if endpoint.forwarded:
-                alias += "<'storage>"
+                alias += "<'graph_storage>"
             type_expr = "%s<%s>" % (wrapper, alias)
         else:
             type_expr = wrapper
@@ -116,7 +116,7 @@ def _task_api_src_impl(ctx):
         if endpoint.has_payload:
             alias = "%s::%s::Payload" % (ctx.attr.payloads_module, endpoint.field)
             if endpoint.forwarded:
-                alias += "<'storage>"
+                alias += "<'graph_storage>"
             type_expr = "%s<%s>" % (wrapper, alias)
         else:
             type_expr = wrapper

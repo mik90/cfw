@@ -12,35 +12,35 @@ use crate::{
 
 /// Native live execution borrowing externally owned graph storage. `run_with`
 /// owns the thread scope and joins all workers before returning or unwinding.
-pub struct LiveExecutor<'storage, T: TimeSource = WallClock> {
-    nodes: Vec<ScheduledCallback<'storage>>,
+pub struct LiveExecutor<'graph_storage, T: TimeSource = WallClock> {
+    nodes: Vec<ScheduledCallback<'graph_storage>>,
     metadata: GraphMetadata,
     scheduler: Arc<Scheduler>,
     #[cfg(feature = "iceoryx2")]
-    events: Arc<std::sync::OnceLock<crate::stop_signal::EventRouter<'storage>>>,
+    events: Arc<std::sync::OnceLock<crate::stop_signal::EventRouter<'graph_storage>>>,
     clock: T,
 }
 
-impl<'storage> LiveExecutor<'storage, WallClock> {
+impl<'graph_storage> LiveExecutor<'graph_storage, WallClock> {
     pub fn new(
         thread_count: usize,
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
     ) -> Result<Self, LiveExecutorStartError> {
         Self::new_multi_pool_with_time(vec![thread_count], graph, WallClock)
     }
 
     pub fn new_multi_pool(
         workers: Vec<usize>,
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
     ) -> Result<Self, LiveExecutorStartError> {
         Self::new_multi_pool_with_time(workers, graph, WallClock)
     }
 }
 
-impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
+impl<'graph_storage, T: TimeSource> LiveExecutor<'graph_storage, T> {
     pub fn new_multi_pool_with_time(
         workers: Vec<usize>,
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         clock: T,
     ) -> Result<Self, LiveExecutorStartError> {
         if workers.is_empty() || workers.contains(&0) {
@@ -86,7 +86,7 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
         })
     }
 
-    pub fn stop_signal(&self) -> StopSignal<'storage> {
+    pub fn stop_signal(&self) -> StopSignal<'graph_storage> {
         #[cfg(feature = "iceoryx2")]
         return StopSignal::new(self.scheduler.clone(), Arc::clone(&self.events));
         #[cfg(not(feature = "iceoryx2"))]
@@ -104,14 +104,14 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
     /// A controller panic is resumed only after all threads have joined.
     pub fn run_with<R>(
         self,
-        controller: impl FnOnce(&StopSignal<'storage>) -> R,
+        controller: impl FnOnce(&StopSignal<'graph_storage>) -> R,
     ) -> Result<R, LiveExecutorError> {
         self.run_checked(controller, |_| Ok(()))
     }
 
     fn run_checked<R>(
         self,
-        controller: impl FnOnce(&StopSignal<'storage>) -> R,
+        controller: impl FnOnce(&StopSignal<'graph_storage>) -> R,
         mut before_spawn: impl FnMut(usize) -> std::io::Result<()>,
     ) -> Result<R, LiveExecutorError> {
         let Self {
@@ -311,7 +311,7 @@ impl<'storage, T: TimeSource> LiveExecutor<'storage, T> {
     }
 }
 
-struct StopOnExit<'storage>(StopSignal<'storage>);
+struct StopOnExit<'graph_storage>(StopSignal<'graph_storage>);
 impl Drop for StopOnExit<'_> {
     fn drop(&mut self) {
         self.0.request_stop();

@@ -43,14 +43,14 @@ impl Source {
 struct Forward;
 #[task_callback]
 impl Forward {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &self,
         #[trigger(true)]
         #[capacity(8)]
-        mut input: Input<'_, 'storage, Value, task::Forwardable>,
+        mut input: Input<'_, 'graph_storage, Value, task::Forwardable>,
         #[forwards(source = input)]
         #[capacity(4)]
-        output: &mut Publisher<'storage, Forwarded<bool, SourcePtr<'storage>>>,
+        output: &mut Publisher<'graph_storage, Forwarded<bool, SourcePtr<'graph_storage>>>,
     ) -> Result<(), LoanError> {
         for value in input.drain() {
             output.publish(Forwarded::new(true, value))?;

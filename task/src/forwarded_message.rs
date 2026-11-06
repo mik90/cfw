@@ -66,9 +66,9 @@ unsafe impl<S: Send + Sync + 'static> ForwardedSources for ArenaReaderPtr<'stati
         vec![("source", std::any::TypeId::of::<S>())]
     }
 }
-impl<'storage, T> SerializableForward for ArenaReaderPtr<'storage, Message<T>> {
+impl<'graph_storage, T> SerializableForward for ArenaReaderPtr<'graph_storage, Message<T>> {
     type Context<'a>
-        = &'a dyn crate::loggable::MessageLog<'storage, T>
+        = &'a dyn crate::loggable::MessageLog<'graph_storage, T>
     where
         Self: 'a;
     fn headers(&self) -> Vec<(&'static str, crate::message::MessageHeader)> {

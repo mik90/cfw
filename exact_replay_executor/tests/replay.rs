@@ -851,12 +851,12 @@ struct Forward;
 type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Value>>;
 #[task_callback]
 impl Forward {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &self,
-        #[trigger(true)] mut input: task::Input<'_, 'storage, Value, task::Forwardable>,
+        #[trigger(true)] mut input: task::Input<'_, 'graph_storage, Value, task::Forwardable>,
         #[forwards(source = input)] output: &mut Publisher<
-            'storage,
-            task::Forwarded<bool, SourcePtr<'storage>>,
+            'graph_storage,
+            task::Forwarded<bool, SourcePtr<'graph_storage>>,
         >,
     ) -> Result<(), LoanError> {
         if let Some(value) = input.pop() {

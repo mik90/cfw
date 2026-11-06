@@ -6,14 +6,14 @@ use crate::wake::{WakeHandle, WakeRegistration};
 use std::sync::{Arc, OnceLock};
 
 /// A typed subscriber retaining messages for the storage lifetime.
-pub struct Subscriber<'storage, MessageType> {
-    buffer: DoubleBuffer<'storage, Message<MessageType>>,
+pub struct Subscriber<'graph_storage, MessageType> {
+    buffer: DoubleBuffer<'graph_storage, Message<MessageType>>,
     channel: String,
     wake: WakeRegistration,
     policy: SubscriberPolicy,
 }
 
-impl<'storage, MessageType> std::fmt::Debug for Subscriber<'storage, MessageType> {
+impl<'graph_storage, MessageType> std::fmt::Debug for Subscriber<'graph_storage, MessageType> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Subscriber")
             .field(
@@ -40,7 +40,7 @@ impl Default for SubscriberPolicy {
     }
 }
 
-impl<'storage, MessageType> Subscriber<'storage, MessageType> {
+impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
     pub fn new(capacity: usize) -> Self {
         Self::with_policy(capacity, SubscriberPolicy::default())
     }
@@ -53,7 +53,7 @@ impl<'storage, MessageType> Subscriber<'storage, MessageType> {
         }
     }
 
-    pub(crate) fn writer(&self) -> SubscriberWriter<'storage, MessageType> {
+    pub(crate) fn writer(&self) -> SubscriberWriter<'graph_storage, MessageType> {
         SubscriberWriter {
             queue: self.buffer.write_buffer(),
             wake: self.wake.clone(),
@@ -108,14 +108,16 @@ impl<'storage, MessageType> Subscriber<'storage, MessageType> {
         self.buffer.clear();
     }
 
-    pub fn input_readonly(&self) -> Input<'_, 'storage, MessageType, crate::input::ReadOnly> {
+    pub fn input_readonly(&self) -> Input<'_, 'graph_storage, MessageType, crate::input::ReadOnly> {
         Input {
             guard: self.buffer.read_buffer(),
             capability: std::marker::PhantomData,
         }
     }
 
-    pub fn input_forwardable(&self) -> Input<'_, 'storage, MessageType, crate::input::Forwardable> {
+    pub fn input_forwardable(
+        &self,
+    ) -> Input<'_, 'graph_storage, MessageType, crate::input::Forwardable> {
         Input {
             guard: self.buffer.read_buffer(),
             capability: std::marker::PhantomData,
@@ -149,13 +151,13 @@ impl<'storage, MessageType> Subscriber<'storage, MessageType> {
 }
 
 /// Allows publishers to write to a subscriber
-pub(crate) struct SubscriberWriter<'storage, T> {
-    queue: WriteBufferHandle<'storage, Message<T>>,
+pub(crate) struct SubscriberWriter<'graph_storage, T> {
+    queue: WriteBufferHandle<'graph_storage, Message<T>>,
     wake: WakeRegistration,
     trigger: bool,
 }
 
-impl<'storage, T> std::fmt::Debug for SubscriberWriter<'storage, T> {
+impl<'graph_storage, T> std::fmt::Debug for SubscriberWriter<'graph_storage, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubscriberWriter")
             .field("queue_length", &self.queue.len())
@@ -164,8 +166,8 @@ impl<'storage, T> std::fmt::Debug for SubscriberWriter<'storage, T> {
     }
 }
 
-impl<'storage, T> SubscriberWriter<'storage, T> {
-    pub(crate) fn write(&self, ptr: base::arena::ArenaPtr<'storage, Message<T>>) {
+impl<'graph_storage, T> SubscriberWriter<'graph_storage, T> {
+    pub(crate) fn write(&self, ptr: base::arena::ArenaPtr<'graph_storage, Message<T>>) {
         self.queue.write(ptr);
         if let Some(wake) = self.wake.get() {
             if self.trigger {
@@ -178,12 +180,12 @@ impl<'storage, T> SubscriberWriter<'storage, T> {
 }
 
 /// The buffer guard's borrow is independent of retained message lifetimes.
-pub struct Input<'input, 'storage, MessageType, Modifiers = crate::input::ReadOnly> {
-    guard: ReadBufferGuard<'input, 'storage, Message<MessageType>>,
+pub struct Input<'input, 'graph_storage, MessageType, Modifiers = crate::input::ReadOnly> {
+    guard: ReadBufferGuard<'input, 'graph_storage, Message<MessageType>>,
     capability: std::marker::PhantomData<Modifiers>,
 }
 
-impl<'storage, MessageType, Modifiers> Input<'_, 'storage, MessageType, Modifiers> {
+impl<'graph_storage, MessageType, Modifiers> Input<'_, 'graph_storage, MessageType, Modifiers> {
     pub fn full_message(&self) -> Option<&Message<MessageType>> {
         self.guard.front()
     }
@@ -237,25 +239,27 @@ impl<'input, MessageType> Input<'input, '_, MessageType, crate::input::ReadOnly>
     }
 }
 
-impl<'storage, MessageType> Input<'_, 'storage, MessageType, crate::input::Forwardable> {
-    pub fn pop(&mut self) -> Option<ArenaReaderPtr<'storage, Message<MessageType>>> {
+impl<'graph_storage, MessageType>
+    Input<'_, 'graph_storage, MessageType, crate::input::Forwardable>
+{
+    pub fn pop(&mut self) -> Option<ArenaReaderPtr<'graph_storage, Message<MessageType>>> {
         self.guard.pop_front_ptr().map(ArenaReaderPtr::new)
     }
 
     pub fn drain(
         &mut self,
-    ) -> impl Iterator<Item = ArenaReaderPtr<'storage, Message<MessageType>>> + '_ {
+    ) -> impl Iterator<Item = ArenaReaderPtr<'graph_storage, Message<MessageType>>> + '_ {
         self.guard.drain_contiguous()
     }
 
     /// Consume a prepared message, retaining its source arena slot.
-    pub fn forward(&mut self) -> Option<ArenaReaderPtr<'storage, Message<MessageType>>> {
+    pub fn forward(&mut self) -> Option<ArenaReaderPtr<'graph_storage, Message<MessageType>>> {
         self.pop()
     }
 
     pub fn forward_all(
         &mut self,
-    ) -> impl Iterator<Item = ArenaReaderPtr<'storage, Message<MessageType>>> + '_ {
+    ) -> impl Iterator<Item = ArenaReaderPtr<'graph_storage, Message<MessageType>>> + '_ {
         self.drain()
     }
 }

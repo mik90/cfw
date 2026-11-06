@@ -25,10 +25,10 @@ produce_api::impl_task!(Produce);
 pub struct Forward;
 
 impl forward_api::Run for Forward {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &mut self,
-        mut inputs: forward_api::Inputs<'_, 'storage>,
-        outputs: forward_api::Outputs<'_, 'storage>,
+        mut inputs: forward_api::Inputs<'_, 'graph_storage>,
+        outputs: forward_api::Outputs<'_, 'graph_storage>,
         _context: &Context,
     ) {
         let value = inputs.input.value().0;

@@ -424,14 +424,17 @@ struct Forward;
 type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<u64>>;
 #[task_callback]
 impl Forward {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &mut self,
         #[capacity(2)]
         #[trigger(true)]
-        mut input: Input<'_, 'storage, u64, task::Forwardable>,
+        mut input: Input<'_, 'graph_storage, u64, task::Forwardable>,
         #[forwards(source = input)]
         #[capacity(2)]
-        output: &mut Publisher<'storage, task::Forwarded<bool, SourcePtr<'storage>>>,
+        output: &mut Publisher<
+            'graph_storage,
+            task::Forwarded<bool, SourcePtr<'graph_storage>>,
+        >,
     ) -> Result<(), LoanError> {
         for ptr in input.drain() {
             output.publish(task::Forwarded::new(true, ptr))?;

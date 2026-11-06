@@ -174,15 +174,15 @@ impl<'a> FlushTrigger<'a> {
 ///     drop(graph); // The graph still borrows logger.
 /// }
 /// ```
-pub struct LoggingScope<'storage> {
+pub struct LoggingScope<'graph_storage> {
     registry: crate::intern_tables::Registry,
-    sessions: Vec<Mutex<Option<LogSession<'storage>>>>,
+    sessions: Vec<Mutex<Option<LogSession<'graph_storage>>>>,
     status: LoggingStatus,
     channels: Vec<task::ChannelName>,
     pool: usize,
     attached: AtomicBool,
 }
-impl<'storage> LoggingScope<'storage> {
+impl<'graph_storage> LoggingScope<'graph_storage> {
     /// Compute before allocation when reserving FlushEventPlan subscribers.
     pub fn planned_shard_count(captured_channels: usize, requested_shards: usize) -> usize {
         requested_shards.max(1).min(captured_channels.max(1))
@@ -191,7 +191,7 @@ impl<'storage> LoggingScope<'storage> {
     /// number of captured channels (one empty shard can still drain execution metadata).
     pub fn new(
         writer: impl LogFileWriter + 'static,
-        captures: Vec<Capture<'storage>>,
+        captures: Vec<Capture<'graph_storage>>,
         shards: usize,
     ) -> Self {
         let count = Self::planned_shard_count(captures.len(), shards);
@@ -269,7 +269,7 @@ impl<'storage> LoggingScope<'storage> {
         period: Duration,
     ) -> Result<BuiltGraph<'scope>, BoxedLogError>
     where
-        'storage: 'scope,
+        'graph_storage: 'scope,
     {
         if period.is_zero() {
             return Err("logging period must be nonzero".into());
@@ -288,10 +288,10 @@ impl<'storage> LoggingScope<'storage> {
     pub fn attach_event<'scope>(
         &'scope self,
         graph: BuiltGraph<'scope>,
-        triggers: Vec<FlushTrigger<'storage>>,
+        triggers: Vec<FlushTrigger<'graph_storage>>,
     ) -> Result<BuiltGraph<'scope>, BoxedLogError>
     where
-        'storage: 'scope,
+        'graph_storage: 'scope,
     {
         if triggers.len() != self.shard_count() {
             return Err("one flush trigger is required per logger shard".into());
@@ -306,10 +306,10 @@ impl<'storage> LoggingScope<'storage> {
         &'scope self,
         graph: BuiltGraph<'scope>,
         schedule: CallbackSchedule,
-        triggers: Vec<Option<FlushTrigger<'storage>>>,
+        triggers: Vec<Option<FlushTrigger<'graph_storage>>>,
     ) -> Result<BuiltGraph<'scope>, BoxedLogError>
     where
-        'storage: 'scope,
+        'graph_storage: 'scope,
     {
         if self.attached.swap(true, Ordering::AcqRel) {
             return Err("logging scope is already attached".into());
@@ -360,9 +360,9 @@ impl<'storage> LoggingScope<'storage> {
     }
 }
 
-struct LogTask<'scope, 'storage> {
-    session: &'scope Mutex<Option<LogSession<'storage>>>,
-    trigger: Option<FlushTrigger<'storage>>,
+struct LogTask<'scope, 'graph_storage> {
+    session: &'scope Mutex<Option<LogSession<'graph_storage>>>,
+    trigger: Option<FlushTrigger<'graph_storage>>,
 }
 impl Callback for LogTask<'_, '_> {
     fn outputs_are_local(&self) -> bool {

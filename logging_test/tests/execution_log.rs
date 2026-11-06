@@ -79,8 +79,8 @@ fn run(plan: GraphPlan, options: ExecutionLogOptions) -> Run {
     }
 }
 
-fn run_builder<'build, 'storage>(
-    builder: GraphBuilder<'build, 'storage>,
+fn run_builder<'build, 'graph_storage>(
+    builder: GraphBuilder<'build, 'graph_storage>,
     options: ExecutionLogOptions,
 ) -> (
     Result<simulation_executor::StepResult, simulation_executor::StepError>,

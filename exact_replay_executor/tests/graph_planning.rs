@@ -407,12 +407,12 @@ impl ForwardSource {
 struct ForwardTask;
 #[task_callback]
 impl ForwardTask {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &self,
-        #[trigger(true)] mut input: task::Input<'_, 'storage, u64, task::Forwardable>,
+        #[trigger(true)] mut input: task::Input<'_, 'graph_storage, u64, task::Forwardable>,
         #[forwards(source = input)] output: &mut Publisher<
-            'storage,
-            task::Forwarded<bool, SourcePtr<'storage, u64>>,
+            'graph_storage,
+            task::Forwarded<bool, SourcePtr<'graph_storage, u64>>,
         >,
     ) -> Result<(), LoanError> {
         for source in input.drain() {
@@ -424,12 +424,12 @@ impl ForwardTask {
 struct ForwardSink;
 #[task_callback]
 impl ForwardSink {
-    fn run<'storage>(
+    fn run<'graph_storage>(
         &self,
         #[trigger(true)] mut input: task::Input<
             '_,
-            'storage,
-            task::Forwarded<bool, SourcePtr<'storage, u64>>,
+            'graph_storage,
+            task::Forwarded<bool, SourcePtr<'graph_storage, u64>>,
         >,
         output: &mut Publisher<u64>,
     ) -> Result<(), LoanError> {

@@ -71,23 +71,23 @@ pub(super) fn bazel_api(
             #(#payload_aliases)*
         }
 
-        pub struct Inputs<'input, 'storage> {
+        pub struct Inputs<'input, 'graph_storage> {
             #(#input_fields,)*
             #[doc(hidden)]
-            pub __lifetime: ::core::marker::PhantomData<(&'input (), &'storage ())>,
+            pub __lifetime: ::core::marker::PhantomData<(&'input (), &'graph_storage ())>,
         }
 
-        pub struct Outputs<'output, 'storage> {
+        pub struct Outputs<'output, 'graph_storage> {
             #(#output_fields,)*
             #[doc(hidden)]
-            pub __lifetime: ::core::marker::PhantomData<(&'output (), &'storage ())>,
+            pub __lifetime: ::core::marker::PhantomData<(&'output (), &'graph_storage ())>,
         }
 
         pub trait Run: ::core::default::Default + 'static {
-            fn run<'storage>(
+            fn run<'graph_storage>(
                 &mut self,
-                inputs: Inputs<'_, 'storage>,
-                outputs: Outputs<'_, 'storage>,
+                inputs: Inputs<'_, 'graph_storage>,
+                outputs: Outputs<'_, 'graph_storage>,
                 context: &::task::Context,
             );
         }
@@ -207,12 +207,12 @@ fn declaration(task: &TaskDefinition, declaration: &syn::Ident) -> TokenStream {
     let endpoints = task.endpoints.iter().map(Endpoint::declare);
     let arity = arity(task.endpoints.len());
     quote! {
-        pub(crate) struct #declaration<'storage> {
+        pub(crate) struct #declaration<'graph_storage> {
             #(#fields,)*
-            __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
+            __cfw_lifetime: ::core::marker::PhantomData<&'graph_storage ()>,
         }
         #[allow(dead_code)]
-        impl<'storage> #declaration<'storage> {
+        impl<'graph_storage> #declaration<'graph_storage> {
             #(#accessors)*
             #arity
             pub(crate) fn from_keys(#(#fields),*) -> Self {
@@ -223,7 +223,7 @@ fn declaration(task: &TaskDefinition, declaration: &syn::Ident) -> TokenStream {
             #[cfg(test)]
             #[allow(dead_code)]
             #arity
-            pub(crate) fn declare<'storage>(#(#params),*) -> Result<#declaration<'storage>, ::task::DeclarationError> {
+            pub(crate) fn declare<'graph_storage>(#(#params),*) -> Result<#declaration<'graph_storage>, ::task::DeclarationError> {
                 #(#validation)*
                 Ok(#declaration { #(#endpoints,)* __cfw_lifetime: ::core::marker::PhantomData })
             }
@@ -253,9 +253,9 @@ fn collection(endpoints: &[Endpoint], name: &syn::Ident, input: bool) -> TokenSt
         )
     };
     quote! {
-        pub(crate) struct #name<'storage> {
+        pub(crate) struct #name<'graph_storage> {
             #(#fields,)*
-            __cfw_lifetime: ::core::marker::PhantomData<&'storage ()>,
+            __cfw_lifetime: ::core::marker::PhantomData<&'graph_storage ()>,
         }
         impl ::task::callback::#set for #name<'_> {
             fn visit(&self, visitor: &mut impl ::task::callback::#visitor) {
@@ -295,13 +295,13 @@ fn binding(
     quote! {
         impl #self_ty {
             #arity
-            pub(crate) fn bind<'storage>(self, __cfw_declaration: #declaration<'storage>, #(#params),*) -> Result<impl ::task::Callback + 'storage, ::task::EndpointError> {
+            pub(crate) fn bind<'graph_storage>(self, __cfw_declaration: #declaration<'graph_storage>, #(#params),*) -> Result<impl ::task::Callback + 'graph_storage, ::task::EndpointError> {
                 let __cfw_inputs = #inputs { #(#input_fields,)* __cfw_lifetime: ::core::marker::PhantomData };
                 let __cfw_outputs = #outputs { #(#output_fields,)* __cfw_lifetime: ::core::marker::PhantomData };
                 #[allow(unused_mut)]
                 let mut __cfw_user = self;
                 Ok(::task::CallbackNode::new(__cfw_inputs, __cfw_outputs,
-                    move |__cfw_inputs: &#inputs<'storage>, __cfw_outputs: &mut #outputs<'storage>, __cfw_context: &::task::Context| {
+                    move |__cfw_inputs: &#inputs<'graph_storage>, __cfw_outputs: &mut #outputs<'graph_storage>, __cfw_context: &::task::Context| {
                         #invocation
                     }
                 ))
@@ -367,15 +367,15 @@ impl Endpoint {
             EndpointKind::IoxEvent | EndpointKind::IoxNotifier => {
                 quote!(&dyn ::task::iox2::Iox2EventBindings)
             }
-            _ => quote!(&::task::ChannelBindings<'storage, #payload>),
+            _ => quote!(&::task::ChannelBindings<'graph_storage, #payload>),
         }
     }
     fn endpoint_type(&self) -> TokenStream {
         let payload = &self.payload;
         match self.kind {
-            EndpointKind::Input => quote!(::task::Subscriber<'storage, #payload>),
+            EndpointKind::Input => quote!(::task::Subscriber<'graph_storage, #payload>),
             EndpointKind::Required => {
-                quote!(::task::callback::Required<::task::Subscriber<'storage, #payload>>)
+                quote!(::task::callback::Required<::task::Subscriber<'graph_storage, #payload>>)
             }
             EndpointKind::IoxInput | EndpointKind::IoxSpan => {
                 quote!(::task::iox2::Iox2Subscriber<#payload>)
@@ -383,7 +383,7 @@ impl Endpoint {
             EndpointKind::IoxOutput => quote!(::task::iox2::Iox2Publisher<#payload>),
             EndpointKind::IoxEvent => quote!(::task::iox2::Iox2EventSubscriber),
             EndpointKind::IoxNotifier => quote!(::task::iox2::Iox2Notifier),
-            _ => quote!(::task::Publisher<'storage, #payload>),
+            _ => quote!(::task::Publisher<'graph_storage, #payload>),
         }
     }
     fn user_arg_type(&self, input: bool) -> TokenStream {
@@ -395,28 +395,28 @@ impl Endpoint {
         };
         match self.kind {
             EndpointKind::Input if self.forwardable => {
-                quote!(::task::Input<#lifetime, 'storage, #payload, ::task::Forwardable>)
+                quote!(::task::Input<#lifetime, 'graph_storage, #payload, ::task::Forwardable>)
             }
             EndpointKind::Input => {
-                quote!(::task::Input<#lifetime, 'storage, #payload>)
+                quote!(::task::Input<#lifetime, 'graph_storage, #payload>)
             }
             EndpointKind::Required if self.forwardable => {
-                quote!(::task::RequiredInput<#lifetime, 'storage, #payload, ::task::Forwardable>)
+                quote!(::task::RequiredInput<#lifetime, 'graph_storage, #payload, ::task::Forwardable>)
             }
             EndpointKind::Required => {
-                quote!(::task::RequiredInput<#lifetime, 'storage, #payload>)
+                quote!(::task::RequiredInput<#lifetime, 'graph_storage, #payload>)
             }
             EndpointKind::Output => {
-                quote!(::task::Output<#lifetime, 'storage, #payload>)
+                quote!(::task::Output<#lifetime, 'graph_storage, #payload>)
             }
             EndpointKind::OutputSpan => {
-                quote!(::task::OutputSpan<#lifetime, 'storage, #payload>)
+                quote!(::task::OutputSpan<#lifetime, 'graph_storage, #payload>)
             }
             EndpointKind::Uninit => {
-                quote!(::task::OutputUninit<#lifetime, 'storage, #payload>)
+                quote!(::task::OutputUninit<#lifetime, 'graph_storage, #payload>)
             }
             EndpointKind::Publisher => {
-                quote!(&#lifetime mut ::task::Publisher<'storage, #payload>)
+                quote!(&#lifetime mut ::task::Publisher<'graph_storage, #payload>)
             }
             EndpointKind::IoxInput => {
                 quote!(::task::iox2::Iox2OptionalInput<#lifetime, #payload>)

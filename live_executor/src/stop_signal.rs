@@ -7,23 +7,23 @@ use std::sync::{Arc, OnceLock};
 /// executor graph storage is alive.
 #[cfg(feature = "iceoryx2")]
 #[derive(Debug)]
-pub(crate) struct EventRouter<'storage> {
-    pub targets: BTreeMap<(String, usize), task::iox2::Iox2EventTarget<'storage>>,
+pub(crate) struct EventRouter<'graph_storage> {
+    pub targets: BTreeMap<(String, usize), task::iox2::Iox2EventTarget<'graph_storage>>,
 }
 
-/// Stop and drain controls. `'storage` is the graph lifetime used by event
+/// Stop and drain controls. `'graph_storage` is the graph lifetime used by event
 /// target observers.
 #[derive(Clone)]
-pub struct StopSignal<'storage> {
+pub struct StopSignal<'graph_storage> {
     scheduler: Arc<Scheduler>,
     #[cfg(feature = "iceoryx2")]
-    events: Arc<OnceLock<EventRouter<'storage>>>,
+    events: Arc<OnceLock<EventRouter<'graph_storage>>>,
 }
 
-impl<'storage> StopSignal<'storage> {
+impl<'graph_storage> StopSignal<'graph_storage> {
     pub(crate) fn new(
         scheduler: Arc<Scheduler>,
-        #[cfg(feature = "iceoryx2")] events: Arc<OnceLock<EventRouter<'storage>>>,
+        #[cfg(feature = "iceoryx2")] events: Arc<OnceLock<EventRouter<'graph_storage>>>,
     ) -> Self {
         Self {
             scheduler,

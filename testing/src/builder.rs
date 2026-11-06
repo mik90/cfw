@@ -160,10 +160,10 @@ impl<T: 'static> TestOutput<T> {
         count
     }
 }
-pub(crate) trait InputPump<'storage>: Send {
+pub(crate) trait InputPump<'graph_storage>: Send {
     fn schedule(
         &mut self,
-        simulation: &mut simulation_executor::SimulationState<'storage>,
+        simulation: &mut simulation_executor::SimulationState<'graph_storage>,
     ) -> Result<(), simulation_executor::StepError>;
 }
 pub(crate) trait Capture: Send {

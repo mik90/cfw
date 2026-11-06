@@ -45,24 +45,24 @@ pub struct LogSimulationCompletion {
     pub at: FrameworkTime,
     pub input_exhausted: bool,
 }
-pub struct LogSimulation<'storage> {
+pub struct LogSimulation<'graph_storage> {
     eof: EofPolicy,
-    simulation: SimulationState<'storage>,
+    simulation: SimulationState<'graph_storage>,
     // Keep sources alive through downstream work after the stream reaches EOF.
-    feed: Arc<Mutex<ReplayFeed<'storage>>>,
+    feed: Arc<Mutex<ReplayFeed<'graph_storage>>>,
 }
-impl<'storage> LogSimulation<'storage> {
+impl<'graph_storage> LogSimulation<'graph_storage> {
     pub fn new(
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         reader: SortedLogStreamReader,
-        sources: impl IntoIterator<Item = ReplaySource<'storage>>,
+        sources: impl IntoIterator<Item = ReplaySource<'graph_storage>>,
     ) -> Result<Self, BoxedLogError> {
         Self::with_options(graph, reader, sources, LogSimulationOptions::default())
     }
     pub fn with_options(
-        graph: BuiltGraph<'storage>,
+        graph: BuiltGraph<'graph_storage>,
         reader: SortedLogStreamReader,
-        sources: impl IntoIterator<Item = ReplaySource<'storage>>,
+        sources: impl IntoIterator<Item = ReplaySource<'graph_storage>>,
         options: LogSimulationOptions,
     ) -> Result<Self, BoxedLogError> {
         let config = options.simulation.unwrap_or_else(|| SimulationConfig {
