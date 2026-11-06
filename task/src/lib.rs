@@ -36,4 +36,5 @@ pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, Required
 pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};
 pub use publisher::{LoanError, Publisher, ReplayError};
 pub use storage::StorageError;
+pub use string_interner::{CallbackNameInterner, ChannelNameInterner};
 pub use subscriber::{Subscriber, SubscriberPolicy};

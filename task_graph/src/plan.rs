@@ -8,7 +8,7 @@ use std::{
     ops::Range,
     sync::Arc,
 };
-use task::{Callback, ChannelBindings, ChannelPlan, ChannelStorage, SubscriberPolicy};
+use task::{Callback, ChannelBindings, ChannelName, ChannelPlan, ChannelStorage, SubscriberPolicy};
 use topology::Topology;
 
 #[derive(Debug)]
@@ -444,11 +444,11 @@ impl GraphPlan {
     pub fn allocate(mut self) -> Result<GraphStorage, BuildError> {
         self.prepare()?;
         let topology = self.topology();
-        let mut names = task::string_interner::ChannelNameInterner::new();
-        let mut channels = BTreeMap::new();
+        let mut names = task::ChannelNameInterner::new();
+        let mut channels: BTreeMap<ChannelName, Box<dyn Stored>> = BTreeMap::new();
         for (name, channel) in self.channels {
             names.intern(&name);
-            channels.insert(name, channel.plan.allocate()?);
+            channels.insert(name.into(), channel.plan.allocate()?);
         }
         #[cfg(feature = "iceoryx2")]
         let events = self
@@ -510,8 +510,8 @@ impl GraphPlan {
 pub struct GraphStorage {
     callbacks: RefCell<Option<Vec<TaskDefinition>>>,
     topology: Topology,
-    channels: BTreeMap<String, Box<dyn Stored>>,
-    names: Arc<task::string_interner::ChannelNameInterner>,
+    channels: BTreeMap<task::ChannelName, Box<dyn Stored>>,
+    names: Arc<task::ChannelNameInterner>,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, Box<dyn Stored>>,
 }
@@ -568,7 +568,7 @@ impl GraphStorage {
     }
 }
 pub struct GraphBindings<'a> {
-    pub(crate) channels: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
+    pub(crate) channels: BTreeMap<ChannelName, Box<dyn Binding<'a> + 'a>>,
     #[cfg(feature = "iceoryx2")]
     events: BTreeMap<String, Box<dyn Binding<'a> + 'a>>,
 }
