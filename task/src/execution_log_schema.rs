@@ -1,5 +1,8 @@
 //! Persisted execution-log schema shared by logging and replay.
-use crate::{LoanError, StaticVec, message::MessageHeader, time::FrameworkTime};
+use crate::{
+    LoanError, StaticVec, callback_name::CallbackName, channel_name::ChannelName,
+    message::MessageHeader, time::FrameworkTime,
+};
 use std::collections::BTreeMap;
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
 /// Maximum number of input/output messages recorded per execution.
@@ -35,7 +38,7 @@ pub enum ExecutionLogMode {
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionLogModes {
     pub default_mode: ExecutionLogMode,
-    pub callbacks: BTreeMap<String, ExecutionLogMode>,
+    pub callbacks: BTreeMap<CallbackName, ExecutionLogMode>,
 }
 impl ExecutionLogModes {
     pub fn new(default_mode: ExecutionLogMode) -> Self {
@@ -44,7 +47,7 @@ impl ExecutionLogModes {
             callbacks: BTreeMap::new(),
         }
     }
-    pub fn with_callback(mut self, name: impl Into<String>, mode: ExecutionLogMode) -> Self {
+    pub fn with_callback(mut self, name: impl Into<CallbackName>, mode: ExecutionLogMode) -> Self {
         self.callbacks.insert(name.into(), mode);
         self
     }
@@ -73,7 +76,7 @@ pub enum Transport {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EndpointDescriptor {
     pub ordinal: usize,
-    pub channel: String,
+    pub channel: ChannelName,
     pub direction: Direction,
     pub transport: Transport,
     pub payload_type: String,
@@ -83,7 +86,7 @@ pub struct EndpointDescriptor {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CallbackDescriptor {
-    pub name: String,
+    pub name: CallbackName,
     /// Mode used when this descriptor was written.
     #[cfg_attr(feature = "serde", serde(default, alias = "recording_mode"))]
     pub mode: ExecutionLogMode,
@@ -93,7 +96,7 @@ pub struct CallbackDescriptor {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExecutionDescriptor {
     pub callbacks: Vec<CallbackDescriptor>,
-    pub logged_channels: Vec<String>,
+    pub logged_channels: Vec<ChannelName>,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

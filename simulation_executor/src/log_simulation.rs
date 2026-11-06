@@ -17,7 +17,7 @@ pub struct LogSimulationOptions {
     /// polling disabled. An explicit configuration is used verbatim.
     pub simulation: Option<SimulationConfig>,
     /// Exclude computed channels; event filtering uses descriptor channel names.
-    pub denylist: HashSet<String>,
+    pub denylist: HashSet<task::ChannelName>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EofPolicy {

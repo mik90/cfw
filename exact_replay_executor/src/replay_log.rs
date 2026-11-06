@@ -3,14 +3,14 @@ use logging::{LogFileReader, SortedLogStreamReader};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use task::{execution_log_schema::*, message::MessageHeader, time::FrameworkTime};
 
-pub(crate) type Identity = (String, MessageHeader);
+pub(crate) type Identity = (task::ChannelName, MessageHeader);
 
 pub struct ReplayLog {
     pub(crate) intern_tables: InternTables,
     pub(crate) descriptor: ExecutionDescriptor,
     pub(crate) executions: Vec<ExecutionRecord>,
     pub(crate) payloads: BTreeMap<Identity, Vec<u8>>,
-    pub(crate) logged: HashSet<String>,
+    pub(crate) logged: HashSet<task::ChannelName>,
 }
 impl ReplayLog {
     pub fn from_reader(reader: &dyn LogFileReader) -> Result<Self, ExactReplayStepError> {

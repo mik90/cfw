@@ -128,10 +128,10 @@ where
 
 pub struct ReplayPlan {
     bindings: Vec<SourceBinding>,
-    channels: Vec<String>,
+    channels: Vec<task::ChannelName>,
 }
 impl ReplayPlan {
-    pub fn channels(&self) -> &[String] {
+    pub fn channels(&self) -> &[task::ChannelName] {
         &self.channels
     }
     pub fn bind<'a>(
@@ -174,7 +174,7 @@ impl GraphPlan {
     /// Reserve injection publishers before allocation, retaining task publishers.
     pub fn declare_replay_sources(
         &mut self,
-        channels: &BTreeSet<String>,
+        channels: &BTreeSet<task::ChannelName>,
         capacity: usize,
     ) -> Result<ReplayPlan, BuildError> {
         if capacity == 0 || u32::try_from(capacity).is_err() {
@@ -185,7 +185,7 @@ impl GraphPlan {
         for channel in channels {
             if !self
                 .channels
-                .get(channel)
+                .get(channel.as_str())
                 .is_some_and(|channel| channel.replay.is_some())
             {
                 return Err(BuildError(format!(
@@ -196,7 +196,13 @@ impl GraphPlan {
         let bindings = channels
             .iter()
             .map(|channel| {
-                let declare = self.channels[channel].replay.unwrap().declare;
+                let declare = self
+                    .channels
+                    .get(channel.as_str())
+                    .unwrap()
+                    .replay
+                    .unwrap()
+                    .declare;
                 declare(self, channel, capacity)
             })
             .collect::<Result<_, _>>()?;

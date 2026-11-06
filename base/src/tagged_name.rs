@@ -4,6 +4,7 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     marker::PhantomData,
+    ops::Deref,
 };
 
 // We manually implement Clone, Debug, PartialEq, Eq, and Hash instead of
@@ -77,8 +78,41 @@ impl<Tag> From<&str> for TaggedName<Tag> {
     }
 }
 
+impl<Tag> From<&String> for TaggedName<Tag> {
+    fn from(value: &String) -> Self {
+        Self::new(value.clone())
+    }
+}
+
+impl<Tag> From<String> for TaggedName<Tag> {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<Tag> PartialOrd for TaggedName<Tag> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<Tag> Ord for TaggedName<Tag> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.value.cmp(&other.value)
+    }
+}
+
 impl<Tag> AsRef<str> for TaggedName<Tag> {
     fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+// Lets &TaggedName coerce to &str at fn and method boundaries.
+impl<Tag> Deref for TaggedName<Tag> {
+    type Target = str;
+    fn deref(&self) -> &str {
         self.as_str()
     }
 }
@@ -99,6 +133,34 @@ impl<Tag> PartialEq<&str> for TaggedName<Tag> {
 impl<Tag> PartialEq<str> for TaggedName<Tag> {
     fn eq(&self, other: &str) -> bool {
         self.as_str().eq(other)
+    }
+}
+
+// Serde impls round-trip the plain string form, matching the recorded log
+// format. Manual impls again: derives would add `Tag:` bounds (see above),
+// and serde_json would serialize the PhantomData field's presence in the
+// struct layout itself.
+#[cfg(feature = "serde")]
+impl<Tag> serde::Serialize for TaggedName<Tag> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.value.serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, Tag> serde::Deserialize<'de> for TaggedName<Tag> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct NameVisitor<Tag>(PhantomData<Tag>);
+        impl<'de, Tag> serde::de::Visitor<'de> for NameVisitor<Tag> {
+            type Value = TaggedName<Tag>;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a string name")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(TaggedName::new(value))
+            }
+        }
+        deserializer.deserialize_string(NameVisitor(PhantomData))
     }
 }
 
@@ -126,5 +188,51 @@ mod tests {
     fn display_shows_name() {
         let formatted = format!("{}", DummyName::new("dummy_name"));
         expect_that!(formatted, eq("dummy_name"));
+    }
+
+    #[gtest]
+    fn from_string() {
+        expect_eq!(DummyName::from("dummy".to_string()).as_str(), "dummy");
+    }
+
+    #[gtest]
+    fn orders_lexically() {
+        let mut names = [DummyName::new("b"), DummyName::new("a")];
+        names.sort();
+        expect_eq!(
+            names.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+    }
+
+    #[gtest]
+    fn serde_round_trip() {
+        #[derive(serde::Serialize, serde::Deserialize, Debug)]
+        struct Container {
+            name: DummyName,
+            names: Vec<DummyName>,
+        }
+        let value = Container {
+            name: DummyName::new("single"),
+            names: vec![DummyName::new("a"), DummyName::new("b")],
+        };
+        let json = serde_json::to_string(&value).unwrap();
+        expect_that!(json, eq(r#"{"name":"single","names":["a","b"]}"#));
+        let decoded: Container = serde_json::from_str(&json).unwrap();
+        expect_eq!(decoded.name, value.name);
+        expect_eq!(decoded.names, value.names);
+    }
+
+    #[gtest]
+    fn serde_rejects_non_strings() {
+        #[derive(serde::Deserialize)]
+        struct Container {
+            name: DummyName,
+        }
+        let message = serde_json::from_str::<Container>(r#"{"name": 42}"#)
+            .err()
+            .unwrap()
+            .to_string();
+        expect_that!(message, contains_substring("a string name"));
     }
 }

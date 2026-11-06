@@ -23,7 +23,7 @@ pub struct LiveReplayConfig {
     /// Continue the replay clock beyond the final recorded timestamp, allowing
     /// delayed periodic consumers to run before timer generation is stopped.
     pub tail_duration: Duration,
-    pub denylist: HashSet<String>,
+    pub denylist: HashSet<task::ChannelName>,
 }
 impl Default for LiveReplayConfig {
     fn default() -> Self {

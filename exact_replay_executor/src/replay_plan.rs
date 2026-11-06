@@ -35,11 +35,11 @@ enum EndpointBinding {
 
 enum Request {
     Input {
-        name: String,
+        name: task::CallbackName,
         ordinal: usize,
     },
     Output {
-        name: String,
+        name: task::CallbackName,
         ordinal: usize,
         channel: String,
         payload_type: String,
@@ -50,19 +50,19 @@ enum Request {
 /// A caller-supplied endpoint binding, omitted from inferred wiring.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExplicitReplayEndpoint {
-    callback: String,
+    callback: task::CallbackName,
     output: bool,
     ordinal: usize,
 }
 impl ExplicitReplayEndpoint {
-    pub fn input(callback: impl Into<String>, ordinal: usize) -> Self {
+    pub fn input(callback: impl Into<task::CallbackName>, ordinal: usize) -> Self {
         Self {
             callback: callback.into(),
             output: false,
             ordinal,
         }
     }
-    pub fn output(callback: impl Into<String>, ordinal: usize) -> Self {
+    pub fn output(callback: impl Into<task::CallbackName>, ordinal: usize) -> Self {
         Self {
             callback: callback.into(),
             output: true,
@@ -73,7 +73,7 @@ impl ExplicitReplayEndpoint {
 
 /// Validates a recorded task layout and prepares isolated per-endpoint replay wiring.
 pub struct ExactReplayPlan {
-    endpoints: Vec<(String, usize, EndpointBinding)>,
+    endpoints: Vec<(task::CallbackName, usize, EndpointBinding)>,
     #[cfg(feature = "iceoryx2")]
     local_outputs: Vec<(String, usize, bool)>,
 }
@@ -129,7 +129,7 @@ impl ExactReplayPlan {
                         callback.name, expected.ordinal
                     ))
                 })?;
-                if endpoint.channel != expected.channel
+                if endpoint.channel != expected.channel.as_str()
                     || endpoint.payload_type != expected.payload_type
                     || endpoint.transport != expected.transport
                 {
@@ -307,9 +307,10 @@ impl ExactReplayPlan {
     }
 }
 
-/// A typed source dependency with retention capacity derived from the replay log.
+/// Typed extension for contextual forwarding graphs: reserve source retention
+/// from distinct full-header identities in the log, including reproduced outputs.
 pub struct GraphSourceCachePlan<T> {
-    channel: String,
+    channel: task::ChannelName,
     cache: SourceCachePlan<T>,
 }
 impl<T: Send + Sync + 'static> GraphSourceCachePlan<T>

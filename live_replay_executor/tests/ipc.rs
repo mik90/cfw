@@ -139,7 +139,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
                 name: name.into(),
                 endpoints: vec![EndpointDescriptor {
                     ordinal: 0,
-                    channel: channel.clone(),
+                    channel: channel.clone().into(),
                     direction: Direction::Received,
                     transport: Transport::Iox2Event,
                     payload_type: "()".into(),
@@ -147,7 +147,7 @@ fn recorded_events_target_recipients_without_duplicate_kernel_notifications() {
                 }],
             })
             .collect(),
-        logged_channels: vec![channel.clone()],
+        logged_channels: vec![channel.clone().into()],
     };
     let mut rows = vec![row(0, &channel, b"42")];
     for (index, count) in [(0, 3), (1, 5)] {

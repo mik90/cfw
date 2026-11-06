@@ -1,4 +1,4 @@
 use base::tagged_name::TaggedName;
 
-pub struct ChannelTag;
-pub type ChannelName = TaggedName<ChannelTag>;
+pub struct ChannelNameTag;
+pub type ChannelName = TaggedName<ChannelNameTag>;

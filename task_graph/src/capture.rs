@@ -152,10 +152,10 @@ fn native<T: Loggable + Send + Sync + 'static>(
 /// All subscribers are declared before storage allocation and bound afterwards.
 pub struct CapturePlan {
     bindings: Vec<CaptureBinding>,
-    channels: Vec<String>,
+    channels: Vec<task::ChannelName>,
 }
 impl CapturePlan {
-    pub fn channels(&self) -> &[String] {
+    pub fn channels(&self) -> &[task::ChannelName] {
         &self.channels
     }
     pub fn bind<'a>(
@@ -199,7 +199,7 @@ impl GraphPlan {
     pub fn declare_captures(
         &mut self,
         capacity: usize,
-        excluded: &BTreeSet<String>,
+        excluded: &BTreeSet<task::ChannelName>,
     ) -> Result<CapturePlan, BuildError> {
         if capacity == 0 {
             return Err(BuildError("capture capacity must be nonzero".into()));
@@ -207,12 +207,18 @@ impl GraphPlan {
         let channels: Vec<_> = self
             .loggable_channels()
             .filter(|name| !excluded.contains(*name))
-            .map(str::to_owned)
+            .map(task::ChannelName::new)
             .collect();
         let bindings = channels
             .iter()
             .map(|channel| {
-                let declare = self.channels[channel].capture.unwrap().declare;
+                let declare = self
+                    .channels
+                    .get(channel.as_str())
+                    .unwrap()
+                    .capture
+                    .unwrap()
+                    .declare;
                 declare(self, channel, capacity)
             })
             .collect::<Result<_, _>>()?;

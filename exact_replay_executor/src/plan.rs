@@ -153,7 +153,7 @@ impl<T> ReplayInputPlan<T> {
         ))
     }
 }
-pub(crate) type Endpoint = (String, usize);
+pub(crate) type Endpoint = (task::CallbackName, usize);
 /// Isolated contextual hydration for a heterogeneous source bundle.
 pub struct BundleReplayInputPlan<M, S: task::ForwardedSources> {
     plan: ReplayInputPlan<task::Forwarded<M, S::Bound<'static>>>,
@@ -185,7 +185,7 @@ pub(crate) type CacheLoader<'a> =
 pub struct ReplayBindings<'a> {
     pub(crate) inputs: BTreeMap<Endpoint, ReplaySource<'a>>,
     pub(crate) outputs: BTreeMap<Endpoint, OutputCapture>,
-    pub(crate) caches: BTreeMap<String, CacheLoader<'a>>,
+    pub(crate) caches: BTreeMap<task::ChannelName, CacheLoader<'a>>,
 }
 impl<'a> ReplayBindings<'a> {
     pub fn new() -> Self {
@@ -193,7 +193,7 @@ impl<'a> ReplayBindings<'a> {
     }
     pub fn add_input(
         &mut self,
-        callback: impl Into<String>,
+        callback: impl Into<task::CallbackName>,
         ordinal: usize,
         source: ReplaySource<'a>,
     ) -> Result<(), ExactReplayStepError> {
@@ -208,7 +208,7 @@ impl<'a> ReplayBindings<'a> {
     }
     pub fn add_output(
         &mut self,
-        callback: impl Into<String>,
+        callback: impl Into<task::CallbackName>,
         ordinal: usize,
         capture: OutputCapture,
     ) -> Result<(), ExactReplayStepError> {
@@ -226,7 +226,7 @@ impl<'a> ReplayBindings<'a> {
     /// after their producer executes. Cache storage must be planned by the caller.
     pub fn add_cache(
         &mut self,
-        channel: impl Into<String>,
+        channel: impl Into<task::ChannelName>,
         load: impl FnMut(MessageHeader, &[u8]) -> Result<(), BoxedLogError> + Send + 'a,
     ) -> Result<(), ExactReplayStepError> {
         let channel = channel.into();

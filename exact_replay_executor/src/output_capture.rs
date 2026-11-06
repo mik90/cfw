@@ -18,16 +18,20 @@ struct State {
 
 /// Buffers serialized outputs observed at one publisher endpoint.
 pub struct OutputCapture {
-    channel: String,
+    channel: task::ChannelName,
     payload_type: String,
     state: Arc<Mutex<State>>,
 }
 
 impl OutputCapture {
-    pub(crate) fn new(channel: String, payload_type: String, capacity: usize) -> Self {
+    pub(crate) fn new(
+        channel: impl Into<task::ChannelName>,
+        payload_type: String,
+        capacity: usize,
+    ) -> Self {
         assert!(capacity > 0, "capture capacity must be positive");
         Self {
-            channel,
+            channel: channel.into(),
             payload_type,
             state: Arc::new(Mutex::new(State {
                 messages: Vec::new(),

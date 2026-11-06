@@ -5,7 +5,7 @@ use task_graph::{BuildError, GraphBindings, GraphPlan};
 #[derive(Clone, Debug)]
 pub struct ReplayOptions {
     pub capacity: usize,
-    pub excluded_channels: BTreeSet<String>,
+    pub excluded_channels: BTreeSet<task::ChannelName>,
 }
 impl ReplayOptions {
     pub fn new(capacity: usize) -> Self {
@@ -14,7 +14,7 @@ impl ReplayOptions {
             excluded_channels: BTreeSet::new(),
         }
     }
-    pub fn exclude(mut self, channel: impl Into<String>) -> Self {
+    pub fn exclude(mut self, channel: impl Into<task::ChannelName>) -> Self {
         self.excluded_channels.insert(channel.into());
         self
     }
@@ -45,7 +45,7 @@ impl ReplayOptions {
 /// ```
 pub struct GraphReplayPlan {
     plan: task_graph::replay::ReplayPlan,
-    excluded: BTreeSet<String>,
+    excluded: BTreeSet<task::ChannelName>,
 }
 impl GraphReplayPlan {
     pub fn declare(
@@ -55,12 +55,12 @@ impl GraphReplayPlan {
     ) -> Result<Self, BuildError> {
         let channels: BTreeSet<_> = channels
             .into_iter()
-            .map(|c| c.as_ref().to_owned())
+            .map(|c| task::ChannelName::new(c.as_ref()))
             .filter(|c| !options.excluded_channels.contains(c))
             .collect();
         for channel in &channels {
-            if channel == task::execution_log_schema::EXECUTION_LOG_CHANNEL
-                || channel == task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL
+            if channel.as_str() == task::execution_log_schema::EXECUTION_LOG_CHANNEL
+                || channel.as_str() == task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL
             {
                 return Err(BuildError(format!(
                     "reserved replay source channel '{channel}'"
@@ -92,10 +92,10 @@ impl GraphReplayPlan {
             options,
         )?)
     }
-    pub fn channels(&self) -> &[String] {
+    pub fn channels(&self) -> &[task::ChannelName] {
         self.plan.channels()
     }
-    pub fn excluded_channels(&self) -> &BTreeSet<String> {
+    pub fn excluded_channels(&self) -> &BTreeSet<task::ChannelName> {
         &self.excluded
     }
     pub fn bind<'a>(

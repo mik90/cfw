@@ -22,7 +22,7 @@ use task_graph::{BuildError, GraphBindings, GraphPlan, capture::CapturePlan};
 #[derive(Clone, Debug)]
 pub struct CaptureOptions {
     pub capacity: usize,
-    pub excluded_channels: BTreeSet<String>,
+    pub excluded_channels: BTreeSet<task::ChannelName>,
 }
 impl CaptureOptions {
     pub fn new(capacity: usize) -> Self {
@@ -32,7 +32,7 @@ impl CaptureOptions {
         }
     }
     /// Exclude a resolved channel name, including any task-instance override.
-    pub fn exclude(mut self, channel: impl Into<String>) -> Self {
+    pub fn exclude(mut self, channel: impl Into<task::ChannelName>) -> Self {
         self.excluded_channels.insert(channel.into());
         self
     }
@@ -47,7 +47,7 @@ impl GraphCapturePlan {
             &options.excluded_channels,
         )?))
     }
-    pub fn channels(&self) -> &[String] {
+    pub fn channels(&self) -> &[task::ChannelName] {
         self.0.channels()
     }
     pub fn bind<'a>(self, bindings: &GraphBindings<'a>) -> Result<Vec<Capture<'a>>, BuildError> {

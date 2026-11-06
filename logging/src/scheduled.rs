@@ -178,7 +178,7 @@ pub struct LoggingScope<'storage> {
     registry: crate::intern_tables::Registry,
     sessions: Vec<Mutex<Option<LogSession<'storage>>>>,
     status: LoggingStatus,
-    channels: Vec<String>,
+    channels: Vec<task::ChannelName>,
     pool: usize,
     attached: AtomicBool,
 }
@@ -195,16 +195,16 @@ impl<'storage> LoggingScope<'storage> {
         shards: usize,
     ) -> Self {
         let count = Self::planned_shard_count(captures.len(), shards);
-        let channels: Vec<String> = captures
+        let channels: Vec<task::ChannelName> = captures
             .iter()
-            .map(|capture| capture.channel().to_owned())
+            .map(|capture| task::ChannelName::new(capture.channel()))
             .collect();
         let mut groups: Vec<Vec<_>> = (0..count).map(|_| Vec::new()).collect();
         for (index, capture) in captures.into_iter().enumerate() {
             groups[index % count].push(capture);
         }
         let writer = SharedLogFileWriter::new(Box::new(writer));
-        let registry = crate::intern_tables::Registry::new(channels.iter().map(String::as_str));
+        let registry = crate::intern_tables::Registry::new(channels.iter().map(|c| c.as_str()));
         let sessions: Vec<_> = groups
             .into_iter()
             .map(|captures| LogSession::with_registry(writer.clone(), captures, registry.clone()))
@@ -227,7 +227,7 @@ impl<'storage> LoggingScope<'storage> {
     pub fn shard_count(&self) -> usize {
         self.sessions.len()
     }
-    pub fn channels(&self) -> &[String] {
+    pub fn channels(&self) -> &[task::ChannelName] {
         &self.channels
     }
     pub fn status(&self) -> LoggingStatus {

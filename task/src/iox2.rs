@@ -1279,7 +1279,7 @@ impl Iox2EventSubscriber {
     pub fn take_registration(&mut self) -> Option<Iox2EventRegistration<'static>> {
         Some(Iox2EventRegistration {
             observer: None,
-            channel: self.channel.clone(),
+            channel: self.channel.clone().into(),
             listener: self.listener.take()?,
             staging: self.staging.clone(),
             wake: self
@@ -1322,7 +1322,7 @@ impl<'a> Iox2Event<'a> {
 }
 pub struct Iox2EventRegistration<'a> {
     pub observer: Option<EventObserver<'a>>,
-    pub channel: String,
+    pub channel: crate::channel_name::ChannelName,
     pub listener: Listener<ipc_threadsafe::Service>,
     pub staging: Arc<base::MpscQueue<EventRecord>>,
     pub wake: WakeHandle,
@@ -1354,7 +1354,7 @@ impl std::fmt::Debug for EventObserver<'_> {
 /// Owned event staging state, independent of callback and arena borrows.
 #[derive(Clone)]
 pub struct Iox2EventTarget<'a> {
-    pub channel: String,
+    pub channel: crate::channel_name::ChannelName,
     staging: Arc<base::MpscQueue<EventRecord>>,
     wake: WakeHandle,
     observer: Option<EventObserver<'a>>,

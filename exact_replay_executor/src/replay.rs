@@ -44,8 +44,14 @@ pub enum ExactReplayStepError {
     InvalidLog(String),
     Setup(String),
     Divergence(String),
-    Gap { channel: String, reason: String },
-    Callback { callback: String, reason: String },
+    Gap {
+        channel: task::ChannelName,
+        reason: String,
+    },
+    Callback {
+        callback: task::CallbackName,
+        reason: String,
+    },
     Poisoned,
 }
 impl std::fmt::Display for ExactReplayStepError {
@@ -68,7 +74,7 @@ impl task::executor::ExecutorStopSignal for StopSignal {
 }
 #[derive(Debug)]
 pub struct ReplayStep {
-    pub callback: String,
+    pub callback: task::CallbackName,
     pub time: task::time::FrameworkTime,
     pub executed: bool,
 }
@@ -129,7 +135,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
         for descriptor in &log.descriptor.callbacks {
             let index = nodes
                 .iter()
-                .position(|node| node.name == descriptor.name)
+                .position(|node| node.name == descriptor.name.as_str())
                 .ok_or_else(|| {
                     ExactReplayStepError::Setup(format!("missing callback '{}'", descriptor.name))
                 })?;
@@ -176,7 +182,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                                 "missing hydration binding {key:?}"
                             ))
                         })?;
-                        if source.channel() != endpoint.channel
+                        if source.channel() != endpoint.channel.as_str()
                             || source.payload_type() != endpoint.payload_type
                         {
                             return Err(ExactReplayStepError::Setup(format!(
@@ -189,7 +195,7 @@ impl<'storage> ExactReplayExecutor<'storage> {
                         let capture = bindings.outputs.get(&key).ok_or_else(|| {
                             ExactReplayStepError::Setup(format!("missing output capture {key:?}"))
                         })?;
-                        if capture.channel() != endpoint.channel
+                        if capture.channel() != endpoint.channel.as_str()
                             || capture.payload_type() != endpoint.payload_type
                         {
                             return Err(ExactReplayStepError::Setup(format!(

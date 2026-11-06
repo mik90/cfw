@@ -49,7 +49,7 @@ impl From<std::io::Error> for LogReadError {
 #[serde(deny_unknown_fields)]
 pub struct OwnedLogEntry {
     pub header: MessageHeader,
-    pub channel_name: String,
+    pub channel_name: task::ChannelName,
     #[serde(rename = "body")]
     pub serialized_body: Vec<u8>,
 }
@@ -201,7 +201,7 @@ enum Source {
 /// Metadata/channel dictionaries are retained. Equal times preserve file order.
 pub struct SortedLogStreamReader {
     source: Source,
-    channels: HashSet<String>,
+    channels: HashSet<task::ChannelName>,
     artifacts: HashMap<String, Vec<u8>>,
     entry_count: usize,
     first_time: Option<FrameworkTime>,
@@ -324,7 +324,7 @@ impl SortedLogStreamReader {
     }
     fn initialize(
         source: Source,
-        channels: HashSet<String>,
+        channels: HashSet<task::ChannelName>,
         artifacts: HashMap<String, Vec<u8>>,
         entry_count: usize,
     ) -> Result<Self, LogReadError> {
@@ -360,7 +360,7 @@ impl SortedLogStreamReader {
             }
         }
     }
-    pub fn channel_names(&self) -> &HashSet<String> {
+    pub fn channel_names(&self) -> &HashSet<task::ChannelName> {
         &self.channels
     }
     pub fn intern_tables(&self) -> Result<crate::InternTables, crate::BoxedLogError> {

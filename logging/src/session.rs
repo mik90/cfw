@@ -53,7 +53,7 @@ impl<'a> LogSession<'a> {
         let channels = self
             .captures
             .iter()
-            .map(|c| c.channel().to_owned())
+            .map(|c| task::ChannelName::new(c.channel()))
             .collect();
         self.attach_execution_log_for(metadata, channels)
     }
@@ -61,12 +61,12 @@ impl<'a> LogSession<'a> {
     pub(crate) fn attach_execution_log_for(
         &mut self,
         metadata: ExecutionLogMetadata,
-        mut channels: Vec<String>,
+        mut channels: Vec<task::ChannelName>,
     ) -> Result<(), BoxedLogError> {
         let mut descriptor = metadata.descriptor.clone();
         channels.retain(|channel| {
-            channel != task::execution_log_schema::EXECUTION_LOG_CHANNEL
-                && channel != task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL
+            channel.as_str() != task::execution_log_schema::EXECUTION_LOG_CHANNEL
+                && channel.as_str() != task::execution_log_schema::IOX2_EVENT_RECORD_CHANNEL
         });
         descriptor.logged_channels = channels;
         descriptor.logged_channels.sort();

@@ -252,7 +252,7 @@ impl<'storage, T> Publisher<'storage, T> {
     ///     second.send();
     ///     first.send();
     /// }
-    /// publisher.flush(FrameworkTime::from_nanoseconds(123));
+    /// publisher.flush(FrameworkTime::from_nanos(123));
     /// ```
     pub fn span(&mut self) -> OutputSpan<'_, 'storage, T> {
         OutputSpan::new(self)

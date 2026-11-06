@@ -41,7 +41,7 @@ fn application(
     app
 }
 
-pub fn replay_denylist(strings_only: bool) -> std::collections::HashSet<String> {
+pub fn replay_denylist(strings_only: bool) -> std::collections::HashSet<task::ChannelName> {
     [if strings_only {
         INTEGER_CHANNEL
     } else {

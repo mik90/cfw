@@ -584,7 +584,7 @@ mod ipc {
                     endpoints: vec![
                         EndpointDescriptor {
                             ordinal: 0,
-                            channel: name.clone(),
+                            channel: name.clone().into(),
                             direction: Direction::Received,
                             transport: Transport::Iox2Event,
                             payload_type: "()".into(),
@@ -600,7 +600,7 @@ mod ipc {
                         },
                         EndpointDescriptor {
                             ordinal: 2,
-                            channel: name.clone(),
+                            channel: name.clone().into(),
                             direction: Direction::Received,
                             transport: Transport::Iox2Data,
                             payload_type: "u64".into(),
@@ -609,7 +609,7 @@ mod ipc {
                     ],
                 })
                 .collect(),
-            logged_channels: vec!["gate".into(), name.clone()],
+            logged_channels: vec!["gate".into(), name.clone().into()],
         };
         let mut rows = Vec::new();
         for callback_index in 0..2 {

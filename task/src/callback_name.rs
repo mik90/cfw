@@ -1,4 +1,4 @@
 use base::tagged_name::TaggedName;
 
-pub struct CallbackTag;
-pub type CallbackName = TaggedName<CallbackTag>;
+pub struct CallbackNameTag;
+pub type CallbackName = TaggedName<CallbackNameTag>;

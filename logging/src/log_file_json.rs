@@ -8,7 +8,7 @@ use crate::log_file::{LogEntry, LogFileReader, LogFileWriter};
 #[derive(serde::Serialize, serde::Deserialize)]
 struct JsonLogEntry {
     header: MessageHeader,
-    channel_name: String,
+    channel_name: task::ChannelName,
     body: Vec<u8>,
 }
 
@@ -48,7 +48,7 @@ impl<W: Write + Send> LogFileWriter for JsonLogFileWriter<W> {
     ) -> Result<(), crate::log_file::BoxedLogError> {
         let entry = JsonLogEntry {
             header: *header,
-            channel_name: channel_name.to_owned(),
+            channel_name: channel_name.into(),
             body: body.to_vec(),
         };
         serde_json::to_writer(&mut self.writer, &entry)

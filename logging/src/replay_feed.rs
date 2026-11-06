@@ -1,12 +1,12 @@
 //! Shared streaming input selection for simulated and wall-clock-paced replay.
 use crate::{BoxedLogError, OwnedLogEntry, ReplaySource, SortedLogStreamReader};
 use std::collections::{BTreeMap, HashSet};
-use task::{execution_log_schema::*, time::FrameworkTime};
+use task::{CallbackName, ChannelName, execution_log_schema::*, time::FrameworkTime};
 enum Pending {
     Data(OwnedLogEntry),
     Iox2Event {
-        callback: String,
-        channel: String,
+        callback: CallbackName,
+        channel: ChannelName,
         iox2_event: Iox2EventRecord,
     },
 }
@@ -20,9 +20,9 @@ impl Pending {
 }
 pub struct ReplayFeed<'a> {
     reader: SortedLogStreamReader,
-    sources: BTreeMap<String, ReplaySource<'a>>,
+    sources: BTreeMap<ChannelName, ReplaySource<'a>>,
     descriptor: Option<ExecutionDescriptor>,
-    denied: HashSet<String>,
+    denied: HashSet<ChannelName>,
     pending: Option<Pending>,
     exhausted: bool,
     failed: bool,
@@ -32,15 +32,16 @@ impl<'a> ReplayFeed<'a> {
     pub fn new(
         reader: SortedLogStreamReader,
         sources: impl IntoIterator<Item = ReplaySource<'a>>,
-        denied: HashSet<String>,
+        denied: HashSet<ChannelName>,
     ) -> Result<Self, BoxedLogError> {
         crate::incompleteness::reject_incomplete_recording(
             reader.artifact(crate::incompleteness::RECORDING_INCOMPLETENESS_ARTIFACT),
         )?;
         let mut map = BTreeMap::new();
         for source in sources {
-            let name = source.channel().to_owned();
-            if name == EXECUTION_LOG_CHANNEL || name == IOX2_EVENT_RECORD_CHANNEL {
+            let name = ChannelName::new(source.channel());
+            if name.as_str() == EXECUTION_LOG_CHANNEL || name.as_str() == IOX2_EVENT_RECORD_CHANNEL
+            {
                 return Err(format!("reserved replay source channel '{name}'").into());
             }
             if map.insert(name.clone(), source).is_some() {
@@ -48,8 +49,8 @@ impl<'a> ReplayFeed<'a> {
             }
         }
         for channel in reader.channel_names() {
-            if channel != EXECUTION_LOG_CHANNEL
-                && channel != IOX2_EVENT_RECORD_CHANNEL
+            if channel.as_str() != EXECUTION_LOG_CHANNEL
+                && channel.as_str() != IOX2_EVENT_RECORD_CHANNEL
                 && !denied.contains(channel)
                 && !map.contains_key(channel)
             {
