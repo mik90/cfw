@@ -628,7 +628,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2ChannelStorage<T> {
                 channel: self.plan.name.to_string(),
                 capacity,
                 listener: Some(self.event.listener_builder().create().map_err(transport)?),
-                staging: Arc::new(base::mpsc_queue::MpscQueue::new(capacity)),
+                staging: Arc::new(base::MpscQueue::new(capacity)),
                 read: RefCell::new(VecDeque::with_capacity(capacity)),
                 wake: None,
                 runtime: self.plan.runtime.clone(),
@@ -1227,7 +1227,7 @@ pub struct Iox2EventSubscriber {
     channel: String,
     capacity: usize,
     listener: Option<Listener<ipc_threadsafe::Service>>,
-    staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    staging: Arc<base::MpscQueue<EventRecord>>,
     read: RefCell<VecDeque<EventRecord>>,
     wake: Option<WakeHandle>,
     runtime: Arc<Iox2Runtime>,
@@ -1324,7 +1324,7 @@ pub struct Iox2EventRegistration<'a> {
     pub observer: Option<EventObserver<'a>>,
     pub channel: String,
     pub listener: Listener<ipc_threadsafe::Service>,
-    pub staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    pub staging: Arc<base::MpscQueue<EventRecord>>,
     pub wake: WakeHandle,
     _runtime: Arc<Iox2Runtime>,
 }
@@ -1355,7 +1355,7 @@ impl std::fmt::Debug for EventObserver<'_> {
 #[derive(Clone)]
 pub struct Iox2EventTarget<'a> {
     pub channel: String,
-    staging: Arc<base::mpsc_queue::MpscQueue<EventRecord>>,
+    staging: Arc<base::MpscQueue<EventRecord>>,
     wake: WakeHandle,
     observer: Option<EventObserver<'a>>,
 }
