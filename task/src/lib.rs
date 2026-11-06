@@ -11,7 +11,6 @@ pub mod input;
 pub mod iox2;
 pub mod loggable;
 pub mod message;
-mod name;
 pub mod output;
 pub mod publisher;
 pub mod storage;
