@@ -11,6 +11,7 @@ pub struct EndpointTopology {
     pub output: bool,
     pub channel: ChannelName,
     pub transport: Transport,
+    /// Rust type of the payload
     pub payload_type: &'static str,
     pub capacity: usize,
     pub endpoint_index: usize,

@@ -403,8 +403,7 @@ impl GraphPlan {
         self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
             name,
             true,
-            false,
-            false,
+            task::Transport::Native,
             key.index(),
             capacity,
         ));
@@ -424,8 +423,7 @@ impl GraphPlan {
         self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
             name,
             false,
-            false,
-            false,
+            task::Transport::Native,
             key.index(),
             capacity,
         ));
@@ -808,8 +806,7 @@ mod ipc {
             self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
                 true,
-                true,
-                false,
+                task::Transport::Iox2Data,
                 key.index(),
                 capacity,
             ));
@@ -835,8 +832,7 @@ mod ipc {
             self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
                 false,
-                true,
-                false,
+                task::Transport::Iox2Data,
                 key.index(),
                 capacity,
             ));
@@ -865,8 +861,7 @@ mod ipc {
             self.endpoints.push(endpoints::PlannedEndpoint::new::<()>(
                 name,
                 false,
-                true,
-                true,
+                task::Transport::Iox2Event,
                 key.index(),
                 capacity,
             ));
@@ -877,8 +872,7 @@ mod ipc {
             self.endpoints.push(endpoints::PlannedEndpoint::new::<()>(
                 name,
                 true,
-                true,
-                true,
+                task::Transport::Iox2Event,
                 key.index(),
                 1,
             ));

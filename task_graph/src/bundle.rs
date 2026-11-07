@@ -132,8 +132,7 @@ impl GraphPlan {
             .push(endpoints::PlannedEndpoint::new::<Value<'static, M, S>>(
                 name,
                 true,
-                false,
-                false,
+                task::Transport::Native,
                 key.index(),
                 capacity,
             ));
@@ -153,8 +152,7 @@ impl GraphPlan {
             .push(endpoints::PlannedEndpoint::new::<Value<'static, M, S>>(
                 name,
                 false,
-                false,
-                false,
+                task::Transport::Native,
                 key.index(),
                 capacity,
             ));

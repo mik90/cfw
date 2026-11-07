@@ -1,6 +1,6 @@
 //! Registered endpoint metadata and wiring.
 use crate::{BuildError, GraphPlan};
-use task::execution_log_schema::Transport;
+use task::Transport;
 
 #[derive(Clone)]
 pub struct PlannedEndpoint {
@@ -10,6 +10,7 @@ pub struct PlannedEndpoint {
     pub channel: task::ChannelName,
     pub output: bool,
     pub transport: Transport,
+    /// Rust type of the payload
     pub payload_type: &'static str,
     pub index: usize,
     pub capacity: usize,
@@ -18,8 +19,7 @@ impl PlannedEndpoint {
     pub fn new<T>(
         channel: &str,
         output: bool,
-        ipc: bool,
-        event: bool,
+        transport: Transport,
         index: usize,
         capacity: usize,
     ) -> Self {
@@ -29,13 +29,7 @@ impl PlannedEndpoint {
             name: None,
             channel: channel.into(),
             output,
-            transport: if event {
-                Transport::Iox2Event
-            } else if ipc {
-                Transport::Iox2Data
-            } else {
-                Transport::Native
-            },
+            transport,
             payload_type: std::any::type_name::<T>(),
             index,
             capacity,
