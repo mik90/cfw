@@ -8,7 +8,7 @@ type Inject<'a> = Box<dyn FnMut(MessageHeader, &[u8]) -> Result<(), ReplayError>
 
 /// A decoded publication capability retaining its graph-storage lifetime.
 pub struct ReplaySource<'a> {
-    channel: String,
+    channel: task::ChannelName,
     payload_type: &'static str,
     inject: Inject<'a>,
 }
