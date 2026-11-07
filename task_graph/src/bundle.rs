@@ -131,7 +131,7 @@ impl GraphPlan {
         self.endpoints
             .push(endpoints::PlannedEndpoint::new::<Value<'static, M, S>>(
                 name,
-                true,
+                task::Direction::Published,
                 task::Transport::Native,
                 key.index(),
                 capacity,
@@ -151,7 +151,7 @@ impl GraphPlan {
         self.endpoints
             .push(endpoints::PlannedEndpoint::new::<Value<'static, M, S>>(
                 name,
-                false,
+                task::Direction::Received,
                 task::Transport::Native,
                 key.index(),
                 capacity,

@@ -325,14 +325,14 @@ impl GraphPlan {
         for (callback, endpoints) in &self.tasks {
             let mut ordinals = [0, 0];
             for endpoint in &self.endpoints[endpoints.clone()] {
-                let ordinal = ordinals[usize::from(endpoint.output)];
-                ordinals[usize::from(endpoint.output)] += 1;
+                let ordinal = ordinals[usize::from(endpoint.is_output())];
+                ordinals[usize::from(endpoint.is_output())] += 1;
                 snapshot.endpoints.push(topology::EndpointTopology {
                     forwardable: endpoint.forwardable,
                     callback: callback.clone(),
                     name: endpoint.name.clone().unwrap_or_else(|| ordinal.to_string()),
                     ordinal,
-                    output: endpoint.output,
+                    output: endpoint.is_output(),
                     channel: endpoint.channel.clone(),
                     transport: endpoint.transport,
                     payload_type: endpoint.payload_type,
@@ -352,7 +352,7 @@ impl GraphPlan {
             .iter()
             .filter(|endpoint| {
                 endpoint.channel == name
-                    && endpoint.output
+                    && endpoint.is_output()
                     && endpoint.transport == task::execution_log_schema::Transport::Native
             })
             .map(|endpoint| endpoint.index)
@@ -402,7 +402,7 @@ impl GraphPlan {
         let key = self.native::<T>(name)?.publisher(capacity);
         self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
             name,
-            true,
+            task::Direction::Published,
             task::Transport::Native,
             key.index(),
             capacity,
@@ -422,7 +422,7 @@ impl GraphPlan {
         self.channels.get_mut(name).unwrap().subscribers += 1;
         self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
             name,
-            false,
+            task::Direction::Received,
             task::Transport::Native,
             key.index(),
             capacity,
@@ -690,7 +690,7 @@ mod ipc {
                 .iter()
                 .filter(|endpoint| {
                     endpoint.channel == name
-                        && endpoint.output
+                        && endpoint.is_output()
                         && endpoint.transport == task::execution_log_schema::Transport::Iox2Data
                 })
                 .map(|endpoint| endpoint.index)
@@ -805,7 +805,7 @@ mod ipc {
             let key = self.iox2::<T>(name)?.publisher(capacity);
             self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
-                true,
+                task::Direction::Published,
                 task::Transport::Iox2Data,
                 key.index(),
                 capacity,
@@ -831,7 +831,7 @@ mod ipc {
                 .subscriber_with_keep(capacity, keep_across_runs);
             self.endpoints.push(endpoints::PlannedEndpoint::new::<T>(
                 name,
-                false,
+                task::Direction::Received,
                 task::Transport::Iox2Data,
                 key.index(),
                 capacity,
@@ -860,7 +860,7 @@ mod ipc {
             let key = entry.0.events(capacity);
             self.endpoints.push(endpoints::PlannedEndpoint::new::<()>(
                 name,
-                false,
+                task::Direction::Received,
                 task::Transport::Iox2Event,
                 key.index(),
                 capacity,
@@ -871,7 +871,7 @@ mod ipc {
             let key = self.event_plan(name)?.0.notifier();
             self.endpoints.push(endpoints::PlannedEndpoint::new::<()>(
                 name,
-                true,
+                task::Direction::Published,
                 task::Transport::Iox2Event,
                 key.index(),
                 1,

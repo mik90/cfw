@@ -117,8 +117,8 @@ impl ExactReplayPlan {
             let mut ordinals = [0, 0];
             let mut mapped = BTreeMap::new();
             for endpoint in actual {
-                let direction = usize::from(endpoint.output);
-                mapped.insert((endpoint.output, ordinals[direction]), endpoint);
+                let direction = usize::from(endpoint.is_output());
+                mapped.insert((endpoint.is_output(), ordinals[direction]), endpoint);
                 ordinals[direction] += 1;
             }
             for expected in &callback.endpoints {

@@ -31,7 +31,7 @@ pub use channel::{
 };
 pub use channel_name::ChannelName;
 pub use context::Context;
-pub use execution_log_schema::Transport;
+pub use execution_log_schema::{Direction, Transport};
 pub use forwarded_message::{Forwarded, ForwardedSources};
 pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, RequiredInput};
 pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};

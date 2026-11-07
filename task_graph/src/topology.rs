@@ -16,6 +16,7 @@ pub struct EndpointTopology {
     pub capacity: usize,
     pub endpoint_index: usize,
 }
+
 #[derive(Clone, Debug, Default)]
 pub struct Topology {
     pub forwarding: Vec<crate::bundle::ForwardingEdge>,

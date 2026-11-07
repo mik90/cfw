@@ -1,6 +1,6 @@
 //! Registered endpoint metadata and wiring.
 use crate::{BuildError, GraphPlan};
-use task::Transport;
+use task::{Direction, Transport};
 
 #[derive(Clone)]
 pub struct PlannedEndpoint {
@@ -8,7 +8,7 @@ pub struct PlannedEndpoint {
     pub forwardable: bool,
     pub name: Option<String>,
     pub channel: task::ChannelName,
-    pub output: bool,
+    pub direction: Direction,
     pub transport: Transport,
     /// Rust type of the payload
     pub payload_type: &'static str,
@@ -18,7 +18,7 @@ pub struct PlannedEndpoint {
 impl PlannedEndpoint {
     pub fn new<T>(
         channel: &str,
-        output: bool,
+        direction: Direction,
         transport: Transport,
         index: usize,
         capacity: usize,
@@ -28,12 +28,16 @@ impl PlannedEndpoint {
             forwardable: false,
             name: None,
             channel: channel.into(),
-            output,
+            direction,
             transport,
             payload_type: std::any::type_name::<T>(),
             index,
             capacity,
         }
+    }
+
+    pub fn is_output(&self) -> bool {
+        self.direction == Direction::Published
     }
 }
 impl GraphPlan {
@@ -73,7 +77,7 @@ impl GraphPlan {
             .clone();
         let endpoint = self.endpoints[range]
             .iter_mut()
-            .filter(|endpoint| endpoint.output == output)
+            .filter(|endpoint| endpoint.is_output() == output)
             .nth(ordinal)
             .ok_or_else(|| {
                 BuildError(format!("unknown endpoint '{callback}' ordinal {ordinal}"))
@@ -172,7 +176,7 @@ impl GraphPlan {
             .and_then(|endpoints| {
                 self.endpoints[endpoints.clone()]
                     .iter()
-                    .filter(|endpoint| endpoint.output == output)
+                    .filter(|endpoint| endpoint.is_output() == output)
                     .nth(ordinal)
             })
             .cloned()
