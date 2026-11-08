@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 use task::{
-    ChannelPlan, LoanError, Publisher, RequiredInput, SubscriberPolicy, executor::TimeSource,
+    ChannelPlan, LoanError, Output, RequiredInput, SubscriberPolicy, executor::TimeSource,
     time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
@@ -67,13 +67,14 @@ impl Double {
         #[trigger(true)]
         #[keep_across_runs(false)]
         input: RequiredInput<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
         if self.slow {
             std::thread::sleep(Duration::from_millis(5));
         }
         self.calls.fetch_add(1, Ordering::SeqCst);
-        output.publish(*input * 2)
+        output.write(*input * 2).send();
+        Ok(())
     }
 }
 fn row(time: i64, bytes: &[u8]) -> OwnedLogEntry {
@@ -220,9 +221,10 @@ impl Poll {
         #[trigger(false)]
         #[keep_across_runs(false)]
         input: RequiredInput<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
-        output.publish(*input)
+        output.write(*input).send();
+        Ok(())
     }
 }
 #[test]
@@ -268,10 +270,11 @@ impl Feedback {
         #[trigger(true)]
         #[keep_across_runs(false)]
         input: task::OptionalInput<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
         let _ = input;
-        output.publish(1)
+        output.write(1).send();
+        Ok(())
     }
 }
 struct Panics;

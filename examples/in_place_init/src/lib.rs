@@ -1,4 +1,4 @@
-use task::output::OutputUninit;
+use task::output::Output;
 use task_macros::task_callback;
 
 pub struct MyTask {}
@@ -10,7 +10,7 @@ pub struct LargeMessage {
 
 #[task_callback]
 impl MyTask {
-    fn run(&mut self, mut output_uninit: OutputUninit<LargeMessage>) {
+    fn run(&mut self, mut output_uninit: Output<LargeMessage>) {
         println!("MyTask run");
         let large_message_uninit = output_uninit.payload_uninit();
         let ptr = large_message_uninit.as_mut_ptr();

@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 use task::{
-    ChannelPlan, InputSpan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime,
+    ChannelPlan, InputSpan, LoanError, OutputSpan, message::MessageHeader, time::FrameworkTime,
 };
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
@@ -32,10 +32,10 @@ impl Double {
         #[trigger(true)]
         #[capacity(8)]
         mut input: InputSpan<u64>,
-        #[capacity(8)] output: &mut Publisher<u64>,
+        #[capacity(8)] output: OutputSpan<u64>,
     ) -> Result<(), LoanError> {
         for value in input.drain() {
-            output.publish(value.message * 2)?;
+            output.loan(value.message * 2)?.send();
         }
         Ok(())
     }

@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use task::Output;
+use task::OutputDefault;
 use task::loggable::Loggable;
 use task_graph::{ApplicationBuilder, CallbackSchedule};
 use task_macros::task_callback;
@@ -126,7 +126,7 @@ impl MyTask {
     fn run(
         &self,
         context: &task::Context,
-        #[channel("custom_data")] mut output: Output<MyCustomData>,
+        #[channel("custom_data")] mut output: OutputDefault<MyCustomData>,
     ) {
         output.integer = context.now.to_nanoseconds() as u64;
         output.string = output.integer.to_string();

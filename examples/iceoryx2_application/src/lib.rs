@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use task::input::{InputSpan, OptionalInput, RequiredInput};
 use task::iox2::{Iox2Event, Iox2OptionalInput, Iox2Output};
-use task::output::Output;
+use task::output::OutputDefault;
 use task_graph::{ApplicationBuilder, BuiltGraph, CallbackSchedule};
 use task_macros::task_callback;
 
@@ -62,7 +62,7 @@ impl Calculator {
         &mut self,
         integer: Iox2OptionalInput<u64>,
         _event: Iox2Event,
-        #[channel(RESULT_CHANNEL)] mut result: Output<String>,
+        #[channel(RESULT_CHANNEL)] mut result: OutputDefault<String>,
         mut acknowledgment: Iox2Output<u64>,
     ) {
         let Some(&value) = integer.value() else {
@@ -123,7 +123,7 @@ impl MetricsRecorder {
         #[capacity(4)]
         #[trigger(true)]
         mut results: InputSpan<String>,
-        #[channel(METRICS_CHANNEL)] mut snapshot: Output<Metrics>,
+        #[channel(METRICS_CHANNEL)] mut snapshot: OutputDefault<Metrics>,
     ) {
         let mut changed = false;
         for result in results.drain() {

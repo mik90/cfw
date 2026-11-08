@@ -7,8 +7,7 @@ use std::{
     time::Duration,
 };
 use task::{
-    ArenaReaderPtr, Forwardable, Forwarded, InputSpan, OutputUninit, RequiredInput,
-    message::Message,
+    ArenaReaderPtr, Forwardable, Forwarded, InputSpan, Output, RequiredInput, message::Message,
 };
 use task_macros::{ForwardedSources, task_callback};
 use testing::UnitTestExecutorBuilder;
@@ -41,7 +40,7 @@ impl Detect {
             Calibration,
             Forwardable,
         >,
-        #[forwards(image = images, calibration = calibration)] detections: OutputUninit<
+        #[forwards(image = images, calibration = calibration)] detections: Output<
             '_,
             'graph_storage,
             Forwarded<Detection, DetectionSources<'graph_storage>>,

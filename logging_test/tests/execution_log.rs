@@ -2,7 +2,7 @@ use logging::{ExecutionLogOptions, ExecutionLogPlan, InMemoryWriter, LogSession}
 use simulation_executor::{SimulationConfig, SimulationState};
 use std::time::Duration;
 use task::{
-    Callback, ChannelPlan, Context, LoanError, Output, Publisher,
+    Callback, ChannelPlan, Context, LoanError, OutputDefault, Publisher,
     execution_log_schema::{
         Direction, EXECUTION_LOG_CHANNEL, EndpointDescriptor, ExecutionDescriptor,
         ExecutionLogMode, ExecutionLogModes, ExecutionRecord, LoggedMessage, Outcome, Transport,
@@ -16,7 +16,7 @@ use task_macros::task_callback;
 struct Counter;
 #[task_callback]
 impl Counter {
-    fn run(&mut self, mut output: Output<u64>) {
+    fn run(&mut self, mut output: OutputDefault<u64>) {
         *output = 1;
         output.send();
     }

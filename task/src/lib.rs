@@ -34,7 +34,9 @@ pub use context::Context;
 pub use execution_log_schema::{Direction, Transport};
 pub use forwarded_message::{Forwarded, ForwardedSources};
 pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, RequiredInput};
-pub use output::{Output, OutputSpan, OutputSpanEntry, OutputUninit, OutputUninitSpan};
+pub use output::{
+    Output, OutputDefault, OutputInit, OutputSpan, OutputSpanEntry, OutputSpanEntryUninit,
+};
 pub use publisher::{LoanError, Publisher, ReplayError};
 pub use storage::StorageError;
 pub use string_interner::{CallbackNameInterner, ChannelNameInterner};

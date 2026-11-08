@@ -1,7 +1,7 @@
 use logging::{CaptureOptions, GraphCapturePlan};
 use logging::{GraphReplayPlan, ReplayOptions};
 use task::{
-    InputSpan, LoanError, OutputSpan, Publisher,
+    InputSpan, LoanError, Output, OutputSpan,
     loggable::{DeserializeError, Loggable, SerializeError},
     time::FrameworkTime,
 };
@@ -43,13 +43,14 @@ impl Source {
     fn run(
         &self,
         #[capacity(2)] output: OutputSpan<Value>,
-        hidden: &mut Publisher<Hidden>,
+        hidden: Output<Hidden>,
     ) -> Result<(), LoanError> {
         let first = output.loan(Value(self.0))?;
         let second = output.loan(Value(self.0 + 1))?;
         second.send();
         first.send();
-        hidden.publish(Hidden)
+        hidden.write(Hidden).send();
+        Ok(())
     }
 }
 struct Sum;
@@ -60,9 +61,12 @@ impl Sum {
         #[trigger(true)]
         #[capacity(4)]
         input: InputSpan<Value>,
-        summary: &mut Publisher<Value>,
+        summary: Output<Value>,
     ) -> Result<(), LoanError> {
-        summary.publish(Value(input.inputs().map(|m| m.message.0).sum()))
+        summary
+            .write(Value(input.inputs().map(|m| m.message.0).sum()))
+            .send();
+        Ok(())
     }
 }
 
@@ -169,8 +173,9 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
     struct Task;
     #[task_callback]
     impl Task {
-        fn run(&self, output: &mut Publisher<Hidden>) -> Result<(), LoanError> {
-            output.publish(Hidden)
+        fn run(&self, output: Output<Hidden>) -> Result<(), LoanError> {
+            output.write(Hidden).send();
+            Ok(())
         }
     }
     let mut plan = GraphPlan::default();
@@ -387,8 +392,9 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
     struct SerdeSource;
     #[task_callback]
     impl SerdeSource {
-        fn run(&self, output: &mut Publisher<u64>) -> Result<(), LoanError> {
-            output.publish(42)
+        fn run(&self, output: Output<u64>) -> Result<(), LoanError> {
+            output.write(42).send();
+            Ok(())
         }
     }
     let mut plan = GraphPlan::default();

@@ -54,26 +54,26 @@ impl FizzBuzzCalculator {
         // This integer input is required for running, and defaults to the INTEGER_CHANNEL
         #[channel(FizzBuzzTaskInfo::INTEGER_CHANNEL)] integer: RequiredInput<u64>,
         // We have a single output channel (defaulted to fizz buzz)
-        #[channel(FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<String>,
+        #[channel(FizzBuzzTaskInfo::FIZZ_BUZZ_STRING_CHANNEL)] fizz_buzz_string: Output<String>,
     ) {
         // Input can be accessed through Deref, although both header/payload are available
         let is_fizz = (*integer).is_multiple_of(3);
         let is_buzz = (*integer).is_multiple_of(5);
         let is_fizz_buzz = is_fizz && is_buzz;
 
-        if is_fizz_buzz {
-            // Although we happen to use a dynamically allocated string here, all pub/sub types are allocated in arenas
-            // so if a contiguous type is used, users can leverage zero-copy messaging without dynamic memory allocation.
-            // Here, we could do that by using a fixed size string.
-            *fizz_buzz_string = String::from("FizzBuzz");
+        // Although we happen to use a dynamically allocated string here, all pub/sub types are allocated in arenas
+        // so if a contiguous type is used, users can leverage zero-copy messaging without dynamic memory allocation.
+        // Here, we could do that by using a fixed size string.
+        let value = if is_fizz_buzz {
+            String::from("FizzBuzz")
         } else if is_fizz {
-            *fizz_buzz_string = String::from("Fizz");
+            String::from("Fizz")
         } else if is_buzz {
-            *fizz_buzz_string = String::from("Buzz");
+            String::from("Buzz")
         } else {
-            *fizz_buzz_string = integer.to_string();
-        }
-        fizz_buzz_string.send();
+            integer.to_string()
+        };
+        fizz_buzz_string.write(value).send();
     }
 }
 ```

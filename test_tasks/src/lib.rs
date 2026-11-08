@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use task::{Output, RequiredInput};
+use task::{OutputDefault, RequiredInput};
 use task_graph::CallbackSchedule;
 use task_macros::task_callback;
 
@@ -14,7 +14,7 @@ pub struct IncrementingIntegerPublisher {
 
 #[task_callback]
 impl IncrementingIntegerPublisher {
-    fn run(&mut self, #[channel(INTEGER_CHANNEL)] mut output: Output<u64>) {
+    fn run(&mut self, #[channel(INTEGER_CHANNEL)] mut output: OutputDefault<u64>) {
         *output = self.value;
         self.value += 1;
         output.send();
@@ -44,7 +44,7 @@ impl FizzBuzzCalculator {
         #[trigger(true)]
         #[channel(INTEGER_CHANNEL)]
         integer: RequiredInput<u64>,
-        #[channel(FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<String>,
+        #[channel(FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: OutputDefault<String>,
     ) {
         *fizz_buzz_string = fizz_buzz(*integer);
         fizz_buzz_string.send();

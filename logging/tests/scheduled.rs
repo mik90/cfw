@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use task::{ChannelPlan, LoanError, Publisher, message::MessageHeader, time::FrameworkTime};
+use task::{ChannelPlan, LoanError, Output, message::MessageHeader, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -69,8 +69,9 @@ impl LogFileWriter for Writer {
 struct Source;
 #[task_callback]
 impl Source {
-    fn run(&self, output: &mut Publisher<Wire>) -> Result<(), LoanError> {
-        output.publish(Wire(42))
+    fn run(&self, output: Output<Wire>) -> Result<(), LoanError> {
+        output.write(Wire(42)).send();
+        Ok(())
     }
 }
 fn at(n: i64) -> FrameworkTime {

@@ -8,7 +8,7 @@ use clap::Parser;
 use live_executor::LiveExecutor;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use task::input::RequiredInput;
-use task::output::Output;
+use task::output::OutputDefault;
 use task_graph::{ApplicationBuilder, CallbackSchedule};
 use task_macros::task_callback;
 
@@ -22,7 +22,7 @@ struct IncrementingIntegerPublisher {
 
 #[task_callback]
 impl IncrementingIntegerPublisher {
-    fn run(&mut self, mut output: Output<u64>) {
+    fn run(&mut self, mut output: OutputDefault<u64>) {
         *output = self.value;
         self.value = self.value.wrapping_add(1);
         output.send();
@@ -36,7 +36,7 @@ impl FizzBuzzCalculator {
     fn run(
         &mut self,
         #[trigger(true)] integer: RequiredInput<u64>,
-        #[channel(FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: Output<FizzBuzzString>,
+        #[channel(FIZZ_BUZZ_STRING_CHANNEL)] mut fizz_buzz_string: OutputDefault<FizzBuzzString>,
     ) {
         let n = *integer;
         let is_fizz = n.is_multiple_of(3);

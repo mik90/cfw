@@ -173,9 +173,8 @@ enum EndpointKind {
     Input,
     Required,
     Output,
+    OutputDefault,
     OutputSpan,
-    Uninit,
-    Publisher,
     IoxInput,
     IoxSpan,
     IoxOutput,
@@ -464,15 +463,14 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
         (true, "Iox2SpanInput") => EndpointKind::IoxSpan,
         (true, "Iox2Event") => EndpointKind::IoxEvent,
         (false, "Output") => EndpointKind::Output,
+        (false, "OutputDefault") => EndpointKind::OutputDefault,
         (false, "OutputSpan") => EndpointKind::OutputSpan,
-        (false, "OutputUninit") => EndpointKind::Uninit,
-        (false, "Publisher") => EndpointKind::Publisher,
         (false, "Iox2Output") => EndpointKind::IoxOutput,
         (false, "Iox2NotifyOutput") => EndpointKind::IoxNotifier,
         _ => {
             return Err(syn::Error::new_spanned(
                 &ty,
-                "expected Input, OptionalInput, InputSpan, RequiredInput, Output, OutputSpan, OutputUninit, Publisher, Iox2OptionalInput, Iox2SpanInput, Iox2Output, Iox2Event, or Iox2NotifyOutput",
+                "expected Input, OptionalInput, InputSpan, RequiredInput, Output, OutputDefault, OutputSpan, Iox2OptionalInput, Iox2SpanInput, Iox2Output, Iox2Event, or Iox2NotifyOutput",
             ));
         }
     };
@@ -493,10 +491,7 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
     if !forwards.is_empty()
         && !matches!(
             kind,
-            EndpointKind::Output
-                | EndpointKind::OutputSpan
-                | EndpointKind::Uninit
-                | EndpointKind::Publisher
+            EndpointKind::Output | EndpointKind::OutputDefault | EndpointKind::OutputSpan
         )
     {
         return Err(syn::Error::new_spanned(
@@ -730,20 +725,17 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             "Input" | "OptionalInput" | "InputSpan" if reference.is_none() => EndpointKind::Input,
             "RequiredInput" if reference.is_none() => EndpointKind::Required,
             "Output" if reference.is_none() => EndpointKind::Output,
+            "OutputDefault" if reference.is_none() => EndpointKind::OutputDefault,
             "OutputSpan" if reference.is_none() => EndpointKind::OutputSpan,
-            "OutputUninit" if reference.is_none() => EndpointKind::Uninit,
             "Iox2OptionalInput" if reference.is_none() => EndpointKind::IoxInput,
             "Iox2SpanInput" if reference.is_none() => EndpointKind::IoxSpan,
             "Iox2Output" if reference.is_none() => EndpointKind::IoxOutput,
             "Iox2Event" if reference.is_none() => EndpointKind::IoxEvent,
             "Iox2NotifyOutput" if reference.is_none() => EndpointKind::IoxNotifier,
-            "Publisher" if matches!(reference, Some(r) if r.mutability.is_some()) => {
-                EndpointKind::Publisher
-            }
             _ => {
                 return Err(syn::Error::new_spanned(
                     &arg.ty,
-                    "expected Input, RequiredInput, OptionalInput, InputSpan, Output, OutputSpan, OutputUninit, &mut Publisher, or &Context",
+                    "expected Input, RequiredInput, OptionalInput, InputSpan, Output, OutputDefault, OutputSpan, or &Context",
                 ));
             }
         };
@@ -924,10 +916,7 @@ fn validate_endpoints(endpoints: &[Endpoint]) -> syn::Result<()> {
         if !endpoint.forwards.is_empty()
             && !matches!(
                 endpoint.kind,
-                EndpointKind::Output
-                    | EndpointKind::Uninit
-                    | EndpointKind::Publisher
-                    | EndpointKind::OutputSpan
+                EndpointKind::Output | EndpointKind::OutputDefault | EndpointKind::OutputSpan
             )
         {
             return Err(syn::Error::new_spanned(

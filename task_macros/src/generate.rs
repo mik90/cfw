@@ -409,14 +409,11 @@ impl Endpoint {
             EndpointKind::Output => {
                 quote!(::task::Output<#lifetime, 'graph_storage, #payload>)
             }
+            EndpointKind::OutputDefault => {
+                quote!(::task::OutputDefault<#lifetime, 'graph_storage, #payload>)
+            }
             EndpointKind::OutputSpan => {
                 quote!(::task::OutputSpan<#lifetime, 'graph_storage, #payload>)
-            }
-            EndpointKind::Uninit => {
-                quote!(::task::OutputUninit<#lifetime, 'graph_storage, #payload>)
-            }
-            EndpointKind::Publisher => {
-                quote!(&#lifetime mut ::task::Publisher<'graph_storage, #payload>)
             }
             EndpointKind::IoxInput => {
                 quote!(::task::iox2::Iox2OptionalInput<#lifetime, #payload>)
@@ -480,12 +477,11 @@ impl Endpoint {
                 quote!(::task::RequiredInput::new_forwardable(&__cfw_inputs.#name.0))
             }
             EndpointKind::Required => quote!(::task::RequiredInput::new(&__cfw_inputs.#name.0)),
-            EndpointKind::Output => {
+            EndpointKind::Output => quote!(__cfw_outputs.#name.loan_uninit()?),
+            EndpointKind::OutputDefault => {
                 quote!(__cfw_outputs.#name.loan(::core::default::Default::default())?)
             }
             EndpointKind::OutputSpan => quote!(__cfw_outputs.#name.span()),
-            EndpointKind::Uninit => quote!(__cfw_outputs.#name.loan_uninit()?),
-            EndpointKind::Publisher => quote!(&mut __cfw_outputs.#name),
             EndpointKind::IoxInput => {
                 quote!(::task::iox2::Iox2OptionalInput::new(&__cfw_inputs.#name))
             }

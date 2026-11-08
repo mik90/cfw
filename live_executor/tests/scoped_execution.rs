@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use task::executor::TimeSource;
 use task::time::FrameworkTime;
-use task::{ChannelPlan, Context, LoanError, Output, Publisher, RequiredInput};
+use task::{ChannelPlan, Context, LoanError, Output, OutputDefault, RequiredInput};
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -29,7 +29,7 @@ impl Increment {
     fn run(
         &mut self,
         #[trigger(true)] mut input: RequiredInput<u64>,
-        mut output: Output<u64>,
+        mut output: OutputDefault<u64>,
         ctx: &Context,
     ) {
         let channels = ctx.channel_names();
@@ -184,8 +184,9 @@ struct Source {
 }
 #[task_callback]
 impl Source {
-    fn run(&mut self, output: &mut Publisher<Counted>) -> Result<(), LoanError> {
-        output.publish(Counted(self.drops.clone()))
+    fn run(&mut self, output: Output<Counted>) -> Result<(), LoanError> {
+        output.write(Counted(self.drops.clone())).send();
+        Ok(())
     }
 }
 struct Failing {
@@ -197,9 +198,9 @@ impl Failing {
     fn run(
         &mut self,
         #[trigger(true)] _input: RequiredInput<Counted>,
-        output: &mut Publisher<Counted>,
+        output: Output<Counted>,
     ) -> Result<(), LoanError> {
-        output.publish(Counted(self.drops.clone()))?;
+        output.write(Counted(self.drops.clone())).send();
         assert!(!self.panic, "worker callback panic");
         Err(LoanError::LoanCapacityReached)
     }

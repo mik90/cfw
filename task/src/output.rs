@@ -10,12 +10,12 @@ use std::ops::{Deref, DerefMut};
 /// Exclusive in-place output reservation. A normal drop releases the slot
 /// without dropping a potentially partially initialized payload. It is up
 /// to the user to handle initialization failure.
-pub struct OutputUninit<'output, 'graph_storage, T> {
+pub struct Output<'output, 'graph_storage, T> {
     publisher: &'output mut Publisher<'graph_storage, T>,
     ptr: ArenaPtrUninit<'graph_storage, Message<T>>,
 }
 
-impl<'output, 'graph_storage, T> OutputUninit<'output, 'graph_storage, T> {
+impl<'output, 'graph_storage, T> Output<'output, 'graph_storage, T> {
     pub fn new(
         publisher: &'output mut Publisher<'graph_storage, T>,
         ptr: ArenaPtrUninit<'graph_storage, Message<T>>,
@@ -23,9 +23,8 @@ impl<'output, 'graph_storage, T> OutputUninit<'output, 'graph_storage, T> {
         Self { publisher, ptr }
     }
 
-    /// The main use-case for OutputUninit, this allows users to initialize large
-    /// types in-place but they must handle safety on their own, including managing
-    /// partially initialized values.
+    /// The main use-case for [`Output`]: initialize large types in-place while
+    /// handling safety and partially initialized values yourself.
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
         let message = self.ptr.payload_uninit().as_mut_ptr();
         // SAFETY: The loan exclusively owns Message<T>. MaybeUninit has T's
@@ -33,7 +32,7 @@ impl<'output, 'graph_storage, T> OutputUninit<'output, 'graph_storage, T> {
         unsafe { &mut *(&raw mut (*message).message).cast::<MaybeUninit<T>>() }
     }
 
-    pub fn write(mut self, value: T) -> Output<'output, 'graph_storage, T> {
+    pub fn write(mut self, value: T) -> OutputInit<'output, 'graph_storage, T> {
         self.payload_uninit().write(value);
         // SAFETY: write initialized T and loan_uninit initialized the header.
         unsafe { self.assume_init() }
@@ -41,8 +40,8 @@ impl<'output, 'graph_storage, T> OutputUninit<'output, 'graph_storage, T> {
 
     /// # Safety
     /// The payload must be fully initialized.
-    pub unsafe fn assume_init(self) -> Output<'output, 'graph_storage, T> {
-        Output {
+    pub unsafe fn assume_init(self) -> OutputInit<'output, 'graph_storage, T> {
+        OutputInit {
             publisher: self.publisher,
             // SAFETY: The caller initialized T; loan_uninit initialized the header.
             ptr: unsafe { self.ptr.assume_init() },
@@ -52,18 +51,18 @@ impl<'output, 'graph_storage, T> OutputUninit<'output, 'graph_storage, T> {
 
 /// Exclusive initialized output. Sending transfers it into the pending batch;
 /// dropping without sending destroys the payload and releases its slot.
-pub struct Output<'output, 'graph_storage, T> {
+pub struct OutputInit<'output, 'graph_storage, T> {
     publisher: &'output mut Publisher<'graph_storage, T>,
     ptr: ArenaPtr<'graph_storage, Message<T>>,
 }
 
-impl<T> Output<'_, '_, T> {
+impl<T> OutputInit<'_, '_, T> {
     pub fn send(self) {
         self.publisher.pending.push(self.ptr);
     }
 
     pub fn value(&self) -> &T {
-        // SAFETY: Output contains a fully initialized, exclusively owned payload.
+        // SAFETY: OutputInit contains a fully initialized, exclusively owned payload.
         &unsafe { (*self.ptr.payload.get()).assume_init_ref() }.message
     }
 
@@ -74,7 +73,7 @@ impl<T> Output<'_, '_, T> {
     }
 }
 
-impl<T> Deref for Output<'_, '_, T> {
+impl<T> Deref for OutputInit<'_, '_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -82,11 +81,15 @@ impl<T> Deref for Output<'_, '_, T> {
     }
 }
 
-impl<T> DerefMut for Output<'_, '_, T> {
+impl<T> DerefMut for OutputInit<'_, '_, T> {
     fn deref_mut(&mut self) -> &mut T {
         self.value_mut()
     }
 }
+
+/// Default-initialized single output endpoint. The executor constructs it with
+/// `T::default()` before calling the callback.
+pub type OutputDefault<'output, 'graph_storage, T> = OutputInit<'output, 'graph_storage, T>;
 
 /// A callback-local span borrowing one publisher. Each reservation owns a
 /// distinct arena slot. Outstanding and sent loans share the publisher's quota.
@@ -112,13 +115,13 @@ impl<'output, 'graph_storage, T> OutputSpan<'output, 'graph_storage, T> {
 
     pub fn loan_uninit(
         &self,
-    ) -> Result<OutputUninitSpan<'_, 'output, 'graph_storage, T>, LoanError> {
+    ) -> Result<OutputSpanEntryUninit<'_, 'output, 'graph_storage, T>, LoanError> {
         if self.outstanding.get() >= (self.loan_capacity - self.pending_len.get()) {
             return Err(LoanError::LoanCapacityReached);
         }
         let ptr = crate::publisher::allocate_output(self.allocator)?;
         self.outstanding.set(self.outstanding.get() + 1);
-        Ok(OutputUninitSpan {
+        Ok(OutputSpanEntryUninit {
             ptr,
             reservation: Reservation { span: self },
         })
@@ -155,12 +158,12 @@ impl<T> Drop for Reservation<'_, '_, '_, T> {
 
 /// Exclusive span reservation whose payload may be initialized in place.
 /// Dropping it releases the slot without dropping a partially initialized T.
-pub struct OutputUninitSpan<'span, 'output, 'graph_storage, T> {
+pub struct OutputSpanEntryUninit<'span, 'output, 'graph_storage, T> {
     ptr: ArenaPtrUninit<'graph_storage, Message<T>>,
     reservation: Reservation<'span, 'output, 'graph_storage, T>,
 }
 
-impl<'span, 'output, 'graph_storage, T> OutputUninitSpan<'span, 'output, 'graph_storage, T> {
+impl<'span, 'output, 'graph_storage, T> OutputSpanEntryUninit<'span, 'output, 'graph_storage, T> {
     pub fn payload_uninit(&mut self) -> &mut MaybeUninit<T> {
         let message = self.ptr.payload_uninit().as_mut_ptr();
         // SAFETY: This reservation exclusively owns its slot. MaybeUninit<T>
@@ -198,7 +201,7 @@ impl<T> OutputSpanEntry<'_, '_, '_, T> {
     }
 
     pub fn value(&self) -> &T {
-        // SAFETY: Output contains a fully initialized, exclusively owned payload.
+        // SAFETY: OutputInit contains a fully initialized, exclusively owned payload.
         &unsafe { (*self.ptr.payload.get()).assume_init_ref() }.message
     }
 

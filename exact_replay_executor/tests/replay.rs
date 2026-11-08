@@ -8,7 +8,7 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
-use task::{ChannelPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task::{ChannelPlan, LoanError, Output, RequiredInput, time::FrameworkTime};
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
 
@@ -55,52 +55,58 @@ impl task::loggable::Loggable for Value {
         serde_json::from_slice(bytes).map(Self).map_err(Into::into)
     }
 }
-struct Source {
-    next: u64,
-    mode: u8,
-}
-#[task_callback]
-impl Source {
-    fn run(
-        &mut self,
-        #[capacity(4)] output: &mut Publisher<Value>,
-        context: &task::Context,
-    ) -> Result<(), LoanError> {
+fn source_body<'a>(mode: u8) -> task::testing::FakePublisherBody<'a, Value> {
+    let mut next = 1;
+    Box::new(move |publisher, context| {
         let mut names = task::string_interner::CallbackNameInterner::new();
         assert_eq!(
             context.callback_names.lookup_by_value("source"),
             Some(names.intern("source"))
         );
-        if self.mode == 3 {
+        if mode == 3 {
             panic!("callback panic");
         }
-        if self.mode == 5 {
-            output.set_publisher_index(999);
+        if mode == 5 {
+            publisher.set_publisher_index(999);
         }
-        if matches!(self.mode, 6 | 7) {
+        if matches!(mode, 6 | 7) {
             let header = task::message::MessageHeader {
-                published_at: if self.mode == 6 {
+                published_at: if mode == 6 {
                     at(context.now().to_nanoseconds() + 1)
                 } else {
                     context.now()
                 },
-                publisher_index: output.publisher_index(),
-                batch_index: u32::from(self.mode == 7),
+                publisher_index: publisher.publisher_index(),
+                batch_index: u32::from(mode == 7),
             };
-            output.publish_with_header(header, Value(self.next))?;
-            self.next += 1;
+            publisher.publish_with_header(header, Value(next))?;
+            next += 1;
             return Ok(());
         }
-        if self.mode != 2 {
-            output.publish(Value(if self.mode == 4 { u64::MAX } else { self.next }))?;
+        if mode != 2 {
+            publisher.publish(Value(if mode == 4 { u64::MAX } else { next }))?;
         }
-        if self.mode == 1 {
-            output.publish(Value(999))?;
+        if mode == 1 {
+            publisher.publish(Value(999))?;
         }
-        self.next += 1;
+        next += 1;
         Ok(())
-    }
+    })
 }
+
+fn source_callback<'a>(
+    bindings: &task::ChannelBindings<'a, Value>,
+    key: &task::PublisherKey<Value>,
+    mode: u8,
+) -> Result<task::testing::FakePublisherCallback<'a, Value>, task::EndpointError> {
+    Ok(task::testing::FakePublisherCallback {
+        publisher: bindings.take_publisher(key)?,
+        body: source_body(mode),
+        ordinal: 0,
+        panic_on_flush: false,
+    })
+}
+
 struct Transform {
     factor: u64,
 }
@@ -109,9 +115,10 @@ impl Transform {
     fn run(
         &self,
         #[trigger(true)] input: RequiredInput<Value>,
-        output: &mut Publisher<Value>,
+        output: Output<Value>,
     ) -> Result<(), LoanError> {
-        output.publish(Value(input.0 * self.factor))
+        output.write(Value(input.0 * self.factor)).send();
+        Ok(())
     }
 }
 fn recorded(log_source: bool) -> ReplayLog {
@@ -119,7 +126,7 @@ fn recorded(log_source: bool) -> ReplayLog {
     {
         let mut source = ChannelPlan::new("source");
         let mut output = ChannelPlan::new("output");
-        let a = Source::declare(&mut source).unwrap();
+        let a = source.publisher(4);
         let b = Transform::declare(&mut source, &mut output).unwrap();
         let source_capture = log_source.then(|| CapturePlan::declare(&mut source, 4));
         let output_capture = CapturePlan::declare(&mut output, 4);
@@ -127,9 +134,7 @@ fn recorded(log_source: bool) -> ReplayLog {
         let source = storage.0.bind();
         let output = storage.1.bind();
         let mut graph = GraphBuilder::with_channel_names([storage.0.name(), storage.1.name()]);
-        graph.add_callback("source", || {
-            Ok(Source { next: 1, mode: 0 }.bind(a, &source)?)
-        });
+        graph.add_callback("source", || Ok(source_callback(&source, &a, 0)?));
         graph.add_callback("transform", || {
             Ok(Transform { factor: 2 }.bind(b, &source, &output)?)
         });
@@ -173,7 +178,7 @@ fn replay<R>(
 ) -> R {
     let mut source = ChannelPlan::new("source");
     let mut output = ChannelPlan::new("output");
-    let a = Source::declare(&mut source).unwrap();
+    let a = source.publisher(4);
     let b = Transform::declare(&mut source, &mut output).unwrap();
     let hydration = ReplayInputPlan::declare(&mut source, b.input_key()).unwrap();
     let storage = (source.allocate().unwrap(), output.allocate().unwrap());
@@ -188,9 +193,7 @@ fn replay<R>(
             "source",
             0,
             source
-                .configure_publisher(a.output_key(), |publisher| {
-                    OutputCapture::native(publisher, 8)
-                })
+                .configure_publisher(&a, |publisher| OutputCapture::native(publisher, 8))
                 .unwrap(),
         )
         .unwrap();
@@ -210,7 +213,7 @@ fn replay<R>(
     graph.add_callback("transform", || {
         Ok(Transform { factor }.bind(b, &source, &output)?)
     });
-    graph.add_callback("source", || Ok(Source { next: 1, mode }.bind(a, &source)?));
+    graph.add_callback("source", || Ok(source_callback(&source, &a, mode)?));
     run(ExactReplayExecutor::with_config(
         graph.build().unwrap(),
         log,
@@ -493,15 +496,13 @@ fn invalid_descriptors_bindings_and_ambiguous_publications_fail_construction() {
 
     let mut source = ChannelPlan::new("source");
     let mut output = ChannelPlan::new("output");
-    let a = Source::declare(&mut source).unwrap();
+    let a = source.publisher(4);
     let b = Transform::declare(&mut source, &mut output).unwrap();
     let storage = (source.allocate().unwrap(), output.allocate().unwrap());
     let source = storage.0.bind();
     let output = storage.1.bind();
     let mut graph = GraphBuilder::new();
-    graph.add_callback("source", || {
-        Ok(Source { next: 1, mode: 0 }.bind(a, &source)?)
-    });
+    graph.add_callback("source", || Ok(source_callback(&source, &a, 0)?));
     graph.add_callback("transform", || {
         Ok(Transform { factor: 2 }.bind(b, &source, &output)?)
     });
@@ -634,9 +635,10 @@ impl TwoInputs {
         &self,
         #[trigger(true)] first: RequiredInput<u64>,
         #[trigger(true)] second: RequiredInput<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
-        output.publish(*first * 10 + *second)
+        output.write(*first * 10 + *second).send();
+        Ok(())
     }
 }
 #[test]
@@ -750,18 +752,15 @@ struct TwoOutputs {
 }
 #[task_callback]
 impl TwoOutputs {
-    fn run(
-        &self,
-        first: &mut Publisher<u64>,
-        second: &mut Publisher<u64>,
-    ) -> Result<(), LoanError> {
+    fn run(&self, first: Output<u64>, second: Output<u64>) -> Result<(), LoanError> {
         if self.swapped {
-            first.publish(7)?;
-            second.publish(42)
+            first.write(7).send();
+            second.write(42).send();
         } else {
-            first.publish(42)?;
-            second.publish(7)
+            first.write(42).send();
+            second.write(7).send();
         }
+        Ok(())
     }
 }
 #[test]
@@ -854,13 +853,14 @@ impl Forward {
     fn run<'graph_storage>(
         &self,
         #[trigger(true)] mut input: task::Input<'_, 'graph_storage, Value, task::Forwardable>,
-        #[forwards(source = input)] output: &mut Publisher<
+        #[forwards(source = input)] output: Output<
+            '_,
             'graph_storage,
             task::Forwarded<bool, SourcePtr<'graph_storage>>,
         >,
     ) -> Result<(), LoanError> {
         if let Some(value) = input.pop() {
-            output.publish(task::Forwarded::new(true, value))?;
+            output.write(task::Forwarded::new(true, value)).send();
         }
         Ok(())
     }
@@ -871,11 +871,14 @@ impl Consume {
     fn run(
         &self,
         #[trigger(true)] input: RequiredInput<task::Forwarded<bool, SourcePtr<'_>>>,
-        output: &mut Publisher<Value>,
+        output: Output<Value>,
     ) -> Result<(), LoanError> {
-        output.publish(Value(
-            input.forwarded_messages.message.0 + if input.message { 10 } else { 100 },
-        ))
+        output
+            .write(Value(
+                input.forwarded_messages.message.0 + if input.message { 10 } else { 100 },
+            ))
+            .send();
+        Ok(())
     }
 }
 #[test]
@@ -887,10 +890,10 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 let mut source = ChannelPlan::new("source");
                 let mut forward = ChannelPlan::new("forward");
                 let mut result = ChannelPlan::new("result");
-                let a = Source::declare(&mut source).unwrap();
+                let a = source.publisher(4);
                 let b = Forward::declare(&mut source, &mut forward).unwrap();
                 let c = Consume::declare(&mut forward, &mut result).unwrap();
-                source.reserve_retained(a.output_key(), 4).unwrap();
+                source.reserve_retained(&a, 4).unwrap();
                 let source_log = logged_source.then(|| CapturePlan::declare(&mut source, 2));
                 let forward_log = logged_forward.then(|| CapturePlan::declare(&mut forward, 2));
                 let result_log = CapturePlan::declare(&mut result, 2);
@@ -903,9 +906,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 let forward = storage.1.bind();
                 let result = storage.2.bind();
                 let mut graph = GraphBuilder::new();
-                graph.add_callback("source", || {
-                    Ok(Source { next: 1, mode: 0 }.bind(a, &source)?)
-                });
+                graph.add_callback("source", || Ok(source_callback(&source, &a, 0)?));
                 graph.add_callback("forward", || Ok(Forward.bind(b, &source, &forward)?));
                 graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
                 let graph = graph.build().unwrap();
@@ -951,7 +952,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
             let mut source = ChannelPlan::new("source");
             let mut forward = ChannelPlan::new("forward");
             let mut result = ChannelPlan::new("result");
-            let a = Source::declare(&mut source).unwrap();
+            let a = source.publisher(4);
             let b = Forward::declare(&mut source, &mut forward).unwrap();
             let c = Consume::declare(&mut forward, &mut result).unwrap();
             let cache = exact_replay_executor::SourceCachePlan::declare(
@@ -994,7 +995,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                     "source",
                     0,
                     source
-                        .configure_publisher(a.output_key(), |p| OutputCapture::native(p, 4))
+                        .configure_publisher(&a, |p| OutputCapture::native(p, 4))
                         .unwrap(),
                 )
                 .unwrap();
@@ -1017,9 +1018,7 @@ fn forwarded_inputs_resolve_logged_and_reproduced_nonclone_sources() {
                 )
                 .unwrap();
             let mut graph = GraphBuilder::new();
-            graph.add_callback("source", || {
-                Ok(Source { next: 1, mode: 0 }.bind(a, &source)?)
-            });
+            graph.add_callback("source", || Ok(source_callback(&source, &a, 0)?));
             graph.add_callback("forward", || Ok(Forward.bind(b, &source, &forward)?));
             graph.add_callback("consume", || Ok(Consume.bind(c, &forward, &result)?));
             let report = ExactReplayExecutor::new(graph.build().unwrap(), log, endpoints)

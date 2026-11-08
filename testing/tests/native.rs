@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use task::{ChannelPlan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task::{ChannelPlan, LoanError, Output, RequiredInput, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 use testing::{UnitTestExecutor, UnitTestExecutorConfig};
@@ -19,9 +19,10 @@ impl Double {
     fn run(
         &self,
         #[trigger(true)] input: RequiredInput<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
-        output.publish(*input * 2)
+        output.write(*input * 2).send();
+        Ok(())
     }
 }
 
@@ -188,8 +189,8 @@ fn retained_payload_drops_exactly_once_after_all_endpoints_and_executor() {
 struct Fails;
 #[task_callback]
 impl Fails {
-    fn run(&self, output: &mut Publisher<u64>) -> Result<(), LoanError> {
-        output.publish(7)?;
+    fn run(&self, output: Output<u64>) -> Result<(), LoanError> {
+        output.write(7).send();
         Err(LoanError::PendingBatchNotEmpty)
     }
 }

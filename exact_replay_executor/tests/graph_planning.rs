@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use task::loggable::Loggable;
-use task::{InputSpan, LoanError, OutputSpan, Publisher, time::FrameworkTime};
+use task::{InputSpan, LoanError, Output, OutputSpan, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 type SourcePtr<'a, T> = task::ArenaReaderPtr<'a, task::message::Message<T>>;
@@ -48,12 +48,15 @@ impl Sum {
         #[trigger(true)]
         #[capacity(2)]
         second: InputSpan<Value>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
-        output.publish(
-            first.inputs().map(|m| m.message.0).sum::<u64>()
-                + second.inputs().map(|m| m.message.0).sum::<u64>(),
-        )
+        output
+            .write(
+                first.inputs().map(|m| m.message.0).sum::<u64>()
+                    + second.inputs().map(|m| m.message.0).sum::<u64>(),
+            )
+            .send();
+        Ok(())
     }
 }
 fn source(plan: &mut GraphPlan, name: &str, value: u64) {
@@ -238,9 +241,10 @@ struct PairSources<'s> {
 struct PairProducer;
 #[task_callback]
 impl PairProducer {
-    fn run(&self, left: &mut Publisher<u64>, right: &mut Publisher<u32>) -> Result<(), LoanError> {
-        left.publish(7)?;
-        right.publish(5)
+    fn run(&self, left: Output<u64>, right: Output<u32>) -> Result<(), LoanError> {
+        left.write(7).send();
+        right.write(5).send();
+        Ok(())
     }
 }
 struct PairForward;
@@ -250,7 +254,7 @@ impl PairForward {
         &self,
         #[trigger(true)] mut left: task::RequiredInput<'_, 's, u64, task::Forwardable>,
         #[trigger(true)] mut right: task::RequiredInput<'_, 's, u32, task::Forwardable>,
-        #[forwards(left = left, right = right)] pair: task::OutputUninit<
+        #[forwards(left = left, right = right)] pair: task::Output<
             '_,
             's,
             task::Forwarded<bool, PairSources<'s>>,
@@ -272,11 +276,15 @@ impl PairSink {
     fn run<'s>(
         &self,
         #[trigger(true)] pair: task::RequiredInput<'_, 's, task::Forwarded<bool, PairSources<'s>>>,
-        result: &mut Publisher<u64>,
+        result: Output<u64>,
     ) -> Result<(), LoanError> {
-        result.publish(
-            pair.forwarded_messages.left.message + u64::from(pair.forwarded_messages.right.message),
-        )
+        result
+            .write(
+                pair.forwarded_messages.left.message
+                    + u64::from(pair.forwarded_messages.right.message),
+            )
+            .send();
+        Ok(())
     }
 }
 fn pair_tasks(plan: &mut GraphPlan, reverse: bool) {
@@ -398,8 +406,8 @@ fn heterogeneous_bundles_replay_logged_and_reproduced_sources() {
 struct ForwardSource(u64);
 #[task_callback]
 impl ForwardSource {
-    fn run(&mut self, output: &mut Publisher<u64>) -> Result<(), LoanError> {
-        output.publish(self.0)?;
+    fn run(&mut self, output: Output<u64>) -> Result<(), LoanError> {
+        output.write(self.0).send();
         self.0 += 1;
         Ok(())
     }
@@ -410,13 +418,16 @@ impl ForwardTask {
     fn run<'graph_storage>(
         &self,
         #[trigger(true)] mut input: task::Input<'_, 'graph_storage, u64, task::Forwardable>,
-        #[forwards(source = input)] output: &mut Publisher<
+        #[forwards(source = input)]
+        #[capacity(1)]
+        output: OutputSpan<
+            '_,
             'graph_storage,
             task::Forwarded<bool, SourcePtr<'graph_storage, u64>>,
         >,
     ) -> Result<(), LoanError> {
         for source in input.drain() {
-            output.publish(task::Forwarded::new(true, source))?;
+            output.loan(task::Forwarded::new(true, source))?.send();
         }
         Ok(())
     }
@@ -431,10 +442,12 @@ impl ForwardSink {
             'graph_storage,
             task::Forwarded<bool, SourcePtr<'graph_storage, u64>>,
         >,
-        output: &mut Publisher<u64>,
+        #[capacity(1)] output: OutputSpan<u64>,
     ) -> Result<(), LoanError> {
         for forwarded in input.drain() {
-            output.publish(forwarded.message.forwarded_messages.message + 1)?;
+            output
+                .loan(forwarded.message.forwarded_messages.message + 1)?
+                .send();
         }
         Ok(())
     }
@@ -578,8 +591,9 @@ impl task::loggable::Loggable for Contextual {
 struct ContextualSource;
 #[task_callback]
 impl ContextualSource {
-    fn run(&self, output: &mut Publisher<Contextual>) -> Result<(), LoanError> {
-        output.publish(Contextual(42))
+    fn run(&self, output: Output<Contextual>) -> Result<(), LoanError> {
+        output.write(Contextual(42)).send();
+        Ok(())
     }
 }
 #[test]

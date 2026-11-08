@@ -8,7 +8,7 @@ use std::{
 };
 use task::loggable::Loggable;
 use task::{
-    ChannelPlan, Forwarded, Input, InputSpan, LoanError, OutputSpan, Publisher, time::FrameworkTime,
+    ChannelPlan, Forwarded, Input, InputSpan, LoanError, Output, OutputSpan, time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
@@ -50,10 +50,10 @@ impl Forward {
         mut input: Input<'_, 'graph_storage, Value, task::Forwardable>,
         #[forwards(source = input)]
         #[capacity(4)]
-        output: &mut Publisher<'graph_storage, Forwarded<bool, SourcePtr<'graph_storage>>>,
+        output: OutputSpan<'_, 'graph_storage, Forwarded<bool, SourcePtr<'graph_storage>>>,
     ) -> Result<(), LoanError> {
         for value in input.drain() {
-            output.publish(Forwarded::new(true, value))?;
+            output.loan(Forwarded::new(true, value))?.send();
         }
         Ok(())
     }
@@ -66,9 +66,12 @@ impl Observe {
         #[trigger(true)]
         #[capacity(8)]
         input: InputSpan<Value>,
-        output: &mut Publisher<Vec<u64>>,
+        output: Output<Vec<u64>>,
     ) -> Result<(), LoanError> {
-        output.publish(input.inputs().map(|m| m.message.0).collect())
+        output
+            .write(input.inputs().map(|m| m.message.0).collect())
+            .send();
+        Ok(())
     }
 }
 struct Consume;
@@ -79,14 +82,17 @@ impl Consume {
         #[trigger(true)]
         #[capacity(8)]
         input: InputSpan<Forwarded<bool, SourcePtr<'_>>>,
-        output: &mut Publisher<Vec<u64>>,
+        output: Output<Vec<u64>>,
     ) -> Result<(), LoanError> {
-        output.publish(
-            input
-                .inputs()
-                .map(|m| m.message.forwarded_messages.message.0)
-                .collect(),
-        )
+        output
+            .write(
+                input
+                    .inputs()
+                    .map(|m| m.message.forwarded_messages.message.0)
+                    .collect(),
+            )
+            .send();
+        Ok(())
     }
 }
 

@@ -8,8 +8,8 @@ use std::{
 };
 use task::iox2::{Iox2ChannelPlan, Iox2Event, Iox2OptionalInput, Iox2Output, Iox2Runtime};
 use task::{
-    ChannelPlan, LoanError, Publisher, RequiredInput, execution_log_schema::*,
-    message::MessageHeader, time::FrameworkTime,
+    ChannelPlan, LoanError, Output, RequiredInput, execution_log_schema::*, message::MessageHeader,
+    time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
@@ -34,10 +34,11 @@ impl Receive {
         &self,
         event: Iox2Event,
         input: Iox2OptionalInput<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
         self.trace.lock().unwrap().push((self.name, event.count()));
-        output.publish(input.value().unwrap() + event.count())
+        output.write(input.value().unwrap() + event.count()).send();
+        Ok(())
     }
 }
 fn row(time: i64, channel: &str, bytes: &[u8]) -> OwnedLogEntry {

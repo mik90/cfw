@@ -6,7 +6,7 @@ use std::{
     },
 };
 use task::{
-    ArenaReaderPtr, ChannelPlan, Forwardable, Forwarded, ForwardedSources as _, OutputUninit,
+    ArenaReaderPtr, ChannelPlan, Forwardable, Forwarded, ForwardedSources as _, Output,
     RequiredInput, message::Message, time::FrameworkTime,
 };
 use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
@@ -35,7 +35,7 @@ impl Merge {
         #[trigger(true)] mut a: RequiredInput<'_, 's, Tracked, Forwardable>,
         #[trigger(true)] mut b: RequiredInput<'_, 's, Tracked, Forwardable>,
         #[trigger(true)] mut c: RequiredInput<'_, 's, u32, Forwardable>,
-        #[forwards(left = a, right = b, scale = c)] output: OutputUninit<
+        #[forwards(left = a, right = b, scale = c)] output: Output<
             '_,
             's,
             Forwarded<u64, Sources<'s>>,
@@ -286,7 +286,7 @@ impl Relay {
             Forwarded<u64, Sources<'s>>,
             Forwardable,
         >,
-        #[forwards(previous = output)] last: OutputUninit<'_, 's, Forwarded<bool, Nested<'s>>>,
+        #[forwards(previous = output)] last: Output<'_, 's, Forwarded<bool, Nested<'s>>>,
     ) {
         last.write(Forwarded::new(
             true,

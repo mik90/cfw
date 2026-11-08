@@ -6,7 +6,7 @@ use std::{
     },
     time::Duration,
 };
-use task::{Context, InputSpan, LoanError, Publisher, RequiredInput, time::FrameworkTime};
+use task::{Context, InputSpan, LoanError, Output, OutputSpan, RequiredInput, time::FrameworkTime};
 use task_graph::CallbackSchedule;
 use task_macros::task_callback;
 use testing::{ExecutionDuration, UnitTestExecutorBuilder, UnitTestExecutorConfig};
@@ -23,9 +23,10 @@ impl Double {
     fn run(
         &self,
         #[trigger(true)] input: RequiredInput<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
-        output.publish(*input * 2)
+        output.write(*input * 2).send();
+        Ok(())
     }
 }
 
@@ -73,9 +74,12 @@ impl ScheduledBatch {
         #[trigger(true)]
         #[capacity(4)]
         mut input: InputSpan<u64>,
-        output: &mut Publisher<Vec<u64>>,
+        output: Output<Vec<u64>>,
     ) -> Result<(), LoanError> {
-        output.publish(input.drain().map(|message| message.message).collect())
+        output
+            .write(input.drain().map(|message| message.message).collect())
+            .send();
+        Ok(())
     }
 }
 
@@ -260,13 +264,16 @@ impl BorrowingForward {
             BorrowedSource,
             task::Forwardable,
         >,
-        #[forwards(source = input)] output: &mut Publisher<
+        #[forwards(source = input)]
+        #[capacity(1)]
+        output: OutputSpan<
+            '_,
             'graph_storage,
             task::Forwarded<bool, BorrowedSourcePtr<'graph_storage>>,
         >,
     ) -> Result<(), LoanError> {
         for source in input.drain() {
-            output.publish(task::Forwarded::new(true, source))?;
+            output.loan(task::Forwarded::new(true, source))?.send();
         }
         Ok(())
     }
@@ -327,10 +334,10 @@ impl Batch {
         #[trigger(true)]
         #[capacity(32)]
         mut input: InputSpan<u64>,
-        #[capacity(32)] output: &mut Publisher<u64>,
+        #[capacity(32)] output: OutputSpan<u64>,
     ) -> Result<(), LoanError> {
         for m in input.drain() {
-            output.publish(m.message)?;
+            output.loan(m.message)?.send();
         }
         Ok(())
     }
@@ -371,9 +378,10 @@ impl Bridge {
         #[trigger(true)]
         #[channel("output")]
         input: RequiredInput<u64>,
-        result: &mut Publisher<u64>,
+        result: Output<u64>,
     ) -> Result<(), LoanError> {
-        result.publish(*input + 1)
+        result.write(*input + 1).send();
+        Ok(())
     }
 }
 #[test]
@@ -417,12 +425,15 @@ impl NonClone {
         #[trigger(true)]
         #[keep_across_runs(false)]
         input: RequiredInput<Counted>,
-        output: &mut Publisher<Counted>,
+        output: Output<Counted>,
     ) -> Result<(), LoanError> {
-        output.publish(Counted {
-            value: input.value * 2,
-            drops: input.drops.clone(),
-        })
+        output
+            .write(Counted {
+                value: input.value * 2,
+                drops: input.drops.clone(),
+            })
+            .send();
+        Ok(())
     }
 }
 #[test]
@@ -583,9 +594,10 @@ struct Tick {
 }
 #[task_callback]
 impl Tick {
-    fn run(&self, output: &mut Publisher<u64>, context: &Context) -> Result<(), LoanError> {
+    fn run(&self, output: Output<u64>, context: &Context) -> Result<(), LoanError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        output.publish(context.now().to_nanoseconds() as u64)
+        output.write(context.now().to_nanoseconds() as u64).send();
+        Ok(())
     }
 }
 #[test]
@@ -657,9 +669,9 @@ impl Fails {
     fn run(
         &self,
         #[trigger(true)] input: RequiredInput<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
-        output.publish(*input)?;
+        output.write(*input).send();
         Err(LoanError::LoanCapacityReached)
     }
 }

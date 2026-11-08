@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use task::{ChannelPlan, LoanError, Publisher};
+use task::{ChannelPlan, LoanError, Output, Publisher};
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -20,8 +20,8 @@ struct Sender {
 }
 #[task_callback]
 impl Sender {
-    fn run(&self, output: &mut Publisher<Counted>) -> Result<(), LoanError> {
-        output.publish(Counted(self.drops.clone()))?;
+    fn run(&self, output: Output<Counted>) -> Result<(), LoanError> {
+        output.write(Counted(self.drops.clone())).send();
         assert!(self.fail != 2, "callback panicked");
         if self.fail == 1 {
             return Err(LoanError::LoanCapacityReached);

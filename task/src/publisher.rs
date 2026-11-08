@@ -1,4 +1,4 @@
-use crate::output::{Output, OutputSpan, OutputUninit};
+use crate::output::{Output, OutputInit, OutputSpan};
 use crate::subscriber::SubscriberWriter;
 use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
 
@@ -220,15 +220,15 @@ impl<'graph_storage, T> Publisher<'graph_storage, T> {
         self.observers.push(Box::new(observer));
     }
 
-    pub fn loan_uninit(&mut self) -> Result<OutputUninit<'_, 'graph_storage, T>, LoanError> {
+    pub fn loan_uninit(&mut self) -> Result<Output<'_, 'graph_storage, T>, LoanError> {
         if self.pending.len() >= self.loan_capacity {
             return Err(LoanError::LoanCapacityReached);
         }
         let ptr = allocate_output(&self.allocator)?;
-        Ok(OutputUninit::new(self, ptr))
+        Ok(Output::new(self, ptr))
     }
 
-    pub fn loan(&mut self, value: T) -> Result<Output<'_, 'graph_storage, T>, LoanError> {
+    pub fn loan(&mut self, value: T) -> Result<OutputInit<'_, 'graph_storage, T>, LoanError> {
         self.loan_uninit().map(|loan| loan.write(value))
     }
 

@@ -1,6 +1,9 @@
 //! Test doubles for callbacks.
 
-use crate::execution_log_schema::{EndpointDescriptor, LoggedIox2Event, LoggedMessage};
+use crate::execution_log_schema::{
+    Direction, EndpointDescriptor, LoggedIox2Event, LoggedMessage, Transport,
+};
+use crate::publisher::Publisher;
 use crate::time::FrameworkTime;
 use crate::wake::WakeHandle;
 use crate::{Callback, Context, LoanError, ReplayError};
@@ -101,4 +104,62 @@ impl Callback for FakeCallback {
         assert!(!self.panic_on_flush, "flush failed");
     }
     fn discard_outputs(&mut self) {}
+}
+
+/// Body invoked by [`Callback::run`] on a [`FakePublisherCallback`].
+pub type FakePublisherBody<'a, T> =
+    Box<dyn FnMut(&mut Publisher<'a, T>, &Context) -> Result<(), LoanError> + Send + 'a>;
+
+/// Configurable callback backed by one real publisher. Useful for tests that
+/// need raw publisher control, such as header injection or publisher indices.
+pub struct FakePublisherCallback<'a, T> {
+    /// Publisher used by this callback.
+    pub publisher: Publisher<'a, T>,
+    /// Body invoked by [`Callback::run`].
+    pub body: FakePublisherBody<'a, T>,
+    /// Endpoint ordinal reported to execution logging.
+    pub ordinal: usize,
+    /// Panic from [`Callback::flush_outputs`] instead of flushing.
+    pub panic_on_flush: bool,
+}
+
+impl<T: Send + Sync> Callback for FakePublisherCallback<'_, T> {
+    fn outputs_are_local(&self) -> bool {
+        true
+    }
+
+    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
+        Ok(())
+    }
+
+    fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
+        Some(vec![EndpointDescriptor {
+            ordinal: self.ordinal,
+            channel: self.publisher.channel_name().into(),
+            direction: Direction::Published,
+            transport: Transport::Native,
+            payload_type: std::any::type_name::<T>().into(),
+            publisher_index: Some(self.publisher.publisher_index()),
+        }])
+    }
+
+    fn run(&mut self, context: &Context) -> Result<(), LoanError> {
+        (self.body)(&mut self.publisher, context)
+    }
+
+    fn visit_pending_messages(&self, visit: &mut dyn FnMut(LoggedMessage)) {
+        let ordinal = self.ordinal;
+        self.publisher.visit_pending_headers(|header| {
+            visit(LoggedMessage { ordinal, header });
+        });
+    }
+
+    fn flush_outputs(&mut self, timestamp: FrameworkTime) {
+        assert!(!self.panic_on_flush, "flush failed");
+        self.publisher.flush(timestamp);
+    }
+
+    fn discard_outputs(&mut self) {
+        self.publisher.discard_pending();
+    }
 }

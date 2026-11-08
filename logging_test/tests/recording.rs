@@ -3,14 +3,14 @@ use logging::{
 };
 use simulation_executor::{SimulationConfig, SimulationState};
 use std::time::Duration;
-use task::{ChannelPlan, Output};
+use task::{ChannelPlan, OutputDefault};
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
 struct Counter(u64);
 #[task_callback]
 impl Counter {
-    fn run(&mut self, mut value: Output<u64>) {
+    fn run(&mut self, mut value: OutputDefault<u64>) {
         *value = self.0;
         self.0 += 1;
         value.send();

@@ -6,15 +6,16 @@ scope exit, including when an assertion panics.
 
 ```rust
 use std::time::Duration;
-use task::{RequiredInput, Publisher, LoanError};
+use task::{RequiredInput, Output, LoanError};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
 struct Double;
 #[task_callback]
 impl Double {
-    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: &mut Publisher<u64>) -> Result<(), LoanError> {
-        output.publish(*input * 2)
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) -> Result<(), LoanError> {
+        output.write(*input * 2).send();
+        Ok(())
     }
 }
 
@@ -90,15 +91,16 @@ timed schedules. All execution uses the simulation scheduler.
 
 ```rust
 use std::time::Duration;
-use task::{RequiredInput, Publisher, LoanError};
+use task::{RequiredInput, Output, LoanError};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
 struct Double;
 #[task_callback]
 impl Double {
-    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: &mut Publisher<u64>) -> Result<(), LoanError> {
-        output.publish(*input * 2)
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) -> Result<(), LoanError> {
+        output.write(*input * 2).send();
+        Ok(())
     }
 }
 
@@ -111,7 +113,7 @@ let storage: testing::UnitTestStorage = builder.allocate();
 let mut executor = storage.build();
 
 input.send(21);
-input.send_at(task::time::FrameworkTime::from_nanoseconds(1_000_000), 22);
+input.send_at(task::time::FrameworkTime::from_nanos(1_000_000), 22);
 executor.run_until_idle(16).unwrap();
 assert_eq!(output.messages(&mut executor, |index, message| {
     assert_eq!(message.message, if index == 0 { 42 } else { 44 });

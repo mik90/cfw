@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use task::time::FrameworkTime;
 use task::{
-    ChannelPlan, Context, Input, InputSpan, LoanError, Output, OutputSpan, OutputUninit, Publisher,
+    ChannelPlan, Context, Input, InputSpan, LoanError, Output, OutputDefault, OutputSpan,
     RequiredInput,
 };
 use task_graph::GraphBuilder;
@@ -17,7 +17,7 @@ impl Increment {
         #[channel("in")]
         #[trigger(true)]
         mut input: RequiredInput<i32>,
-        #[channel("out")] mut output: Output<i32>,
+        #[channel("out")] mut output: OutputDefault<i32>,
         ctx: &Context,
     ) {
         assert_eq!(ctx.now(), FrameworkTime::from_nanos(10));
@@ -173,7 +173,7 @@ struct Failure {
 }
 #[task_callback]
 impl Failure {
-    fn run(&mut self, mut output: Output<Counted>) -> Result<(), LoanError> {
+    fn run(&mut self, mut output: OutputDefault<Counted>) -> Result<(), LoanError> {
         output.0 = Some(self.drops.clone());
         output.send();
         assert!(!self.panic, "callback failed");
@@ -388,7 +388,7 @@ fn generated_span_outputs_cancel_sent_and_unsent_loans_on_failure() {
 
 #[task_callback]
 impl InPlace {
-    fn run(&mut self, mut output: OutputUninit<String>) {
+    fn run(&mut self, mut output: Output<String>) {
         output.payload_uninit().write(String::from("initialized"));
         // SAFETY: The payload was initialized above; the loan initialized its header.
         unsafe { output.assume_init() }.send();
@@ -431,13 +431,14 @@ impl Forward {
         mut input: Input<'_, 'graph_storage, u64, task::Forwardable>,
         #[forwards(source = input)]
         #[capacity(2)]
-        output: &mut Publisher<
+        output: OutputSpan<
+            '_,
             'graph_storage,
             task::Forwarded<bool, SourcePtr<'graph_storage>>,
         >,
     ) -> Result<(), LoanError> {
         for ptr in input.drain() {
-            output.publish(task::Forwarded::new(true, ptr))?;
+            output.loan(task::Forwarded::new(true, ptr))?.send();
         }
         Ok(())
     }
@@ -564,10 +565,10 @@ impl Feedback {
     fn run(
         &self,
         #[trigger(true)] mut input: Input<u64>,
-        output: &mut Publisher<u64>,
+        output: Output<u64>,
     ) -> Result<(), LoanError> {
         if let Some(message) = input.pop() {
-            output.publish(message.message + 1)?;
+            output.write(message.message + 1).send();
         }
         Ok(())
     }

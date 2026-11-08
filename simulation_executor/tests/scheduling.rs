@@ -5,7 +5,7 @@ use std::sync::{
 };
 use std::time::Duration;
 use task::time::FrameworkTime;
-use task::{ChannelPlan, Context, Input, LoanError, Publisher, RequiredInput};
+use task::{ChannelPlan, Context, Input, LoanError, Output, RequiredInput};
 use task_graph::{CallbackSchedule, GraphBuilder};
 use task_macros::task_callback;
 
@@ -65,7 +65,7 @@ struct OrderedSource {
 }
 #[task_callback]
 impl OrderedSource {
-    fn run(&self, output: &mut Publisher<u64>) -> Result<(), LoanError> {
+    fn run(&self, output: Output<u64>) -> Result<(), LoanError> {
         self.barrier.wait();
         if self.value == 1 {
             while self.released.load(Ordering::Acquire) == 0 {
@@ -73,7 +73,7 @@ impl OrderedSource {
             }
         }
         self.order.lock().unwrap().push(self.value);
-        output.publish(self.value)?;
+        output.write(self.value).send();
         if self.value == 2 {
             self.released.store(1, Ordering::Release);
         }
@@ -145,8 +145,9 @@ fn parallel_bodies_commit_in_scheduling_order_and_retained_messages_outlive_simu
 struct Source;
 #[task_callback]
 impl Source {
-    fn run(&self, output: &mut Publisher<u64>) -> Result<(), LoanError> {
-        output.publish(42)
+    fn run(&self, output: Output<u64>) -> Result<(), LoanError> {
+        output.write(42).send();
+        Ok(())
     }
 }
 struct Observe {
