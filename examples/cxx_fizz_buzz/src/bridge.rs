@@ -13,6 +13,9 @@ pub const OPTIONAL_PROBE_IN_CHANNEL: &str = "optional_probe_in";
 pub const OPTIONAL_PROBE_OUT_CHANNEL: &str = "optional_probe_out";
 pub const NORM_IN_CHANNEL: &str = "norm_in";
 pub const NORM_OUT_CHANNEL: &str = "norm_out";
+pub const SPAN_IN_CHANNEL: &str = "span_in";
+pub const SPAN_OUT_CHANNEL: &str = "span_out";
+pub const SPAN_LABEL_CHANNEL: &str = "span_label";
 
 #[cxx::bridge(namespace = "cfw::fizz_buzz")]
 mod ffi {
@@ -63,6 +66,16 @@ mod ffi {
             context: &Context,
         ) -> Result<()>;
         fn make_norm_task() -> UniquePtr<NormTask>;
+
+        type SpanProbeTask;
+
+        fn run(
+            self: Pin<&mut SpanProbeTask>,
+            inputs: &mut SpanProbeCxxInputs,
+            outputs: &mut SpanProbeCxxOutputs,
+            context: &Context,
+        );
+        fn make_span_probe_task() -> UniquePtr<SpanProbeTask>;
     }
 
     extern "Rust" {
@@ -103,6 +116,25 @@ mod ffi {
 
         unsafe fn length_value(self: &mut NormCalculatorCxxOutputs) -> &mut f64;
         fn length_send(self: &mut NormCalculatorCxxOutputs);
+
+        type SpanProbeCxxInputs;
+
+        unsafe fn count(self: &SpanProbeCxxInputs) -> &u64;
+
+        type SpanProbeCxxOutputs;
+
+        /// Reserves a slot and returns its payload for placement new; null when
+        /// the publisher's quota is exhausted.
+        fn numbers_loan(self: &mut SpanProbeCxxOutputs) -> *mut u64;
+        fn numbers_write(self: &mut SpanProbeCxxOutputs, value: u64) -> bool;
+        fn numbers_len(self: &SpanProbeCxxOutputs) -> usize;
+        fn numbers_send(self: &mut SpanProbeCxxOutputs, index: usize);
+        fn numbers_send_all(self: &mut SpanProbeCxxOutputs);
+        fn numbers_discard(self: &mut SpanProbeCxxOutputs);
+
+        /// Reserved slot for in-place `rust::String` construction.
+        fn label_payload(self: &mut SpanProbeCxxOutputs) -> *mut String;
+        fn label_send(self: &mut SpanProbeCxxOutputs);
     }
 }
 
@@ -125,10 +157,24 @@ task_cxx_macros::define_cxx_task! {
     cxx_type: OptionalProbeTask,
     factory: make_optional_probe_task,
     subscribers: {
-        value: OptionalInput<u64> { channel: "optional_probe_in", capacity: 4, trigger: true },
+        value: InputSpan<u64> { channel: "optional_probe_in", capacity: 4, trigger: true },
     },
     publishers: {
         report: Output<String> { channel: "optional_probe_out" },
+    },
+}
+
+task_cxx_macros::define_cxx_task! {
+    bridge: ffi,
+    name: SpanProbe,
+    cxx_type: SpanProbeTask,
+    factory: make_span_probe_task,
+    subscribers: {
+        count: RequiredInput<u64> { channel: "span_in", trigger: true },
+    },
+    publishers: {
+        numbers: OutputSpan<u64> { channel: "span_out", capacity: 4 },
+        label: OutputUninit<String> { channel: "span_label" },
     },
 }
 
@@ -159,7 +205,7 @@ mod tests {
     use super::{
         FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, NORM_IN_CHANNEL,
         NORM_OUT_CHANNEL, NormCalculator, OPTIONAL_PROBE_IN_CHANNEL, OPTIONAL_PROBE_OUT_CHANNEL,
-        OptionalProbe,
+        OptionalProbe, SPAN_IN_CHANNEL, SPAN_LABEL_CHANNEL, SPAN_OUT_CHANNEL, SpanProbe,
     };
 
     #[test]
@@ -221,6 +267,29 @@ mod tests {
         if let Some(second) = reports.get(1) {
             assert_eq!(second, "9:1:9:3000000");
         }
+    }
+
+    #[test]
+    fn cxx_span_and_uninit_outputs() {
+        let mut builder = UnitTestExecutorBuilder::new();
+        builder.add_task("span", SpanProbe::new(), Duration::from_millis(1));
+        let mut input = builder.add_test_publisher::<u64>(SPAN_IN_CHANNEL);
+        let numbers = builder.add_test_subscriber::<u64>(SPAN_OUT_CHANNEL);
+        let labels = builder.add_test_subscriber::<String>(SPAN_LABEL_CHANNEL);
+        let mut collected_numbers = Vec::new();
+        let mut collected_labels = Vec::new();
+        builder.run(|mut executor| {
+            input.send(6);
+            executor.step();
+            numbers.messages(&mut executor, |_, message| {
+                collected_numbers.push(message.message);
+            });
+            labels.messages(&mut executor, |_, message| {
+                collected_labels.push(message.message.clone());
+            });
+        });
+        assert_eq!(collected_numbers, vec![1, 0, 2, 3]);
+        assert_eq!(collected_labels, vec!["span:4".to_string()]);
     }
 
     #[test]

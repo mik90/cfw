@@ -201,13 +201,14 @@ pub fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoin
         (true, "Iox2Event") => EndpointKind::IoxEvent,
         (false, "Output") => EndpointKind::Output,
         (false, "OutputDefault") => EndpointKind::OutputDefault,
+        (false, "OutputUninit") => EndpointKind::Uninit,
         (false, "OutputSpan") => EndpointKind::OutputSpan,
         (false, "Iox2Output") => EndpointKind::IoxOutput,
         (false, "Iox2NotifyOutput") => EndpointKind::IoxNotifier,
         _ => {
             return Err(syn::Error::new_spanned(
                 &ty,
-                "expected Input, OptionalInput, InputSpan, RequiredInput, Output, OutputDefault, OutputSpan, Iox2OptionalInput, Iox2SpanInput, Iox2Output, Iox2Event, or Iox2NotifyOutput",
+                "expected Input, OptionalInput, InputSpan, RequiredInput, Output, OutputDefault, OutputUninit, OutputSpan, Iox2OptionalInput, Iox2SpanInput, Iox2Output, Iox2Event, or Iox2NotifyOutput",
             ));
         }
     };
@@ -228,7 +229,10 @@ pub fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoin
     if !forwards.is_empty()
         && !matches!(
             kind,
-            EndpointKind::Output | EndpointKind::OutputDefault | EndpointKind::OutputSpan
+            EndpointKind::Output
+                | EndpointKind::OutputDefault
+                | EndpointKind::Uninit
+                | EndpointKind::OutputSpan
         )
     {
         return Err(syn::Error::new_spanned(

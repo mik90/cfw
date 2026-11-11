@@ -24,6 +24,8 @@ struct OptionalProbeCxxInputs;
 struct OptionalProbeCxxOutputs;
 struct NormCalculatorCxxInputs;
 struct NormCalculatorCxxOutputs;
+struct SpanProbeCxxInputs;
+struct SpanProbeCxxOutputs;
 
 class FizzBuzzTask {
   public:
@@ -52,5 +54,15 @@ class NormTask {
 };
 
 std::unique_ptr<NormTask> make_norm_task();
+
+/// Writes a span of outputs with mixed `write` and placement-new loans,
+/// exercising capacity exhaustion, per-index sends, and an in-place String.
+class SpanProbeTask {
+  public:
+    void run(SpanProbeCxxInputs& inputs, SpanProbeCxxOutputs& outputs,
+             Context const& context);
+};
+
+std::unique_ptr<SpanProbeTask> make_span_probe_task();
 
 } // namespace cfw::fizz_buzz

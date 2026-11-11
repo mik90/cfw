@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -76,6 +77,39 @@ void NormTask::run(NormCalculatorCxxInputs& inputs,
 
 std::unique_ptr<NormTask> make_norm_task() {
     return std::make_unique<NormTask>();
+}
+
+void SpanProbeTask::run(SpanProbeCxxInputs& inputs,
+                        SpanProbeCxxOutputs& outputs,
+                        Context const& /*context*/) {
+    std::uint64_t const count = inputs.count();
+
+    for (std::uint64_t index = 0; index < count; ++index) {
+        if (index % 2 == 0) {
+            if (!outputs.numbers_write(index)) {
+                break;
+            }
+        } else {
+            std::uint64_t* slot = outputs.numbers_loan();
+            if (slot == nullptr) {
+                break;
+            }
+            new (slot) std::uint64_t(index);
+        }
+    }
+
+    // In-place string output: placement-new into the reserved slot.
+    auto* label = outputs.label_payload();
+    new (label) rust::String("span:" + std::to_string(outputs.numbers_len()));
+    outputs.label_send();
+
+    // Publish the second loan out of order, then the rest in loan order.
+    outputs.numbers_send(1);
+    outputs.numbers_send_all();
+}
+
+std::unique_ptr<SpanProbeTask> make_span_probe_task() {
+    return std::make_unique<SpanProbeTask>();
 }
 
 } // namespace cfw::fizz_buzz

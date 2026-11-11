@@ -121,6 +121,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             "RequiredInput" if reference.is_none() => EndpointKind::Required,
             "Output" if reference.is_none() => EndpointKind::Output,
             "OutputDefault" if reference.is_none() => EndpointKind::OutputDefault,
+            "OutputUninit" if reference.is_none() => EndpointKind::Uninit,
             "OutputSpan" if reference.is_none() => EndpointKind::OutputSpan,
             "Iox2OptionalInput" if reference.is_none() => EndpointKind::IoxInput,
             "Iox2SpanInput" if reference.is_none() => EndpointKind::IoxSpan,
@@ -130,7 +131,7 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             _ => {
                 return Err(syn::Error::new_spanned(
                     &arg.ty,
-                    "expected Input, RequiredInput, OptionalInput, InputSpan, Output, OutputDefault, OutputSpan, or &Context",
+                    "expected Input, RequiredInput, OptionalInput, InputSpan, Output, OutputDefault, OutputUninit, OutputSpan, or &Context",
                 ));
             }
         };

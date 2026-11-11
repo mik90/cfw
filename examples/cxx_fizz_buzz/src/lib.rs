@@ -10,5 +10,5 @@ mod bridge;
 pub use bridge::{
     FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, NORM_IN_CHANNEL,
     NORM_OUT_CHANNEL, NormCalculator, OPTIONAL_PROBE_IN_CHANNEL, OPTIONAL_PROBE_OUT_CHANNEL,
-    OptionalProbe,
+    OptionalProbe, SPAN_IN_CHANNEL, SPAN_LABEL_CHANNEL, SPAN_OUT_CHANNEL, SpanProbe,
 };

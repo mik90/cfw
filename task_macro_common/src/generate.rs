@@ -407,7 +407,7 @@ impl Endpoint {
             EndpointKind::Required => {
                 quote!(::task::RequiredInput<#lifetime, 'graph_storage, #payload>)
             }
-            EndpointKind::Output => {
+            EndpointKind::Output | EndpointKind::Uninit => {
                 quote!(::task::Output<#lifetime, 'graph_storage, #payload>)
             }
             EndpointKind::OutputDefault => {
@@ -478,7 +478,9 @@ impl Endpoint {
                 quote!(::task::RequiredInput::new_forwardable(&__cfw_inputs.#name.0))
             }
             EndpointKind::Required => quote!(::task::RequiredInput::new(&__cfw_inputs.#name.0)),
-            EndpointKind::Output => quote!(__cfw_outputs.#name.loan_uninit()?),
+            EndpointKind::Output | EndpointKind::Uninit => {
+                quote!(__cfw_outputs.#name.loan_uninit()?)
+            }
             EndpointKind::OutputDefault => {
                 quote!(__cfw_outputs.#name.loan(::core::default::Default::default())?)
             }

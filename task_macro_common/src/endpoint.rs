@@ -9,6 +9,7 @@ pub enum EndpointKind {
     Required,
     Output,
     OutputDefault,
+    Uninit,
     OutputSpan,
     IoxInput,
     IoxSpan,
@@ -103,7 +104,10 @@ pub fn validate_endpoints(endpoints: &[Endpoint]) -> syn::Result<()> {
         if !endpoint.forwards.is_empty()
             && !matches!(
                 endpoint.kind,
-                EndpointKind::Output | EndpointKind::OutputDefault | EndpointKind::OutputSpan
+                EndpointKind::Output
+                    | EndpointKind::OutputDefault
+                    | EndpointKind::Uninit
+                    | EndpointKind::OutputSpan
             )
         {
             return Err(syn::Error::new_spanned(

@@ -49,7 +49,17 @@ use task_macro_common::{
 /// - optional input: `foo_has_value(&self) -> bool`, `foo_len(&self) -> usize`,
 ///   `unsafe fn foo_value(&self) -> &T`, `unsafe fn foo_at(&self, usize) -> &T`,
 ///   `foo_try_value(&self) -> *const T`, `foo_pop(&mut self)`
-/// - output: `unsafe fn foo_value(&mut self) -> &mut T`, `foo_send(&mut self)`
+/// - input span (`InputSpan`, requires `capacity`): the same methods as an
+///   optional input
+/// - default-initialized output (`Output`/`OutputDefault`):
+///   `unsafe fn foo_value(&mut self) -> &mut T`, `foo_send(&mut self)`
+/// - in-place output (`OutputUninit`): `fn foo_payload(&mut self) -> *mut T`,
+///   `foo_send(&mut self)`; C++ placement-news the payload before sending
+/// - span output (`OutputSpan`, requires `capacity`):
+///   `fn foo_loan(&mut self) -> *mut T` (null when exhausted),
+///   `fn foo_write(&mut self, T) -> bool`, `foo_len(&self) -> usize`,
+///   `foo_send(&mut self, index: usize)`, `foo_send_all(&mut self)`,
+///   `foo_discard(&mut self)`
 ///
 /// Both input kinds also expose `foo_header(&self) -> MessageHeader`, where the
 /// bridge aliases `type MessageHeader = ::task_cxx::ffi::MessageHeader`.
@@ -149,11 +159,15 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
     for endpoint in &endpoints {
         match endpoint.kind {
             EndpointKind::Required | EndpointKind::Input => {}
-            EndpointKind::Output | EndpointKind::OutputDefault => {}
+            EndpointKind::Output
+            | EndpointKind::OutputDefault
+            | EndpointKind::Uninit
+            | EndpointKind::OutputSpan => {}
             _ => {
                 return Err(syn::Error::new_spanned(
                     &endpoint.name,
-                    "C++ tasks support RequiredInput, OptionalInput, and Output endpoints only",
+                    "C++ tasks support RequiredInput, OptionalInput, InputSpan, Output, \
+                     OutputUninit, and OutputSpan endpoints only",
                 ));
             }
         }
@@ -185,7 +199,7 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
     let registration = generate_registration(&quote!(#name), &declaration, endpoints);
     let input_collection = generate::collection(endpoints, &inputs, true);
     let output_collection = generate::collection(endpoints, &outputs, false);
-    let views = view_definitions(&view_inputs, &view_outputs, endpoints);
+    let views = view_definitions(&name, &view_inputs, &view_outputs, endpoints);
     let invocation = invocation(&name, &view_inputs, &view_outputs, endpoints, fallible);
     let binding = generate::binding(&task, &declaration, &inputs, &outputs, &invocation);
 
@@ -222,6 +236,7 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
 }
 
 fn view_definitions(
+    task_name: &Ident,
     view_inputs: &Ident,
     view_outputs: &Ident,
     endpoints: &[Endpoint],
@@ -346,62 +361,242 @@ fn view_definitions(
 
     let output_fields = output_endpoints.iter().map(|endpoint| {
         let name = &endpoint.name;
-        let payload = &endpoint.payload;
-        quote!(
-            #name: *mut ::core::option::Option<
-                ::task::OutputDefault<'static, 'static, #payload>
-            >
-        )
+        let ty = &endpoint.payload;
+        match endpoint.kind {
+            EndpointKind::Output | EndpointKind::OutputDefault => quote!(
+                #name: *mut ::core::option::Option<
+                    ::task::OutputDefault<'static, 'static, #ty>
+                >
+            ),
+            EndpointKind::Uninit => quote!(
+                #name: *mut ::core::option::Option<
+                    ::task::Output<'static, 'static, #ty>
+                >
+            ),
+            EndpointKind::OutputSpan => {
+                let slot = span_slot_ident(task_name, endpoint);
+                let entries = span_entries_ident(endpoint);
+                quote!(
+                    #name: *mut ::task::OutputSpan<'static, 'static, #ty>,
+                    #entries: ::std::vec::Vec<#slot>
+                )
+            }
+            _ => quote!(),
+        }
     });
     let output_params = output_endpoints.iter().map(|endpoint| {
         let name = &endpoint.name;
-        let payload = &endpoint.payload;
-        quote!(
-            #name: &mut ::core::option::Option<::task::OutputDefault<'_, '_, #payload>>
-        )
+        let ty = &endpoint.payload;
+        match endpoint.kind {
+            EndpointKind::Output | EndpointKind::OutputDefault => quote!(
+                #name: &mut ::core::option::Option<::task::OutputDefault<'_, '_, #ty>>
+            ),
+            EndpointKind::Uninit => quote!(
+                #name: &mut ::core::option::Option<::task::Output<'_, '_, #ty>>
+            ),
+            EndpointKind::OutputSpan => quote!(
+                #name: &mut ::task::OutputSpan<'_, '_, #ty>
+            ),
+            _ => quote!(),
+        }
     });
     let output_inits = output_endpoints.iter().map(|endpoint| {
         let name = &endpoint.name;
-        let payload = &endpoint.payload;
-        quote!(
-            #name: #name as *mut ::core::option::Option<
-                ::task::OutputDefault<'_, '_, #payload>
-            > as *mut ::core::option::Option<
-                ::task::OutputDefault<'static, 'static, #payload>
-            >
-        )
+        let ty = &endpoint.payload;
+        match endpoint.kind {
+            EndpointKind::Output | EndpointKind::OutputDefault => quote!(
+                #name: #name as *mut ::core::option::Option<
+                    ::task::OutputDefault<'_, '_, #ty>
+                > as *mut ::core::option::Option<
+                    ::task::OutputDefault<'static, 'static, #ty>
+                >
+            ),
+            EndpointKind::Uninit => quote!(
+                #name: #name as *mut ::core::option::Option<
+                    ::task::Output<'_, '_, #ty>
+                > as *mut ::core::option::Option<
+                    ::task::Output<'static, 'static, #ty>
+                >
+            ),
+            EndpointKind::OutputSpan => {
+                let entries = span_entries_ident(endpoint);
+                quote!(
+                    #name: #name as *mut ::task::OutputSpan<'_, '_, #ty>
+                        as *mut ::task::OutputSpan<'static, 'static, #ty>,
+                    #entries: ::std::vec::Vec::new()
+                )
+            }
+            _ => quote!(),
+        }
     });
     let output_methods = output_endpoints.iter().map(|endpoint| {
         let name = &endpoint.name;
-        let payload = &endpoint.payload;
-        let value = format_ident!("{name}_value");
-        let send = format_ident!("{name}_send");
-        quote! {
-            /// # Safety
-            /// The returned reference is only valid until the next `#send` call and
-            /// must not escape the C++ `run` call.
-            pub unsafe fn #value(&mut self) -> &mut #payload {
-                // SAFETY: view construction guarantees the slot outlives the view;
-                // the `&mut self` borrow makes access exclusive for its duration.
-                let slot = unsafe { &mut *self.#name };
-                slot.as_mut()
-                    .expect("output value accessed after send")
-                    .value_mut()
-            }
+        let ty = &endpoint.payload;
+        match endpoint.kind {
+            EndpointKind::Output | EndpointKind::OutputDefault => {
+                let value = format_ident!("{name}_value");
+                let send = format_ident!("{name}_send");
+                quote! {
+                    /// # Safety
+                    /// The returned reference is only valid until the next `#send` call and
+                    /// must not escape the C++ `run` call.
+                    pub unsafe fn #value(&mut self) -> &mut #ty {
+                        // SAFETY: view construction guarantees the slot outlives the view;
+                        // the `&mut self` borrow makes access exclusive for its duration.
+                        let slot = unsafe { &mut *self.#name };
+                        slot.as_mut()
+                            .expect("output value accessed after send")
+                            .value_mut()
+                    }
 
-            pub fn #send(&mut self) {
-                // SAFETY: view construction guarantees the slot outlives the view;
-                // the `&mut self` borrow makes access exclusive for its duration.
-                if let ::core::option::Option::Some(output) =
-                    unsafe { &mut *self.#name }.take()
-                {
-                    output.send();
+                    pub fn #send(&mut self) {
+                        // SAFETY: view construction guarantees the slot outlives the view;
+                        // the `&mut self` borrow makes access exclusive for its duration.
+                        if let ::core::option::Option::Some(output) =
+                            unsafe { &mut *self.#name }.take()
+                        {
+                            output.send();
+                        }
+                    }
                 }
             }
+            EndpointKind::Uninit => {
+                let payload = format_ident!("{name}_payload");
+                let send = format_ident!("{name}_send");
+                quote! {
+                    /// Returns the reserved payload slot for in-place construction.
+                    /// The pointer is valid until the output is sent; C++ must
+                    /// placement-new the payload before calling `send`. Dropping an
+                    /// unsent in-place output does not run the payload destructor.
+                    pub fn #payload(&mut self) -> *mut #ty {
+                        // SAFETY: view construction guarantees the slot outlives the view;
+                        // the `&mut self` borrow makes access exclusive for its duration.
+                        let slot = unsafe { &mut *self.#name };
+                        slot.as_mut()
+                            .expect("output payload accessed after send")
+                            .payload_uninit()
+                            .as_mut_ptr()
+                    }
+
+                    pub fn #send(&mut self) {
+                        // SAFETY: view construction guarantees the slot outlives the view;
+                        // the `&mut self` borrow makes access exclusive for its duration.
+                        if let ::core::option::Option::Some(output) =
+                            unsafe { &mut *self.#name }.take()
+                        {
+                            // SAFETY: C++ placement-new initialized the payload in place.
+                            unsafe { output.assume_init() }.send();
+                        }
+                    }
+                }
+            }
+            EndpointKind::OutputSpan => {
+                let slot = span_slot_ident(task_name, endpoint);
+                let entries = span_entries_ident(endpoint);
+                let loan = format_ident!("{name}_loan");
+                let write = format_ident!("{name}_write");
+                let len = format_ident!("{name}_len");
+                let send = format_ident!("{name}_send");
+                let send_all = format_ident!("{name}_send_all");
+                let discard = format_ident!("{name}_discard");
+                quote! {
+                    /// Reserves an output slot for placement-new initialization and
+                    /// returns a pointer to its payload, or null when the publisher's
+                    /// quota or arena is exhausted. The pointer is valid until the slot
+                    /// is sent or discarded; C++ must placement-new the payload before
+                    /// calling `send`/`send_all`. Dropping an unsent placement-new slot
+                    /// does not run the payload destructor.
+                    pub fn #loan(&mut self) -> *mut #ty {
+                        // SAFETY: view construction guarantees the span outlives the view.
+                        let span = unsafe { &*self.#name };
+                        let mut entry = match span.loan_uninit() {
+                            ::core::result::Result::Ok(entry) => entry,
+                            ::core::result::Result::Err(_) => return ::core::ptr::null_mut(),
+                        };
+                        let payload = entry.payload_uninit().as_mut_ptr();
+                        self.#entries.push(#slot::Uninit(entry));
+                        payload
+                    }
+
+                    /// Reserves an output slot initialized with `value`. Returns false
+                    /// when the publisher's quota or arena is exhausted.
+                    pub fn #write(&mut self, value: #ty) -> bool {
+                        // SAFETY: view construction guarantees the span outlives the view.
+                        let span = unsafe { &*self.#name };
+                        match span.loan(value) {
+                            ::core::result::Result::Ok(entry) => {
+                                self.#entries.push(#slot::Written(entry));
+                                true
+                            }
+                            ::core::result::Result::Err(_) => false,
+                        }
+                    }
+
+                    /// Number of outstanding (unsent) loans.
+                    pub fn #len(&self) -> usize {
+                        self.#entries
+                            .iter()
+                            .filter(|slot| !::core::matches!(slot, #slot::Sent))
+                            .count()
+                    }
+
+                    /// Publishes loan `index` in loan order. Does nothing when the
+                    /// index is out of range or already sent.
+                    pub fn #send(&mut self, index: usize) {
+                        let ::core::option::Option::Some(slot) = self.#entries.get_mut(index) else {
+                            return;
+                        };
+                        let slot = ::core::mem::replace(slot, #slot::Sent);
+                        match slot {
+                            // SAFETY: C++ placement-new initialized the payload in place.
+                            #slot::Uninit(entry) => unsafe { entry.assume_init() }.send(),
+                            #slot::Written(entry) => entry.send(),
+                            #slot::Sent => {}
+                        }
+                    }
+
+                    /// Publishes outstanding loans in loan order and clears the span.
+                    pub fn #send_all(&mut self) {
+                        for slot in self.#entries.drain(..) {
+                            match slot {
+                                // SAFETY: C++ placement-new initialized the payload in place.
+                                #slot::Uninit(entry) => unsafe { entry.assume_init() }.send(),
+                                #slot::Written(entry) => entry.send(),
+                                #slot::Sent => {}
+                            }
+                        }
+                    }
+
+                    /// Drops all outstanding loans without publishing them. Slots
+                    /// initialized with placement new must be destroyed by C++ first.
+                    pub fn #discard(&mut self) {
+                        self.#entries.clear();
+                    }
+                }
+            }
+            _ => quote!(),
         }
     });
 
+    let span_slots = output_endpoints
+        .iter()
+        .filter(|endpoint| matches!(endpoint.kind, EndpointKind::OutputSpan))
+        .map(|endpoint| {
+            let slot = span_slot_ident(task_name, endpoint);
+            let ty = &endpoint.payload;
+            quote! {
+                #[doc(hidden)]
+                enum #slot {
+                    Uninit(::task::OutputSpanEntryUninit<'static, 'static, 'static, #ty>),
+                    Written(::task::OutputSpanEntry<'static, 'static, 'static, #ty>),
+                    Sent,
+                }
+            }
+        });
+
     quote! {
+        #(#span_slots)*
+
         #[doc(hidden)]
         pub struct #view_inputs {
             #(#input_fields,)*
@@ -432,6 +627,16 @@ fn view_definitions(
     }
 }
 
+fn span_slot_ident(task_name: &Ident, endpoint: &Endpoint) -> Ident {
+    let name = &endpoint.name;
+    format_ident!("{task_name}{name}SpanSlot")
+}
+
+fn span_entries_ident(endpoint: &Endpoint) -> Ident {
+    let name = &endpoint.name;
+    format_ident!("{name}_entries")
+}
+
 fn invocation(
     name: &Ident,
     view_inputs: &Ident,
@@ -443,30 +648,52 @@ fn invocation(
     let mut input_args = Vec::new();
     let mut output_args = Vec::new();
     for endpoint in endpoints {
-        let name = &endpoint.name;
+        let endpoint_name = &endpoint.name;
         if endpoint.is_input() {
             match endpoint.kind {
                 EndpointKind::Required => {
                     prelude.push(quote!(
-                        let #name = ::task::RequiredInput::new(&__cfw_inputs.#name.0);
+                        let #endpoint_name = ::task::RequiredInput::new(&__cfw_inputs.#endpoint_name.0);
                     ));
-                    input_args.push(quote!(&#name));
+                    input_args.push(quote!(&#endpoint_name));
                 }
                 _ => {
                     prelude.push(quote!(
-                        let mut #name = __cfw_inputs.#name.input_readonly();
+                        let mut #endpoint_name = __cfw_inputs.#endpoint_name.input_readonly();
                     ));
-                    input_args.push(quote!(&mut #name));
+                    input_args.push(quote!(&mut #endpoint_name));
                 }
             }
         } else {
-            let slot = format_ident!("{name}_slot");
-            prelude.push(quote! {
-                let mut #slot = ::core::option::Option::Some(
-                    __cfw_outputs.#name.loan(::core::default::Default::default())?
-                );
-            });
-            output_args.push(quote!(&mut #slot));
+            match endpoint.kind {
+                EndpointKind::Output | EndpointKind::OutputDefault => {
+                    let slot = format_ident!("{endpoint_name}_slot");
+                    prelude.push(quote! {
+                        let mut #slot = ::core::option::Option::Some(
+                            __cfw_outputs.#endpoint_name.loan(::core::default::Default::default())?
+                        );
+                    });
+                    output_args.push(quote!(&mut #slot));
+                }
+                EndpointKind::Uninit => {
+                    let slot = format_ident!("{endpoint_name}_slot");
+                    prelude.push(quote! {
+                        let mut #slot = ::core::option::Option::Some(
+                            __cfw_outputs.#endpoint_name.loan_uninit()?
+                        );
+                    });
+                    output_args.push(quote!(&mut #slot));
+                }
+                EndpointKind::OutputSpan => {
+                    // The span is declared before the view, so the view's entries
+                    // (which borrow it) drop first on both normal and unwinding exits.
+                    prelude.push(quote! {
+                        let mut #endpoint_name = __cfw_outputs.#endpoint_name.span();
+                    });
+                    output_args.push(quote!(&mut #endpoint_name));
+                }
+                _ => {}
+            }
         }
     }
     let call = if fallible {
@@ -516,9 +743,12 @@ mod tests {
             subscribers: {
                 integer: RequiredInput<u64> { channel: "integer", trigger: true },
                 gain: OptionalInput<f64> { channel: "gain", capacity: 4 },
+                span_in: InputSpan<u64> { channel: "span_in", capacity: 4 },
             },
             publishers: {
                 report: Output<String> { channel: "report" },
+                raw: OutputUninit<String> { channel: "raw" },
+                numbers: OutputSpan<u64> { channel: "numbers", capacity: 4 },
             },
             "#,
         )
@@ -536,6 +766,15 @@ mod tests {
             "pub fn gain_header",
             "pub unsafe fn report_value",
             "pub fn report_send",
+            "pub fn raw_payload",
+            "pub fn raw_send",
+            "pub fn numbers_loan",
+            "pub fn numbers_write",
+            "pub fn numbers_len",
+            "pub fn numbers_send",
+            "pub fn numbers_send_all",
+            "pub fn numbers_discard",
+            "ProbenumbersSpanSlot",
         ] {
             assert!(
                 tokens.contains(expected),
@@ -571,7 +810,7 @@ mod tests {
             r#"
             bridge: ffi, name: Probe, cxx_type: T, factory: make,
             subscribers: {},
-            publishers: { value: OutputSpan<u64> { channel: "out", capacity: 2 } },
+            publishers: { value: OutputSpan<u64> { channel: "out" } },
             "#,
             r#"
             bridge: ffi, name: Probe, cxx_type: T, factory: make,
