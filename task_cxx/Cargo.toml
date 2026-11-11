@@ -1,0 +1,23 @@
+[package]
+name = "task_cxx"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# Exposes the cxx-generated header to dependent task bridge crates.
+links = "task_cxx"
+
+[dependencies]
+task = { path = "../task", default-features = false }
+cxx = { workspace = true, optional = true }
+
+[build-dependencies]
+cxx-build = { workspace = true, optional = true }
+
+[features]
+# Off by default so workspace builds need no C++ toolchain; task bridges that
+# alias these types enable `task_cxx/cxx`.
+default = []
+cxx = ["dep:cxx", "dep:cxx-build"]
+
+[lints]
+workspace = true

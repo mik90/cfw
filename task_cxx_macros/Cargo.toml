@@ -1,0 +1,17 @@
+[package]
+name = "task_cxx_macros"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+task_macro_common = { path = "../task_macro_common" }
+proc-macro2 = "1"
+quote = "1.0.42"
+syn = { version = "2.0.111", features = ["full", "visit-mut"] }
+
+[lints]
+workspace = true
