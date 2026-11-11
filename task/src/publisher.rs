@@ -1,7 +1,6 @@
 use crate::output::{Output, OutputInit, OutputSpan};
 use crate::subscriber::SubscriberWriter;
 use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
-use std::mem::MaybeUninit;
 
 use super::Subscriber;
 use crate::message::{Message, MessageHeader};
@@ -282,11 +281,17 @@ impl<'graph_storage, T> Publisher<'graph_storage, T> {
     /// Unsent outputs are released when their output handle is dropped.
     pub fn flush(&mut self, timestamp: FrameworkTime) {
         let publisher_index = self.publisher_index;
-        self.flush_headers(|index| MessageHeader {
+        self.flush_with(|index| MessageHeader {
             published_at: timestamp,
             publisher_index,
             batch_index: u32::try_from(index).expect("publisher batch index overflow"),
         });
+    }
+
+    /// Publish the pending batch using a caller-supplied header stamp.
+    /// Unsent outputs are released when their output handle is dropped.
+    pub fn flush_with(&mut self, stamp: impl FnMut(usize) -> MessageHeader) {
+        self.flush_headers(stamp);
     }
 
     /// Inject one message with its original publication identity intact.
@@ -300,28 +305,6 @@ impl<'graph_storage, T> Publisher<'graph_storage, T> {
             return Err(LoanError::PendingBatchNotEmpty);
         }
         self.publish(value)?;
-        self.flush_headers(|_| header);
-        Ok(())
-    }
-
-    /// Publish one in-place initialized output with an explicit header.
-    /// Intended for replay hydration.
-    pub fn publish_with_header_in_place(
-        &mut self,
-        header: MessageHeader,
-        init: impl FnOnce(&mut MaybeUninit<T>) -> Result<(), ReplayError>,
-    ) -> Result<(), ReplayError> {
-        if !self.pending.is_empty() {
-            return Err(ReplayError::new(
-                "header injection requires an empty pending batch",
-            ));
-        }
-        let mut output = self
-            .loan_uninit()
-            .map_err(|error| ReplayError::new(format!("replay loan failed: {error:?}")))?;
-        init(output.payload_uninit())?;
-        // SAFETY: init initialized the loan payload.
-        unsafe { output.assume_init() }.send();
         self.flush_headers(|_| header);
         Ok(())
     }

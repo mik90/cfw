@@ -22,11 +22,14 @@ impl<'a> ReplaySource<'a> {
             channel: publisher.channel_name().into(),
             payload_type: std::any::type_name::<T>(),
             inject: Box::new(move |header, bytes| {
-                publisher.publish_with_header_in_place(header, |slot| {
-                    T::deserialize_into(bytes, slot, ()).map_err(|error| {
-                        task::ReplayError::new(format!("replay decode failed: {error}"))
-                    })
-                })?;
+                let mut output = publisher
+                    .loan_uninit()
+                    .map_err(|error| format!("replay loan failed: {error:?}"))?;
+                T::deserialize_into(bytes, output.payload_uninit(), ())
+                    .map_err(|error| format!("replay decode failed: {error}"))?;
+                // SAFETY: `deserialize_into` initialized the loan payload.
+                unsafe { output.assume_init() }.send();
+                publisher.flush_with(|_| header);
                 Ok(())
             }),
         }
