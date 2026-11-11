@@ -19,6 +19,59 @@ fn timestamp() -> FrameworkTime {
 }
 
 #[test]
+fn required_inputs_consume_one_message_per_run_unless_cleared() {
+    use task::callback::{CallbackNode, Required};
+    use task::{
+        CallbackNameInterner, ChannelNameInterner, Context, SubscriberPolicy, execute_callback,
+    };
+
+    fn drain_lengths(clear: bool) -> Vec<usize> {
+        let arena = Arena::new(8);
+        let subscriber = Subscriber::with_policy(
+            8,
+            SubscriberPolicy {
+                trigger: true,
+                keep_across_runs: false,
+            },
+        );
+        let mut publisher = Publisher::new(arena.allocator(), 8);
+        publisher.connect(&subscriber);
+        for value in 0..3 {
+            publisher.publish(value).unwrap();
+        }
+        publisher.flush(timestamp());
+
+        let mut observed = Vec::new();
+        {
+            let mut node = CallbackNode::new(
+                Required(subscriber),
+                (),
+                |input: &Required<Subscriber<'_, u32>>,
+                 _: &mut (),
+                 _: &Context|
+                 -> Result<(), LoanError> {
+                    observed.push(input.0.pending_len());
+                    if clear {
+                        input.0.input_readonly().clear();
+                    }
+                    Ok(())
+                },
+            );
+            let channel_names = ChannelNameInterner::new();
+            let callback_names = CallbackNameInterner::new();
+            let context = Context::new(timestamp(), &channel_names, &callback_names);
+            while execute_callback(&mut node, &context).unwrap() {}
+        }
+        observed
+    }
+
+    // The framework consumes one exposed message per run, leaving the rest.
+    assert_eq!(drain_lengths(false), [3, 2, 1]);
+    // Explicit consumption does not cause a second message to be discarded.
+    assert_eq!(drain_lengths(true), [3, 2, 1]);
+}
+
+#[test]
 fn header_injection_preserves_identity_without_flushing_an_existing_batch() {
     use task::message::MessageHeader;
     let arena = Arena::new(4);

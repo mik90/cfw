@@ -82,6 +82,14 @@ where
         self.inputs.visit(&mut readiness);
         readiness.ready
     }
+    fn required_input_count(&self) -> Option<usize> {
+        let mut count = RequiredCount {
+            total: 0,
+            found: false,
+        };
+        self.inputs.visit(&mut count);
+        count.found.then_some(count.total)
+    }
     fn flush_outputs(&mut self, timestamp: FrameworkTime) {
         self.outputs.visit_mut(&mut Flush(timestamp));
     }
@@ -176,6 +184,18 @@ struct Pending(bool);
 impl InputVisitor for Pending {
     fn visit(&mut self, endpoint: &impl InputEndpoint) {
         self.0 |= endpoint.requests_execution();
+    }
+}
+struct RequiredCount {
+    total: usize,
+    found: bool,
+}
+impl InputVisitor for RequiredCount {
+    fn visit(&mut self, endpoint: &impl InputEndpoint) {
+        if let Some(len) = endpoint.required_pending_len() {
+            self.found = true;
+            self.total = self.total.saturating_add(len);
+        }
     }
 }
 struct Readiness {

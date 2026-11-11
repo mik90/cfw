@@ -411,6 +411,11 @@ fn span_endpoint(segment: &syn::PathSegment) -> bool {
     )
 }
 
+/// Trigger inputs consume by default so retained messages cannot retrigger them.
+fn default_keep(trigger: &syn::Expr) -> syn::Expr {
+    parse_quote!(!(#trigger))
+}
+
 fn validate_endpoint_policies(
     kind: EndpointKind,
     has_trigger: bool,
@@ -567,12 +572,12 @@ fn declared_endpoint(spec: EndpointSpec, input: bool) -> syn::Result<Endpoint> {
         }
         None => parse_quote!(1),
     };
-    let trigger = trigger
+    let trigger: syn::Expr = trigger
         .map(|literal| parse_quote!(#literal))
         .unwrap_or_else(|| parse_quote!(false));
     let keep = keep_across_runs
         .map(|literal| parse_quote!(#literal))
-        .unwrap_or_else(|| parse_quote!(true));
+        .unwrap_or_else(|| default_keep(&trigger));
     Ok(Endpoint {
         forwardable,
         forwards,
@@ -866,6 +871,8 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             None => parse_quote!(1),
         };
         arguments.push(Some(endpoints.len()));
+        let trigger: syn::Expr = trigger.unwrap_or_else(|| parse_quote!(false));
+        let keep = keep.unwrap_or_else(|| default_keep(&trigger));
         endpoints.push(Endpoint {
             forwardable,
             forwards,
@@ -875,8 +882,8 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             kind,
             channel,
             capacity,
-            trigger: trigger.unwrap_or_else(|| parse_quote!(false)),
-            keep: keep.unwrap_or_else(|| parse_quote!(true)),
+            trigger,
+            keep,
         });
     }
     let fallible = match &run.sig.output {

@@ -244,6 +244,7 @@ impl SpanTransform {
         #[channel("span_in")]
         #[capacity(3)]
         #[trigger(true)]
+        #[keep_across_runs(true)]
         mut input: InputSpan<SpanValue>,
         #[channel("span_out")]
         #[capacity(3)]

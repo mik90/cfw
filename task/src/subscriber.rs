@@ -3,7 +3,10 @@ use base::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 
 use crate::message::{Message, MessageHeader};
 use crate::wake::{WakeHandle, WakeRegistration};
-use std::sync::{Arc, OnceLock};
+use std::{
+    cell::Cell,
+    sync::{Arc, OnceLock},
+};
 
 /// A typed subscriber retaining messages for the storage lifetime.
 pub struct Subscriber<'graph_storage, MessageType> {
@@ -11,6 +14,9 @@ pub struct Subscriber<'graph_storage, MessageType> {
     channel: String,
     wake: WakeRegistration,
     policy: SubscriberPolicy,
+    /// Read-buffer length after the last prepare. Required inputs use it to
+    /// consume one exposed message only when the callback did not consume it.
+    prepared_len: Cell<usize>,
 }
 
 impl<'graph_storage, MessageType> std::fmt::Debug for Subscriber<'graph_storage, MessageType> {
@@ -50,6 +56,7 @@ impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
             channel: String::new(),
             wake: Arc::new(OnceLock::new()),
             policy,
+            prepared_len: Cell::new(0),
         }
     }
 
@@ -81,6 +88,11 @@ impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
         !self.buffer.read_buffer().is_empty() || !self.buffer.write_buffer().is_empty()
     }
 
+    /// Total messages retained in the read and write buffers.
+    pub fn pending_len(&self) -> usize {
+        self.buffer.read_buffer().len() + self.buffer.write_buffer().len()
+    }
+
     pub fn requests_execution(&self) -> bool {
         self.policy.trigger && !self.buffer.write_buffer().is_empty()
     }
@@ -99,9 +111,21 @@ impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
         }
     }
 
+    /// Consume the single message exposed by a required input, unless the
+    /// callback already consumed it.
+    pub fn finish_required_iteration(&self) {
+        if !self.policy.keep_across_runs {
+            let mut read = self.buffer.read_buffer();
+            if read.len() == self.prepared_len.get() {
+                read.pop_front();
+            }
+        }
+    }
+
     /// Move pending publications into the bounded read buffer.
     pub fn update(&self) {
         self.buffer.drain_writer_to_reader();
+        self.prepared_len.set(self.buffer.read_buffer().len());
     }
 
     pub fn clear(&self) {
@@ -145,6 +169,13 @@ impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
 
     pub fn visit_headers(&self, mut visit: impl FnMut(crate::message::MessageHeader)) {
         for message in self.buffer.read_buffer().as_slice() {
+            visit(message.header);
+        }
+    }
+
+    /// Visit only the message exposed by a required input.
+    pub fn visit_front_header(&self, mut visit: impl FnMut(crate::message::MessageHeader)) {
+        if let Some(message) = self.buffer.read_buffer().front() {
             visit(message.header);
         }
     }

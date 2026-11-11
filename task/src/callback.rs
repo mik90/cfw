@@ -83,6 +83,11 @@ pub trait Callback: Send {
     fn required_inputs_ready(&self) -> bool {
         true
     }
+    /// Buffered message count across required inputs, or `None` when the
+    /// callback has no required inputs.
+    fn required_input_count(&self) -> Option<usize> {
+        None
+    }
     fn run(&mut self, context: &Context) -> Result<(), LoanError>;
     fn finish_inputs(&mut self) {}
     fn flush_outputs(&mut self, _timestamp: FrameworkTime) {}

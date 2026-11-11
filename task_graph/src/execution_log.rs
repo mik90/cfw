@@ -270,6 +270,9 @@ impl Callback for ExecutionLogRecorded<'_> {
     fn required_inputs_ready(&self) -> bool {
         self.callback.required_inputs_ready()
     }
+    fn required_input_count(&self) -> Option<usize> {
+        self.callback.required_input_count()
+    }
     fn finish_inputs(&mut self) {
         self.callback.finish_inputs();
     }

@@ -12,7 +12,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use task::{InputSpan, LoanError, OutputDefault, OutputSpan};
+use task::{OutputDefault, RequiredInput};
 use task_graph::{ApplicationBuilder, CallbackSchedule, GraphPlan};
 use task_macros::task_callback;
 
@@ -66,18 +66,14 @@ impl AddTask {
         &self,
         #[trigger(true)]
         #[capacity(64)]
-        mut a: InputSpan<u64>,
+        a: RequiredInput<u64>,
         #[trigger(true)]
         #[capacity(64)]
-        mut b: InputSpan<u64>,
-        #[capacity(64)] output: OutputSpan<u64>,
-    ) -> Result<(), LoanError> {
-        while !a.is_empty() && !b.is_empty() {
-            let left = a.pop().unwrap();
-            let right = b.pop().unwrap();
-            output.loan(left.message + right.message)?.send();
-        }
-        Ok(())
+        b: RequiredInput<u64>,
+        mut output: OutputDefault<u64>,
+    ) {
+        *output = *a + *b;
+        output.send();
     }
 }
 
@@ -88,18 +84,14 @@ impl SubtractTask {
         &self,
         #[trigger(true)]
         #[capacity(64)]
-        mut a: InputSpan<u64>,
+        a: RequiredInput<u64>,
         #[trigger(true)]
         #[capacity(64)]
-        mut b: InputSpan<u64>,
-        #[capacity(64)] output: OutputSpan<u64>,
-    ) -> Result<(), LoanError> {
-        while !a.is_empty() && !b.is_empty() {
-            let left = a.pop().unwrap();
-            let right = b.pop().unwrap();
-            output.loan(left.message - right.message)?.send();
-        }
-        Ok(())
+        b: RequiredInput<u64>,
+        mut output: OutputDefault<u64>,
+    ) {
+        *output = *a - *b;
+        output.send();
     }
 }
 
@@ -113,28 +105,22 @@ impl AddSubtractMergerTask {
         &self,
         #[trigger(true)]
         #[capacity(64)]
-        mut add: InputSpan<u64>,
+        add: RequiredInput<u64>,
         #[trigger(true)]
         #[capacity(64)]
-        mut sub: InputSpan<u64>,
-        #[capacity(64)] output: OutputSpan<u64>,
-    ) -> Result<(), LoanError> {
-        let mut produced = Vec::new();
-        while !add.is_empty() && !sub.is_empty() {
-            let add = add.pop().unwrap();
-            let sub = sub.pop().unwrap();
-            let result = add.message + sub.message;
-            output.loan(result)?.send();
-            produced.push(result);
-        }
+        sub: RequiredInput<u64>,
+        mut output: OutputDefault<u64>,
+    ) {
+        let result = *add + *sub;
+        *output = result;
+        output.send();
         let mut values = self.values.lock().unwrap();
-        values.extend(produced);
+        values.push(result);
         if values.len() == RESULT_COUNT
             && let Some(stop) = &self.stop
         {
             let _ = stop.send(());
         }
-        Ok(())
     }
 }
 

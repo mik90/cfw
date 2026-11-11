@@ -31,6 +31,10 @@ pub trait InputEndpoint: Endpoint {
     fn required_available(&self) -> bool {
         true
     }
+    /// Buffered message count for a required input.
+    fn required_pending_len(&self) -> Option<usize> {
+        None
+    }
     fn visit_headers(&self, _visit: impl FnMut(MessageHeader)) {}
     fn visit_events(&self, _visit: impl FnMut(usize, u64)) {}
     fn stage_event(&mut self, _event_id: usize, _count: u64) -> Result<(), ReplayError> {
@@ -177,7 +181,7 @@ impl<T> InputEndpoint for Required<Subscriber<'_, T>> {
         self.0.clear();
     }
     fn finish(&mut self) {
-        self.0.finish_iteration();
+        self.0.finish_required_iteration();
     }
     fn set_waker(&mut self, wake: WakeHandle) {
         self.0.set_waker(wake);
@@ -194,8 +198,11 @@ impl<T> InputEndpoint for Required<Subscriber<'_, T>> {
     fn required_available(&self) -> bool {
         self.0.has_pending()
     }
+    fn required_pending_len(&self) -> Option<usize> {
+        Some(self.0.pending_len())
+    }
     fn visit_headers(&self, visit: impl FnMut(MessageHeader)) {
-        self.0.visit_headers(visit);
+        self.0.visit_front_header(visit);
     }
 }
 impl<T> Endpoint for Publisher<'_, T> {

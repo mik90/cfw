@@ -21,19 +21,32 @@ pub(crate) fn work<T: TimeSource>(
                 let index = work.expect("scheduler owns work sender");
                 if scheduler.is_stopped() { return Ok(()); }
                 scheduler.claim(index);
-                let executed = {
+                let (executed, requeue) = {
                     let mut node = nodes[index].lock().unwrap();
                     let context = metadata.context(clock.now());
+                    let before = node.callback.required_input_count();
                     let executed = execute_callback(node.callback.as_mut(), &context).map_err(|source| ThreadFailure::Callback {
                         worker: id, callback: node.name.clone(), source,
                     })?;
+                    let after = node.callback.required_input_count();
+                    let progressed = matches!(
+                        (before, after),
+                        (Some(before), Some(after)) if after < before
+                    );
+                    let requeue = executed
+                        && progressed
+                        && node.callback.has_triggering_inputs()
+                        && node.callback.required_inputs_available();
                     if executed && node.schedule.is_timed() {
                         let next = node.schedule.next_after(clock.now()).map_err(|source| ThreadFailure::Timing { callback: node.name.clone(), source })?;
                         scheduler.set_deadline(index, next);
                     }
-                    executed
+                    (executed, requeue)
                 };
                 scheduler.finish(index, executed);
+                if requeue {
+                    scheduler.trigger(index);
+                }
             }
         }
     }
