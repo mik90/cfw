@@ -57,10 +57,9 @@ use task_macro_common::{
 ///   (C++ calls `cfw::OutputUninit::init<T>(...)` to construct, send, or drop
 ///   the payload through the owning `cfw::Output<T>` handle)
 /// - span output (`OutputSpan`, requires `capacity`):
-///   `fn foo_loan(&mut self) -> *mut T` (null when exhausted),
-///   `fn foo_write(&mut self, T) -> bool`, `foo_len(&self) -> usize`,
-///   `foo_send(&mut self, index: usize)`, `foo_send_all(&mut self)`,
-///   `foo_discard(&mut self)`
+///   `fn foo_span(&mut self) -> SpanHandle`; C++ calls
+///   `span.loan_uninit().init<T>(...)` or `span.loan(value)`, and each returned
+///   `cfw::Output<T>` sends or releases only its own slot
 ///
 /// Both input kinds also expose `foo_header(&self) -> MessageHeader`, where the
 /// bridge aliases `type MessageHeader = ::task_cxx::ffi::MessageHeader`.
@@ -492,84 +491,104 @@ fn view_definitions(
             EndpointKind::OutputSpan => {
                 let slot = span_slot_ident(task_name, endpoint);
                 let entries = span_entries_ident(endpoint);
-                let loan = format_ident!("{name}_loan");
-                let write = format_ident!("{name}_write");
-                let len = format_ident!("{name}_len");
-                let send = format_ident!("{name}_send");
-                let send_all = format_ident!("{name}_send_all");
-                let discard = format_ident!("{name}_discard");
+                let span = format_ident!("{name}_span");
+                let loan_uninit_inner = format_ident!("{name}_span_loan_uninit_inner");
+                let loan_inner = format_ident!("{name}_span_loan_inner");
+                let send_inner = format_ident!("{name}_span_send_inner");
+                let discard_inner = format_ident!("{name}_span_discard_inner");
+                let (loan_uninit_thunk, loan_thunk, send_thunk, discard_thunk) =
+                    span_thunk_idents(task_name, endpoint);
                 quote! {
-                    /// Reserves an output slot for placement-new initialization and
-                    /// returns a pointer to its payload, or null when the publisher's
-                    /// quota or arena is exhausted. The pointer is valid until the slot
-                    /// is sent or discarded; C++ must placement-new the payload before
-                    /// calling `send`/`send_all`. Dropping an unsent placement-new slot
-                    /// does not run the payload destructor.
-                    pub fn #loan(&mut self) -> *mut #ty {
-                        // SAFETY: view construction guarantees the span outlives the view.
-                        let span = unsafe { &*self.#name };
-                        let mut entry = match span.loan_uninit() {
-                            ::core::result::Result::Ok(entry) => entry,
-                            ::core::result::Result::Err(_) => return ::core::ptr::null_mut(),
-                        };
-                        let payload = entry.payload_uninit().as_mut_ptr();
-                        self.#entries.push(#slot::Uninit(entry));
-                        payload
-                    }
-
-                    /// Reserves an output slot initialized with `value`. Returns false
-                    /// when the publisher's quota or arena is exhausted.
-                    pub fn #write(&mut self, value: #ty) -> bool {
-                        // SAFETY: view construction guarantees the span outlives the view.
-                        let span = unsafe { &*self.#name };
-                        match span.loan(value) {
-                            ::core::result::Result::Ok(entry) => {
-                                self.#entries.push(#slot::Written(entry));
-                                true
-                            }
-                            ::core::result::Result::Err(_) => false,
+                    /// Returns a span proxy. Each loan returns an owning handle
+                    /// that sends or releases only its own slot.
+                    pub fn #span(&mut self) -> ::task_cxx::SpanHandle {
+                        ::task_cxx::SpanHandle {
+                            context: self as *mut Self as *mut ::core::ffi::c_void,
+                            loan_uninit_fn: #loan_uninit_thunk,
+                            loan_fn: #loan_thunk,
                         }
                     }
 
-                    /// Number of outstanding (unsent) loans.
-                    pub fn #len(&self) -> usize {
-                        self.#entries
-                            .iter()
-                            .filter(|slot| !::core::matches!(slot, #slot::Sent))
-                            .count()
+                    fn #loan_uninit_inner(&mut self) -> ::task_cxx::OutputUninit {
+                        // SAFETY: view construction guarantees the span outlives the view.
+                        let span = unsafe { &*self.#name };
+                        match span.loan_uninit() {
+                            ::core::result::Result::Ok(mut entry) => {
+                                let payload = entry.payload_uninit().as_mut_ptr()
+                                    as *mut ::core::ffi::c_void;
+                                let index = self.#entries.len();
+                                self.#entries.push(#slot::Uninit(entry));
+                                ::task_cxx::OutputUninit {
+                                    payload,
+                                    context: self as *mut Self as *mut ::core::ffi::c_void,
+                                    send: #send_thunk,
+                                    discard: #discard_thunk,
+                                    index,
+                                }
+                            }
+                            ::core::result::Result::Err(_) => {
+                                ::task_cxx::OutputUninit {
+                                    payload: ::core::ptr::null_mut(),
+                                    context: self as *mut Self as *mut ::core::ffi::c_void,
+                                    send: #send_thunk,
+                                    discard: #discard_thunk,
+                                    index: 0,
+                                }
+                            }
+                        }
                     }
 
-                    /// Publishes loan `index` in loan order. Does nothing when the
-                    /// index is out of range or already sent.
-                    pub fn #send(&mut self, index: usize) {
-                        let ::core::option::Option::Some(slot) = self.#entries.get_mut(index) else {
+                    fn #loan_inner(&mut self, value: #ty) -> ::task_cxx::OutputUninit {
+                        // SAFETY: view construction guarantees the span outlives the view.
+                        let span = unsafe { &*self.#name };
+                        match span.loan(value) {
+                            ::core::result::Result::Ok(mut entry) => {
+                                let payload = entry.value_mut() as *mut #ty
+                                    as *mut ::core::ffi::c_void;
+                                let index = self.#entries.len();
+                                self.#entries.push(#slot::Written(entry));
+                                ::task_cxx::OutputUninit {
+                                    payload,
+                                    context: self as *mut Self as *mut ::core::ffi::c_void,
+                                    send: #send_thunk,
+                                    discard: #discard_thunk,
+                                    index,
+                                }
+                            }
+                            ::core::result::Result::Err(_) => {
+                                ::task_cxx::OutputUninit {
+                                    payload: ::core::ptr::null_mut(),
+                                    context: self as *mut Self as *mut ::core::ffi::c_void,
+                                    send: #send_thunk,
+                                    discard: #discard_thunk,
+                                    index: 0,
+                                }
+                            }
+                        }
+                    }
+
+                    fn #send_inner(&mut self, index: usize) {
+                        let ::core::option::Option::Some(slot) =
+                            self.#entries.get_mut(index)
+                        else {
                             return;
                         };
                         let slot = ::core::mem::replace(slot, #slot::Sent);
                         match slot {
-                            // SAFETY: C++ placement-new initialized the payload in place.
+                            // SAFETY: C++ initialized the payload in place.
                             #slot::Uninit(entry) => unsafe { entry.assume_init() }.send(),
                             #slot::Written(entry) => entry.send(),
                             #slot::Sent => {}
                         }
                     }
 
-                    /// Publishes outstanding loans in loan order and clears the span.
-                    pub fn #send_all(&mut self) {
-                        for slot in self.#entries.drain(..) {
-                            match slot {
-                                // SAFETY: C++ placement-new initialized the payload in place.
-                                #slot::Uninit(entry) => unsafe { entry.assume_init() }.send(),
-                                #slot::Written(entry) => entry.send(),
-                                #slot::Sent => {}
-                            }
-                        }
-                    }
-
-                    /// Drops all outstanding loans without publishing them. Slots
-                    /// initialized with placement new must be destroyed by C++ first.
-                    pub fn #discard(&mut self) {
-                        self.#entries.clear();
+                    fn #discard_inner(&mut self, index: usize) {
+                        let ::core::option::Option::Some(slot) =
+                            self.#entries.get_mut(index)
+                        else {
+                            return;
+                        };
+                        let _ = ::core::mem::replace(slot, #slot::Sent);
                     }
                 }
             }
@@ -611,6 +630,62 @@ fn view_definitions(
             }
         });
 
+    let span_thunks = output_endpoints
+        .iter()
+        .filter(|endpoint| matches!(endpoint.kind, EndpointKind::OutputSpan))
+        .map(|endpoint| {
+            let name = &endpoint.name;
+            let ty = &endpoint.payload;
+            let loan_uninit_inner = format_ident!("{name}_span_loan_uninit_inner");
+            let loan_inner = format_ident!("{name}_span_loan_inner");
+            let send_inner = format_ident!("{name}_span_send_inner");
+            let discard_inner = format_ident!("{name}_span_discard_inner");
+            let (loan_uninit_thunk, loan_thunk, send_thunk, discard_thunk) =
+                span_thunk_idents(task_name, endpoint);
+            quote! {
+                #[allow(non_snake_case)]
+                unsafe extern "C" fn #loan_uninit_thunk(
+                    context: *mut ::core::ffi::c_void,
+                ) -> ::task_cxx::OutputUninit {
+                    // SAFETY: context is the live view for the duration of `run`.
+                    let view = unsafe { &mut *(context as *mut #view_outputs) };
+                    view.#loan_uninit_inner()
+                }
+
+                #[allow(non_snake_case)]
+                unsafe extern "C" fn #loan_thunk(
+                    context: *mut ::core::ffi::c_void,
+                    value: *mut ::core::ffi::c_void,
+                ) -> ::task_cxx::OutputUninit {
+                    // SAFETY: C++ always passes a live, moved-in payload pointer.
+                    let value = unsafe { value.cast::<#ty>().read() };
+                    // SAFETY: context is the live view for the duration of `run`.
+                    let view = unsafe { &mut *(context as *mut #view_outputs) };
+                    view.#loan_inner(value)
+                }
+
+                #[allow(non_snake_case)]
+                unsafe extern "C" fn #send_thunk(
+                    context: *mut ::core::ffi::c_void,
+                    index: usize,
+                ) {
+                    // SAFETY: context is the live view for the duration of `run`.
+                    let view = unsafe { &mut *(context as *mut #view_outputs) };
+                    view.#send_inner(index);
+                }
+
+                #[allow(non_snake_case)]
+                unsafe extern "C" fn #discard_thunk(
+                    context: *mut ::core::ffi::c_void,
+                    index: usize,
+                ) {
+                    // SAFETY: context is the live view for the duration of `run`.
+                    let view = unsafe { &mut *(context as *mut #view_outputs) };
+                    view.#discard_inner(index);
+                }
+            }
+        });
+
     let span_slots = output_endpoints
         .iter()
         .filter(|endpoint| matches!(endpoint.kind, EndpointKind::OutputSpan))
@@ -629,6 +704,7 @@ fn view_definitions(
 
     quote! {
         #(#uninit_thunks)*
+        #(#span_thunks)*
         #(#span_slots)*
 
         #[doc(hidden)]
@@ -666,6 +742,16 @@ fn uninit_thunk_idents(task_name: &Ident, endpoint: &Endpoint) -> (Ident, Ident)
     (
         format_ident!("__cfw_{task_name}_{name}_uninit_send"),
         format_ident!("__cfw_{task_name}_{name}_uninit_discard"),
+    )
+}
+
+fn span_thunk_idents(task_name: &Ident, endpoint: &Endpoint) -> (Ident, Ident, Ident, Ident) {
+    let name = &endpoint.name;
+    (
+        format_ident!("__cfw_{task_name}_{name}_span_loan_uninit"),
+        format_ident!("__cfw_{task_name}_{name}_span_loan"),
+        format_ident!("__cfw_{task_name}_{name}_span_send"),
+        format_ident!("__cfw_{task_name}_{name}_span_discard"),
     )
 }
 
@@ -809,12 +895,7 @@ mod tests {
             "pub unsafe fn report_value",
             "pub fn report_send",
             "pub fn raw_uninit",
-            "pub fn numbers_loan",
-            "pub fn numbers_write",
-            "pub fn numbers_len",
-            "pub fn numbers_send",
-            "pub fn numbers_send_all",
-            "pub fn numbers_discard",
+            "pub fn numbers_span",
             "ProbenumbersSpanSlot",
         ] {
             assert!(

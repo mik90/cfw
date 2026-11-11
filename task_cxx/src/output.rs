@@ -36,3 +36,25 @@ unsafe impl cxx::ExternType for OutputUninit {
     type Id = cxx::type_id!("cfw::OutputUninit");
     type Kind = cxx::kind::Trivial;
 }
+
+/// Trivial proxy for a span publisher, mirroring Rust's `OutputSpan`.
+///
+/// C++ calls [`SpanHandle::loan`] / [`SpanHandle::loan_uninit`]; each call
+/// returns an owning output handle that sends or releases its own slot.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SpanHandle {
+    /// The live view; only valid during the C++ `run` call.
+    pub context: *mut c_void,
+    /// Reserves an uninitialized slot.
+    pub loan_uninit_fn: unsafe extern "C" fn(*mut c_void) -> OutputUninit,
+    /// Reserves a slot initialized from a moved-in payload.
+    pub loan_fn: unsafe extern "C" fn(*mut c_void, *mut c_void) -> OutputUninit,
+}
+
+// SAFETY: `SpanHandle` is a plain C-layout struct of pointers with no drop
+// glue. C++ asserts the same triviality in `output.hpp`.
+unsafe impl cxx::ExternType for SpanHandle {
+    type Id = cxx::type_id!("cfw::SpanHandle");
+    type Kind = cxx::kind::Trivial;
+}

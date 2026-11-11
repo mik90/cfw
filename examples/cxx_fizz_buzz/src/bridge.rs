@@ -27,6 +27,7 @@ mod ffi {
         type Context = ::task_cxx::ffi::Context;
         type MessageHeader = ::task_cxx::ffi::MessageHeader;
         type OutputUninit = ::task_cxx::OutputUninit;
+        type SpanHandle = ::task_cxx::SpanHandle;
     }
 
     #[namespace = "cfw::messages"]
@@ -125,14 +126,8 @@ mod ffi {
 
         type SpanProbeCxxOutputs;
 
-        /// Reserves a slot and returns its payload for placement new; null when
-        /// the publisher's quota is exhausted.
-        fn numbers_loan(self: &mut SpanProbeCxxOutputs) -> *mut u64;
-        fn numbers_write(self: &mut SpanProbeCxxOutputs, value: u64) -> bool;
-        fn numbers_len(self: &SpanProbeCxxOutputs) -> usize;
-        fn numbers_send(self: &mut SpanProbeCxxOutputs, index: usize);
-        fn numbers_send_all(self: &mut SpanProbeCxxOutputs);
-        fn numbers_discard(self: &mut SpanProbeCxxOutputs);
+        /// Span proxy; each loan returns an owning handle for one slot.
+        fn numbers_span(self: &mut SpanProbeCxxOutputs) -> SpanHandle;
 
         /// Reserved slot for in-place `rust::String` construction.
         fn label_uninit(self: &mut SpanProbeCxxOutputs) -> OutputUninit;
