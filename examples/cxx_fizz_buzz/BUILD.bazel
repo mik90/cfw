@@ -1,0 +1,14 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel:rust.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# The C++ tasks are gated behind the `cxx` feature, which requires C++ build
+# wiring that Bazel targets do not enable yet. This target builds the default
+# (empty) surface so the workspace remains buildable.
+rust_library(
+    name = "cxx_fizz_buzz",
+    srcs = glob(["src/**/*.rs"]),
+    include_default_features = False,
+    deps = all_crate_deps(normal = True),
+)

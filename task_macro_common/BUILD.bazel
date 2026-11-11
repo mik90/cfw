@@ -1,0 +1,18 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel:rust.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "task_macro_common",
+    srcs = glob(["src/**/*.rs"]),
+    include_default_features = False,
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "task_macro_common_unit_tests",
+    crate = ":task_macro_common",
+    include_default_features = False,
+    deps = all_crate_deps(normal_dev = True),
+)

@@ -1,0 +1,13 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel:rust.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# C++ support is enabled through the `cxx` feature. The default Bazel target
+# builds the empty default-feature surface, matching Cargo's default build.
+rust_library(
+    name = "task_cxx",
+    srcs = glob(["src/**/*.rs"]),
+    include_default_features = False,
+    deps = all_crate_deps(normal = True),
+)

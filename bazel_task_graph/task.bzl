@@ -44,7 +44,7 @@ def _wrapper_type(kind, input):
         }
     else:
         wrappers = {
-            "output": "Output",
+            "output": "OutputDefault",
             "output_span": "OutputSpan",
             "uninit": "OutputUninit",
             "publisher": "Publisher",

@@ -1,4 +1,4 @@
-//! C++ task interop spike (M1).
+//! C++ task interop example.
 //!
 //! The C++ bridge lives behind the `cxx` feature so the default workspace
 //! build needs no C++ toolchain. Enable it with `--features cxx`.

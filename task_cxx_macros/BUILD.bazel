@@ -1,0 +1,16 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel:rust.bzl", "rust_proc_macro", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_proc_macro(
+    name = "task_cxx_macros",
+    srcs = glob(["src/**/*.rs"]),
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "task_cxx_macros_unit_tests",
+    crate = ":task_cxx_macros",
+    deps = all_crate_deps(normal_dev = True),
+)

@@ -1,4 +1,4 @@
-//! Hand-written C++ task bridge (M1).
+//! C++ task bridge for the example tasks.
 //!
 //! The literal `#[cxx::bridge]` module must stay in source because cxx codegen
 //! scans files, so its `extern "Rust"` declarations follow a naming convention
