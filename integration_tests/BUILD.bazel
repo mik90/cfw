@@ -1,0 +1,13 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel:rust.bzl", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_test(
+    name = "exact_replay_of_live_executor_test",
+    srcs = ["tests/exact_replay_of_live_executor.rs"],
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)

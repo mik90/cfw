@@ -11,6 +11,7 @@ members = [
     "testing",
     "logging",
     "logging_test",
+    "integration_tests",
     "base",
     "examples/fizz_buzz_application",
     "examples/iceoryx2_application",

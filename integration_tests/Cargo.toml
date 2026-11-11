@@ -1,0 +1,17 @@
+[package]
+name = "integration_tests"
+version = "0.1.0"
+edition = "2024"
+# Cross-crate end-to-end tests spanning live execution, logging, and replay.
+publish = false
+
+[dependencies]
+exact_replay_executor = { path = "../exact_replay_executor" }
+live_executor = { path = "../live_executor" }
+logging = { path = "../logging", features = ["testing"] }
+task = { path = "../task", features = ["serde"] }
+task_graph = { path = "../task_graph" }
+task_macros = { path = "../task_macros" }
+
+[lints]
+workspace = true

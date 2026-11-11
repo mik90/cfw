@@ -46,6 +46,16 @@ impl InMemoryMessage {
     }
 }
 
+impl InMemoryArtifact {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+}
+
 #[derive(Debug)]
 pub struct InMemoryWriter {
     data: Arc<Mutex<LoggedData>>,

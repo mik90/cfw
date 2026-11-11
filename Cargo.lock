@@ -1070,6 +1070,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "integration_tests"
+version = "0.1.0"
+dependencies = [
+ "exact_replay_executor",
+ "live_executor",
+ "logging",
+ "task",
+ "task_graph",
+ "task_macros",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
