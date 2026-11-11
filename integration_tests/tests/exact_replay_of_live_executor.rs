@@ -2,8 +2,7 @@ use exact_replay_executor::{ExactReplayExecutor, ExactReplayPlan, ReplayLog};
 use live_executor::{LiveExecutor, clock::WallClock};
 use logging::{
     CaptureOptions, ExecutionLogOptions, ExecutionLogPlan, GraphCapturePlan, LogSession,
-    OwnedLogEntry, SortedLogStreamReader,
-    testing::{InMemoryWriter, LoggedData},
+    testing::InMemoryWriter,
 };
 use std::{
     sync::{
@@ -15,6 +14,8 @@ use std::{
 use task::{OutputDefault, RequiredInput};
 use task_graph::{ApplicationBuilder, CallbackSchedule, GraphPlan};
 use task_macros::task_callback;
+
+mod common;
 
 const SOURCE_COUNT: usize = 4;
 const MESSAGES_PER_SOURCE: u64 = 16;
@@ -196,33 +197,6 @@ fn sorted(mut values: Vec<u64>) -> Vec<u64> {
     values
 }
 
-fn replay_log_from_recorded_data(data: &Arc<Mutex<LoggedData>>) -> ReplayLog {
-    let data = data.lock().unwrap();
-    assert_eq!(
-        data.messages()
-            .iter()
-            .filter(|message| message.channel() == "result")
-            .count(),
-        RESULT_COUNT
-    );
-    let entries = data
-        .messages()
-        .iter()
-        .map(|message| OwnedLogEntry {
-            header: *message.header(),
-            channel_name: message.channel().clone(),
-            serialized_body: message.body().to_vec(),
-        })
-        .collect();
-    let artifacts = data
-        .artifacts()
-        .iter()
-        .map(|artifact| (artifact.name().to_owned(), artifact.body().to_vec()))
-        .collect();
-    let reader = SortedLogStreamReader::from_entries(entries, artifacts).unwrap();
-    ReplayLog::from_sorted(reader).unwrap()
-}
-
 fn run_live() -> (ReplayLog, Vec<u64>) {
     let values: CalculationResults = Default::default();
     let (stop_tx, stop_rx) = mpsc::channel();
@@ -289,8 +263,18 @@ fn run_live() -> (ReplayLog, Vec<u64>) {
         sorted(live_values.clone()),
         sorted(expected_combined_results())
     );
+    assert_eq!(
+        logged_data
+            .lock()
+            .unwrap()
+            .messages()
+            .iter()
+            .filter(|message| message.channel() == "result")
+            .count(),
+        RESULT_COUNT
+    );
 
-    let log = replay_log_from_recorded_data(&logged_data);
+    let log = common::replay_log_from_recorded_data(&logged_data);
     (log, live_values)
 }
 

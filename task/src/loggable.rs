@@ -1,7 +1,7 @@
 //! Typed serialization and arena-backed forwarded-message resolution.
 use crate::message::{Message, MessageHeader};
 use base::arena::ArenaReaderPtr;
-use std::io::Write;
+use std::{io::Write, mem::MaybeUninit};
 
 pub type SerializeError = Box<dyn std::error::Error + Send + Sync>;
 pub type DeserializeError = Box<dyn std::error::Error + Send + Sync>;
@@ -10,12 +10,28 @@ pub trait Loggable: Sized {
     where
         Self: 'a;
     fn serialize(&self, writer: &mut dyn Write) -> Result<(), SerializeError>;
+    /// Decode a complete value. Types that only support in-place hydration
+    /// should return an unsupported-operation error here and implement
+    /// [`Self::deserialize_into`] instead.
     fn deserialize_with_ctx<'a>(
         bytes: &[u8],
         context: Self::Context<'a>,
     ) -> Result<Self, DeserializeError>
     where
         Self: 'a;
+    /// Initialize `slot` in place. Types with large inline payloads can
+    /// override this to avoid materializing a stack temporary.
+    fn deserialize_into<'a>(
+        bytes: &[u8],
+        slot: &mut MaybeUninit<Self>,
+        context: Self::Context<'a>,
+    ) -> Result<(), DeserializeError>
+    where
+        Self: 'a,
+    {
+        slot.write(Self::deserialize_with_ctx(bytes, context)?);
+        Ok(())
+    }
     fn deserialize(bytes: &[u8]) -> Result<Self, DeserializeError>
     where
         Self: 'static,

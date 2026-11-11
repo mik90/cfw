@@ -5,7 +5,24 @@ package(default_visibility = ["//visibility:public"])
 
 rust_test(
     name = "exact_replay_of_live_executor_test",
-    srcs = ["tests/exact_replay_of_live_executor.rs"],
+    srcs = [
+        "tests/common/mod.rs",
+        "tests/exact_replay_of_live_executor.rs",
+    ],
+    crate_root = "tests/exact_replay_of_live_executor.rs",
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_test(
+    name = "large_message_replay_test",
+    srcs = [
+        "tests/common/mod.rs",
+        "tests/large_message_replay.rs",
+    ],
+    crate_root = "tests/large_message_replay.rs",
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,

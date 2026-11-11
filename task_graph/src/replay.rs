@@ -13,12 +13,23 @@ pub struct ReplaySource<'a> {
     inject: Inject<'a>,
 }
 impl<'a> ReplaySource<'a> {
-    pub fn native<T>(publisher: Publisher<'a, T>) -> Self
+    pub fn native<T>(mut publisher: Publisher<'a, T>) -> Self
     where
         T: Send + Sync + 'static,
         for<'ctx> T: Loggable<Context<'ctx> = ()>,
     {
-        Self::with_decoder(publisher, T::deserialize)
+        Self {
+            channel: publisher.channel_name().into(),
+            payload_type: std::any::type_name::<T>(),
+            inject: Box::new(move |header, bytes| {
+                publisher.publish_with_header_in_place(header, |slot| {
+                    T::deserialize_into(bytes, slot, ()).map_err(|error| {
+                        task::ReplayError::new(format!("replay decode failed: {error}"))
+                    })
+                })?;
+                Ok(())
+            }),
+        }
     }
     pub fn with_decoder<T: Send + Sync + 'a>(
         mut publisher: Publisher<'a, T>,

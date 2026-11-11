@@ -1,6 +1,7 @@
 use crate::output::{Output, OutputInit, OutputSpan};
 use crate::subscriber::SubscriberWriter;
 use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
+use std::mem::MaybeUninit;
 
 use super::Subscriber;
 use crate::message::{Message, MessageHeader};
@@ -299,6 +300,28 @@ impl<'graph_storage, T> Publisher<'graph_storage, T> {
             return Err(LoanError::PendingBatchNotEmpty);
         }
         self.publish(value)?;
+        self.flush_headers(|_| header);
+        Ok(())
+    }
+
+    /// Publish one in-place initialized output with an explicit header.
+    /// Intended for replay hydration.
+    pub fn publish_with_header_in_place(
+        &mut self,
+        header: MessageHeader,
+        init: impl FnOnce(&mut MaybeUninit<T>) -> Result<(), ReplayError>,
+    ) -> Result<(), ReplayError> {
+        if !self.pending.is_empty() {
+            return Err(ReplayError::new(
+                "header injection requires an empty pending batch",
+            ));
+        }
+        let mut output = self
+            .loan_uninit()
+            .map_err(|error| ReplayError::new(format!("replay loan failed: {error:?}")))?;
+        init(output.payload_uninit())?;
+        // SAFETY: init initialized the loan payload.
+        unsafe { output.assume_init() }.send();
         self.flush_headers(|_| header);
         Ok(())
     }
