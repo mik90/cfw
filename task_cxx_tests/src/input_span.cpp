@@ -1,4 +1,4 @@
-#include "task_cxx_tests/src/lib.rs.h"
+#include "task_cxx_tests/gen/bridge.rs.h"
 
 #include <cstdint>
 #include <string>

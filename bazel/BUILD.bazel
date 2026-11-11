@@ -1,11 +1,35 @@
 load("//bazel:settings.bzl", "format_generated_rust")
 
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
+    "cxx.bzl",
     "rust.bzl",
     "settings.bzl",
 ])
+
+# C++ runtime from the Cargo-resolved cxx crate. The generated crate repo
+# exposes it as a public cc_library; alias it so the canonical rules_rs repo
+# name stays in one place.
+alias(
+    name = "cxx_runtime",
+    actual = "@@rules_rs++crate+crates__cxx-1.0.205//:cxx_cc",
+)
+
+sh_test(
+    name = "cxx_version_test",
+    srcs = ["cxx_version_test.sh"],
+    args = [
+        "$(location //:Cargo.lock)",
+        "$(location //:MODULE.bazel)",
+    ],
+    data = [
+        "//:Cargo.lock",
+        "//:MODULE.bazel",
+    ],
+)
 
 # Disable generated-source formatting with
 # `--//bazel:format_generated_rust=false`.

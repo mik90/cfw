@@ -1,12 +1,51 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("//bazel:rust.bzl", "rust_library")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//bazel:cxx.bzl", "cfw_cxx_bridge")
+load("//bazel:rust.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
-# The C++ view tests are gated behind the `cxx` feature.
+cc_library(
+    name = "cxx_impl",
+    srcs = ["src/input_span.cpp"],
+    hdrs = ["src/input_span.hpp"],
+    include_prefix = "task_cxx_tests",
+    deps = [
+        ":bridge/include",
+        "//task_cxx:bridge/include",
+        "//task_cxx:output_headers",
+        "@cxx.rs//:core",
+    ],
+)
+
+cfw_cxx_bridge(
+    name = "bridge",
+    src = "src/tasks.rs",
+    include_prefix = "task_cxx_tests",
+    deps = [":cxx_impl"],
+)
+
 rust_library(
     name = "task_cxx_tests",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = [":bridge/rust"],
+    crate_root = ":bridge/rust",
+    crate_features = ["cxx"],
     include_default_features = False,
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + [
+        ":bridge",
+        ":cxx_impl",
+        "@crates//:cxx-1.0.205",
+    ],
+    proc_macro_deps = ["//task_cxx_macros:task_cxx_macros"],
+)
+
+rust_test(
+    name = "input_span_test",
+    srcs = ["tests/input_span.rs"],
+    crate_features = ["cxx"],
+    include_default_features = False,
+    deps = [
+        ":task_cxx_tests",
+        "//testing",
+    ],
 )

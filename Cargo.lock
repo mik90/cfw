@@ -1767,6 +1767,7 @@ dependencies = [
  "cxx-build",
  "task",
  "task_cxx",
+ "task_cxx_codegen",
  "task_cxx_macros",
  "task_graph",
  "testing",

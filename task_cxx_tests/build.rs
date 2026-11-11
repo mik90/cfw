@@ -4,11 +4,13 @@ fn main() {}
 
 #[cfg(feature = "cxx")]
 fn main() {
-    println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src/tasks.rs");
     println!("cargo:rerun-if-changed=src/input_span.cpp");
     println!("cargo:rerun-if-changed=src/input_span.hpp");
 
-    cxx_build::bridge("src/lib.rs")
+    task_cxx_codegen::generate_bridge_file("src/tasks.rs", "gen/bridge.rs").unwrap();
+
+    cxx_build::bridge("gen/bridge.rs")
         .file("src/input_span.cpp")
         .std("c++17")
         .compile("task_cxx_tests");

@@ -5,6 +5,13 @@ module(
 bazel_dep(name = "rules_rs", version = "0.1.0")
 bazel_dep(name = "llvm", version = "0.8.24")
 bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "rules_cc", version = "0.2.25")
+bazel_dep(name = "rules_shell", version = "0.8.0")
+
+# Bazel-native cxx codegen and C++ runtime. Keep this version in sync with the
+# cxx/cxx-build versions in Cargo.lock; //bazel:cxx_version_test enforces it.
+bazel_dep(name = "cxx.rs", version = "1.0.205")
 
 # Narrow upstream fixes for the experimental rules_rs Miri rules:
 # deduplicate build-script and proc-macro deps, propagate build-script OUT_DIR,

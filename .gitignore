@@ -5,6 +5,7 @@
 
 # Generated C++ bridge sources
 /examples/cxx_fizz_buzz/gen/
+/task_cxx_tests/gen/
 
 # Bazel outputs
 /bazel-*

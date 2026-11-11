@@ -21,6 +21,32 @@ use syn::{Ident, Result};
 use task_cxx_codegen::CxxTaskSpec;
 use task_macro_common::{Endpoint, EndpointKind, TaskDefinition, generate, generate_registration};
 
+/// Declare the bridge-level configuration for C++ tasks.
+///
+/// This block lives in the same source file as the `define_cxx_task!`
+/// declarations. It is parsed by `task_cxx_codegen` in `build.rs` (and by the
+/// Bazel generator) and expands to nothing at compile time. The proc macro
+/// still parses it so malformed config blocks fail during compilation.
+///
+/// ```ignore
+/// define_cxx_bridge! {
+///     namespace: "cfw::fizz_buzz",
+///     headers: ["example/src/tasks.hpp"],
+///     payloads: {
+///         Vec3: {
+///             namespace: "cfw::messages",
+///             header: "messages/src/lib.rs.h",
+///             rust_path: ::messages::Vec3,
+///         },
+///     },
+/// }
+/// ```
+#[proc_macro]
+pub fn define_cxx_bridge(input: TokenStream) -> TokenStream {
+    let _ = syn::parse_macro_input!(input as task_cxx_codegen::CxxBridgeSpec);
+    TokenStream::new()
+}
+
 /// Declare a C++-backed task.
 ///
 /// ```ignore

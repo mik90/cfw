@@ -4,9 +4,10 @@
 //! `#[cxx::bridge]` module cannot drift from the generated views:
 //!
 //! - [`CxxTaskSpec`] parses a single task declaration.
+//! - [`CxxBridgeSpec`] parses the `define_cxx_bridge!` config block.
 //! - [`task_endpoints`] applies the same endpoint validation to both users.
-//! - [`generate_bridge_file`] finds every `define_cxx_task!` in a source file
-//!   and writes the matching `#[cxx::bridge]` module.
+//! - [`generate_bridge_file`] reads both blocks from one source file and writes
+//!   the matching `#[cxx::bridge]` module.
 //!
 //! cxx generates C++ from literal source files, so the bridge has to be
 //! written to disk before `cxx_build::bridge` runs. That is why this lives in
@@ -20,7 +21,7 @@ use std::process::{Command, Stdio};
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, Result, Token};
+use syn::{Ident, LitStr, Result, Token};
 
 use task_macro_common::{
     Endpoint, EndpointKind, EndpointSpec, declared_endpoint, validate_endpoints,
@@ -129,26 +130,173 @@ pub fn task_endpoints(
     Ok(endpoints)
 }
 
-/// Parses every top-level `define_cxx_task!` invocation in `source`.
-pub fn parse_tasks(source: &str) -> Result<Vec<CxxTaskSpec>> {
+/// Bridge-level configuration parsed from `define_cxx_bridge!`.
+pub struct CxxBridgeSpec {
+    pub namespace: String,
+    pub headers: Vec<String>,
+    pub payloads: Vec<PayloadSpec>,
+}
+
+/// A payload type aliased into the bridge from another bridge.
+pub struct PayloadSpec {
+    pub rust_type: Ident,
+    pub namespace: String,
+    pub header: String,
+    pub rust_path: syn::Path,
+}
+
+impl Parse for CxxBridgeSpec {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let namespace: LitStr = parse_key(input, "namespace")?;
+        input.parse::<Token![,]>()?;
+        let headers = parse_headers(input)?;
+        input.parse::<Token![,]>()?;
+        let payloads = parse_payloads(input)?;
+        let _ = input.parse::<Token![,]>();
+        if !input.is_empty() {
+            return Err(input.error("unexpected tokens after bridge config"));
+        }
+        Ok(Self {
+            namespace: namespace.value(),
+            headers,
+            payloads,
+        })
+    }
+}
+
+impl CxxBridgeSpec {
+    /// Generates the literal bridge for `tasks` using this config.
+    pub fn generate(&self, tasks: &[CxxTaskSpec]) -> Result<String> {
+        let headers: Vec<&str> = self.headers.iter().map(String::as_str).collect();
+        let payload_strings: Vec<(String, String)> = self
+            .payloads
+            .iter()
+            .map(|payload| {
+                let path = &payload.rust_path;
+                (payload.rust_type.to_string(), quote!(#path).to_string())
+            })
+            .collect();
+        let payloads: Vec<PayloadAlias<'_>> = self
+            .payloads
+            .iter()
+            .zip(&payload_strings)
+            .map(|(payload, (rust_type, rust_path))| PayloadAlias {
+                namespace: &payload.namespace,
+                header: &payload.header,
+                rust_type,
+                rust_path,
+            })
+            .collect();
+        generate_bridge(
+            tasks,
+            &BridgeConfig {
+                namespace: &self.namespace,
+                headers: &headers,
+                payloads: &payloads,
+            },
+        )
+    }
+}
+
+fn parse_headers(input: ParseStream) -> Result<Vec<String>> {
+    let key: Ident = input.parse()?;
+    if key != "headers" {
+        return Err(syn::Error::new_spanned(key, "expected 'headers'"));
+    }
+    input.parse::<Token![:]>()?;
+    let content;
+    syn::bracketed!(content in input);
+    let mut headers = Vec::new();
+    while !content.is_empty() {
+        let header: LitStr = content.parse()?;
+        headers.push(header.value());
+        if content.is_empty() {
+            break;
+        }
+        content.parse::<Token![,]>()?;
+    }
+    Ok(headers)
+}
+
+fn parse_payloads(input: ParseStream) -> Result<Vec<PayloadSpec>> {
+    let key: Ident = input.parse()?;
+    if key != "payloads" {
+        return Err(syn::Error::new_spanned(key, "expected 'payloads'"));
+    }
+    input.parse::<Token![:]>()?;
+    let content;
+    syn::braced!(content in input);
+    let mut payloads = Vec::new();
+    while !content.is_empty() {
+        let rust_type: Ident = content.parse()?;
+        content.parse::<Token![:]>()?;
+        let body;
+        syn::braced!(body in content);
+        let namespace: LitStr = parse_key(&body, "namespace")?;
+        body.parse::<Token![,]>()?;
+        let header: LitStr = parse_key(&body, "header")?;
+        body.parse::<Token![,]>()?;
+        let rust_path: syn::Path = parse_key(&body, "rust_path")?;
+        let _ = body.parse::<Token![,]>();
+        if !body.is_empty() {
+            return Err(body.error("unexpected tokens after payload alias"));
+        }
+        payloads.push(PayloadSpec {
+            rust_type,
+            namespace: namespace.value(),
+            header: header.value(),
+            rust_path,
+        });
+        if content.is_empty() {
+            break;
+        }
+        content.parse::<Token![,]>()?;
+    }
+    Ok(payloads)
+}
+
+/// Parsed bridge config and task declarations from one source file.
+pub struct ParsedSource {
+    pub bridge: CxxBridgeSpec,
+    pub tasks: Vec<CxxTaskSpec>,
+}
+
+/// Parses the `define_cxx_bridge!` config and every `define_cxx_task!` in `source`.
+pub fn parse_source(source: &str) -> Result<ParsedSource> {
     let file = syn::parse_file(source)?;
+    let mut bridge = None;
     let mut tasks = Vec::new();
     for item in file.items {
         let syn::Item::Macro(item_macro) = item else {
             continue;
         };
-        let last = item_macro.mac.path.segments.last();
-        if last.is_some_and(|segment| segment.ident == "define_cxx_task") {
-            tasks.push(syn::parse2(item_macro.mac.tokens)?);
+        let Some(last) = item_macro.mac.path.segments.last() else {
+            continue;
+        };
+        match last.ident.to_string().as_str() {
+            "define_cxx_bridge" => {
+                if bridge.is_some() {
+                    return Err(syn::Error::new(
+                        item_macro.mac.path.segments.first().unwrap().ident.span(),
+                        "only one define_cxx_bridge! is allowed per source file",
+                    ));
+                }
+                bridge = Some(syn::parse2(item_macro.mac.tokens)?);
+            }
+            "define_cxx_task" => tasks.push(syn::parse2(item_macro.mac.tokens)?),
+            _ => {}
         }
     }
+    let bridge = bridge.ok_or_else(|| {
+        syn::Error::new(Span::call_site(), "no define_cxx_bridge! invocation found")
+    })?;
     if tasks.is_empty() {
         return Err(syn::Error::new(
             Span::call_site(),
             "no define_cxx_task! invocations found",
         ));
     }
-    Ok(tasks)
+    Ok(ParsedSource { bridge, tasks })
 }
 
 /// A payload type that must be aliased into the generated bridge.
@@ -167,6 +315,46 @@ pub struct BridgeConfig<'a> {
     pub headers: &'a [&'a str],
     /// Payload types declared in other bridges.
     pub payloads: &'a [PayloadAlias<'a>],
+}
+
+/// Parses `tasks_path` and writes the generated bridge to `output_path`.
+///
+/// Runs `rustfmt` when available and writes only when the content changes.
+pub fn generate_bridge_file(
+    tasks_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+) -> Result<()> {
+    let tasks_path = tasks_path.as_ref();
+    let parsed = parse_source(&read_source(tasks_path)?)?;
+    let generated = parsed.bridge.generate(&parsed.tasks)?;
+    let generated = rustfmt_source(&generated).unwrap_or(generated);
+    write_if_changed(output_path.as_ref(), &generated)?;
+    println!("cargo:rerun-if-changed={}", tasks_path.display());
+    Ok(())
+}
+
+/// Generates the literal bridge and a combined source file for Bazel.
+///
+/// The combined file is the bridge followed by the original task declarations,
+/// so both expand in the same Rust module.
+pub fn generate_bridge_files(
+    tasks_path: impl AsRef<Path>,
+    bridge_path: impl AsRef<Path>,
+    combined_path: impl AsRef<Path>,
+) -> Result<()> {
+    let tasks_path = tasks_path.as_ref();
+    let source = read_source(tasks_path)?;
+    let parsed = parse_source(&source)?;
+    let bridge = parsed.bridge.generate(&parsed.tasks)?;
+    write_if_changed(bridge_path.as_ref(), &bridge)?;
+    let combined = format!("{bridge}\n{source}");
+    write_if_changed(combined_path.as_ref(), &combined)?;
+    Ok(())
+}
+
+fn read_source(path: &Path) -> Result<String> {
+    fs::read_to_string(path)
+        .map_err(|error| io_error(format!("failed to read {}: {error}", path.display())))
 }
 
 /// Generates the literal `#[cxx::bridge]` module for `tasks`.
@@ -255,38 +443,15 @@ pub fn generate_bridge(tasks: &[CxxTaskSpec], config: &BridgeConfig) -> Result<S
     Ok(out.finish())
 }
 
-/// Parses `tasks_path` and writes the generated bridge to `output_path`.
-///
-/// Writes only when the content changes and emits `rerun-if-changed` for the
-/// task source, so it is safe to call from `build.rs`. Runs `rustfmt` when it
-/// is available; the raw token output is valid Rust either way.
-pub fn generate_bridge_file(
-    tasks_path: impl AsRef<Path>,
-    output_path: impl AsRef<Path>,
-    config: &BridgeConfig,
-) -> Result<()> {
-    let tasks_path = tasks_path.as_ref();
-    let output_path = output_path.as_ref();
-    let source = fs::read_to_string(tasks_path)
-        .map_err(|error| io_error(format!("failed to read {}: {error}", tasks_path.display())))?;
-    let tasks = parse_tasks(&source)?;
-    let generated = generate_bridge(&tasks, config)?;
-    let generated = rustfmt_source(&generated).unwrap_or(generated);
-
-    if let Some(parent) = output_path.parent() {
+fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| io_error(format!("failed to create {}: {error}", parent.display())))?;
     }
-    if fs::read_to_string(output_path).ok().as_deref() != Some(generated.as_str()) {
-        fs::write(output_path, generated).map_err(|error| {
-            io_error(format!(
-                "failed to write {}: {error}",
-                output_path.display()
-            ))
-        })?;
+    if fs::read_to_string(path).ok().as_deref() != Some(contents) {
+        fs::write(path, contents)
+            .map_err(|error| io_error(format!("failed to write {}: {error}", path.display())))?;
     }
-
-    println!("cargo:rerun-if-changed={}", tasks_path.display());
     Ok(())
 }
 
@@ -470,6 +635,18 @@ mod tests {
 
     fn sample_tasks() -> &'static str {
         r#"
+        task_cxx_macros::define_cxx_bridge! {
+            namespace: "cfw::probe",
+            headers: ["probe/src/probe.hpp"],
+            payloads: {
+                Vec3: {
+                    namespace: "cfw::messages",
+                    header: "probe_messages/src/lib.rs.h",
+                    rust_path: ::probe_messages::Vec3,
+                },
+            },
+        }
+
         task_cxx_macros::define_cxx_task! {
             bridge: ffi,
             name: Probe,
@@ -494,30 +671,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_tasks_and_ignores_other_items() {
-        let tasks = parse_tasks(sample_tasks()).unwrap();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].name.to_string(), "Probe");
-        assert!(tasks[0].fallible);
+    fn parses_config_and_tasks_and_ignores_other_items() {
+        let parsed = parse_source(sample_tasks()).unwrap();
+        assert_eq!(parsed.bridge.namespace, "cfw::probe");
+        assert_eq!(parsed.bridge.headers, ["probe/src/probe.hpp"]);
+        assert_eq!(parsed.bridge.payloads.len(), 1);
+        assert_eq!(parsed.tasks.len(), 1);
+        assert_eq!(parsed.tasks[0].name.to_string(), "Probe");
+        assert!(parsed.tasks[0].fallible);
     }
 
     #[test]
     fn generates_all_endpoint_declarations() {
-        let tasks = parse_tasks(sample_tasks()).unwrap();
-        let generated = generate_bridge(
-            &tasks,
-            &BridgeConfig {
-                namespace: "cfw::probe",
-                headers: &["probe/src/probe.hpp"],
-                payloads: &[PayloadAlias {
-                    namespace: "cfw::messages",
-                    header: "probe_messages/src/lib.rs.h",
-                    rust_type: "Vec3",
-                    rust_path: "::probe_messages::Vec3",
-                }],
-            },
-        )
-        .unwrap();
+        let parsed = parse_source(sample_tasks()).unwrap();
+        let generated = parsed.bridge.generate(&parsed.tasks).unwrap();
 
         let compacted = compact(&generated);
         for expected in [
@@ -556,6 +723,12 @@ mod tests {
     #[test]
     fn rejects_unsupported_endpoints() {
         let source = r#"
+        task_cxx_macros::define_cxx_bridge! {
+            namespace: "cfw::probe",
+            headers: [],
+            payloads: {},
+        }
+
         task_cxx_macros::define_cxx_task! {
             bridge: ffi,
             name: Probe,
@@ -565,22 +738,24 @@ mod tests {
             publishers: { value: Iox2Output<u64> { channel: "out" } },
         }
         "#;
-        let tasks = parse_tasks(source).unwrap();
-        assert!(
-            generate_bridge(
-                &tasks,
-                &BridgeConfig {
-                    namespace: "cfw::probe",
-                    headers: &[],
-                    payloads: &[],
-                },
-            )
-            .is_err()
-        );
+        let parsed = parse_source(source).unwrap();
+        assert!(parsed.bridge.generate(&parsed.tasks).is_err());
     }
 
     #[test]
-    fn requires_at_least_one_task() {
-        assert!(parse_tasks("fn main() {}").is_err());
+    fn requires_config_and_tasks() {
+        assert!(parse_source("fn main() {}").is_err());
+        assert!(
+            parse_source(
+                r#"
+                task_cxx_macros::define_cxx_bridge! {
+                    namespace: "cfw::probe",
+                    headers: [],
+                    payloads: {},
+                }
+                "#,
+            )
+            .is_err()
+        );
     }
 }

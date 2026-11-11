@@ -17,11 +17,12 @@ testing = { path = "../testing" }
 
 [build-dependencies]
 cxx-build = { workspace = true, optional = true }
+task_cxx_codegen = { path = "../task_cxx_codegen", optional = true }
 
 [features]
 # Off by default so default workspace builds need no C++ toolchain.
 default = []
-cxx = ["dep:cxx", "dep:cxx-build", "dep:task_cxx_macros", "task_cxx/cxx"]
+cxx = ["dep:cxx", "dep:cxx-build", "dep:task_cxx_codegen", "dep:task_cxx_macros", "task_cxx/cxx"]
 
 [lints]
 workspace = true

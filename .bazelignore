@@ -1,0 +1,7 @@
+# Cargo build output can contain generated copies of BUILD files (for example
+# cxx-build's cxxbridge/crate symlink tree); keep Bazel out of it.
+target
+tmp
+bazel-bin
+bazel-out
+bazel-testlogs

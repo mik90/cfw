@@ -1,13 +1,35 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("//bazel:rust.bzl", "rust_library")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//bazel:cxx.bzl", "rust_cxx_bridge")
+load("//bazel:rust.bzl", "rust_library", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
-# C++ support is enabled through the `cxx` feature. The default Bazel target
-# builds the empty default-feature surface, matching Cargo's default build.
+cc_library(
+    name = "output_headers",
+    hdrs = ["src/output.hpp"],
+)
+
+rust_cxx_bridge(
+    name = "bridge",
+    src = "src/lib.rs",
+)
+
 rust_library(
     name = "task_cxx",
     srcs = glob(["src/**/*.rs"]),
+    crate_features = ["cxx"],
     include_default_features = False,
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + [
+        ":bridge",
+        "@crates//:cxx-1.0.205",
+    ],
+)
+
+rust_test(
+    name = "task_cxx_link_test",
+    crate = ":task_cxx",
+    crate_features = ["cxx"],
+    include_default_features = False,
+    deps = all_crate_deps(normal_dev = True),
 )

@@ -1,12 +1,22 @@
 load("@crates//:defs.bzl", "all_crate_deps")
+load("//bazel:cxx.bzl", "rust_cxx_bridge")
 load("//bazel:rust.bzl", "rust_library")
 
 package(default_visibility = ["//visibility:public"])
 
-# Shared C++ payloads are gated behind the `cxx` feature.
+rust_cxx_bridge(
+    name = "bridge",
+    src = "src/lib.rs",
+    include_prefix = "cxx_fizz_buzz_messages",
+)
+
 rust_library(
     name = "cxx_fizz_buzz_messages",
     srcs = glob(["src/**/*.rs"]),
+    crate_features = ["cxx"],
     include_default_features = False,
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + [
+        ":bridge",
+        "@crates//:cxx-1.0.205",
+    ],
 )
