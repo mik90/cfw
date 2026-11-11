@@ -7,4 +7,8 @@
 mod bridge;
 
 #[cfg(feature = "cxx")]
-pub use bridge::{FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, OptionalProbe};
+pub use bridge::{
+    FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, NORM_IN_CHANNEL,
+    NORM_OUT_CHANNEL, NormCalculator, OPTIONAL_PROBE_IN_CHANNEL, OPTIONAL_PROBE_OUT_CHANNEL,
+    OptionalProbe,
+};

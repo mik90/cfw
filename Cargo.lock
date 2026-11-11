@@ -441,6 +441,7 @@ version = "0.1.0"
 dependencies = [
  "cxx",
  "cxx-build",
+ "cxx_fizz_buzz_messages",
  "live_executor",
  "task",
  "task_cxx",
@@ -448,6 +449,16 @@ dependencies = [
  "task_graph",
  "test_tasks",
  "testing",
+]
+
+[[package]]
+name = "cxx_fizz_buzz_messages"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "serde_json",
+ "task",
 ]
 
 [[package]]

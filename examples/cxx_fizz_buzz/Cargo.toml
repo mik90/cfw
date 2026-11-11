@@ -9,6 +9,7 @@ task = { path = "../../task" }
 task_graph = { path = "../../task_graph" }
 task_cxx = { path = "../../task_cxx", optional = true }
 task_cxx_macros = { path = "../../task_cxx_macros", optional = true }
+cxx_fizz_buzz_messages = { path = "messages", optional = true }
 cxx = { workspace = true, optional = true }
 
 [build-dependencies]
@@ -17,7 +18,15 @@ cxx-build = { workspace = true, optional = true }
 [features]
 # Opt in to the C++ bridge; off by default so workspace builds need no C++ toolchain.
 default = []
-cxx = ["dep:cxx", "dep:cxx-build", "dep:task_cxx", "task_cxx/cxx", "dep:task_cxx_macros"]
+cxx = [
+    "dep:cxx",
+    "dep:cxx-build",
+    "dep:task_cxx",
+    "task_cxx/cxx",
+    "dep:task_cxx_macros",
+    "dep:cxx_fizz_buzz_messages",
+    "cxx_fizz_buzz_messages/cxx",
+]
 
 [dev-dependencies]
 testing = { path = "../../testing" }

@@ -48,8 +48,16 @@ use task_macro_common::{
 /// - required input: `unsafe fn foo(self: &FooCxxInputs) -> &T;`
 /// - optional input: `foo_has_value(&self) -> bool`, `foo_len(&self) -> usize`,
 ///   `unsafe fn foo_value(&self) -> &T`, `unsafe fn foo_at(&self, usize) -> &T`,
-///   `foo_pop(&mut self)`
+///   `foo_try_value(&self) -> *const T`, `foo_pop(&mut self)`
 /// - output: `unsafe fn foo_value(&mut self) -> &mut T`, `foo_send(&mut self)`
+///
+/// Both input kinds also expose `foo_header(&self) -> MessageHeader`, where the
+/// bridge aliases `type MessageHeader = ::task_cxx::ffi::MessageHeader`.
+///
+/// Set `fallible: true` to declare `run` as returning `Result<()>` in the bridge.
+/// C++ exceptions are then caught by cxx and surfaced as callback panics
+/// (`BatchFailure::Panic` to executors, like any panicking task) instead of
+/// terminating the process.
 #[proc_macro]
 pub fn define_cxx_task(input: TokenStream) -> TokenStream {
     let spec = syn::parse_macro_input!(input as CxxTaskSpec);
@@ -63,6 +71,7 @@ struct CxxTaskSpec {
     name: Ident,
     cxx_type: Ident,
     factory: Ident,
+    fallible: bool,
     subscribers: Vec<EndpointSpec>,
     publishers: Vec<EndpointSpec>,
 }
@@ -77,6 +86,19 @@ impl Parse for CxxTaskSpec {
         input.parse::<Token![,]>()?;
         let factory = parse_key::<Ident>(input, "factory")?;
         input.parse::<Token![,]>()?;
+        let fallible = if input
+            .fork()
+            .parse::<Ident>()
+            .is_ok_and(|ident| ident == "fallible")
+        {
+            let _: Ident = input.parse()?;
+            input.parse::<Token![:]>()?;
+            let value: syn::LitBool = input.parse()?;
+            input.parse::<Token![,]>()?;
+            value.value
+        } else {
+            false
+        };
         let subscribers = parse_endpoint_block(input, "subscribers")?;
         input.parse::<Token![,]>()?;
         let publishers = parse_endpoint_block(input, "publishers")?;
@@ -89,6 +111,7 @@ impl Parse for CxxTaskSpec {
             name,
             cxx_type,
             factory,
+            fallible,
             subscribers,
             publishers,
         })
@@ -110,6 +133,7 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
         name,
         cxx_type,
         factory,
+        fallible,
         subscribers,
         publishers,
     } = spec;
@@ -153,7 +177,7 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
         self_ty: quote!(#name),
         endpoints,
         arguments: Vec::new(),
-        fallible: false,
+        fallible,
     };
     let endpoints = &task.endpoints;
 
@@ -162,7 +186,7 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
     let input_collection = generate::collection(endpoints, &inputs, true);
     let output_collection = generate::collection(endpoints, &outputs, false);
     let views = view_definitions(&view_inputs, &view_outputs, endpoints);
-    let invocation = invocation(&view_inputs, &view_outputs, endpoints);
+    let invocation = invocation(&name, &view_inputs, &view_outputs, endpoints, fallible);
     let binding = generate::binding(&task, &declaration, &inputs, &outputs, &invocation);
 
     let task_struct = quote! {
@@ -209,7 +233,9 @@ fn view_definitions(
         let name = &endpoint.name;
         let payload = &endpoint.payload;
         match endpoint.kind {
-            EndpointKind::Required => quote!(#name: *const #payload),
+            EndpointKind::Required => quote!(
+                #name: *const ::task::RequiredInput<'static, 'static, #payload>
+            ),
             _ => quote!(#name: *mut ::task::Input<'static, 'static, #payload>),
         }
     });
@@ -225,7 +251,10 @@ fn view_definitions(
         let name = &endpoint.name;
         let payload = &endpoint.payload;
         match endpoint.kind {
-            EndpointKind::Required => quote!(#name: (&**#name) as *const #payload),
+            EndpointKind::Required => quote!(
+                #name: #name as *const ::task::RequiredInput<'_, '_, #payload>
+                    as *const ::task::RequiredInput<'static, 'static, #payload>
+            ),
             _ => quote!(
                 #name: #name as *mut ::task::Input<'_, '_, #payload>
                     as *mut ::task::Input<'static, 'static, #payload>
@@ -235,6 +264,7 @@ fn view_definitions(
     let input_methods = input_endpoints.iter().map(|endpoint| {
         let name = &endpoint.name;
         let payload = &endpoint.payload;
+        let header = format_ident!("{name}_header");
         match endpoint.kind {
             EndpointKind::Required => quote! {
                 /// # Safety
@@ -242,13 +272,19 @@ fn view_definitions(
                 pub unsafe fn #name(&self) -> &#payload {
                     // SAFETY: view construction guarantees the endpoint outlives the view,
                     // which never escapes the C++ `run` call.
-                    unsafe { &*self.#name }
+                    unsafe { &*self.#name }.value()
+                }
+
+                pub fn #header(&self) -> ::task_cxx::ffi::MessageHeader {
+                    // SAFETY: view construction guarantees the endpoint outlives the view.
+                    ::task_cxx::message_header(unsafe { &*self.#name }.header())
                 }
             },
             _ => {
                 let has_value = format_ident!("{name}_has_value");
                 let len = format_ident!("{name}_len");
                 let value = format_ident!("{name}_value");
+                let try_value = format_ident!("{name}_try_value");
                 let at = format_ident!("{name}_at");
                 let pop = format_ident!("{name}_pop");
                 quote! {
@@ -271,6 +307,15 @@ fn view_definitions(
                             .expect("input value accessed while empty")
                     }
 
+                    /// Returns null when the input queue is empty. The pointer is only
+                    /// valid for the duration of the C++ `run` call.
+                    pub fn #try_value(&self) -> *const #payload {
+                        // SAFETY: view construction guarantees the endpoint outlives the view.
+                        unsafe { &*self.#name }
+                            .value()
+                            .map_or(::core::ptr::null(), |value| value as *const #payload)
+                    }
+
                     /// # Safety
                     /// The returned reference is only valid for the duration of the C++ `run` call.
                     pub unsafe fn #at(&self, index: usize) -> &#payload {
@@ -285,6 +330,14 @@ fn view_definitions(
                     pub fn #pop(&mut self) {
                         // SAFETY: view construction guarantees the endpoint outlives the view.
                         unsafe { &mut *self.#name }.clear();
+                    }
+
+                    pub fn #header(&self) -> ::task_cxx::ffi::MessageHeader {
+                        // SAFETY: view construction guarantees the endpoint outlives the view.
+                        let header = unsafe { &*self.#name }
+                            .header()
+                            .expect("input header accessed while empty");
+                        ::task_cxx::message_header(header)
                     }
                 }
             }
@@ -379,7 +432,13 @@ fn view_definitions(
     }
 }
 
-fn invocation(view_inputs: &Ident, view_outputs: &Ident, endpoints: &[Endpoint]) -> TokenStream2 {
+fn invocation(
+    name: &Ident,
+    view_inputs: &Ident,
+    view_outputs: &Ident,
+    endpoints: &[Endpoint],
+    fallible: bool,
+) -> TokenStream2 {
     let mut prelude = Vec::new();
     let mut input_args = Vec::new();
     let mut output_args = Vec::new();
@@ -410,15 +469,122 @@ fn invocation(view_inputs: &Ident, view_outputs: &Ident, endpoints: &[Endpoint])
             output_args.push(quote!(&mut #slot));
         }
     }
+    let call = if fallible {
+        quote! {
+            if let ::core::result::Result::Err(error) = __cfw_user
+                .task
+                .pin_mut()
+                .run(&mut __cfw_cxx_inputs, &mut __cfw_cxx_outputs, &__cfw_cxx_context)
+            {
+                ::std::panic!("{} failed: {error}", ::core::stringify!(#name));
+            }
+        }
+    } else {
+        quote! {
+            __cfw_user
+                .task
+                .pin_mut()
+                .run(&mut __cfw_cxx_inputs, &mut __cfw_cxx_outputs, &__cfw_cxx_context);
+        }
+    };
     quote! {
         #(#prelude)*
         let mut __cfw_cxx_inputs = #view_inputs::new(#(#input_args),*);
         let mut __cfw_cxx_outputs = #view_outputs::new(#(#output_args),*);
         let __cfw_cxx_context = ::task_cxx::context(__cfw_context);
-        __cfw_user
-            .task
-            .pin_mut()
-            .run(&mut __cfw_cxx_inputs, &mut __cfw_cxx_outputs, &__cfw_cxx_context);
+        #call
         ::core::result::Result::Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand_source(source: &str) -> Result<TokenStream2> {
+        expand(syn::parse_str::<CxxTaskSpec>(source)?)
+    }
+
+    #[test]
+    fn generates_documented_view_conventions() {
+        let tokens = expand_source(
+            r#"
+            bridge: ffi,
+            name: Probe,
+            cxx_type: ProbeTask,
+            factory: make_probe_task,
+            subscribers: {
+                integer: RequiredInput<u64> { channel: "integer", trigger: true },
+                gain: OptionalInput<f64> { channel: "gain", capacity: 4 },
+            },
+            publishers: {
+                report: Output<String> { channel: "report" },
+            },
+            "#,
+        )
+        .unwrap()
+        .to_string();
+        for expected in [
+            "pub unsafe fn integer",
+            "pub fn integer_header",
+            "pub fn gain_has_value",
+            "pub fn gain_len",
+            "pub unsafe fn gain_value",
+            "pub fn gain_try_value",
+            "pub unsafe fn gain_at",
+            "pub fn gain_pop",
+            "pub fn gain_header",
+            "pub unsafe fn report_value",
+            "pub fn report_send",
+        ] {
+            assert!(
+                tokens.contains(expected),
+                "missing `{expected}` in generated tokens:\n{tokens}"
+            );
+        }
+    }
+
+    #[test]
+    fn fallible_run_maps_errors_to_panics() {
+        let tokens = expand_source(
+            r#"
+            bridge: ffi,
+            name: Probe,
+            cxx_type: ProbeTask,
+            factory: make_probe_task,
+            fallible: true,
+            subscribers: {
+                integer: RequiredInput<u64> { channel: "integer" },
+            },
+            publishers: {},
+            "#,
+        )
+        .unwrap()
+        .to_string();
+        assert!(tokens.contains("panic !"), "{tokens}");
+        assert!(tokens.contains("stringify ! (Probe)"), "{tokens}");
+    }
+
+    #[test]
+    fn rejects_unsupported_endpoints() {
+        for source in [
+            r#"
+            bridge: ffi, name: Probe, cxx_type: T, factory: make,
+            subscribers: {},
+            publishers: { value: OutputSpan<u64> { channel: "out", capacity: 2 } },
+            "#,
+            r#"
+            bridge: ffi, name: Probe, cxx_type: T, factory: make,
+            subscribers: {},
+            publishers: { value: Iox2Output<u64> { channel: "out" } },
+            "#,
+            r#"
+            bridge: ffi, name: Probe, cxx_type: T, factory: make,
+            subscribers: { value: RequiredInput<u64, Forwardable> { channel: "in" } },
+            publishers: {},
+            "#,
+        ] {
+            assert!(expand_source(source).is_err(), "{source}");
+        }
     }
 }

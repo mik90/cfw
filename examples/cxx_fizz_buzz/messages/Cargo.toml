@@ -1,0 +1,23 @@
+[package]
+name = "cxx_fizz_buzz_messages"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# Exposes the cxx-generated header to task bridges that alias these payloads.
+links = "cxx_fizz_buzz_messages"
+
+[dependencies]
+task = { path = "../../../task", default-features = false }
+serde_json = { workspace = true }
+cxx = { workspace = true, optional = true }
+
+[build-dependencies]
+cxx-build = { workspace = true, optional = true }
+
+[features]
+# Off by default so workspace builds need no C++ toolchain.
+default = []
+cxx = ["dep:cxx", "dep:cxx-build"]
+
+[lints]
+workspace = true

@@ -3,10 +3,16 @@
 //! The literal `#[cxx::bridge]` module must stay in source because cxx codegen
 //! scans files, so its `extern "Rust"` declarations follow a naming convention
 //! derived from the endpoint names. `define_cxx_task!` generates the view types,
-//! the task struct, and the `task_graph::Task` adapter that matches them.
+//! the task structs, and the `task_graph::Task` adapters that match them.
+
+use cxx_fizz_buzz_messages::Vec3;
 
 pub const INTEGER_CHANNEL: &str = "integer";
 pub const FIZZ_BUZZ_STRING_CHANNEL: &str = "fizz_buzz_string";
+pub const OPTIONAL_PROBE_IN_CHANNEL: &str = "optional_probe_in";
+pub const OPTIONAL_PROBE_OUT_CHANNEL: &str = "optional_probe_out";
+pub const NORM_IN_CHANNEL: &str = "norm_in";
+pub const NORM_OUT_CHANNEL: &str = "norm_out";
 
 #[cxx::bridge(namespace = "cfw::fizz_buzz")]
 mod ffi {
@@ -15,6 +21,14 @@ mod ffi {
         include!("task_cxx/src/lib.rs.h");
 
         type Context = ::task_cxx::ffi::Context;
+        type MessageHeader = ::task_cxx::ffi::MessageHeader;
+    }
+
+    #[namespace = "cfw::messages"]
+    unsafe extern "C++" {
+        include!("cxx_fizz_buzz_messages/src/lib.rs.h");
+
+        type Vec3 = ::cxx_fizz_buzz_messages::Vec3;
     }
 
     unsafe extern "C++" {
@@ -39,6 +53,16 @@ mod ffi {
             context: &Context,
         );
         fn make_optional_probe_task() -> UniquePtr<OptionalProbeTask>;
+
+        type NormTask;
+
+        fn run(
+            self: Pin<&mut NormTask>,
+            inputs: &mut NormCalculatorCxxInputs,
+            outputs: &mut NormCalculatorCxxOutputs,
+            context: &Context,
+        ) -> Result<()>;
+        fn make_norm_task() -> UniquePtr<NormTask>;
     }
 
     extern "Rust" {
@@ -46,6 +70,7 @@ mod ffi {
 
         /// Required input payload. Valid for the duration of `run`.
         unsafe fn integer(self: &FizzBuzzCalculatorCxxInputs) -> &u64;
+        fn integer_header(self: &FizzBuzzCalculatorCxxInputs) -> MessageHeader;
 
         type FizzBuzzCalculatorCxxOutputs;
 
@@ -59,13 +84,25 @@ mod ffi {
         fn value_has_value(self: &OptionalProbeCxxInputs) -> bool;
         fn value_len(self: &OptionalProbeCxxInputs) -> usize;
         unsafe fn value_value(self: &OptionalProbeCxxInputs) -> &u64;
+        fn value_try_value(self: &OptionalProbeCxxInputs) -> *const u64;
         unsafe fn value_at(self: &OptionalProbeCxxInputs, index: usize) -> &u64;
         fn value_pop(self: &mut OptionalProbeCxxInputs);
+        fn value_header(self: &OptionalProbeCxxInputs) -> MessageHeader;
 
         type OptionalProbeCxxOutputs;
 
         unsafe fn report_value(self: &mut OptionalProbeCxxOutputs) -> &mut String;
         fn report_send(self: &mut OptionalProbeCxxOutputs);
+
+        type NormCalculatorCxxInputs;
+
+        /// Shared-struct payload aliased from `cxx_fizz_buzz_messages`.
+        unsafe fn value(self: &NormCalculatorCxxInputs) -> &Vec3;
+
+        type NormCalculatorCxxOutputs;
+
+        unsafe fn length_value(self: &mut NormCalculatorCxxOutputs) -> &mut f64;
+        fn length_send(self: &mut NormCalculatorCxxOutputs);
     }
 }
 
@@ -95,15 +132,35 @@ task_cxx_macros::define_cxx_task! {
     },
 }
 
+task_cxx_macros::define_cxx_task! {
+    bridge: ffi,
+    name: NormCalculator,
+    cxx_type: NormTask,
+    factory: make_norm_task,
+    fallible: true,
+    subscribers: {
+        value: RequiredInput<Vec3> { channel: "norm_in", trigger: true },
+    },
+    publishers: {
+        length: Output<f64> { channel: "norm_out" },
+    },
+}
+
 #[cfg(all(test, not(miri)))]
 mod tests {
     use std::time::Duration;
 
+    use cxx_fizz_buzz_messages::Vec3;
+    use task::time::FrameworkTime;
     use task_graph::CallbackSchedule;
     use test_tasks::{IncrementingIntegerPublisher, StringCollector, fizz_buzz};
     use testing::UnitTestExecutorBuilder;
 
-    use super::{FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, OptionalProbe};
+    use super::{
+        FIZZ_BUZZ_STRING_CHANNEL, FizzBuzzCalculator, INTEGER_CHANNEL, NORM_IN_CHANNEL,
+        NORM_OUT_CHANNEL, NormCalculator, OPTIONAL_PROBE_IN_CHANNEL, OPTIONAL_PROBE_OUT_CHANNEL,
+        OptionalProbe,
+    };
 
     #[test]
     fn cxx_calculator_matches_rust_reference() {
@@ -143,15 +200,15 @@ mod tests {
     }
 
     #[test]
-    fn cxx_optional_input_queue_semantics() {
+    fn cxx_optional_input_queue_and_header_semantics() {
         let mut builder = UnitTestExecutorBuilder::new();
         builder.add_task("probe", OptionalProbe::new(), Duration::from_millis(1));
-        let mut input = builder.add_test_publisher::<u64>("optional_probe_in");
-        let output = builder.add_test_subscriber::<String>("optional_probe_out");
+        let mut input = builder.add_test_publisher::<u64>(OPTIONAL_PROBE_IN_CHANNEL);
+        let output = builder.add_test_subscriber::<String>(OPTIONAL_PROBE_OUT_CHANNEL);
         let mut reports = Vec::new();
         builder.run(|mut executor| {
-            input.send(7);
-            input.send(9);
+            input.send_at(FrameworkTime::from_millis(3), 7);
+            input.send_at(FrameworkTime::from_millis(3), 9);
             for _ in 0..3 {
                 executor.step();
                 output.messages(&mut executor, |_, message| {
@@ -159,10 +216,51 @@ mod tests {
                 });
             }
         });
-        assert_eq!(reports.first().map(String::as_str), Some("7:2:7"));
+        assert_eq!(reports.first().map(String::as_str), Some("7:2:7:3000000"));
         assert!(reports.len() <= 2);
         if let Some(second) = reports.get(1) {
-            assert_eq!(second, "9:1:9");
+            assert_eq!(second, "9:1:9:3000000");
+        }
+    }
+
+    #[test]
+    fn cxx_shared_struct_payload_runs_through_cxx() {
+        let mut builder = UnitTestExecutorBuilder::new();
+        builder.add_task("norm", NormCalculator::new(), Duration::from_millis(1));
+        let mut input = builder.add_test_publisher::<Vec3>(NORM_IN_CHANNEL);
+        let output = builder.add_test_subscriber::<f64>(NORM_OUT_CHANNEL);
+        let mut lengths = Vec::new();
+        builder.run(|mut executor| {
+            input.send(Vec3 {
+                x: 3.0,
+                y: 4.0,
+                z: 12.0,
+            });
+            executor.step();
+            output.messages(&mut executor, |_, message| lengths.push(message.message));
+        });
+        assert_eq!(lengths, vec![13.0]);
+    }
+
+    #[test]
+    fn cxx_fallible_run_surfaces_exceptions() {
+        let mut builder = UnitTestExecutorBuilder::new();
+        builder.add_task("norm", NormCalculator::new(), Duration::from_millis(1));
+        let mut input = builder.add_test_publisher::<Vec3>(NORM_IN_CHANNEL);
+        let error = builder.run(|mut executor| {
+            input.send(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            });
+            executor.try_step().unwrap_err()
+        });
+        match error {
+            testing::StepError::Callback {
+                failure: testing::BatchFailure::Panic,
+                ..
+            } => {}
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 

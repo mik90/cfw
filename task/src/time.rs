@@ -25,16 +25,16 @@ impl FrameworkTime {
         FrameworkTime { nanoseconds }
     }
 
-    pub const fn from_millis(milliseconds: i64) -> FrameworkTime {
-        FrameworkTime::from_nanos(milliseconds * 1000)
+    pub const fn from_micros(microseconds: i64) -> FrameworkTime {
+        FrameworkTime::from_nanos(microseconds * 1_000)
     }
 
-    pub const fn from_micros(microseconds: i64) -> FrameworkTime {
-        FrameworkTime::from_millis(microseconds * 1000)
+    pub const fn from_millis(milliseconds: i64) -> FrameworkTime {
+        FrameworkTime::from_nanos(milliseconds * 1_000_000)
     }
 
     pub const fn from_secs(seconds: i64) -> FrameworkTime {
-        FrameworkTime::from_micros(seconds * 1000)
+        FrameworkTime::from_nanos(seconds * 1_000_000_000)
     }
 
     /// Formats as $SECONDS.$NANOSECONDS, kidna like journalctl's `-o short-monotonic` but more sig figs
@@ -180,6 +180,13 @@ mod tests {
         let mut time = FrameworkTime::from_nanos(1);
         time += Duration::from_nanos(2);
         expect_eq!(time.to_nanoseconds(), 3);
+    }
+
+    #[gtest]
+    fn time_conversions() {
+        expect_eq!(FrameworkTime::from_millis(3).to_nanoseconds(), 3_000_000);
+        expect_eq!(FrameworkTime::from_micros(3).to_nanoseconds(), 3_000);
+        expect_eq!(FrameworkTime::from_secs(3).to_nanoseconds(), 3_000_000_000);
     }
 
     #[gtest]
