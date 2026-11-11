@@ -15,6 +15,9 @@
 
 use std::pin::Pin;
 
+mod output;
+pub use output::OutputUninit;
+
 #[cxx::bridge(namespace = "cfw")]
 pub mod ffi {
     /// Executor-provided time for one callback invocation, in nanoseconds.

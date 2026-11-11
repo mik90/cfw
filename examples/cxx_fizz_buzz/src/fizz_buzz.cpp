@@ -98,10 +98,14 @@ void SpanProbeTask::run(SpanProbeCxxInputs& inputs,
         }
     }
 
-    // In-place string output: placement-new into the reserved slot.
-    auto* label = outputs.label_payload();
-    new (label) rust::String("span:" + std::to_string(outputs.numbers_len()));
-    outputs.label_send();
+    // In-place string output: the handle construction uses placement new and
+    // owns the value until sent (or destroys it on early return).
+    auto label = outputs.label_uninit().init<rust::String>(
+        "span:" + std::to_string(outputs.numbers_len()));
+    if (count == 0) {
+        return;
+    }
+    std::move(label).send();
 
     // Publish the second loan out of order, then the rest in loan order.
     outputs.numbers_send(1);

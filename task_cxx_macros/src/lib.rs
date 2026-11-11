@@ -53,8 +53,9 @@ use task_macro_common::{
 ///   optional input
 /// - default-initialized output (`Output`/`OutputDefault`):
 ///   `unsafe fn foo_value(&mut self) -> &mut T`, `foo_send(&mut self)`
-/// - in-place output (`OutputUninit`): `fn foo_payload(&mut self) -> *mut T`,
-///   `foo_send(&mut self)`; C++ placement-news the payload before sending
+/// - in-place output (`OutputUninit`): `fn foo_uninit(&mut self) -> OutputUninit`
+///   (C++ calls `cfw::OutputUninit::init<T>(...)` to construct, send, or drop
+///   the payload through the owning `cfw::Output<T>` handle)
 /// - span output (`OutputSpan`, requires `capacity`):
 ///   `fn foo_loan(&mut self) -> *mut T` (null when exhausted),
 ///   `fn foo_write(&mut self, T) -> bool`, `foo_len(&self) -> usize`,
@@ -461,31 +462,29 @@ fn view_definitions(
                 }
             }
             EndpointKind::Uninit => {
-                let payload = format_ident!("{name}_payload");
-                let send = format_ident!("{name}_send");
+                let uninit = format_ident!("{name}_uninit");
+                let (send_thunk, discard_thunk) = uninit_thunk_idents(task_name, endpoint);
                 quote! {
-                    /// Returns the reserved payload slot for in-place construction.
-                    /// The pointer is valid until the output is sent; C++ must
-                    /// placement-new the payload before calling `send`. Dropping an
-                    /// unsent in-place output does not run the payload destructor.
-                    pub fn #payload(&mut self) -> *mut #ty {
+                    /// Returns a descriptor for in-place construction. Feed it to
+                    /// `cfw::OutputUninit::init<T>(...)` in C++ to get an owning
+                    /// output handle. Null payload means no slot was available.
+                    pub fn #uninit(&mut self) -> ::task_cxx::OutputUninit {
                         // SAFETY: view construction guarantees the slot outlives the view;
                         // the `&mut self` borrow makes access exclusive for its duration.
                         let slot = unsafe { &mut *self.#name };
-                        slot.as_mut()
-                            .expect("output payload accessed after send")
-                            .payload_uninit()
-                            .as_mut_ptr()
-                    }
-
-                    pub fn #send(&mut self) {
-                        // SAFETY: view construction guarantees the slot outlives the view;
-                        // the `&mut self` borrow makes access exclusive for its duration.
-                        if let ::core::option::Option::Some(output) =
-                            unsafe { &mut *self.#name }.take()
-                        {
-                            // SAFETY: C++ placement-new initialized the payload in place.
-                            unsafe { output.assume_init() }.send();
+                        let payload = slot.as_mut().map_or(
+                            ::core::ptr::null_mut(),
+                            |output| {
+                                output.payload_uninit().as_mut_ptr()
+                                    as *mut ::core::ffi::c_void
+                            },
+                        );
+                        ::task_cxx::OutputUninit {
+                            payload,
+                            context: self as *mut Self as *mut ::core::ffi::c_void,
+                            send: #send_thunk,
+                            discard: #discard_thunk,
+                            index: 0,
                         }
                     }
                 }
@@ -578,6 +577,40 @@ fn view_definitions(
         }
     });
 
+    let uninit_thunks = output_endpoints
+        .iter()
+        .filter(|endpoint| matches!(endpoint.kind, EndpointKind::Uninit))
+        .map(|endpoint| {
+            let name = &endpoint.name;
+            let (send_thunk, discard_thunk) = uninit_thunk_idents(task_name, endpoint);
+            quote! {
+                #[allow(non_snake_case)]
+                unsafe extern "C" fn #send_thunk(
+                    context: *mut ::core::ffi::c_void,
+                    _index: usize,
+                ) {
+                    // SAFETY: context is the live view for the duration of `run`.
+                    let view = unsafe { &mut *(context as *mut #view_outputs) };
+                    if let ::core::option::Option::Some(output) =
+                        unsafe { &mut *view.#name }.take()
+                    {
+                        // SAFETY: C++ initialized the payload before sending.
+                        unsafe { output.assume_init() }.send();
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                unsafe extern "C" fn #discard_thunk(
+                    context: *mut ::core::ffi::c_void,
+                    _index: usize,
+                ) {
+                    // SAFETY: context is the live view for the duration of `run`.
+                    let view = unsafe { &mut *(context as *mut #view_outputs) };
+                    let _ = unsafe { &mut *view.#name }.take();
+                }
+            }
+        });
+
     let span_slots = output_endpoints
         .iter()
         .filter(|endpoint| matches!(endpoint.kind, EndpointKind::OutputSpan))
@@ -595,6 +628,7 @@ fn view_definitions(
         });
 
     quote! {
+        #(#uninit_thunks)*
         #(#span_slots)*
 
         #[doc(hidden)]
@@ -625,6 +659,14 @@ fn view_definitions(
             #(#output_methods)*
         }
     }
+}
+
+fn uninit_thunk_idents(task_name: &Ident, endpoint: &Endpoint) -> (Ident, Ident) {
+    let name = &endpoint.name;
+    (
+        format_ident!("__cfw_{task_name}_{name}_uninit_send"),
+        format_ident!("__cfw_{task_name}_{name}_uninit_discard"),
+    )
 }
 
 fn span_slot_ident(task_name: &Ident, endpoint: &Endpoint) -> Ident {
@@ -766,8 +808,7 @@ mod tests {
             "pub fn gain_header",
             "pub unsafe fn report_value",
             "pub fn report_send",
-            "pub fn raw_payload",
-            "pub fn raw_send",
+            "pub fn raw_uninit",
             "pub fn numbers_loan",
             "pub fn numbers_write",
             "pub fn numbers_len",

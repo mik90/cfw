@@ -22,9 +22,11 @@ mod ffi {
     #[namespace = "cfw"]
     unsafe extern "C++" {
         include!("task_cxx/src/lib.rs.h");
+        include!("task_cxx/src/output.hpp");
 
         type Context = ::task_cxx::ffi::Context;
         type MessageHeader = ::task_cxx::ffi::MessageHeader;
+        type OutputUninit = ::task_cxx::OutputUninit;
     }
 
     #[namespace = "cfw::messages"]
@@ -133,8 +135,7 @@ mod ffi {
         fn numbers_discard(self: &mut SpanProbeCxxOutputs);
 
         /// Reserved slot for in-place `rust::String` construction.
-        fn label_payload(self: &mut SpanProbeCxxOutputs) -> *mut String;
-        fn label_send(self: &mut SpanProbeCxxOutputs);
+        fn label_uninit(self: &mut SpanProbeCxxOutputs) -> OutputUninit;
     }
 }
 
@@ -290,6 +291,28 @@ mod tests {
         });
         assert_eq!(collected_numbers, vec![1, 0, 2, 3]);
         assert_eq!(collected_labels, vec!["span:4".to_string()]);
+    }
+
+    #[test]
+    fn cxx_uninit_output_unsent_is_discarded() {
+        let mut builder = UnitTestExecutorBuilder::new();
+        builder.add_task("span", SpanProbe::new(), Duration::from_millis(1));
+        let mut input = builder.add_test_publisher::<u64>(SPAN_IN_CHANNEL);
+        let labels = builder.add_test_subscriber::<String>(SPAN_LABEL_CHANNEL);
+        let mut collected = Vec::new();
+        builder.run(|mut executor| {
+            input.send(0);
+            executor.step();
+            labels.messages(&mut executor, |_, message| {
+                collected.push(message.message.clone());
+            });
+            input.send(2);
+            executor.step();
+            labels.messages(&mut executor, |_, message| {
+                collected.push(message.message.clone());
+            });
+        });
+        assert_eq!(collected, vec!["span:2".to_string()]);
     }
 
     #[test]
