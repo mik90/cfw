@@ -1,9 +1,9 @@
 //! C++ task bridge for the example tasks.
 //!
-//! The literal `#[cxx::bridge]` module must stay in source because cxx codegen
-//! scans files, so its `extern "Rust"` declarations follow a naming convention
-//! derived from the endpoint names. `define_cxx_task!` generates the view types,
-//! the task structs, and the `task_graph::Task` adapters that match them.
+//! `build.rs` generates the literal `#[cxx::bridge]` module into
+//! `gen/bridge.rs` from the `define_cxx_task!` declarations below, then cxx
+//! compiles it. The generated module and the task declarations share one
+//! endpoint spec, so they cannot drift.
 
 use cxx_fizz_buzz_messages::Vec3;
 
@@ -17,123 +17,7 @@ pub const SPAN_IN_CHANNEL: &str = "span_in";
 pub const SPAN_OUT_CHANNEL: &str = "span_out";
 pub const SPAN_LABEL_CHANNEL: &str = "span_label";
 
-#[cxx::bridge(namespace = "cfw::fizz_buzz")]
-mod ffi {
-    #[namespace = "cfw"]
-    unsafe extern "C++" {
-        include!("task_cxx/src/lib.rs.h");
-        include!("task_cxx/src/output.hpp");
-
-        type Context = ::task_cxx::ffi::Context;
-        type MessageHeader = ::task_cxx::ffi::MessageHeader;
-        type OutputUninit = ::task_cxx::OutputUninit;
-        type SpanHandle = ::task_cxx::SpanHandle;
-    }
-
-    #[namespace = "cfw::messages"]
-    unsafe extern "C++" {
-        include!("cxx_fizz_buzz_messages/src/lib.rs.h");
-
-        type Vec3 = ::cxx_fizz_buzz_messages::Vec3;
-    }
-
-    unsafe extern "C++" {
-        include!("cxx_fizz_buzz/src/fizz_buzz.hpp");
-
-        type FizzBuzzTask;
-
-        fn run(
-            self: Pin<&mut FizzBuzzTask>,
-            inputs: &mut FizzBuzzCalculatorCxxInputs,
-            outputs: &mut FizzBuzzCalculatorCxxOutputs,
-            context: &Context,
-        );
-        fn make_fizz_buzz_task() -> UniquePtr<FizzBuzzTask>;
-
-        type OptionalProbeTask;
-
-        fn run(
-            self: Pin<&mut OptionalProbeTask>,
-            inputs: &mut OptionalProbeCxxInputs,
-            outputs: &mut OptionalProbeCxxOutputs,
-            context: &Context,
-        );
-        fn make_optional_probe_task() -> UniquePtr<OptionalProbeTask>;
-
-        type NormTask;
-
-        fn run(
-            self: Pin<&mut NormTask>,
-            inputs: &mut NormCalculatorCxxInputs,
-            outputs: &mut NormCalculatorCxxOutputs,
-            context: &Context,
-        ) -> Result<()>;
-        fn make_norm_task() -> UniquePtr<NormTask>;
-
-        type SpanProbeTask;
-
-        fn run(
-            self: Pin<&mut SpanProbeTask>,
-            inputs: &mut SpanProbeCxxInputs,
-            outputs: &mut SpanProbeCxxOutputs,
-            context: &Context,
-        );
-        fn make_span_probe_task() -> UniquePtr<SpanProbeTask>;
-    }
-
-    extern "Rust" {
-        type FizzBuzzCalculatorCxxInputs;
-
-        /// Required input payload. Valid for the duration of `run`.
-        unsafe fn integer(self: &FizzBuzzCalculatorCxxInputs) -> &u64;
-        fn integer_header(self: &FizzBuzzCalculatorCxxInputs) -> MessageHeader;
-
-        type FizzBuzzCalculatorCxxOutputs;
-
-        /// Loaned output payload. Valid until `fizz_buzz_string_send`.
-        unsafe fn fizz_buzz_string_value(self: &mut FizzBuzzCalculatorCxxOutputs) -> &mut String;
-        /// Publishes the output. Dropping without sending discards it.
-        fn fizz_buzz_string_send(self: &mut FizzBuzzCalculatorCxxOutputs);
-
-        type OptionalProbeCxxInputs;
-
-        fn value_has_value(self: &OptionalProbeCxxInputs) -> bool;
-        fn value_len(self: &OptionalProbeCxxInputs) -> usize;
-        unsafe fn value_value(self: &OptionalProbeCxxInputs) -> &u64;
-        fn value_try_value(self: &OptionalProbeCxxInputs) -> *const u64;
-        unsafe fn value_at(self: &OptionalProbeCxxInputs, index: usize) -> &u64;
-        fn value_pop(self: &mut OptionalProbeCxxInputs) -> bool;
-        fn value_clear(self: &mut OptionalProbeCxxInputs);
-        fn value_header(self: &OptionalProbeCxxInputs) -> MessageHeader;
-
-        type OptionalProbeCxxOutputs;
-
-        unsafe fn report_value(self: &mut OptionalProbeCxxOutputs) -> &mut String;
-        fn report_send(self: &mut OptionalProbeCxxOutputs);
-
-        type NormCalculatorCxxInputs;
-
-        /// Shared-struct payload aliased from `cxx_fizz_buzz_messages`.
-        unsafe fn value(self: &NormCalculatorCxxInputs) -> &Vec3;
-
-        type NormCalculatorCxxOutputs;
-
-        unsafe fn length_value(self: &mut NormCalculatorCxxOutputs) -> &mut f64;
-        fn length_send(self: &mut NormCalculatorCxxOutputs);
-
-        type SpanProbeCxxInputs;
-
-        unsafe fn count(self: &SpanProbeCxxInputs) -> &u64;
-
-        type SpanProbeCxxOutputs;
-
-        /// Span proxy; each loan returns an owning handle for one slot.
-        fn numbers_span(self: &mut SpanProbeCxxOutputs) -> SpanHandle;
-
-        /// Reserved slot for in-place `rust::String` construction.
-        fn label_uninit(self: &mut SpanProbeCxxOutputs) -> OutputUninit;
-    }
-}
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/gen/bridge.rs"));
 
 task_cxx_macros::define_cxx_task! {
     bridge: ffi,

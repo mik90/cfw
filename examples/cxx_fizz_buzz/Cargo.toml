@@ -14,6 +14,7 @@ cxx = { workspace = true, optional = true }
 
 [build-dependencies]
 cxx-build = { workspace = true, optional = true }
+task_cxx_codegen = { path = "../../task_cxx_codegen", optional = true }
 
 [features]
 # Opt in to the C++ bridge; off by default so workspace builds need no C++ toolchain.
@@ -21,6 +22,7 @@ default = []
 cxx = [
     "dep:cxx",
     "dep:cxx-build",
+    "dep:task_cxx_codegen",
     "dep:task_cxx",
     "task_cxx/cxx",
     "dep:task_cxx_macros",

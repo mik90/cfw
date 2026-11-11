@@ -445,6 +445,7 @@ dependencies = [
  "live_executor",
  "task",
  "task_cxx",
+ "task_cxx_codegen",
  "task_cxx_macros",
  "task_graph",
  "test_tasks",
@@ -1738,12 +1739,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "task_cxx_codegen"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "task_macro_common",
+]
+
+[[package]]
 name = "task_cxx_macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "task_cxx_codegen",
  "task_macro_common",
 ]
 

@@ -3,6 +3,9 @@
 
 .idea
 
+# Generated C++ bridge sources
+/examples/cxx_fizz_buzz/gen/
+
 # Bazel outputs
 /bazel-*
 

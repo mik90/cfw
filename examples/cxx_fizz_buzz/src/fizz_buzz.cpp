@@ -1,4 +1,4 @@
-#include "cxx_fizz_buzz/src/bridge.rs.h"
+#include "cxx_fizz_buzz/gen/bridge.rs.h"
 
 #include <array>
 #include <cmath>

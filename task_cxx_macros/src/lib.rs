@@ -9,20 +9,17 @@
 //! - the `task_graph::Task` adapter that loans inputs/outputs and calls the
 //!   C++ `run` method through the cxx bridge
 //!
-//! The literal `#[cxx::bridge]` module stays hand-written (cxx codegen scans
-//! source files), but the method names it declares follow a fixed convention
-//! derived from the endpoint names; mismatches are compile errors.
+//! The literal `#[cxx::bridge]` module is generated from these declarations by
+//! [`task_cxx_codegen`] in `build.rs` before cxx compiles the crate, so the
+//! bridge methods and the generated views share one endpoint spec.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::parse::{Parse, ParseStream};
-use syn::{Ident, Path, Result, Token};
+use syn::{Ident, Result};
 
-use task_macro_common::{
-    Endpoint, EndpointKind, EndpointSpec, TaskDefinition, declared_endpoint, generate,
-    generate_registration, parse_endpoint_block, validate_endpoints,
-};
+use task_cxx_codegen::CxxTaskSpec;
+use task_macro_common::{Endpoint, EndpointKind, TaskDefinition, generate, generate_registration};
 
 /// Declare a C++-backed task.
 ///
@@ -77,67 +74,6 @@ pub fn define_cxx_task(input: TokenStream) -> TokenStream {
         .into()
 }
 
-struct CxxTaskSpec {
-    bridge: Path,
-    name: Ident,
-    cxx_type: Ident,
-    factory: Ident,
-    fallible: bool,
-    subscribers: Vec<EndpointSpec>,
-    publishers: Vec<EndpointSpec>,
-}
-
-impl Parse for CxxTaskSpec {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let bridge = parse_key::<Path>(input, "bridge")?;
-        input.parse::<Token![,]>()?;
-        let name = parse_key::<Ident>(input, "name")?;
-        input.parse::<Token![,]>()?;
-        let cxx_type = parse_key::<Ident>(input, "cxx_type")?;
-        input.parse::<Token![,]>()?;
-        let factory = parse_key::<Ident>(input, "factory")?;
-        input.parse::<Token![,]>()?;
-        let fallible = if input
-            .fork()
-            .parse::<Ident>()
-            .is_ok_and(|ident| ident == "fallible")
-        {
-            let _: Ident = input.parse()?;
-            input.parse::<Token![:]>()?;
-            let value: syn::LitBool = input.parse()?;
-            input.parse::<Token![,]>()?;
-            value.value
-        } else {
-            false
-        };
-        let subscribers = parse_endpoint_block(input, "subscribers")?;
-        input.parse::<Token![,]>()?;
-        let publishers = parse_endpoint_block(input, "publishers")?;
-        let _ = input.parse::<Token![,]>();
-        if !input.is_empty() {
-            return Err(input.error("unexpected tokens after task definition"));
-        }
-        Ok(Self {
-            bridge,
-            name,
-            cxx_type,
-            factory,
-            fallible,
-            subscribers,
-            publishers,
-        })
-    }
-}
-
-fn parse_key<T: Parse>(input: ParseStream, key: &str) -> Result<T> {
-    let ident: Ident = input.parse()?;
-    if ident != key {
-        return Err(syn::Error::new_spanned(ident, format!("expected '{key}'")));
-    }
-    input.parse::<Token![:]>()?;
-    input.parse()
-}
-
 fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
     let CxxTaskSpec {
         bridge,
@@ -149,36 +85,7 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
         publishers,
     } = spec;
 
-    let mut endpoints = Vec::new();
-    for subscriber in subscribers {
-        endpoints.push(declared_endpoint(subscriber, true)?);
-    }
-    for publisher in publishers {
-        endpoints.push(declared_endpoint(publisher, false)?);
-    }
-    validate_endpoints(&endpoints)?;
-    for endpoint in &endpoints {
-        match endpoint.kind {
-            EndpointKind::Required | EndpointKind::Input => {}
-            EndpointKind::Output
-            | EndpointKind::OutputDefault
-            | EndpointKind::Uninit
-            | EndpointKind::OutputSpan => {}
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    &endpoint.name,
-                    "C++ tasks support RequiredInput, OptionalInput, InputSpan, Output, \
-                     OutputUninit, and OutputSpan endpoints only",
-                ));
-            }
-        }
-        if endpoint.forwardable || !endpoint.forwards.is_empty() || endpoint.forwarded.is_some() {
-            return Err(syn::Error::new_spanned(
-                &endpoint.name,
-                "forwarding is not supported on C++ tasks yet",
-            ));
-        }
-    }
+    let endpoints = task_cxx_codegen::task_endpoints(&subscribers, &publishers)?;
 
     let declaration = format_ident!("{name}Declaration");
     let inputs = format_ident!("{name}Inputs");

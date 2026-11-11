@@ -8,6 +8,7 @@ publish = false
 proc-macro = true
 
 [dependencies]
+task_cxx_codegen = { path = "../task_cxx_codegen" }
 task_macro_common = { path = "../task_macro_common" }
 proc-macro2 = "1"
 quote = "1.0.42"

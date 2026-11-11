@@ -46,6 +46,7 @@ pub struct TaskDefinition {
     pub fallible: bool,
 }
 
+#[derive(Clone)]
 pub struct EndpointSpec {
     pub name: Ident,
     pub ty: Type,
