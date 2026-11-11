@@ -1,6 +1,6 @@
 use super::{Callback, endpoints::*};
 use crate::{
-    Context, LoanError, ReplayError,
+    CallbackError, Context, LoanError,
     execution_log_schema::{
         Direction, EndpointDescriptor, LoggedIox2Event, LoggedMessage, Transport,
     },
@@ -43,7 +43,7 @@ where
     fn finish_inputs(&mut self) {
         self.inputs.visit_mut(&mut Finish);
     }
-    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
+    fn reset_inputs(&mut self) -> Result<(), CallbackError> {
         self.inputs.visit_mut(&mut Clear);
         Ok(())
     }
@@ -128,12 +128,12 @@ where
     fn visit_pending_iox2_events(&self, visit: &mut dyn FnMut(LoggedIox2Event)) {
         self.outputs.visit(&mut Events { visit, ordinal: 0 });
     }
-    fn stage_replay_iox2_event(
+    fn stage_iox2_event(
         &mut self,
         ordinal: usize,
         event_id: usize,
         count: u64,
-    ) -> Result<(), ReplayError> {
+    ) -> Result<(), CallbackError> {
         let mut stage = StageEvent {
             remaining: ordinal,
             event_id,
@@ -143,7 +143,7 @@ where
         self.inputs.visit_mut(&mut stage);
         stage
             .result
-            .unwrap_or_else(|| Err(ReplayError::new("unknown replay event endpoint")))
+            .unwrap_or(Err(CallbackError::UnknownEventEndpoint))
     }
     #[cfg(feature = "iceoryx2")]
     fn take_iox2_events<'a>(
@@ -342,7 +342,7 @@ struct StageEvent {
     remaining: usize,
     event_id: usize,
     count: u64,
-    result: Option<Result<(), ReplayError>>,
+    result: Option<Result<(), CallbackError>>,
 }
 impl InputVisitorMut for StageEvent {
     fn visit(&mut self, endpoint: &mut impl InputEndpoint) {
@@ -567,7 +567,7 @@ mod tests {
         );
         assert_true!(records.iter().all(|r| r.header.published_at == now));
 
-        node.clear_replay_inputs().unwrap();
+        node.reset_inputs().unwrap();
         assert_true!(!node.required_inputs_available());
         assert_true!(!node.required_inputs_ready());
     }
@@ -642,6 +642,6 @@ mod tests {
             },
         );
 
-        assert_that!(node.stage_replay_iox2_event(0, 1, 1), err(anything()));
+        assert_that!(node.stage_iox2_event(0, 1, 1), err(anything()));
     }
 }

@@ -21,21 +21,6 @@ pub enum LoanError {
     Iox2Send(iceoryx2::port::SendError),
 }
 
-/// Failure from replay-only operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplayError(String);
-impl ReplayError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
-    }
-}
-impl std::fmt::Display for ReplayError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for ReplayError {}
-
 #[cfg(feature = "serde")]
 impl serde::Serialize for LoanError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

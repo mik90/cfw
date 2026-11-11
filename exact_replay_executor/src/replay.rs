@@ -345,12 +345,12 @@ impl<'graph_storage> ExactReplayExecutor<'graph_storage> {
             )?;
             return Ok(skipped());
         }
-        self.callbacks[index].clear_replay_inputs().map_err(|e| {
-            ExactReplayStepError::Callback {
+        self.callbacks[index]
+            .reset_inputs()
+            .map_err(|e| ExactReplayStepError::Callback {
                 callback: name.clone(),
                 reason: format!("input reset: {e}"),
-            }
-        })?;
+            })?;
         for capture in self.bindings.outputs.values_mut() {
             capture.clear();
         }
@@ -395,7 +395,7 @@ impl<'graph_storage> ExactReplayExecutor<'graph_storage> {
             self.detail_endpoint = Some((Direction::Received, event.ordinal));
             self.detail_header = None;
             self.callbacks[index]
-                .stage_replay_iox2_event(event.ordinal, event.event_id, event.count)
+                .stage_iox2_event(event.ordinal, event.event_id, event.count)
                 .map_err(|e| ExactReplayStepError::Callback {
                     callback: name.clone(),
                     reason: format!("event hydration: {e}"),

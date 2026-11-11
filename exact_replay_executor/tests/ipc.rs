@@ -111,7 +111,7 @@ fn ipc_inputs_are_endpoint_local_events_are_restored_once_and_outputs_stay_local
         let mut callback = Observe
             .bind(declaration, &input, &input, &input, &output, &notify)
             .unwrap();
-        callback.stage_replay_iox2_event(2, 9, 5).unwrap();
+        callback.stage_iox2_event(2, 9, 5).unwrap();
         let mut graph = GraphBuilder::with_channel_names([
             storage.0.name(),
             storage.1.name(),

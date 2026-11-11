@@ -6,7 +6,7 @@ use crate::execution_log_schema::{
 use crate::publisher::Publisher;
 use crate::time::FrameworkTime;
 use crate::wake::WakeHandle;
-use crate::{Callback, Context, LoanError, ReplayError};
+use crate::{Callback, CallbackError, Context, LoanError};
 
 /// Body invoked by [`Callback::run`] on a [`FakeCallback`].
 pub type FakeBody = Box<dyn FnMut(&Context) -> Result<(), LoanError> + Send>;
@@ -58,13 +58,11 @@ impl Callback for FakeCallback {
     fn outputs_are_local(&self) -> bool {
         self.outputs_are_local
     }
-    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
-        Err(ReplayError::new(
-            "fake callback does not support replay input reset",
-        ))
+    fn reset_inputs(&mut self) -> Result<(), CallbackError> {
+        Err(CallbackError::ResetUnsupported)
     }
-    fn stage_replay_iox2_event(&mut self, _: usize, _: usize, _: u64) -> Result<(), ReplayError> {
-        Err(ReplayError::new("unknown replay event endpoint"))
+    fn stage_iox2_event(&mut self, _: usize, _: usize, _: u64) -> Result<(), CallbackError> {
+        Err(CallbackError::UnknownEventEndpoint)
     }
     fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
         None
@@ -128,7 +126,7 @@ impl<T: Send + Sync> Callback for FakePublisherCallback<'_, T> {
         true
     }
 
-    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
+    fn reset_inputs(&mut self) -> Result<(), CallbackError> {
         Ok(())
     }
 

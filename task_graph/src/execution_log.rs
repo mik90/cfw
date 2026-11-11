@@ -219,17 +219,16 @@ impl Callback for ExecutionLogRecorded<'_> {
     fn outputs_are_local(&self) -> bool {
         self.callback.outputs_are_local()
     }
-    fn clear_replay_inputs(&mut self) -> Result<(), task::ReplayError> {
-        self.callback.clear_replay_inputs()
+    fn reset_inputs(&mut self) -> Result<(), task::CallbackError> {
+        self.callback.reset_inputs()
     }
-    fn stage_replay_iox2_event(
+    fn stage_iox2_event(
         &mut self,
         ordinal: usize,
         event_id: usize,
         count: u64,
-    ) -> Result<(), task::ReplayError> {
-        self.callback
-            .stage_replay_iox2_event(ordinal, event_id, count)
+    ) -> Result<(), task::CallbackError> {
+        self.callback.stage_iox2_event(ordinal, event_id, count)
     }
     fn recording_endpoints(&self) -> Option<Vec<EndpointDescriptor>> {
         self.callback.recording_endpoints()

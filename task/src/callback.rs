@@ -2,11 +2,32 @@ use std::fmt::Debug;
 
 use crate::execution_log_schema::{LoggedIox2Event, LoggedMessage};
 use crate::time::FrameworkTime;
-use crate::{Context, LoanError, ReplayError};
+use crate::{Context, LoanError};
 mod endpoints;
 mod node;
 pub use endpoints::*;
 pub use node::CallbackNode;
+
+/// Failure while resetting callback inputs or staging recorded events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallbackError {
+    /// The callback cannot discard its buffered inputs.
+    ResetUnsupported,
+    /// No IPC event endpoint exists at the requested ordinal.
+    UnknownEventEndpoint,
+    /// The endpoint rejected the staged event.
+    EventStaging(LoanError),
+}
+impl std::fmt::Display for CallbackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ResetUnsupported => f.write_str("callback cannot reset buffered inputs"),
+            Self::UnknownEventEndpoint => f.write_str("unknown IPC event endpoint"),
+            Self::EventStaging(error) => write!(f, "event staging failed: {error:?}"),
+        }
+    }
+}
+impl std::error::Error for CallbackError {}
 
 /// Callback body and IO lifecycle, shared by live and deterministic executors.
 /// Executors invoke `execute_callback` or `execute_callback_batch` rather than
@@ -16,19 +37,18 @@ pub trait Callback: Send {
     fn outputs_are_local(&self) -> bool {
         false
     }
-    /// Clear prepared and incoming snapshots before exact-replay hydration.
-    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
-        Err(ReplayError::new(
-            "callback does not support replay input reset",
-        ))
+    /// Discard prepared and buffered inputs so an external snapshot can be injected.
+    fn reset_inputs(&mut self) -> Result<(), CallbackError> {
+        Err(CallbackError::ResetUnsupported)
     }
-    fn stage_replay_iox2_event(
+    /// Stage a counted IPC event on the endpoint at `ordinal`.
+    fn stage_iox2_event(
         &mut self,
         _ordinal: usize,
         _event_id: usize,
         _count: u64,
-    ) -> Result<(), ReplayError> {
-        Err(ReplayError::new("unknown replay event endpoint"))
+    ) -> Result<(), CallbackError> {
+        Err(CallbackError::UnknownEventEndpoint)
     }
     /// Whether this callback has endpoints on a non-native transport.
     fn has_iox2_endpoints(&self) -> bool {
@@ -105,19 +125,18 @@ where
     fn outputs_are_local(&self) -> bool {
         false
     }
-    /// Clear prepared and incoming snapshots before exact-replay hydration.
-    fn clear_replay_inputs(&mut self) -> Result<(), ReplayError> {
-        Err(ReplayError::new(
-            "callback does not support replay input reset",
-        ))
+    /// Discard prepared and buffered inputs so an external snapshot can be injected.
+    fn reset_inputs(&mut self) -> Result<(), CallbackError> {
+        Err(CallbackError::ResetUnsupported)
     }
-    fn stage_replay_iox2_event(
+    /// Stage a counted IPC event on the endpoint at `ordinal`.
+    fn stage_iox2_event(
         &mut self,
         _ordinal: usize,
         _event_id: usize,
         _count: u64,
-    ) -> Result<(), ReplayError> {
-        Err(ReplayError::new("unknown replay event endpoint"))
+    ) -> Result<(), CallbackError> {
+        Err(CallbackError::UnknownEventEndpoint)
     }
     /// Whether this callback has endpoints on a non-native transport.
     fn has_iox2_endpoints(&self) -> bool {

@@ -1,6 +1,6 @@
 //! Statically dispatched traversal of heterogeneous callback endpoints.
 use crate::{
-    Publisher, ReplayError, Subscriber, execution_log_schema::Transport, message::MessageHeader,
+    CallbackError, Publisher, Subscriber, execution_log_schema::Transport, message::MessageHeader,
     time::FrameworkTime, wake::WakeHandle,
 };
 
@@ -37,8 +37,8 @@ pub trait InputEndpoint: Endpoint {
     }
     fn visit_headers(&self, _visit: impl FnMut(MessageHeader)) {}
     fn visit_events(&self, _visit: impl FnMut(usize, u64)) {}
-    fn stage_event(&mut self, _event_id: usize, _count: u64) -> Result<(), ReplayError> {
-        Err(ReplayError::new("unknown replay event endpoint"))
+    fn stage_event(&mut self, _event_id: usize, _count: u64) -> Result<(), CallbackError> {
+        Err(CallbackError::UnknownEventEndpoint)
     }
     #[cfg(feature = "iceoryx2")]
     fn take_registration(&mut self) -> Option<crate::iox2::Iox2EventRegistration<'static>> {
@@ -327,9 +327,9 @@ mod ipc {
         fn visit_events(&self, mut visit: impl FnMut(usize, u64)) {
             self.visit_records(|event| visit(event.event_id.as_value(), event.count));
         }
-        fn stage_event(&mut self, id: usize, count: u64) -> Result<(), ReplayError> {
+        fn stage_event(&mut self, id: usize, count: u64) -> Result<(), CallbackError> {
             self.stage_replay(id, count)
-                .map_err(|e| ReplayError::new(format!("event staging failed: {e:?}")))
+                .map_err(CallbackError::EventStaging)
         }
         fn take_registration(&mut self) -> Option<Iox2EventRegistration<'static>> {
             self.take_registration()

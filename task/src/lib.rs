@@ -23,7 +23,9 @@ pub mod time;
 pub mod wake;
 
 pub use base::{ArenaReaderPtr, StaticVec};
-pub use callback::{Callback, CallbackNode, Inputs, Outputs, Required, execute_callback};
+pub use callback::{
+    Callback, CallbackError, CallbackNode, Inputs, Outputs, Required, execute_callback,
+};
 pub use callback_name::CallbackName;
 pub use channel::{
     ChannelBindings, ChannelPlan, ChannelStorage, DeclarationError, EndpointError, PublisherKey,
@@ -37,7 +39,7 @@ pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, Required
 pub use output::{
     Output, OutputDefault, OutputInit, OutputSpan, OutputSpanEntry, OutputSpanEntryUninit,
 };
-pub use publisher::{LoanError, Publisher, ReplayError};
+pub use publisher::{LoanError, Publisher};
 pub use storage::StorageError;
 pub use string_interner::{CallbackNameInterner, ChannelNameInterner};
 pub use subscriber::{Subscriber, SubscriberPolicy};
