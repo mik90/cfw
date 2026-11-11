@@ -8,6 +8,7 @@ members = [
     "task_macro_common",
     "task_cxx",
     "task_cxx_macros",
+    "task_cxx_tests",
     "test_tasks",
     "live_executor",
     "live_replay_executor",

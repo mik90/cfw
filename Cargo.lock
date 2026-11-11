@@ -1748,6 +1748,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "task_cxx_tests"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "task",
+ "task_cxx",
+ "task_cxx_macros",
+ "task_graph",
+ "testing",
+]
+
+[[package]]
 name = "task_graph"
 version = "0.1.0"
 dependencies = [

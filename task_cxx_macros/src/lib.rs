@@ -48,7 +48,8 @@ use task_macro_common::{
 /// - required input: `unsafe fn foo(self: &FooCxxInputs) -> &T;`
 /// - optional input: `foo_has_value(&self) -> bool`, `foo_len(&self) -> usize`,
 ///   `unsafe fn foo_value(&self) -> &T`, `unsafe fn foo_at(&self, usize) -> &T`,
-///   `foo_try_value(&self) -> *const T`, `foo_pop(&mut self)`
+///   `foo_try_value(&self) -> *const T`, `foo_pop(&mut self) -> bool`,
+///   `foo_clear(&mut self)`
 /// - input span (`InputSpan`, requires `capacity`): the same methods as an
 ///   optional input
 /// - default-initialized output (`Output`/`OutputDefault`):
@@ -302,6 +303,7 @@ fn view_definitions(
                 let try_value = format_ident!("{name}_try_value");
                 let at = format_ident!("{name}_at");
                 let pop = format_ident!("{name}_pop");
+                let clear = format_ident!("{name}_clear");
                 quote! {
                     pub fn #has_value(&self) -> bool {
                         // SAFETY: view construction guarantees the endpoint outlives the view.
@@ -342,9 +344,17 @@ fn view_definitions(
                             .expect("input index out of range")
                     }
 
-                    pub fn #pop(&mut self) {
+                    /// Drops the front message and reports whether one existed.
+                    pub fn #pop(&mut self) -> bool {
                         // SAFETY: view construction guarantees the endpoint outlives the view.
-                        unsafe { &mut *self.#name }.clear();
+                        unsafe { &mut *self.#name }.pop().is_some()
+                    }
+
+                    /// Drops every queued message.
+                    pub fn #clear(&mut self) {
+                        // SAFETY: view construction guarantees the endpoint outlives the view.
+                        let input = unsafe { &mut *self.#name };
+                        while input.pop().is_some() {}
                     }
 
                     pub fn #header(&self) -> ::task_cxx::ffi::MessageHeader {
@@ -891,6 +901,7 @@ mod tests {
             "pub fn gain_try_value",
             "pub unsafe fn gain_at",
             "pub fn gain_pop",
+            "pub fn gain_clear",
             "pub fn gain_header",
             "pub unsafe fn report_value",
             "pub fn report_send",

@@ -102,7 +102,8 @@ mod ffi {
         unsafe fn value_value(self: &OptionalProbeCxxInputs) -> &u64;
         fn value_try_value(self: &OptionalProbeCxxInputs) -> *const u64;
         unsafe fn value_at(self: &OptionalProbeCxxInputs, index: usize) -> &u64;
-        fn value_pop(self: &mut OptionalProbeCxxInputs);
+        fn value_pop(self: &mut OptionalProbeCxxInputs) -> bool;
+        fn value_clear(self: &mut OptionalProbeCxxInputs);
         fn value_header(self: &OptionalProbeCxxInputs) -> MessageHeader;
 
         type OptionalProbeCxxOutputs;

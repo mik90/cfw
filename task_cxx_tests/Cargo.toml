@@ -1,0 +1,27 @@
+[package]
+name = "task_cxx_tests"
+version = "0.1.0"
+edition = "2024"
+# End-to-end tests for the generated C++ views.
+publish = false
+
+[dependencies]
+task = { path = "../task" }
+task_graph = { path = "../task_graph" }
+task_cxx = { path = "../task_cxx" }
+cxx = { workspace = true, optional = true }
+task_cxx_macros = { path = "../task_cxx_macros", optional = true }
+
+[dev-dependencies]
+testing = { path = "../testing" }
+
+[build-dependencies]
+cxx-build = { workspace = true, optional = true }
+
+[features]
+# Off by default so default workspace builds need no C++ toolchain.
+default = []
+cxx = ["dep:cxx", "dep:cxx-build", "dep:task_cxx_macros", "task_cxx/cxx"]
+
+[lints]
+workspace = true
