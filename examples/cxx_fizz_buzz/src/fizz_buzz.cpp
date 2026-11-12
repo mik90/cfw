@@ -14,11 +14,11 @@ namespace cfw::fizz_buzz {
 
 void FizzBuzzTask::run(FizzBuzzCalculatorCxxInputs& inputs,
                        FizzBuzzCalculatorCxxOutputs& outputs,
-                       Context const& /*context*/) {
-    std::uint64_t const value = inputs.integer();
+                       const Context& /*context*/) {
+    const std::uint64_t value = inputs.integer();
     std::string result;
-    bool const is_fizz = value % 3 == 0;
-    bool const is_buzz = value % 5 == 0;
+    const bool is_fizz = value % 3 == 0;
+    const bool is_buzz = value % 5 == 0;
     if (is_fizz && is_buzz) {
         result = "FizzBuzz";
     } else if (is_fizz) {
@@ -38,14 +38,14 @@ std::unique_ptr<FizzBuzzTask> make_fizz_buzz_task() {
 
 void OptionalProbeTask::run(OptionalProbeCxxInputs& inputs,
                             OptionalProbeCxxOutputs& outputs,
-                            Context const& /*context*/) {
-    std::uint64_t const* head = inputs.value_try_value();
+                            const Context& /*context*/) {
+    const std::uint64_t* head = inputs.value_try_value();
     if (head == nullptr) {
         return;
     }
-    std::size_t const len = inputs.value_len();
-    std::uint64_t const first = inputs.value_at(0);
-    std::int64_t const published_at = inputs.value_header().published_at;
+    const std::size_t len = inputs.value_len();
+    const std::uint64_t first = inputs.value_at(0);
+    const std::int64_t published_at = inputs.value_header().published_at;
     inputs.value_pop();
 
     std::string report = std::to_string(*head);
@@ -65,9 +65,9 @@ std::unique_ptr<OptionalProbeTask> make_optional_probe_task() {
 
 void NormTask::run(NormCalculatorCxxInputs& inputs,
                    NormCalculatorCxxOutputs& outputs,
-                   Context const& /*context*/) {
-    cfw::messages::Vec3 const& value = inputs.value();
-    double const length = std::sqrt(value.x * value.x + value.y * value.y +
+                   const Context& /*context*/) {
+    const cfw::messages::Vec3& value = inputs.value();
+    const double length = std::sqrt(value.x * value.x + value.y * value.y +
                                     value.z * value.z);
     if (length == 0.0) {
         throw std::runtime_error("zero-length vector");
@@ -82,8 +82,8 @@ std::unique_ptr<NormTask> make_norm_task() {
 
 void SpanProbeTask::run(SpanProbeCxxInputs& inputs,
                         SpanProbeCxxOutputs& outputs,
-                        Context const& /*context*/) {
-    std::uint64_t const count = inputs.count();
+                        const Context& /*context*/) {
+    const std::uint64_t count = inputs.count();
     auto span = outputs.numbers_span();
 
     // The declared span capacity is four.

@@ -20,7 +20,7 @@ struct InputSpanProbeCxxOutputs;
 class InputSpanProbeTask {
   public:
     void run(InputSpanProbeCxxInputs& inputs, InputSpanProbeCxxOutputs& outputs,
-             Context const& context);
+             const Context& context);
 };
 
 std::unique_ptr<InputSpanProbeTask> make_input_span_probe_task();

@@ -30,7 +30,7 @@ struct SpanProbeCxxOutputs;
 class FizzBuzzTask {
   public:
     void run(FizzBuzzCalculatorCxxInputs& inputs,
-             FizzBuzzCalculatorCxxOutputs& outputs, Context const& context);
+             FizzBuzzCalculatorCxxOutputs& outputs, const Context& context);
 };
 
 std::unique_ptr<FizzBuzzTask> make_fizz_buzz_task();
@@ -40,7 +40,7 @@ std::unique_ptr<FizzBuzzTask> make_fizz_buzz_task();
 class OptionalProbeTask {
   public:
     void run(OptionalProbeCxxInputs& inputs, OptionalProbeCxxOutputs& outputs,
-             Context const& context);
+             const Context& context);
 };
 
 std::unique_ptr<OptionalProbeTask> make_optional_probe_task();
@@ -50,7 +50,7 @@ std::unique_ptr<OptionalProbeTask> make_optional_probe_task();
 class NormTask {
   public:
     void run(NormCalculatorCxxInputs& inputs, NormCalculatorCxxOutputs& outputs,
-             Context const& context);
+             const Context& context);
 };
 
 std::unique_ptr<NormTask> make_norm_task();
@@ -60,7 +60,7 @@ std::unique_ptr<NormTask> make_norm_task();
 class SpanProbeTask {
   public:
     void run(SpanProbeCxxInputs& inputs, SpanProbeCxxOutputs& outputs,
-             Context const& context);
+             const Context& context);
 };
 
 std::unique_ptr<SpanProbeTask> make_span_probe_task();

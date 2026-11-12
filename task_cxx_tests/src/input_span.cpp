@@ -10,7 +10,7 @@ namespace cfw::task_cxx_tests {
 
 void InputSpanProbeTask::run(InputSpanProbeCxxInputs& inputs,
                              InputSpanProbeCxxOutputs& outputs,
-                             Context const& /*context*/) {
+                             const Context& /*context*/) {
     std::string report = std::to_string(inputs.value_len());
     if (inputs.value_len() > 0) {
         report.push_back(':');
