@@ -24,6 +24,7 @@ CfwPublisherInfo = provider(
         "forwards": "Forwarded source field to task input field mapping.",
         "has_payload": "Whether the endpoint carries a payload type.",
         "kind": "Endpoint kind.",
+        "payload_type": "Rust payload type path, or empty for iox2 event endpoints.",
     },
 )
 
@@ -44,6 +45,7 @@ def _publisher_info_impl(ctx):
             forwards = ctx.attr.forwards,
             has_payload = ctx.attr.kind != "iox2_notifier",
             kind = ctx.attr.kind,
+            payload_type = channel.payload_type,
         ),
     ]
 

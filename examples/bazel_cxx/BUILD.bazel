@@ -1,0 +1,275 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//bazel:rust.bzl", "rust_library", "rust_test")
+load(
+    "//bazel_task_graph:defs.bzl",
+    "cfw_channel",
+    "cfw_cxx_payload",
+    "cfw_cxx_task",
+    "cfw_publisher",
+    "cfw_subscriber",
+)
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "fizz_buzz_headers",
+    hdrs = ["src/fizz_buzz.hpp"],
+    include_prefix = "cxx_fizz_buzz",
+)
+
+cc_library(
+    name = "fizz_buzz_calculator_impl",
+    srcs = ["src/fizz_buzz_calculator.cpp"],
+    deps = [
+        ":fizz_buzz_calculator_include",
+        ":fizz_buzz_headers",
+        "//task_cxx:bridge/include",
+        "//task_cxx:output_headers",
+        "@cxx.rs//:core",
+    ],
+)
+
+cc_library(
+    name = "optional_probe_impl",
+    srcs = ["src/optional_probe.cpp"],
+    deps = [
+        ":fizz_buzz_headers",
+        ":optional_probe_include",
+        "//task_cxx:bridge/include",
+        "//task_cxx:output_headers",
+        "@cxx.rs//:core",
+    ],
+)
+
+cc_library(
+    name = "norm_calculator_impl",
+    srcs = ["src/norm_calculator.cpp"],
+    deps = [
+        ":fizz_buzz_headers",
+        ":norm_calculator_include",
+        "//examples/bazel_cxx/messages:bridge/include",
+        "//task_cxx:bridge/include",
+        "//task_cxx:output_headers",
+        "@cxx.rs//:core",
+    ],
+)
+
+cc_library(
+    name = "span_probe_impl",
+    srcs = ["src/span_probe.cpp"],
+    deps = [
+        ":fizz_buzz_headers",
+        ":span_probe_include",
+        "//task_cxx:bridge/include",
+        "//task_cxx:output_headers",
+        "@cxx.rs//:core",
+    ],
+)
+
+cfw_channel(
+    name = "integer",
+    payload = "u64",
+)
+
+cfw_channel(
+    name = "fizz_buzz_string",
+    payload = "String",
+)
+
+cfw_channel(
+    name = "optional_probe_in",
+    payload = "u64",
+)
+
+cfw_channel(
+    name = "optional_probe_out",
+    payload = "String",
+)
+
+cfw_channel(
+    name = "norm_in",
+    payload = "::cxx_fizz_buzz_messages::Vec3",
+    deps = ["//examples/bazel_cxx/messages:cxx_fizz_buzz_messages"],
+)
+
+cfw_channel(
+    name = "norm_out",
+    payload = "f64",
+)
+
+cfw_channel(
+    name = "span_in",
+    payload = "u64",
+)
+
+cfw_channel(
+    name = "span_out",
+    payload = "u64",
+)
+
+cfw_channel(
+    name = "span_label",
+    payload = "String",
+)
+
+cfw_subscriber(
+    name = "integer_input",
+    channel = ":integer",
+    field = "integer",
+    keep_across_runs = False,
+    kind = "required",
+    trigger = True,
+)
+
+cfw_subscriber(
+    name = "optional_probe_value",
+    channel = ":optional_probe_in",
+    field = "value",
+    keep_across_runs = False,
+    kind = "span",
+    queue_capacity = 4,
+    trigger = True,
+)
+
+cfw_subscriber(
+    name = "norm_value",
+    channel = ":norm_in",
+    field = "value",
+    keep_across_runs = False,
+    kind = "required",
+    trigger = True,
+)
+
+cfw_subscriber(
+    name = "span_count",
+    channel = ":span_in",
+    field = "count",
+    keep_across_runs = False,
+    kind = "required",
+    trigger = True,
+)
+
+cfw_publisher(
+    name = "fizz_buzz_string_output",
+    channel = ":fizz_buzz_string",
+    field = "fizz_buzz_string",
+    kind = "output",
+)
+
+cfw_publisher(
+    name = "optional_probe_report",
+    channel = ":optional_probe_out",
+    field = "report",
+    kind = "output",
+)
+
+cfw_publisher(
+    name = "norm_length",
+    channel = ":norm_out",
+    field = "length",
+    kind = "output",
+)
+
+cfw_publisher(
+    name = "span_numbers",
+    channel = ":span_out",
+    field = "numbers",
+    kind = "output_span",
+    queue_capacity = 4,
+)
+
+cfw_publisher(
+    name = "span_label_output",
+    channel = ":span_label",
+    field = "label",
+    kind = "uninit",
+)
+
+cfw_cxx_payload(
+    name = "vec3",
+    cxx_type = "Vec3",
+    header = "cxx_fizz_buzz_messages/src/lib.rs.h",
+    namespace = "cfw::messages",
+    rust_path = "::cxx_fizz_buzz_messages::Vec3",
+)
+
+cfw_cxx_task(
+    name = "fizz_buzz_calculator",
+    cxx_type = "FizzBuzzTask",
+    factory = "make_fizz_buzz_task",
+    headers = ["cxx_fizz_buzz/src/fizz_buzz.hpp"],
+    include_prefix = "cxx_fizz_buzz",
+    namespace = "cfw::fizz_buzz",
+    publishers = [":fizz_buzz_string_output"],
+    subscribers = [":integer_input"],
+    implementation = ":fizz_buzz_calculator_impl",
+)
+
+cfw_cxx_task(
+    name = "optional_probe",
+    cxx_type = "OptionalProbeTask",
+    factory = "make_optional_probe_task",
+    headers = ["cxx_fizz_buzz/src/fizz_buzz.hpp"],
+    include_prefix = "cxx_fizz_buzz",
+    namespace = "cfw::fizz_buzz",
+    publishers = [":optional_probe_report"],
+    subscribers = [":optional_probe_value"],
+    implementation = ":optional_probe_impl",
+)
+
+cfw_cxx_task(
+    name = "norm_calculator",
+    cxx_type = "NormTask",
+    factory = "make_norm_task",
+    fallible = True,
+    headers = ["cxx_fizz_buzz/src/fizz_buzz.hpp"],
+    include_prefix = "cxx_fizz_buzz",
+    namespace = "cfw::fizz_buzz",
+    payloads = [":vec3"],
+    publishers = [":norm_length"],
+    rust_deps = ["//examples/bazel_cxx/messages:cxx_fizz_buzz_messages"],
+    subscribers = [":norm_value"],
+    deps = ["//examples/bazel_cxx/messages:bridge/include"],
+    implementation = ":norm_calculator_impl",
+)
+
+cfw_cxx_task(
+    name = "span_probe",
+    cxx_type = "SpanProbeTask",
+    factory = "make_span_probe_task",
+    headers = ["cxx_fizz_buzz/src/fizz_buzz.hpp"],
+    include_prefix = "cxx_fizz_buzz",
+    namespace = "cfw::fizz_buzz",
+    publishers = [
+        ":span_numbers",
+        ":span_label_output",
+    ],
+    subscribers = [":span_count"],
+    implementation = ":span_probe_impl",
+)
+
+rust_library(
+    name = "cxx_fizz_buzz",
+    srcs = ["src/lib.rs"],
+    compile_data = ["src/tasks_tests.rs"],
+    deps = [
+        ":fizz_buzz_calculator_rust",
+        ":norm_calculator_rust",
+        ":optional_probe_rust",
+        ":span_probe_rust",
+    ],
+)
+
+rust_test(
+    name = "cxx_fizz_buzz_test",
+    compile_data = ["src/tasks_tests.rs"],
+    crate = ":cxx_fizz_buzz",
+    deps = [
+        "//examples/bazel_cxx/messages:cxx_fizz_buzz_messages",
+        "//live_executor",
+        "//task",
+        "//task_graph",
+        "//test_tasks",
+        "//testing",
+    ],
+)

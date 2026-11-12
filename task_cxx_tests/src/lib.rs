@@ -7,5 +7,8 @@
 
 #![cfg(feature = "cxx")]
 
-include!(concat!(env!("CARGO_MANIFEST_DIR"), "/gen/bridge.rs"));
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/input_span_probe_gen/input_span_probe_cxx_bridge.rs"
+));
 include!("tasks.rs");

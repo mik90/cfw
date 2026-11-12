@@ -22,8 +22,8 @@ members = [
     "examples/iceoryx2_application",
     "examples/facet_serialization",
     "examples/profiling", "examples/in_place_init", "task_graph",
-    "examples/cxx_fizz_buzz",
-    "examples/cxx_fizz_buzz/messages",
+    "examples/cargo_cxx_fizz_buzz",
+    "examples/cargo_cxx_fizz_buzz/messages",
 ]
 resolver = "3"
 

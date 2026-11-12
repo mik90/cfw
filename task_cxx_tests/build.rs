@@ -8,9 +8,13 @@ fn main() {
     println!("cargo:rerun-if-changed=src/input_span.cpp");
     println!("cargo:rerun-if-changed=src/input_span.hpp");
 
-    task_cxx_codegen::generate_bridge_file("src/tasks.rs", "gen/bridge.rs").unwrap();
+    task_cxx_codegen::generate_bridge_file(
+        "src/tasks.rs",
+        "input_span_probe_gen/input_span_probe_cxx_bridge.rs",
+    )
+    .unwrap();
 
-    cxx_build::bridge("gen/bridge.rs")
+    cxx_build::bridge("input_span_probe_gen/input_span_probe_cxx_bridge.rs")
         .file("src/input_span.cpp")
         .std("c++17")
         .compile("task_cxx_tests");

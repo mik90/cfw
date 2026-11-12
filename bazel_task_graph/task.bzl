@@ -233,7 +233,7 @@ def _task_meta_impl(ctx):
         ),
     ]
 
-_task_meta = rule(
+cfw_task_meta = rule(
     implementation = _task_meta_impl,
     attrs = {
         "callback_name": attr.string(mandatory = True),
@@ -244,6 +244,27 @@ _task_meta = rule(
         "schedule": attr.string(),
     },
 )
+
+def cfw_schedule_bridge(name, schedule, visibility, **kwargs):
+    """Generate the schedule bridge crate for a task.
+
+    Args:
+      name: Task target name.
+      schedule: Schedule target, or None for input-triggered execution.
+      visibility: Visibility forwarded to the generated crate.
+      **kwargs: Additional arguments forwarded to the generated crate.
+    """
+    _task_schedule_src(
+        name = name + "_schedule_src",
+        schedule = info_label(schedule) if schedule else None,
+    )
+    rust_library(
+        name = name + "_schedule_bridge",
+        srcs = [":" + name + "_schedule_src"],
+        deps = ([schedule] if schedule else []) + ["//task_graph:task_graph"],
+        visibility = visibility,
+        **kwargs
+    )
 
 def _task_impl(
         name,
@@ -261,7 +282,6 @@ def _task_impl(
     payloads_module = "__cfw_payloads_" + field_name(name)
     subscriber_info = [info_label(subscriber) for subscriber in subscribers]
     publisher_info = [info_label(publisher) for publisher in publishers]
-    schedule_info = info_label(schedule) if schedule else None
     schedule_expression = "::%s::__cfw_schedule()" % field_name(name + "_schedule_bridge")
 
     _task_api_src(
@@ -280,18 +300,13 @@ def _task_impl(
         visibility = visibility,
         **kwargs
     )
-    _task_schedule_src(
-        name = name + "_schedule_src",
-        schedule = schedule_info,
-    )
-    rust_library(
-        name = name + "_schedule_bridge",
-        srcs = [":" + name + "_schedule_src"],
-        deps = ([schedule] if schedule else []) + ["//task_graph:task_graph"],
+    cfw_schedule_bridge(
+        name = name,
+        schedule = schedule,
         visibility = visibility,
         **kwargs
     )
-    _task_meta(
+    cfw_task_meta(
         name = name,
         callback_name = callback_name or name,
         implementation = implementation,

@@ -1,4 +1,4 @@
-#include "task_cxx_tests/gen/bridge.rs.h"
+#include "task_cxx_tests/input_span_probe_gen/input_span_probe_cxx_bridge.rs.h"
 
 #include <cstdint>
 #include <string>

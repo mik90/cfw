@@ -6,6 +6,12 @@ load(
     _cfw_channel = "cfw_channel",
 )
 load(
+    "//bazel_task_graph:cxx.bzl",
+    _CfwCxxPayloadInfo = "CfwCxxPayloadInfo",
+    _cfw_cxx_payload = "cfw_cxx_payload",
+    _cfw_cxx_task = "cfw_cxx_task",
+)
+load(
     "//bazel_task_graph:live_executor.bzl",
     _cfw_live_application = "cfw_live_application",
 )
@@ -38,12 +44,15 @@ load(
 
 CfwCallbackScheduleInfo = _CfwCallbackScheduleInfo
 CfwChannelInfo = _CfwChannelInfo
+CfwCxxPayloadInfo = _CfwCxxPayloadInfo
 CfwPoolInfo = _CfwPoolInfo
 CfwPublisherInfo = _CfwPublisherInfo
 CfwSubscriberInfo = _CfwSubscriberInfo
 CfwTaskInfo = _CfwTaskInfo
 cfw_channel = _cfw_channel
 cfw_custom_schedule = _cfw_custom_schedule
+cfw_cxx_payload = _cfw_cxx_payload
+cfw_cxx_task = _cfw_cxx_task
 cfw_fixed_schedule = _cfw_fixed_schedule
 cfw_live_application = _cfw_live_application
 cfw_pool = _cfw_pool

@@ -1,6 +1,6 @@
 //! Generates a C++ task bridge from `define_cxx_task!` declarations.
 //!
-//! Used by the Bazel `cfw_cxx_bridge` rule. Cargo builds call the library
+//! Used by the Bazel `cfw_cxx_task` rule. Cargo builds call the library
 //! directly from `build.rs`.
 
 use std::path::PathBuf;

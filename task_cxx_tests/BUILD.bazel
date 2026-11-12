@@ -1,7 +1,12 @@
-load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("//bazel:cxx.bzl", "cfw_cxx_bridge")
 load("//bazel:rust.bzl", "rust_library", "rust_test")
+load(
+    "//bazel_task_graph:defs.bzl",
+    "cfw_channel",
+    "cfw_cxx_task",
+    "cfw_publisher",
+    "cfw_subscriber",
+)
 
 package(default_visibility = ["//visibility:public"])
 
@@ -11,39 +16,61 @@ cc_library(
     hdrs = ["src/input_span.hpp"],
     include_prefix = "task_cxx_tests",
     deps = [
-        ":bridge/include",
+        ":input_span_probe_include",
         "//task_cxx:bridge/include",
         "//task_cxx:output_headers",
         "@cxx.rs//:core",
     ],
 )
 
-cfw_cxx_bridge(
-    name = "bridge",
-    src = "src/tasks.rs",
+cfw_channel(
+    name = "input_span_in",
+    payload = "u64",
+)
+
+cfw_channel(
+    name = "input_span_out",
+    payload = "String",
+)
+
+cfw_subscriber(
+    name = "input_span_value",
+    channel = ":input_span_in",
+    field = "value",
+    keep_across_runs = False,
+    kind = "span",
+    queue_capacity = 4,
+    trigger = True,
+)
+
+cfw_publisher(
+    name = "input_span_report",
+    channel = ":input_span_out",
+    field = "report",
+    kind = "output",
+)
+
+cfw_cxx_task(
+    name = "input_span_probe",
+    cxx_type = "InputSpanProbeTask",
+    factory = "make_input_span_probe_task",
+    headers = ["task_cxx_tests/src/input_span.hpp"],
     include_prefix = "task_cxx_tests",
-    deps = [":cxx_impl"],
+    namespace = "cfw::task_cxx_tests",
+    publishers = [":input_span_report"],
+    subscribers = [":input_span_value"],
+    implementation = ":cxx_impl",
 )
 
 rust_library(
     name = "task_cxx_tests",
-    srcs = [":bridge/rust"],
-    crate_root = ":bridge/rust",
-    crate_features = ["cxx"],
-    include_default_features = False,
-    deps = all_crate_deps(normal = True) + [
-        ":bridge",
-        ":cxx_impl",
-        "@crates//:cxx-1.0.205",
-    ],
-    proc_macro_deps = ["//task_cxx_macros:task_cxx_macros"],
+    srcs = ["src/bazel_lib.rs"],
+    deps = [":input_span_probe_rust"],
 )
 
 rust_test(
     name = "input_span_test",
     srcs = ["tests/input_span.rs"],
-    crate_features = ["cxx"],
-    include_default_features = False,
     deps = [
         ":task_cxx_tests",
         "//testing",

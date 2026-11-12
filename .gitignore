@@ -4,8 +4,8 @@
 .idea
 
 # Generated C++ bridge sources
-/examples/cxx_fizz_buzz/gen/
-/task_cxx_tests/gen/
+/examples/cargo_cxx_fizz_buzz/gen/
+/task_cxx_tests/input_span_probe_gen/
 
 # Bazel outputs
 /bazel-*

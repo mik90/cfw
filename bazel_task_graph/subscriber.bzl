@@ -25,6 +25,7 @@ CfwSubscriberInfo = provider(
         "has_payload": "Whether the endpoint carries a payload type.",
         "keep_across_runs": "Whether the input is retained across runs.",
         "kind": "Endpoint kind.",
+        "payload_type": "Rust payload type path, or empty for iox2 event endpoints.",
         "trigger": "Whether the input triggers execution. Native only.",
     },
 )
@@ -47,6 +48,7 @@ def _subscriber_info_impl(ctx):
             has_payload = ctx.attr.kind != "iox2_event",
             keep_across_runs = ctx.attr.keep_across_runs,
             kind = ctx.attr.kind,
+            payload_type = channel.payload_type,
             trigger = ctx.attr.trigger,
         ),
     ]
