@@ -1,6 +1,5 @@
-load("//bazel:settings.bzl", "format_generated_rust")
-
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel:settings.bzl", "format_generated_rust")
 
 package(default_visibility = ["//visibility:public"])
 

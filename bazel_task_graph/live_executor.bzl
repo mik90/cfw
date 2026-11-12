@@ -26,8 +26,8 @@ def _application_src_impl(ctx):
     ]
     for index, pool in enumerate(pools):
         lines.append(
-            "    let pool_%d = pools.add_pool(::task_graph::ThreadPoolConfig::new(::%s::THREADS));"
-            % (index, pool.crate_name)
+            "    let pool_%d = pools.add_pool(::task_graph::ThreadPoolConfig::new(::%s::THREADS));" %
+            (index, pool.crate_name),
         )
         lines.append("    ::%s::add_to(&mut app, pool_%d);" % (pool.crate_name, index))
     lines.extend([
