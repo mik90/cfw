@@ -6,6 +6,7 @@ pub mod endpoints;
 pub mod execution_log;
 pub mod graph;
 mod plan;
+pub mod pool;
 pub mod replay;
 pub mod topology;
 
