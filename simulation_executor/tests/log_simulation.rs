@@ -8,7 +8,7 @@ use std::{
 use task::{
     ChannelPlan, InputSpan, LoanError, OutputSpan, message::MessageHeader, time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{CallbackSchedule, GraphBuilder, ThreadPoolConfigList};
 use task_macros::task_callback;
 
 fn at(n: i64) -> FrameworkTime {
@@ -643,8 +643,8 @@ mod ipc {
             LogSimulationOptions {
                 simulation: Some(SimulationConfig {
                     start_time: at(10),
-                    virtual_pool_threads: vec![2],
-                    node_executor_thread_count: 2,
+                    virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
+                    node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
                     poll_external_events: false,
                 }),
                 ..Default::default()

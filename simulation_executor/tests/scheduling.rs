@@ -6,7 +6,7 @@ use std::sync::{
 use std::time::Duration;
 use task::time::FrameworkTime;
 use task::{ChannelPlan, Context, Input, LoanError, Output, RequiredInput};
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{CallbackSchedule, GraphBuilder, PoolIndex, ThreadPoolConfigList};
 use task_macros::task_callback;
 
 type Trace<T> = Arc<Mutex<Vec<T>>>;
@@ -121,8 +121,8 @@ fn parallel_bodies_commit_in_scheduling_order_and_retained_messages_outlive_simu
         },
     );
     let config = SimulationConfig {
-        virtual_pool_threads: vec![2],
-        node_executor_thread_count: 2,
+        virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
+        node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
         start_time: at(100),
         ..Default::default()
     };
@@ -190,8 +190,8 @@ fn whole_batch_reads_precommit_inputs_then_new_work_runs_at_same_simulated_time(
     let mut simulation = SimulationState::with_config(
         builder.build().unwrap(),
         SimulationConfig {
-            virtual_pool_threads: vec![2],
-            node_executor_thread_count: 2,
+            virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
+            node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
             ..Default::default()
         },
     )
@@ -211,7 +211,11 @@ fn whole_batch_reads_precommit_inputs_then_new_work_runs_at_same_simulated_time(
 fn virtual_pool_contention_and_durations_advance_to_the_next_event() {
     let trace = Arc::new(Mutex::new(Vec::new()));
     let mut builder = GraphBuilder::new();
-    for (name, pool, duration) in [("a", 0, 10), ("b", 0, 10), ("c", 1, 3)] {
+    for (name, pool, duration) in [
+        ("a", PoolIndex::new(0), 10),
+        ("b", PoolIndex::new(0), 10),
+        ("c", PoolIndex::new(1), 3),
+    ] {
         let trace = trace.clone();
         builder.add_scheduled_callback(
             name,
@@ -229,7 +233,7 @@ fn virtual_pool_contention_and_durations_advance_to_the_next_event() {
     let mut simulation = SimulationState::with_config(
         builder.build().unwrap(),
         SimulationConfig {
-            virtual_pool_threads: vec![1, 1],
+            virtual_pool_threads: ThreadPoolConfigList::try_from([1, 1]).unwrap(),
             ..Default::default()
         },
     )
@@ -393,7 +397,7 @@ fn invalid_configs_past_actions_and_infinite_schedules_report_errors() {
         SimulationState::with_config(
             graph,
             SimulationConfig {
-                node_executor_thread_count: 0,
+                virtual_pool_threads: ThreadPoolConfigList::new(),
                 ..Default::default()
             }
         ),

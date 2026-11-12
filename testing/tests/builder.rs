@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 use task::{Context, InputSpan, LoanError, Output, OutputSpan, RequiredInput, time::FrameworkTime};
-use task_graph::CallbackSchedule;
+use task_graph::{CallbackSchedule, PoolIndex, ThreadPoolConfigList};
 use task_macros::task_callback;
 use testing::{ExecutionDuration, UnitTestExecutorBuilder, UnitTestExecutorConfig};
 
@@ -87,7 +87,7 @@ impl ScheduledBatch {
 fn scheduled_inputs_wait_for_their_deadline_and_respect_virtual_pool_capacity() {
     for threads in [1, 2] {
         let mut builder = UnitTestExecutorBuilder::with_config(UnitTestExecutorConfig {
-            virtual_pool_threads: vec![threads],
+            virtual_pool_threads: ThreadPoolConfigList::try_from([threads]).unwrap(),
             ..Default::default()
         });
         for name in ["left", "right"] {
@@ -345,8 +345,8 @@ impl Batch {
 #[test]
 fn arbitrary_input_handle_count_and_fanout_fanin() {
     let mut builder = UnitTestExecutorBuilder::with_config(UnitTestExecutorConfig {
-        virtual_pool_threads: vec![2],
-        node_executor_thread_count: 2,
+        virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
+        node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
         ..Default::default()
     });
     builder.add_task("first", Batch, ns(3));
@@ -562,7 +562,7 @@ fn setup_errors_close_handles_and_foreign_outputs_are_rejected() {
             .contains("duplicate task")
     );
     let mut invalid = UnitTestExecutorBuilder::with_config(UnitTestExecutorConfig {
-        node_executor_thread_count: 0,
+        virtual_pool_threads: ThreadPoolConfigList::new(),
         ..Default::default()
     });
     invalid.add_task("double", Double, ns(1));
@@ -605,8 +605,8 @@ fn explicit_fixed_dynamic_durations_pools_and_completion_deadlines() {
     let calls = Arc::new(AtomicUsize::new(0));
     let durations = Arc::new(AtomicUsize::new(0));
     let mut builder = UnitTestExecutorBuilder::with_config(UnitTestExecutorConfig {
-        virtual_pool_threads: vec![1, 1],
-        node_executor_thread_count: 2,
+        virtual_pool_threads: ThreadPoolConfigList::try_from([1, 1]).unwrap(),
+        node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
         ..Default::default()
     });
     let finished = calls.clone();
@@ -621,7 +621,7 @@ fn explicit_fixed_dynamic_durations_pools_and_completion_deadlines() {
             ns(2)
         }),
         CallbackSchedule::on_start()
-            .in_pool(1)
+            .in_pool(PoolIndex::new(1))
             .with_next_execution_time_callback(move |now| {
                 (finished.load(Ordering::SeqCst) < 2).then(|| now + ns(5))
             }),

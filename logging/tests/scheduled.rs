@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 use task::{ChannelPlan, LoanError, Output, message::MessageHeader, time::FrameworkTime};
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{CallbackSchedule, GraphBuilder, ThreadPoolConfigList};
 use task_macros::task_callback;
 
 #[derive(Default)]
@@ -197,8 +197,8 @@ fn event_pulses_fan_out_to_shards_and_coalesce_without_duplicate_messages() {
         let mut sim = simulation_executor::SimulationState::with_config(
             graph,
             simulation_executor::SimulationConfig {
-                virtual_pool_threads: vec![2],
-                node_executor_thread_count: 2,
+                virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
+                node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
                 ..Default::default()
             },
         )
@@ -346,8 +346,8 @@ fn shards_share_a_writer_and_record_only_workload_callbacks_once() {
         let mut sim = simulation_executor::SimulationState::with_config(
             graph,
             simulation_executor::SimulationConfig {
-                virtual_pool_threads: vec![2],
-                node_executor_thread_count: 2,
+                virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
+                node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
                 ..Default::default()
             },
         )
@@ -432,7 +432,7 @@ fn live_periodic_logger_flushes_while_workers_run() {
     let graph = logger
         .attach_periodic(graph.build().unwrap(), Duration::from_millis(1))
         .unwrap();
-    live_executor::LiveExecutor::new(2, graph)
+    live_executor::LiveExecutor::new(task_graph::ThreadPoolConfig::try_from(2).unwrap(), graph)
         .unwrap()
         .run_with(|stop| {
             let start = std::time::Instant::now();

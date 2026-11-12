@@ -5,7 +5,7 @@ use task::{
     loggable::{DeserializeError, Loggable, SerializeError},
     time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
+use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration, ThreadPoolConfigList};
 use task_macros::task_callback;
 
 struct Value(u64);
@@ -111,7 +111,7 @@ fn discovers_custom_loggable_channels_deduplicates_and_applies_resolved_exclusio
         graph,
         testing::UnitTestExecutorConfig {
             start_time: FrameworkTime::from_nanos(7),
-            virtual_pool_threads: vec![2],
+            virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
             ..Default::default()
         },
     );
@@ -227,7 +227,7 @@ fn automatic_replay_preserves_headers_fanout_and_task_publisher_accounting() {
         graph,
         testing::UnitTestExecutorConfig {
             start_time: FrameworkTime::from_nanos(10),
-            virtual_pool_threads: vec![2],
+            virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
             ..Default::default()
         },
     );

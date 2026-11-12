@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use task::time::FrameworkTime;
 use task::{ChannelPlan, EndpointError, Forwarded, LoanError, StorageError};
-use task_graph::{GraphBuildError, GraphBuilder};
+use task_graph::{GraphBuildError, GraphBuilder, ThreadPoolConfigList};
 
 fn timestamp() -> FrameworkTime {
     FrameworkTime::from_nanos(100)
@@ -128,7 +128,7 @@ fn runtime_declarations_wire_fanin_and_fanout_before_factories_run() {
                 graph,
                 testing::UnitTestExecutorConfig {
                     start_time: timestamp(),
-                    virtual_pool_threads: vec![3],
+                    virtual_pool_threads: ThreadPoolConfigList::try_from([3]).unwrap(),
                     ..Default::default()
                 },
             ),

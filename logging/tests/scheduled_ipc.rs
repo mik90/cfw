@@ -60,7 +60,7 @@ fn real_ipc_event_requests_a_flush_without_data_arrival_triggering_it() {
         .unwrap();
     publisher.publish(42).unwrap();
     publisher.flush(FrameworkTime::from_nanos(0));
-    live_executor::LiveExecutor::new(1, graph)
+    live_executor::LiveExecutor::new(task_graph::ThreadPoolConfig::try_from(1).unwrap(), graph)
         .unwrap()
         .run_with(|stop| {
             assert_eq!(messages.load(Ordering::SeqCst), 0);

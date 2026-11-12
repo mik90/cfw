@@ -112,13 +112,9 @@ impl<'graph_storage> SimulationState<'graph_storage> {
         graph: BuiltGraph<'graph_storage>,
         config: SimulationConfig,
     ) -> Result<Self, StepError> {
-        if config.node_executor_thread_count == 0
-            || config.virtual_pool_threads.is_empty()
-            || config.virtual_pool_threads.contains(&0)
-            || config.start_time == FrameworkTime::INVALID
-        {
+        if config.virtual_pool_threads.is_empty() || config.start_time == FrameworkTime::INVALID {
             return Err(StepError::InvalidConfig(
-                "positive worker/pool counts and a valid start time are required".into(),
+                "at least one virtual pool and a valid start time are required".into(),
             ));
         }
         let (callbacks, metadata) = graph.into_parts();
@@ -162,7 +158,11 @@ impl<'graph_storage> SimulationState<'graph_storage> {
                     task_graph::GraphBuildError::NeverRuns(node.name).to_string(),
                 ));
             }
-            if node.schedule.pool >= state.config.virtual_pool_threads.len() {
+            if !state
+                .config
+                .virtual_pool_threads
+                .contains(node.schedule.pool)
+            {
                 return Err(StepError::InvalidConfig(format!(
                     "callback '{}' references missing pool {}",
                     node.name, node.schedule.pool
@@ -429,10 +429,15 @@ impl<'graph_storage> SimulationState<'graph_storage> {
     }
 
     fn free_threads(&self) -> Vec<usize> {
-        let mut free = self.config.virtual_pool_threads.clone();
+        let mut free = self
+            .config
+            .virtual_pool_threads
+            .iter_indexed()
+            .map(|(_, config)| config.thread_count().get())
+            .collect::<Vec<_>>();
         for (node, schedule) in self.nodes.iter().zip(&self.schedules) {
             if node.busy_until > self.time {
-                free[schedule.pool] -= 1;
+                free[schedule.pool.as_usize()] -= 1;
             }
         }
         free
@@ -472,7 +477,7 @@ impl<'graph_storage> SimulationState<'graph_storage> {
         let mut free = self.free_threads();
         let mut selected = Vec::new();
         for (_, index) in candidates {
-            let pool = self.schedules[index].pool;
+            let pool = self.schedules[index].pool.as_usize();
             if free[pool] != 0 {
                 free[pool] -= 1;
                 selected.push(index);
@@ -533,9 +538,6 @@ impl<'graph_storage> SimulationState<'graph_storage> {
                 failure,
             },
             BatchExecutionError::BeforeCommit(error) => error,
-            BatchExecutionError::NoWorkers => {
-                StepError::InvalidConfig("a callback batch requires a worker".into())
-            }
         })?;
         for (&index, (finish, next)) in executed.iter().zip(timing) {
             self.nodes[index].requested = false;
@@ -547,7 +549,7 @@ impl<'graph_storage> SimulationState<'graph_storage> {
         self.refresh();
         let free = self.free_threads();
         let runnable = self.nodes.iter().enumerate().any(|(index, node)| {
-            node.ready_since.is_some() && free[self.schedules[index].pool] != 0
+            node.ready_since.is_some() && free[self.schedules[index].pool.as_usize()] != 0
         });
         let next = self
             .nodes
@@ -563,7 +565,7 @@ impl<'graph_storage> SimulationState<'graph_storage> {
         self.refresh();
         let free = self.free_threads();
         let runnable = self.nodes.iter().enumerate().any(|(index, node)| {
-            node.ready_since.is_some() && free[self.schedules[index].pool] != 0
+            node.ready_since.is_some() && free[self.schedules[index].pool.as_usize()] != 0
         });
         let future = !self.actions.is_empty()
             || self.nodes.iter().any(|node| {

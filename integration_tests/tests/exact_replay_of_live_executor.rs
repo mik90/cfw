@@ -12,7 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 use task::{OutputDefault, RequiredInput};
-use task_graph::{ApplicationBuilder, CallbackSchedule, GraphPlan};
+use task_graph::{
+    ApplicationBuilder, CallbackSchedule, GraphPlan, PoolIndex, ThreadPoolConfigList,
+};
 use task_macros::task_callback;
 
 mod common;
@@ -137,7 +139,7 @@ fn build_plan(stop: Option<mpsc::Sender<()>>, values: CalculationResults) -> Gra
                 remaining: MESSAGES_PER_SOURCE,
             },
             CallbackSchedule::periodic(SOURCE_PUBLISH_PERIOD)
-                .in_pool(0)
+                .in_pool(PoolIndex::new(0))
                 .with_execution_duration(Duration::from_micros(1)),
         )
         .output_channel("output", raw);
@@ -146,7 +148,7 @@ fn build_plan(stop: Option<mpsc::Sender<()>>, values: CalculationResults) -> Gra
         "add",
         AddTask,
         CallbackSchedule::input_triggered()
-            .in_pool(0)
+            .in_pool(PoolIndex::new(0))
             .with_execution_duration(Duration::from_micros(10)),
     )
     .input_channel("a", "raw_0")
@@ -156,7 +158,7 @@ fn build_plan(stop: Option<mpsc::Sender<()>>, values: CalculationResults) -> Gra
         "sub",
         SubtractTask,
         CallbackSchedule::input_triggered()
-            .in_pool(0)
+            .in_pool(PoolIndex::new(0))
             .with_execution_duration(Duration::from_micros(12)),
     )
     .input_channel("a", "raw_2")
@@ -166,7 +168,7 @@ fn build_plan(stop: Option<mpsc::Sender<()>>, values: CalculationResults) -> Gra
         "sink",
         AddSubtractMergerTask { values, stop },
         CallbackSchedule::input_triggered()
-            .in_pool(1)
+            .in_pool(PoolIndex::new(1))
             .with_execution_duration(Duration::from_micros(50)),
     )
     .input_channel("add", "add")
@@ -220,9 +222,12 @@ fn run_live() -> (ReplayLog, Vec<u64>) {
         .with_execution_log(metadata)
         .unwrap();
 
-    let executor =
-        LiveExecutor::new_multi_pool_with_time(vec![SOURCE_POOL_THREADS, 1], graph, WallClock)
-            .unwrap();
+    let executor = LiveExecutor::new_multi_pool_with_time(
+        ThreadPoolConfigList::try_from([SOURCE_POOL_THREADS, 1]).unwrap(),
+        graph,
+        WallClock,
+    )
+    .unwrap();
     let mut stopped_by_sink = false;
     executor
         .run_with(|stop| {

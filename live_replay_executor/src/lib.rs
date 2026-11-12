@@ -12,12 +12,12 @@ use std::{
     time::Duration,
 };
 use task::{executor::TimeSource, time::FrameworkTime};
-use task_graph::BuiltGraph;
+use task_graph::{BuiltGraph, ThreadPoolConfig, ThreadPoolConfigList};
 
 pub struct LiveReplayConfig {
     pub speed: f64,
     pub start_paused: bool,
-    pub pool_threads: Vec<usize>,
+    pub pool_threads: ThreadPoolConfigList,
     pub poll_interval: Duration,
     pub drain_timeout: Duration,
     /// Continue the replay clock beyond the final recorded timestamp, allowing
@@ -30,7 +30,9 @@ impl Default for LiveReplayConfig {
         Self {
             speed: 1.0,
             start_paused: false,
-            pool_threads: vec![1],
+            pool_threads: ThreadPoolConfigList::from(ThreadPoolConfig::new(
+                std::num::NonZeroUsize::MIN,
+            )),
             poll_interval: Duration::from_millis(1),
             drain_timeout: Duration::from_secs(10),
             tail_duration: Duration::ZERO,

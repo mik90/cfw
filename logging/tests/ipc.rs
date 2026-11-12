@@ -11,7 +11,7 @@ use task::{
     message::MessageHeader,
     time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{CallbackSchedule, GraphBuilder, ThreadPoolConfigList};
 use task_macros::task_callback;
 
 #[repr(C)]
@@ -277,8 +277,12 @@ fn live_readiness_records_arrivals_using_the_injected_clock() {
         Iox2NotifyOutput::new(&mut notifier).send();
         notifier.flush(FrameworkTime::from_nanos(7));
     }
-    let executor =
-        live_executor::LiveExecutor::new_multi_pool_with_time(vec![1], graph, Fixed).unwrap();
+    let executor = live_executor::LiveExecutor::new_multi_pool_with_time(
+        ThreadPoolConfigList::try_from([1]).unwrap(),
+        graph,
+        Fixed,
+    )
+    .unwrap();
     let records = executor
         .run_with(|stop| {
             let start = std::time::Instant::now();

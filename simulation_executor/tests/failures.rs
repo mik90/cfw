@@ -5,7 +5,7 @@ use std::sync::{
 };
 use std::time::Duration;
 use task::{ChannelPlan, LoanError, Output, Publisher};
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{CallbackSchedule, GraphBuilder, ThreadPoolConfigList};
 use task_macros::task_callback;
 
 struct Counted(Arc<AtomicUsize>);
@@ -68,8 +68,8 @@ fn body_error_panic_and_post_execution_timing_failure_cancel_the_whole_batch() {
         let mut simulation = SimulationState::with_config(
             builder.build().unwrap(),
             SimulationConfig {
-                virtual_pool_threads: vec![2],
-                node_executor_thread_count: 2,
+                virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
+                node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
                 ..Default::default()
             },
         )
@@ -134,7 +134,7 @@ fn panic_during_commit_preserves_already_published_messages_and_cancels_remainin
     let mut simulation = SimulationState::with_config(
         builder.build().unwrap(),
         SimulationConfig {
-            virtual_pool_threads: vec![2],
+            virtual_pool_threads: ThreadPoolConfigList::try_from([2]).unwrap(),
             ..Default::default()
         },
     )

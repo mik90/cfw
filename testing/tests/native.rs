@@ -5,7 +5,7 @@ use std::sync::{
 };
 use std::time::Duration;
 use task::{ChannelPlan, LoanError, Output, RequiredInput, time::FrameworkTime};
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{CallbackSchedule, GraphBuilder, PoolIndex, ThreadPoolConfigList};
 use task_macros::task_callback;
 use testing::{UnitTestExecutor, UnitTestExecutorConfig};
 
@@ -97,7 +97,7 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
     graph.add_scheduled_callback(
         "tick",
         CallbackSchedule::periodic(Duration::from_nanos(10))
-            .in_pool(1)
+            .in_pool(PoolIndex::new(1))
             .with_execution_duration(Duration::ZERO),
         || Ok(Tick.bind(Tick::declare()?)?),
     );
@@ -105,8 +105,8 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
         graph.build().unwrap(),
         UnitTestExecutorConfig {
             start_time: at(100),
-            virtual_pool_threads: vec![1, 1],
-            node_executor_thread_count: 2,
+            virtual_pool_threads: ThreadPoolConfigList::try_from([1, 1]).unwrap(),
+            node_executor_thread_count: std::num::NonZeroUsize::new(2).unwrap(),
             ..Default::default()
         },
     );
@@ -234,7 +234,7 @@ fn invalid_configuration_is_reported_by_graph_constructor() {
     let result = UnitTestExecutor::try_new_with_graph(
         graph,
         UnitTestExecutorConfig {
-            node_executor_thread_count: 0,
+            virtual_pool_threads: ThreadPoolConfigList::new(),
             ..Default::default()
         },
     );

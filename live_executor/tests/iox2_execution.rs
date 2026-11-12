@@ -70,7 +70,8 @@ fn pre_start_notification_wakes_each_listener_without_periodic_polling() {
     let stamp = FrameworkTime::from_nanos(77);
     publisher.loan(42).unwrap().send();
     publisher.flush(stamp);
-    let executor = LiveExecutor::new(2, graph).unwrap();
+    let executor =
+        LiveExecutor::new(task_graph::ThreadPoolConfig::try_from(2).unwrap(), graph).unwrap();
     let stop = executor.stop_signal();
     let mut messages = executor
         .run_with(|_| {
@@ -106,7 +107,11 @@ fn controller_panic_wakes_and_joins_an_idle_readiness_thread() {
         }
         .bind(declaration, &bindings, &bindings)?)
     });
-    let executor = LiveExecutor::new(2, graph.build().unwrap()).unwrap();
+    let executor = LiveExecutor::new(
+        task_graph::ThreadPoolConfig::try_from(2).unwrap(),
+        graph.build().unwrap(),
+    )
+    .unwrap();
     let stop = executor.stop_signal();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         executor.run_with(|_| panic!("controller failed"))
@@ -153,7 +158,11 @@ fn standalone_notifier_dispatches_configured_event_id() {
         Ok(Notify.bind(notifier, &bindings)?)
     });
     builder.add_callback("events", || Ok(Events { sent }.bind(events, &bindings)?));
-    let executor = LiveExecutor::new(2, builder.build().unwrap()).unwrap();
+    let executor = LiveExecutor::new(
+        task_graph::ThreadPoolConfig::try_from(2).unwrap(),
+        builder.build().unwrap(),
+    )
+    .unwrap();
     let id = executor
         .run_with(|_| received.recv_timeout(Duration::from_secs(20)).unwrap())
         .unwrap();

@@ -6,6 +6,8 @@ use task::string_interner::{CallbackNameInterner, ChannelNameInterner};
 use task::time::FrameworkTime;
 use task::{Callback, Context};
 
+use crate::PoolIndex;
+
 pub type FactoryError = Box<dyn std::error::Error + Send + Sync>;
 type StoredCallback<'graph_storage> = Box<dyn Callback + 'graph_storage>;
 type Factory<'build, 'graph_storage> =
@@ -259,7 +261,7 @@ impl<'graph_storage> BuiltGraph<'graph_storage> {
 
 #[derive(Clone)]
 pub struct CallbackSchedule {
-    pub pool: usize,
+    pub pool: PoolIndex,
     pub run_on_start: bool,
     pub period: Option<Duration>,
     /// Explicit simulated pool occupancy. Simulation rejects an unspecified
@@ -358,7 +360,7 @@ impl CallbackSchedule {
     /// Runs only when inputs are pending or another task wakes it.
     pub fn input_triggered() -> Self {
         Self {
-            pool: 0,
+            pool: PoolIndex::new(0),
             run_on_start: false,
             period: None,
             execution_duration: None,
@@ -380,7 +382,7 @@ impl CallbackSchedule {
             ..Self::on_start()
         }
     }
-    pub fn in_pool(mut self, pool: usize) -> Self {
+    pub fn in_pool(mut self, pool: PoolIndex) -> Self {
         self.pool = pool;
         self
     }

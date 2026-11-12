@@ -6,7 +6,9 @@ use std::time::Duration;
 use task::executor::TimeSource;
 use task::time::FrameworkTime;
 use task::{ChannelPlan, Context, LoanError, Output, OutputDefault, RequiredInput};
-use task_graph::{CallbackSchedule, GraphBuilder};
+use task_graph::{
+    CallbackSchedule, GraphBuilder, PoolIndex, ThreadPoolConfig, ThreadPoolConfigList,
+};
 use task_macros::task_callback;
 
 struct Clock;
@@ -65,7 +67,7 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
         GraphBuilder::with_channel_names([storage.0.name(), storage.1.name(), "fixture-only"]);
     builder.add_scheduled_callback(
         "increment",
-        CallbackSchedule::input_triggered().in_pool(1),
+        CallbackSchedule::input_triggered().in_pool(PoolIndex::new(1)),
         || Ok(Increment { done }.bind(declaration, &input, &output)?),
     );
     let graph = builder.build().unwrap();
@@ -80,7 +82,12 @@ fn generated_callbacks_wake_in_assigned_pool_and_messages_outlive_execution() {
     // A pre-start publication must not be lost when notifications are installed.
     source.publish(40).unwrap();
     source.flush(FrameworkTime::from_nanos(0));
-    let executor = LiveExecutor::new_multi_pool_with_time(vec![2, 1], graph, Clock).unwrap();
+    let executor = LiveExecutor::new_multi_pool_with_time(
+        ThreadPoolConfigList::try_from([2, 1]).unwrap(),
+        graph,
+        Clock,
+    )
+    .unwrap();
     let stop = executor.stop_signal();
     let main = std::thread::current().id();
     let result = executor
@@ -153,8 +160,12 @@ fn trigger_during_run_is_requeued_without_concurrent_invocations() {
         }
         .bind(declaration, &bindings)?)
     });
-    let executor =
-        LiveExecutor::new_multi_pool_with_time(vec![4], builder.build().unwrap(), Clock).unwrap();
+    let executor = LiveExecutor::new_multi_pool_with_time(
+        ThreadPoolConfigList::try_from([4]).unwrap(),
+        builder.build().unwrap(),
+        Clock,
+    )
+    .unwrap();
     executor
         .run_with(|_| {
             source.publish(1).unwrap();
@@ -233,9 +244,12 @@ fn callback_errors_and_panics_wake_control_and_leave_captured_messages_valid() {
             }
             .bind(fail_decl, &source, &output)?)
         });
-        let executor =
-            LiveExecutor::new_multi_pool_with_time(vec![3], builder.build().unwrap(), Clock)
-                .unwrap();
+        let executor = LiveExecutor::new_multi_pool_with_time(
+            ThreadPoolConfigList::try_from([3]).unwrap(),
+            builder.build().unwrap(),
+            Clock,
+        )
+        .unwrap();
         drop((source, output));
         match executor.run_with(|stop| stop.wait()) {
             Err(LiveExecutorError::Threads(failures)) => {
@@ -285,7 +299,7 @@ fn periodic_callbacks_run_until_controller_requests_stop() {
         },
     );
     let executor = LiveExecutor::new_multi_pool_with_time(
-        vec![2],
+        ThreadPoolConfigList::try_from([2]).unwrap(),
         builder.build().unwrap(),
         AdvancingClock(std::time::Instant::now()),
     )
@@ -318,8 +332,12 @@ fn custom_deadline_uses_injected_clock_and_can_disable_its_timer() {
             Ok(())
         })
     });
-    let executor =
-        LiveExecutor::new_multi_pool_with_time(vec![1], builder.build().unwrap(), Clock).unwrap();
+    let executor = LiveExecutor::new_multi_pool_with_time(
+        ThreadPoolConfigList::try_from([1]).unwrap(),
+        builder.build().unwrap(),
+        Clock,
+    )
+    .unwrap();
     executor
         .run_with(|stop| {
             wait(&completed);
@@ -337,8 +355,12 @@ fn controller_panic_joins_sleeping_workers_and_periodic_thread() {
         CallbackSchedule::periodic(Duration::from_secs(3600)),
         || Ok(|_| Ok(())),
     );
-    let executor =
-        LiveExecutor::new_multi_pool_with_time(vec![3], builder.build().unwrap(), Clock).unwrap();
+    let executor = LiveExecutor::new_multi_pool_with_time(
+        ThreadPoolConfigList::try_from([3]).unwrap(),
+        builder.build().unwrap(),
+        Clock,
+    )
+    .unwrap();
     let stop = executor.stop_signal();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         executor.run_with(|_| panic!("controller panic"))
@@ -358,15 +380,33 @@ fn stop_before_run_and_invalid_pool_configuration() {
             Ok(())
         })
     });
-    let executor =
-        LiveExecutor::new_multi_pool_with_time(vec![2], builder.build().unwrap(), Clock).unwrap();
+    let executor = LiveExecutor::new_multi_pool_with_time(
+        ThreadPoolConfigList::try_from([2]).unwrap(),
+        builder.build().unwrap(),
+        Clock,
+    )
+    .unwrap();
     executor.stop_signal().request_stop();
     executor.run().unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert!(LiveExecutor::new(0, GraphBuilder::new().build().unwrap()).is_err());
+    assert!(
+        LiveExecutor::new_multi_pool(
+            ThreadPoolConfigList::new(),
+            GraphBuilder::new().build().unwrap()
+        )
+        .is_err()
+    );
     let mut builder = GraphBuilder::new();
-    builder.add_scheduled_callback("bad pool", CallbackSchedule::on_start().in_pool(1), || {
-        Ok(|_| Ok(()))
-    });
-    assert!(LiveExecutor::new(1, builder.build().unwrap()).is_err());
+    builder.add_scheduled_callback(
+        "bad pool",
+        CallbackSchedule::on_start().in_pool(PoolIndex::new(1)),
+        || Ok(|_| Ok(())),
+    );
+    assert!(
+        LiveExecutor::new(
+            ThreadPoolConfig::new(std::num::NonZeroUsize::MIN),
+            builder.build().unwrap()
+        )
+        .is_err()
+    );
 }

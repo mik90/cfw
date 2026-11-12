@@ -3,7 +3,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use task::executor::TimeSource;
-use task_graph::{BuiltGraph, GraphMetadata, ScheduledCallback};
+use task_graph::{
+    BuiltGraph, GraphMetadata, ScheduledCallback, ThreadPoolConfig, ThreadPoolConfigList,
+};
 
 use crate::pool_state::Scheduler;
 use crate::{
@@ -23,29 +25,29 @@ pub struct LiveExecutor<'graph_storage, T: TimeSource = WallClock> {
 
 impl<'graph_storage> LiveExecutor<'graph_storage, WallClock> {
     pub fn new(
-        thread_count: usize,
+        config: ThreadPoolConfig,
         graph: BuiltGraph<'graph_storage>,
     ) -> Result<Self, LiveExecutorStartError> {
-        Self::new_multi_pool_with_time(vec![thread_count], graph, WallClock)
+        Self::new_multi_pool_with_time(ThreadPoolConfigList::from(config), graph, WallClock)
     }
 
     pub fn new_multi_pool(
-        workers: Vec<usize>,
+        pools: ThreadPoolConfigList,
         graph: BuiltGraph<'graph_storage>,
     ) -> Result<Self, LiveExecutorStartError> {
-        Self::new_multi_pool_with_time(workers, graph, WallClock)
+        Self::new_multi_pool_with_time(pools, graph, WallClock)
     }
 }
 
 impl<'graph_storage, T: TimeSource> LiveExecutor<'graph_storage, T> {
     pub fn new_multi_pool_with_time(
-        workers: Vec<usize>,
+        pools: ThreadPoolConfigList,
         graph: BuiltGraph<'graph_storage>,
         clock: T,
     ) -> Result<Self, LiveExecutorStartError> {
-        if workers.is_empty() || workers.contains(&0) {
+        if pools.is_empty() {
             return Err(LiveExecutorStartError {
-                reason: "each executor pool must have at least one worker".into(),
+                reason: "at least one executor pool is required".into(),
             });
         }
         graph
@@ -56,7 +58,7 @@ impl<'graph_storage, T: TimeSource> LiveExecutor<'graph_storage, T> {
         let (nodes, metadata) = graph.into_parts();
         if let Some(node) = nodes
             .iter()
-            .find(|node| node.schedule.pool >= workers.len())
+            .find(|node| !pools.contains(node.schedule.pool))
         {
             return Err(LiveExecutorStartError {
                 reason: format!(
@@ -75,7 +77,7 @@ impl<'graph_storage, T: TimeSource> LiveExecutor<'graph_storage, T> {
             });
         }
         let schedules: Vec<_> = nodes.iter().map(|node| node.schedule.clone()).collect();
-        let scheduler = Scheduler::new(&schedules, &workers);
+        let scheduler = Scheduler::new(&schedules, &pools);
         Ok(Self {
             nodes,
             metadata,
@@ -234,7 +236,7 @@ impl<'graph_storage, T: TimeSource> LiveExecutor<'graph_storage, T> {
             }
             if startup_error.is_none() {
                 'pools: for (pool_index, pool) in scheduler.pools.iter().enumerate() {
-                    for worker_index in 0..pool.thread_count {
+                    for worker_index in 0..pool.config.thread_count().get() {
                         let name = format!("cfw_pool_{pool_index}_t_{worker_index}");
                         let id = spawn_index;
                         let stop = stop.clone();
@@ -356,10 +358,13 @@ mod tests {
 
         let mut builder = GraphBuilder::new();
         builder.add_callback("ipc", || Ok(IpcCallback));
-        let error =
-            LiveExecutor::new_multi_pool_with_time(vec![1], builder.build().unwrap(), Clock)
-                .err()
-                .expect("IPC graph should be rejected without iceoryx2");
+        let error = LiveExecutor::new_multi_pool_with_time(
+            ThreadPoolConfigList::try_from([1]).unwrap(),
+            builder.build().unwrap(),
+            Clock,
+        )
+        .err()
+        .expect("IPC graph should be rejected without iceoryx2");
         assert!(error.reason.contains("iceoryx2"));
     }
 
@@ -367,10 +372,13 @@ mod tests {
     fn rejects_callbacks_without_triggers_or_timers() {
         let mut builder = GraphBuilder::new();
         builder.add_callback("dead", || Ok(|_| Ok(())));
-        let error =
-            LiveExecutor::new_multi_pool_with_time(vec![1], builder.build().unwrap(), Clock)
-                .err()
-                .expect("graph should be rejected");
+        let error = LiveExecutor::new_multi_pool_with_time(
+            ThreadPoolConfigList::try_from([1]).unwrap(),
+            builder.build().unwrap(),
+            Clock,
+        )
+        .err()
+        .expect("graph should be rejected");
         assert!(error.reason.contains("no triggering inputs"));
     }
 
@@ -414,9 +422,12 @@ mod tests {
         let bindings = storage.bind().unwrap();
         let mut builder = GraphBuilder::new();
         builder.add_callback("events", || Ok(EventCallback(bindings.take_event(&event)?)));
-        let executor =
-            LiveExecutor::new_multi_pool_with_time(vec![1], builder.build().unwrap(), Clock)
-                .unwrap();
+        let executor = LiveExecutor::new_multi_pool_with_time(
+            ThreadPoolConfigList::try_from([1]).unwrap(),
+            builder.build().unwrap(),
+            Clock,
+        )
+        .unwrap();
         let stop = executor.stop_signal();
         let result = executor.run_checked(
             |_| panic!("startup should have failed"),
@@ -452,7 +463,7 @@ mod tests {
                 })
             });
             let executor = LiveExecutor::new_multi_pool_with_time(
-                vec![if periodic { 1 } else { 2 }],
+                ThreadPoolConfigList::try_from([if periodic { 1 } else { 2 }]).unwrap(),
                 builder.build().unwrap(),
                 Clock,
             )

@@ -261,7 +261,10 @@ mod tests {
         );
         let storage = app.allocate().unwrap();
         let (graph, bindings) = storage.bind_and_build().unwrap();
-        live_executor::LiveExecutor::new(2, graph)
+        live_executor::LiveExecutor::new(
+            task_graph::ThreadPoolConfig::try_from(2).unwrap(),
+            graph,
+        )
             .unwrap()
             .run_with(|stop| {
                 let start = std::time::Instant::now();

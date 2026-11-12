@@ -180,13 +180,15 @@ fn run_live(
         std::fs::File::create(log_path)?,
     ));
     let mut session = LogSession::new(writer, captures).with_execution_log(metadata)?;
-    LiveExecutor::new(1, graph)?.run_with(|stop| -> Result<(), logging::BoxedLogError> {
-        while !term.load(Ordering::Relaxed) && !stop.is_stopped() {
-            session.flush()?;
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        Ok(())
-    })??;
+    LiveExecutor::new(task_graph::ThreadPoolConfig::try_from(1).unwrap(), graph)?.run_with(
+        |stop| -> Result<(), logging::BoxedLogError> {
+            while !term.load(Ordering::Relaxed) && !stop.is_stopped() {
+                session.flush()?;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(())
+        },
+    )??;
     session.finish()?;
     println!("Done");
     Ok(())

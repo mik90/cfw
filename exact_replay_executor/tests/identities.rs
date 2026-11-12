@@ -149,7 +149,8 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
                     ..task_graph::CallbackSchedule::periodic(std::time::Duration::from_nanos(9))
                 }
             } else {
-                task_graph::CallbackSchedule::input_triggered().in_pool(1)
+                task_graph::CallbackSchedule::input_triggered()
+                    .in_pool(task_graph::PoolIndex::new(1))
             }
             .with_execution_duration(std::time::Duration::from_nanos(1));
         });
@@ -158,7 +159,7 @@ fn replay_batches(logged_source: bool, logged_forward: bool) {
         let mut graph = testing::UnitTestExecutor::new_with_graph(
             graph,
             testing::UnitTestExecutorConfig {
-                virtual_pool_threads: vec![2, 3],
+                virtual_pool_threads: task_graph::ThreadPoolConfigList::try_from([2, 3]).unwrap(),
                 ..Default::default()
             },
         );

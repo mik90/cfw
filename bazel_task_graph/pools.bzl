@@ -35,9 +35,9 @@ def _pool_src_impl(ctx):
         seen[name] = True
 
     lines = [
-        "pub const THREADS: usize = %d;" % ctx.attr.threads,
+        "pub const THREADS: ::core::num::NonZeroUsize = ::core::num::NonZeroUsize::new(%d).expect(\"Compile-time panic is a compile error\");" % ctx.attr.threads,
         "",
-        "pub fn add_to(app: &mut ::task_graph::ApplicationBuilder, pool_index: usize) {",
+        "pub fn add_to(app: &mut ::task_graph::ApplicationBuilder, pool_index: ::task_graph::PoolIndex) {",
     ]
     for task in tasks:
         lines.extend([
@@ -63,7 +63,7 @@ def _pool_src_impl(ctx):
         "    #[test]",
         "    fn wiring_builds() {",
         "        let mut app = ::task_graph::ApplicationBuilder::new();",
-        "        super::add_to(&mut app, 0);",
+        "        super::add_to(&mut app, ::task_graph::PoolIndex::new(0));",
         "        app.plan().unwrap();",
         "    }",
         "}",

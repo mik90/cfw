@@ -10,7 +10,9 @@ use task::{
     testing::FakeCallback,
     time::FrameworkTime,
 };
-use task_graph::{CallbackSchedule, GraphBuilder, GraphPlan, TaskRegistration};
+use task_graph::{
+    CallbackSchedule, GraphBuilder, GraphPlan, TaskRegistration, ThreadPoolConfigList,
+};
 use task_macros::task_callback;
 
 struct Counter;
@@ -57,7 +59,7 @@ fn run(plan: GraphPlan, options: ExecutionLogOptions) -> Run {
         graph,
         SimulationConfig {
             start_time: FrameworkTime::from_nanos(7),
-            virtual_pool_threads: vec![4],
+            virtual_pool_threads: ThreadPoolConfigList::try_from([4]).unwrap(),
             ..Default::default()
         },
     )

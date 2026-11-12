@@ -16,7 +16,7 @@ use task::{
     LoanError, Output, RequiredInput,
     loggable::{DeserializeError, Loggable, SerializeError},
 };
-use task_graph::{ApplicationBuilder, CallbackSchedule, GraphPlan};
+use task_graph::{ApplicationBuilder, CallbackSchedule, GraphPlan, PoolIndex};
 use task_macros::task_callback;
 
 mod common;
@@ -185,7 +185,7 @@ fn build_plan(stop: Option<mpsc::Sender<()>>, checksums: Checksums) -> GraphPlan
             remaining: MESSAGE_COUNT,
         },
         CallbackSchedule::periodic(SOURCE_PERIOD)
-            .in_pool(0)
+            .in_pool(PoolIndex::new(0))
             .with_execution_duration(Duration::from_millis(1)),
     )
     .output_channel("output", LARGE_CHANNEL);
@@ -193,7 +193,7 @@ fn build_plan(stop: Option<mpsc::Sender<()>>, checksums: Checksums) -> GraphPlan
         "large_sink",
         LargeMessageSink { checksums, stop },
         CallbackSchedule::input_triggered()
-            .in_pool(0)
+            .in_pool(PoolIndex::new(0))
             .with_execution_duration(Duration::from_millis(1)),
     )
     .input_channel("message", LARGE_CHANNEL);
@@ -222,7 +222,8 @@ fn run_live() -> (ReplayLog, Vec<u64>) {
         .with_execution_log(metadata)
         .unwrap();
 
-    let executor = LiveExecutor::new(1, graph).unwrap();
+    let executor =
+        LiveExecutor::new(task_graph::ThreadPoolConfig::try_from(1).unwrap(), graph).unwrap();
     let mut stopped_by_sink = false;
     executor
         .run_with(|stop| {

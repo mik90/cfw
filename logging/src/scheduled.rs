@@ -22,7 +22,7 @@ use task::{
 };
 #[cfg(feature = "serde")]
 use task_graph::execution_log::ExecutionLogMetadata;
-use task_graph::{BuiltGraph, CallbackSchedule, ScheduledCallback};
+use task_graph::{BuiltGraph, CallbackSchedule, PoolIndex, ScheduledCallback};
 
 #[derive(Clone)]
 pub struct LoggingStatus {
@@ -179,7 +179,7 @@ pub struct LoggingScope<'graph_storage> {
     sessions: Vec<Mutex<Option<LogSession<'graph_storage>>>>,
     status: LoggingStatus,
     channels: Vec<task::ChannelName>,
-    pool: usize,
+    pool: PoolIndex,
     attached: AtomicBool,
 }
 impl<'graph_storage> LoggingScope<'graph_storage> {
@@ -220,7 +220,7 @@ impl<'graph_storage> LoggingScope<'graph_storage> {
                 .collect(),
             status,
             channels,
-            pool: 0,
+            pool: PoolIndex::new(0),
             attached: AtomicBool::new(false),
         }
     }
@@ -233,7 +233,7 @@ impl<'graph_storage> LoggingScope<'graph_storage> {
     pub fn status(&self) -> LoggingStatus {
         self.status.clone()
     }
-    pub fn in_pool(mut self, pool: usize) -> Self {
+    pub fn in_pool(mut self, pool: PoolIndex) -> Self {
         self.pool = pool;
         self
     }

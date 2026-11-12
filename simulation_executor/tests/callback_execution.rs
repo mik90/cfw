@@ -23,7 +23,7 @@ fn rejected_batch_commit_cancels_outputs_before_single_callback_reuse() {
     let result = execute_callback_batch(
         [(17, &mut callback as &mut dyn Callback)],
         &context,
-        1,
+        std::num::NonZeroUsize::new(1).unwrap(),
         |executed| {
             assert_eq!(executed, [17]);
             capture.update();
@@ -62,7 +62,7 @@ fn batch_failure_reports_the_supplied_id_after_skipping_unready_callbacks() {
             (99, &mut failing as &mut dyn Callback),
         ],
         &context,
-        2,
+        std::num::NonZeroUsize::new(2).unwrap(),
         |_| -> Result<(), ()> { panic!("failed bodies must not reach commit validation") },
     );
     assert!(matches!(

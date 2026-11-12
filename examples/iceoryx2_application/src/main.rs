@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, BufReader, Write};
+use std::num::NonZeroUsize;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -21,8 +22,8 @@ enum Role {
 #[command(about = "Run FizzBuzz in two cfw processes connected by iceoryx2")]
 struct Args {
     /// Number of integers to publish (starting at 1).
-    #[arg(long, default_value_t = 30)]
-    count: usize,
+    #[arg(long, default_value_t = NonZeroUsize::new(30).unwrap())]
+    count: NonZeroUsize,
 
     #[arg(long, value_enum, default_value = "launcher", hide = true)]
     role: Role,
@@ -33,9 +34,6 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    if args.count == 0 {
-        return Err("--count must be positive".into());
-    }
     match args.role {
         Role::Launcher => launch(args.count),
         Role::Fizzer => run_fizzer(
@@ -49,14 +47,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn run_fizzer(count: usize, channel: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_fizzer(count: NonZeroUsize, channel: &str) -> Result<(), Box<dyn std::error::Error>> {
     let published = Arc::new(AtomicUsize::new(0));
     with_fizzer_graph(
         channel,
-        count,
+        count.get(),
         published,
         |graph| -> Result<(), Box<dyn std::error::Error>> {
-            let executor = LiveExecutor::new(1, graph)?;
+            let executor =
+                LiveExecutor::new(task_graph::ThreadPoolConfig::try_from(1).unwrap(), graph)?;
             // The launcher closes stdin after the buzzer consumes the final sample.
             executor.run_with(|_| io::copy(&mut io::stdin(), &mut io::sink()))??;
             Ok(())
@@ -65,25 +64,27 @@ fn run_fizzer(count: usize, channel: &str) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-fn run_buzzer(count: usize, channel: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_buzzer(count: NonZeroUsize, channel: &str) -> Result<(), Box<dyn std::error::Error>> {
     let complete = Arc::new(AtomicBool::new(false));
     let printed = Arc::new(AtomicUsize::new(0));
     with_buzzer_graph(
         channel,
-        count,
+        count.get(),
         Arc::clone(&complete),
         Arc::clone(&printed),
         |graph| -> Result<(), Box<dyn std::error::Error>> {
-            let executor = LiveExecutor::new(1, graph)?;
+            let executor =
+                LiveExecutor::new(task_graph::ThreadPoolConfig::try_from(1).unwrap(), graph)?;
             executor.run_with(|stop| -> Result<(), Box<dyn std::error::Error>> {
                 // run_with begins only after the readiness waitset has attached its listeners.
                 println!("{READY}");
                 io::stdout().flush()?;
                 let deadline = Instant::now()
-                    + PUBLISH_PERIOD.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
+                    + PUBLISH_PERIOD.saturating_mul(u32::try_from(count.get()).unwrap_or(u32::MAX))
                     + Duration::from_secs(10);
                 loop {
-                    if printed.load(Ordering::Acquire) >= count && complete.load(Ordering::Acquire)
+                    if printed.load(Ordering::Acquire) >= count.get()
+                        && complete.load(Ordering::Acquire)
                     {
                         break;
                     }
@@ -109,7 +110,7 @@ fn run_buzzer(count: usize, channel: &str) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-fn launch(count: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn launch(count: NonZeroUsize) -> Result<(), Box<dyn std::error::Error>> {
     let executable = std::env::current_exe()?;
     let channel = format!("cfw_fizz_buzz_{}", std::process::id());
     let mut buzzer = Command::new(&executable)

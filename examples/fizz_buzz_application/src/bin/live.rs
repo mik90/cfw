@@ -36,18 +36,20 @@ fn main() -> Result<(), BuildError> {
         &args.log_path,
         !args.no_log_integer,
         |graph, mut session, collected| {
-            live_executor::LiveExecutor::new(2, graph)?.run_with(
-                |stop| -> Result<(), BuildError> {
-                    while !term.load(Ordering::Relaxed)
-                        && !stop.is_stopped()
-                        && !args.count.is_some_and(|count| collected.len() >= count)
-                    {
-                        session.flush()?;
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    Ok(())
-                },
-            )??;
+            live_executor::LiveExecutor::new(
+                task_graph::ThreadPoolConfig::try_from(2).unwrap(),
+                graph,
+            )?
+            .run_with(|stop| -> Result<(), BuildError> {
+                while !term.load(Ordering::Relaxed)
+                    && !stop.is_stopped()
+                    && !args.count.is_some_and(|count| collected.len() >= count)
+                {
+                    session.flush()?;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(())
+            })??;
             session.finish()?;
             for value in collected.stored_strings() {
                 println!("{value}");

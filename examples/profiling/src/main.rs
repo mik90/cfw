@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -9,7 +10,7 @@ use live_executor::LiveExecutor;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use task::input::RequiredInput;
 use task::output::OutputDefault;
-use task_graph::{ApplicationBuilder, CallbackSchedule};
+use task_graph::{ApplicationBuilder, CallbackSchedule, ThreadPoolConfig};
 use task_macros::task_callback;
 
 const FIZZ_BUZZ_STRING_CHANNEL: &str = "fizz_buzz_string";
@@ -94,8 +95,8 @@ impl StringCollector {
 #[command(version, about, long_about = None)]
 struct CliArgs {
     /// Publisher execution period in microseconds. Lower is more stressful.
-    #[arg(long, default_value_t = 100)]
-    period_us: u64,
+    #[arg(long, default_value_t = NonZeroU64::new(100).unwrap())]
+    period_us: NonZeroU64,
 
     /// Number of independent integer-publisher -> fizz-buzz chains, all
     /// feeding a single string collector. More chains means more scheduling.
@@ -103,8 +104,8 @@ struct CliArgs {
     sets: usize,
 
     /// Number of worker threads in the pool.
-    #[arg(long, default_value_t = 2)]
-    threads: usize,
+    #[arg(long, default_value_t = NonZeroUsize::new(2).unwrap())]
+    threads: NonZeroUsize,
 
     /// Auto-stop the executor after this many seconds.
     #[arg(long, default_value_t = 15)]
@@ -123,7 +124,7 @@ fn main() {
 
     let args = CliArgs::parse();
     let counter = Arc::new(AtomicU64::new(0));
-    let period = Duration::from_micros(args.period_us);
+    let period = Duration::from_micros(args.period_us.get());
 
     let mut app = ApplicationBuilder::new();
     for set in 0..args.sets {
@@ -158,7 +159,8 @@ fn main() {
         return;
     }
 
-    let executor = LiveExecutor::new(args.threads, graph).expect("construct executor");
+    let pool = ThreadPoolConfig::from(args.threads);
+    let executor = LiveExecutor::new(pool, graph).expect("construct executor");
     let timed_out = executor
         .run_with(|stop| {
             let deadline = std::time::Instant::now() + Duration::from_secs(args.duration_secs);

@@ -19,13 +19,14 @@ pub use log_simulation::{
 };
 pub use state::{SimulationState, StepError, StepResult};
 pub use task::time::FrameworkTime;
+use task_graph::{ThreadPoolConfig, ThreadPoolConfigList};
 
 /// Simulated pool sizes are independent of the real workers executing a batch.
 #[derive(Clone, Debug)]
 pub struct SimulationConfig {
     pub start_time: FrameworkTime,
-    pub virtual_pool_threads: Vec<usize>,
-    pub node_executor_thread_count: usize,
+    pub virtual_pool_threads: ThreadPoolConfigList,
+    pub node_executor_thread_count: std::num::NonZeroUsize,
     /// Poll real IPC event listeners at step boundaries. Disable this when
     /// scheduled injections are the authoritative source of simulation events.
     pub poll_external_events: bool,
@@ -35,8 +36,10 @@ impl Default for SimulationConfig {
     fn default() -> Self {
         Self {
             start_time: FrameworkTime::from_nanos(0),
-            virtual_pool_threads: vec![1],
-            node_executor_thread_count: 1,
+            virtual_pool_threads: ThreadPoolConfigList::from(ThreadPoolConfig::new(
+                std::num::NonZeroUsize::MIN,
+            )),
+            node_executor_thread_count: std::num::NonZeroUsize::MIN,
             poll_external_events: true,
         }
     }

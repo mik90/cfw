@@ -22,14 +22,19 @@ def _application_src_impl(ctx):
     lines = [
         "fn main() -> ::core::result::Result<(), ::std::boxed::Box<dyn ::std::error::Error>> {",
         "    let mut app = ::task_graph::ApplicationBuilder::new();",
+        "    let mut pools = ::task_graph::ThreadPoolConfigList::new();",
     ]
     for index, pool in enumerate(pools):
-        lines.append("    ::%s::add_to(&mut app, %d);" % (pool.crate_name, index))
+        lines.append(
+            "    let pool_%d = pools.add_pool(::task_graph::ThreadPoolConfig::new(::%s::THREADS));"
+            % (index, pool.crate_name)
+        )
+        lines.append("    ::%s::add_to(&mut app, pool_%d);" % (pool.crate_name, index))
     lines.extend([
         "    let storage = app.allocate()?;",
         "    let graph = storage.build()?;",
         "    ::live_executor::LiveExecutor::new_multi_pool(",
-        "        vec![%s]," % ", ".join(["::%s::THREADS" % pool.crate_name for pool in pools]),
+        "        pools,",
         "        graph,",
         "    )?.run()?;",
         "    Ok(())",

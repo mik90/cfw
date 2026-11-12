@@ -2,7 +2,7 @@ use crossbeam::channel::{self, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use task::wake::{Wake, WakeHandle};
-use task_graph::CallbackSchedule;
+use task_graph::{CallbackSchedule, PoolIndex, ThreadPoolConfig, ThreadPoolConfigList};
 
 const IDLE: u8 = 0;
 const QUEUED: u8 = 1;
@@ -12,14 +12,14 @@ const WAITING: u8 = 4;
 const READINESS_CHANGED: u8 = 5;
 
 pub(crate) struct PoolState {
-    pub thread_count: usize,
+    pub config: ThreadPoolConfig,
     work_tx: Sender<usize>,
     pub work_rx: Receiver<usize>,
 }
 
 struct NodeState {
     state: AtomicU8,
-    pool: usize,
+    pool: PoolIndex,
     deadline: AtomicI64,
 }
 
@@ -44,15 +44,14 @@ pub(crate) struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(schedules: &[CallbackSchedule], workers: &[usize]) -> Arc<Self> {
-        let pools = workers
-            .iter()
-            .enumerate()
-            .map(|(pool, &thread_count)| {
+    pub fn new(schedules: &[CallbackSchedule], configs: &ThreadPoolConfigList) -> Arc<Self> {
+        let pools = configs
+            .iter_indexed()
+            .map(|(pool, config)| {
                 let capacity = schedules.iter().filter(|s| s.pool == pool).count().max(1);
                 let (work_tx, work_rx) = channel::bounded(capacity);
                 PoolState {
-                    thread_count,
+                    config: config.clone(),
                     work_tx,
                     work_rx,
                 }
@@ -264,7 +263,7 @@ impl Scheduler {
     fn enqueue(&self, node: usize) {
         // At most one queue entry per node. Running nodes do not occupy the
         // queue, so a queue sized for its pool's node count cannot overflow.
-        self.pools[self.nodes[node].pool]
+        self.pools[self.nodes[node].pool.as_usize()]
             .work_tx
             .try_send(node)
             .expect("duplicate node scheduling");
@@ -337,7 +336,8 @@ mod tests {
     use super::*;
     #[test]
     fn readiness_changes_resume_only_an_outstanding_trigger() {
-        let scheduler = Scheduler::new(&[CallbackSchedule::input_triggered()], &[1]);
+        let pools = ThreadPoolConfigList::try_from([1]).unwrap();
+        let scheduler = Scheduler::new(&[CallbackSchedule::input_triggered()], &pools);
         let wake = scheduler.waker(0);
         wake.readiness_changed();
         assert!(scheduler.pools[0].work_rx.is_empty());
@@ -362,7 +362,8 @@ mod tests {
     }
     #[test]
     fn repeated_triggers_coalesce_without_hot_path_allocation() {
-        let scheduler = Scheduler::new(&[CallbackSchedule::input_triggered()], &[2]);
+        let pools = ThreadPoolConfigList::try_from([2]).unwrap();
+        let scheduler = Scheduler::new(&[CallbackSchedule::input_triggered()], &pools);
         let wake = scheduler.waker(0);
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..100 {
