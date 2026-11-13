@@ -1,7 +1,11 @@
 use crate::pool_state::Scheduler;
 use crossbeam::channel::Receiver;
+use std::alloc::{Allocator, Global};
+#[cfg(feature = "iceoryx2")]
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(feature = "iceoryx2")]
+use std::sync::OnceLock;
 
 /// Event targets borrow callback publishers; the router lives only while the
 /// executor graph storage is alive.
@@ -14,21 +18,26 @@ pub(crate) struct EventRouter<'graph_storage> {
 /// Stop and drain controls. `'graph_storage` is the graph lifetime used by event
 /// target observers.
 #[derive(Clone)]
-pub struct StopSignal<'graph_storage> {
-    scheduler: Arc<Scheduler>,
+pub struct StopSignal<'graph_storage, A: Allocator + Clone + Send + Sync + 'static = Global> {
+    scheduler: Arc<Scheduler<A>>,
     #[cfg(feature = "iceoryx2")]
     events: Arc<OnceLock<EventRouter<'graph_storage>>>,
+    // Keeps the graph lifetime in the type when event routing is disabled.
+    #[cfg(not(feature = "iceoryx2"))]
+    _graph_storage: std::marker::PhantomData<&'graph_storage ()>,
 }
 
-impl<'graph_storage> StopSignal<'graph_storage> {
+impl<'graph_storage, A: Allocator + Clone + Send + Sync + 'static> StopSignal<'graph_storage, A> {
     pub(crate) fn new(
-        scheduler: Arc<Scheduler>,
+        scheduler: Arc<Scheduler<A>>,
         #[cfg(feature = "iceoryx2")] events: Arc<OnceLock<EventRouter<'graph_storage>>>,
     ) -> Self {
         Self {
             scheduler,
             #[cfg(feature = "iceoryx2")]
             events,
+            #[cfg(not(feature = "iceoryx2"))]
+            _graph_storage: std::marker::PhantomData,
         }
     }
 
@@ -112,7 +121,9 @@ impl<'graph_storage> StopSignal<'graph_storage> {
     }
 }
 
-impl task::executor::ExecutorStopSignal for StopSignal<'_> {
+impl<A: Allocator + Clone + Send + Sync + 'static> task::executor::ExecutorStopSignal
+    for StopSignal<'_, A>
+{
     fn request_stop(&self) {
         StopSignal::request_stop(self);
     }

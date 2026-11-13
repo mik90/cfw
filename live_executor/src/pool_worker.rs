@@ -1,3 +1,4 @@
+use std::alloc::Allocator;
 use std::sync::Mutex;
 use task::execute_callback;
 use task::executor::TimeSource;
@@ -6,10 +7,10 @@ use task_graph::{GraphMetadata, ScheduledCallback};
 use crate::ThreadFailure;
 use crate::pool_state::{PoolState, Scheduler};
 
-pub(crate) fn work<T: TimeSource>(
+pub(crate) fn work<T: TimeSource, A: Allocator + Clone + Send + Sync + 'static>(
     id: usize,
     pool: &PoolState,
-    scheduler: &Scheduler,
+    scheduler: &Scheduler<A>,
     nodes: &[Mutex<ScheduledCallback<'_>>],
     metadata: &GraphMetadata,
     clock: &T,

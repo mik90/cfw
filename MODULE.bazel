@@ -27,7 +27,7 @@ single_version_override(
 # ---------------------------------------------------------------------------
 # Rust toolchains.
 #
-# Pin the Bazel Rust toolchain to Rust 1.98.0 with edition 2024. The Bazel
+# Pin the Bazel Rust toolchain to Rust 1.100.0 with edition 2024. The Bazel
 # toolchain is deliberately kept separate from Cargo (Cargo has no pinned
 # toolchain). We only need x86_64-unknown-linux-gnu for now, but the rules_rs
 # toolchain extension provisions the full supported matrix; unused archives
@@ -36,13 +36,13 @@ single_version_override(
 toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 toolchains.toolchain(
     edition = "2024",
-    version = "1.98.0",
+    version = "1.100.0",
 )
 
 # Experimental Miri toolchain, pinned to a dated nightly.
 toolchains.experimental_miri(
     exec_triples = ["x86_64-unknown-linux-gnu"],
-    version = "nightly/2026-08-29",
+    version = "nightly/2026-11-11",
 )
 use_repo(
     toolchains,

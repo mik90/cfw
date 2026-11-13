@@ -1,4 +1,5 @@
 use crossbeam::channel::{self, Receiver, Sender};
+use std::alloc::{Allocator, Global};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use task::wake::{Wake, WakeHandle};
@@ -24,7 +25,7 @@ struct NodeState {
 }
 
 /// Scheduling metadata only: this may outlive a run, but owns no borrowed nodes.
-pub(crate) struct Scheduler {
+pub(crate) struct Scheduler<A: Allocator + Clone + Send + Sync + 'static = Global> {
     active: AtomicUsize,
     completed: AtomicUsize,
     timers_enabled: Mutex<bool>,
@@ -34,8 +35,8 @@ pub(crate) struct Scheduler {
     poll_completed: AtomicUsize,
     #[cfg(feature = "iceoryx2")]
     external_stop: std::sync::OnceLock<WakeHandle>,
-    pub pools: Vec<PoolState>,
-    nodes: Vec<NodeState>,
+    pub pools: Vec<PoolState, A>,
+    nodes: Vec<NodeState, A>,
     stopped: AtomicBool,
     stop_tx: Mutex<Option<Sender<()>>>,
     pub stop_rx: Receiver<()>,
@@ -43,20 +44,36 @@ pub(crate) struct Scheduler {
     pub timer_rx: Receiver<()>,
 }
 
-impl Scheduler {
+impl Scheduler<Global> {
     pub fn new(schedules: &[CallbackSchedule], configs: &ThreadPoolConfigList) -> Arc<Self> {
-        let pools = configs
-            .iter_indexed()
-            .map(|(pool, config)| {
-                let capacity = schedules.iter().filter(|s| s.pool == pool).count().max(1);
-                let (work_tx, work_rx) = channel::bounded(capacity);
-                PoolState {
-                    config: config.clone(),
-                    work_tx,
-                    work_rx,
-                }
-            })
-            .collect();
+        Self::new_in(Global, schedules, configs)
+    }
+}
+
+impl<A: Allocator + Clone + Send + Sync + 'static> Scheduler<A> {
+    pub fn new_in(
+        allocator: A,
+        schedules: &[CallbackSchedule],
+        configs: &ThreadPoolConfigList,
+    ) -> Arc<Self> {
+        let mut pools = Vec::with_capacity_in(configs.len(), allocator.clone());
+        for (pool, config) in configs.iter_indexed() {
+            let capacity = schedules.iter().filter(|s| s.pool == pool).count().max(1);
+            let (work_tx, work_rx) = channel::bounded(capacity);
+            pools.push(PoolState {
+                config: config.clone(),
+                work_tx,
+                work_rx,
+            });
+        }
+        let mut nodes = Vec::with_capacity_in(schedules.len(), allocator);
+        for schedule in schedules {
+            nodes.push(NodeState {
+                state: AtomicU8::new(IDLE),
+                pool: schedule.pool,
+                deadline: AtomicI64::new(task::time::FrameworkTime::INVALID.to_nanoseconds()),
+            });
+        }
         let (stop_tx, stop_rx) = channel::bounded(0);
         let (timer_tx, timer_rx) = channel::bounded(1);
         Arc::new(Self {
@@ -70,14 +87,7 @@ impl Scheduler {
             #[cfg(feature = "iceoryx2")]
             external_stop: std::sync::OnceLock::new(),
             pools,
-            nodes: schedules
-                .iter()
-                .map(|s| NodeState {
-                    state: AtomicU8::new(IDLE),
-                    pool: s.pool,
-                    deadline: AtomicI64::new(task::time::FrameworkTime::INVALID.to_nanoseconds()),
-                })
-                .collect(),
+            nodes,
             stopped: AtomicBool::new(false),
             stop_tx: Mutex::new(Some(stop_tx)),
             stop_rx,
@@ -314,11 +324,11 @@ impl Scheduler {
     }
 }
 
-struct NodeWake {
-    scheduler: Weak<Scheduler>,
+struct NodeWake<A: Allocator + Clone + Send + Sync + 'static> {
+    scheduler: Weak<Scheduler<A>>,
     node: usize,
 }
-impl Wake for NodeWake {
+impl<A: Allocator + Clone + Send + Sync + 'static> Wake for NodeWake<A> {
     fn readiness_changed(&self) {
         if let Some(scheduler) = self.scheduler.upgrade() {
             scheduler.notify(self.node, false);

@@ -1,13 +1,14 @@
 use crate::{ThreadFailure, pool_state::Scheduler};
 use crossbeam::channel::Sender;
 use iceoryx2::prelude::*;
+use std::alloc::Allocator;
 use std::time::Duration;
 use task::iox2::{EventRecord, Iox2EventRegistration, Iox2Shutdown};
 
-pub(crate) fn run<T: task::executor::TimeSource>(
+pub(crate) fn run<T: task::executor::TimeSource, A: Allocator + Clone + Send + Sync + 'static>(
     registrations: Vec<Iox2EventRegistration>,
     shutdown: Iox2Shutdown,
-    scheduler: &Scheduler,
+    scheduler: &Scheduler<A>,
     ready: Sender<Result<(), String>>,
     clock: &T,
 ) -> Result<(), ThreadFailure> {
