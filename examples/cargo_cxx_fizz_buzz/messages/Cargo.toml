@@ -7,8 +7,8 @@ publish = false
 links = "cxx_fizz_buzz_messages"
 
 [dependencies]
-task = { path = "../../../task", default-features = false }
-serde_json = { workspace = true }
+task = { path = "../../../task", default-features = false, optional = true }
+serde_json = { workspace = true, optional = true }
 cxx = { workspace = true, optional = true }
 
 [build-dependencies]
@@ -17,7 +17,7 @@ cxx-build = { workspace = true, optional = true }
 [features]
 # Off by default so workspace builds need no C++ toolchain.
 default = []
-cxx = ["dep:cxx", "dep:cxx-build"]
+cxx = ["dep:cxx", "dep:cxx-build", "dep:task", "dep:serde_json"]
 
 [lints]
 workspace = true

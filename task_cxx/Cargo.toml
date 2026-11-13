@@ -7,7 +7,7 @@ publish = false
 links = "task_cxx"
 
 [dependencies]
-task = { path = "../task", default-features = false }
+task = { path = "../task", default-features = false, optional = true }
 cxx = { workspace = true, optional = true }
 
 [build-dependencies]
@@ -17,7 +17,7 @@ cxx-build = { workspace = true, optional = true }
 # Off by default so workspace builds need no C++ toolchain; task bridges that
 # alias these types enable `task_cxx/cxx`.
 default = []
-cxx = ["dep:cxx", "dep:cxx-build"]
+cxx = ["dep:cxx", "dep:cxx-build", "dep:task"]
 
 [lints]
 workspace = true
