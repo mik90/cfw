@@ -1,13 +1,8 @@
 use crate::pool_state::Scheduler;
-use std::alloc::Allocator;
 use std::time::Duration;
 use task::executor::TimeSource;
 
-pub(crate) fn run<T: TimeSource, A: Allocator + Clone + Send + Sync + 'static>(
-    scheduler: &Scheduler<A>,
-    timed: Vec<usize>,
-    clock: &T,
-) {
+pub(crate) fn run<T: TimeSource>(scheduler: &Scheduler, timed: Vec<usize>, clock: &T) {
     while !scheduler.is_stopped() {
         while scheduler.timer_rx.try_recv().is_ok() {}
         let now = clock.now();

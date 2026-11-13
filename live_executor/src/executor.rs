@@ -1,5 +1,4 @@
 use crate::clock::WallClock;
-use std::alloc::{Allocator, Global};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -15,18 +14,13 @@ use crate::{
 
 /// Native live execution borrowing externally owned graph storage. `run_with`
 /// owns the thread scope and joins all workers before returning or unwinding.
-pub struct LiveExecutor<
-    'graph_storage,
-    T: TimeSource = WallClock,
-    A: Allocator + Clone + Send + Sync + 'static = Global,
-> {
-    nodes: Vec<ScheduledCallback<'graph_storage>, A>,
+pub struct LiveExecutor<'graph_storage, T: TimeSource = WallClock> {
+    nodes: Vec<ScheduledCallback<'graph_storage>>,
     metadata: GraphMetadata,
-    scheduler: Arc<Scheduler<A>>,
+    scheduler: Arc<Scheduler>,
     #[cfg(feature = "iceoryx2")]
     events: Arc<std::sync::OnceLock<crate::stop_signal::EventRouter<'graph_storage>>>,
     clock: T,
-    allocator: A,
 }
 
 impl<'graph_storage> LiveExecutor<'graph_storage, WallClock> {
@@ -34,47 +28,14 @@ impl<'graph_storage> LiveExecutor<'graph_storage, WallClock> {
         config: ThreadPoolConfig,
         graph: BuiltGraph<'graph_storage>,
     ) -> Result<Self, LiveExecutorStartError> {
-        Self::new_multi_pool_with_time_in(
-            ThreadPoolConfigList::from(config),
-            graph,
-            WallClock,
-            Global,
-        )
+        Self::new_multi_pool_with_time(ThreadPoolConfigList::from(config), graph, WallClock)
     }
 
     pub fn new_multi_pool(
         pools: ThreadPoolConfigList,
         graph: BuiltGraph<'graph_storage>,
     ) -> Result<Self, LiveExecutorStartError> {
-        Self::new_multi_pool_with_time_in(pools, graph, WallClock, Global)
-    }
-}
-
-impl<'graph_storage, A: Allocator + Clone + Send + Sync + 'static>
-    LiveExecutor<'graph_storage, WallClock, A>
-{
-    /// Like [`LiveExecutor::new`], allocating executor-owned storage from `allocator`.
-    pub fn new_in(
-        config: ThreadPoolConfig,
-        graph: BuiltGraph<'graph_storage>,
-        allocator: A,
-    ) -> Result<Self, LiveExecutorStartError> {
-        Self::new_multi_pool_with_time_in(
-            ThreadPoolConfigList::from(config),
-            graph,
-            WallClock,
-            allocator,
-        )
-    }
-
-    /// Like [`LiveExecutor::new_multi_pool`], allocating executor-owned storage
-    /// from `allocator`.
-    pub fn new_multi_pool_in(
-        pools: ThreadPoolConfigList,
-        graph: BuiltGraph<'graph_storage>,
-        allocator: A,
-    ) -> Result<Self, LiveExecutorStartError> {
-        Self::new_multi_pool_with_time_in(pools, graph, WallClock, allocator)
+        Self::new_multi_pool_with_time(pools, graph, WallClock)
     }
 }
 
@@ -83,22 +44,6 @@ impl<'graph_storage, T: TimeSource> LiveExecutor<'graph_storage, T> {
         pools: ThreadPoolConfigList,
         graph: BuiltGraph<'graph_storage>,
         clock: T,
-    ) -> Result<Self, LiveExecutorStartError> {
-        Self::new_multi_pool_with_time_in(pools, graph, clock, Global)
-    }
-}
-
-impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static>
-    LiveExecutor<'graph_storage, T, A>
-{
-    /// Like [`LiveExecutor::new_multi_pool_with_time`], allocating the executor's
-    /// node and scheduler vectors from `allocator`. Callback storage, graph
-    /// metadata, channels, and thread setup still use the global allocator.
-    pub fn new_multi_pool_with_time_in(
-        pools: ThreadPoolConfigList,
-        graph: BuiltGraph<'graph_storage>,
-        clock: T,
-        allocator: A,
     ) -> Result<Self, LiveExecutorStartError> {
         if pools.is_empty() {
             return Err(LiveExecutorStartError {
@@ -111,7 +56,6 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
                 reason: error.to_string(),
             })?;
         let (nodes, metadata) = graph.into_parts();
-        let nodes = into_vec_in(nodes, allocator.clone());
         if let Some(node) = nodes
             .iter()
             .find(|node| !pools.contains(node.schedule.pool))
@@ -133,7 +77,7 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
             });
         }
         let schedules: Vec<_> = nodes.iter().map(|node| node.schedule.clone()).collect();
-        let scheduler = Scheduler::new_in(allocator.clone(), &schedules, &pools);
+        let scheduler = Scheduler::new(&schedules, &pools);
         Ok(Self {
             nodes,
             metadata,
@@ -141,11 +85,10 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
             #[cfg(feature = "iceoryx2")]
             events: Arc::new(std::sync::OnceLock::new()),
             clock,
-            allocator,
         })
     }
 
-    pub fn stop_signal(&self) -> StopSignal<'graph_storage, A> {
+    pub fn stop_signal(&self) -> StopSignal<'graph_storage> {
         #[cfg(feature = "iceoryx2")]
         return StopSignal::new(self.scheduler.clone(), Arc::clone(&self.events));
         #[cfg(not(feature = "iceoryx2"))]
@@ -163,14 +106,14 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
     /// A controller panic is resumed only after all threads have joined.
     pub fn run_with<R>(
         self,
-        controller: impl FnOnce(&StopSignal<'graph_storage, A>) -> R,
+        controller: impl FnOnce(&StopSignal<'graph_storage>) -> R,
     ) -> Result<R, LiveExecutorError> {
         self.run_checked(controller, |_| Ok(()))
     }
 
     fn run_checked<R>(
         self,
-        controller: impl FnOnce(&StopSignal<'graph_storage, A>) -> R,
+        controller: impl FnOnce(&StopSignal<'graph_storage>) -> R,
         mut before_spawn: impl FnMut(usize) -> std::io::Result<()>,
     ) -> Result<R, LiveExecutorError> {
         let Self {
@@ -180,7 +123,6 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
             #[cfg(feature = "iceoryx2")]
             events,
             clock,
-            allocator,
         } = self;
         #[cfg(feature = "iceoryx2")]
         let stop = StopSignal::new(scheduler.clone(), Arc::clone(&events));
@@ -192,7 +134,10 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
         #[cfg(feature = "iceoryx2")]
         let mut registrations = Vec::new();
         #[cfg(feature = "iceoryx2")]
-        let mut event_targets = std::collections::BTreeMap::new();
+        let mut event_targets = std::collections::BTreeMap::<
+            String,
+            std::collections::BTreeMap<usize, task::iox2::Iox2EventTarget<'graph_storage>>,
+        >::new();
         for (index, node) in nodes.iter_mut().enumerate() {
             if node.schedule.is_timed() {
                 let next = if node.schedule.run_on_start {
@@ -223,11 +168,10 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
                         reason: format!("callback '{}': {error}", node.name),
                     })
                 })?;
-                event_targets.extend(
-                    targets
-                        .into_iter()
-                        .map(|(ordinal, target)| ((node.name.clone(), ordinal), target)),
-                );
+                event_targets
+                    .entry(node.name.clone())
+                    .or_default()
+                    .extend(targets);
                 registrations.extend(registrations_for_node);
             }
         }
@@ -256,9 +200,7 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
                 (node.schedule.run_on_start || node.callback.has_pending_inputs()).then_some(i)
             })
             .collect();
-        let mut wrapped = Vec::with_capacity_in(nodes.len(), allocator);
-        wrapped.extend(nodes.into_iter().map(Mutex::new));
-        let nodes = wrapped;
+        let nodes: Vec<_> = nodes.into_iter().map(Mutex::new).collect();
 
         thread::scope(|scope| {
             // This guard must unwind inside the scope, before scope's implicit
@@ -373,23 +315,11 @@ impl<'graph_storage, T: TimeSource, A: Allocator + Clone + Send + Sync + 'static
     }
 }
 
-struct StopOnExit<'graph_storage, A: Allocator + Clone + Send + Sync + 'static>(
-    StopSignal<'graph_storage, A>,
-);
-impl<A: Allocator + Clone + Send + Sync + 'static> Drop for StopOnExit<'_, A> {
+struct StopOnExit<'graph_storage>(StopSignal<'graph_storage>);
+impl Drop for StopOnExit<'_> {
     fn drop(&mut self) {
         self.0.request_stop();
     }
-}
-
-/// Move a globally allocated vector into our allocator.
-/// We could turn task graph into something allocator aware, but it's really just a build time
-/// concern so there's not much gain.
-/// Plus, a lot of its data like String and maps don't have allocator APIs yet.
-fn into_vec_in<T, A: Allocator>(items: Vec<T>, allocator: A) -> Vec<T, A> {
-    let mut target = Vec::with_capacity_in(items.len(), allocator);
-    target.extend(items);
-    target
 }
 
 #[cfg(test)]

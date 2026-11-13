@@ -1,6 +1,5 @@
 use crate::pool_state::Scheduler;
 use crossbeam::channel::Receiver;
-use std::alloc::{Allocator, Global};
 #[cfg(feature = "iceoryx2")]
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -12,24 +11,24 @@ use std::sync::OnceLock;
 #[cfg(feature = "iceoryx2")]
 #[derive(Debug)]
 pub(crate) struct EventRouter<'graph_storage> {
-    pub targets: BTreeMap<(String, usize), task::iox2::Iox2EventTarget<'graph_storage>>,
+    pub targets: BTreeMap<String, BTreeMap<usize, task::iox2::Iox2EventTarget<'graph_storage>>>,
 }
 
 /// Stop and drain controls. `'graph_storage` is the graph lifetime used by event
 /// target observers.
 #[derive(Clone)]
-pub struct StopSignal<'graph_storage, A: Allocator + Clone + Send + Sync + 'static = Global> {
-    scheduler: Arc<Scheduler<A>>,
+pub struct StopSignal<'graph_storage> {
+    scheduler: Arc<Scheduler>,
     #[cfg(feature = "iceoryx2")]
     events: Arc<OnceLock<EventRouter<'graph_storage>>>,
-    // Keeps the graph lifetime in the type when event routing is disabled.
+    /// Keeps the graph lifetime in the type when event routing is disabled.
     #[cfg(not(feature = "iceoryx2"))]
     _graph_storage: std::marker::PhantomData<&'graph_storage ()>,
 }
 
-impl<'graph_storage, A: Allocator + Clone + Send + Sync + 'static> StopSignal<'graph_storage, A> {
+impl<'graph_storage> StopSignal<'graph_storage> {
     pub(crate) fn new(
-        scheduler: Arc<Scheduler<A>>,
+        scheduler: Arc<Scheduler>,
         #[cfg(feature = "iceoryx2")] events: Arc<OnceLock<EventRouter<'graph_storage>>>,
     ) -> Self {
         Self {
@@ -93,7 +92,8 @@ impl<'graph_storage, A: Allocator + Clone + Send + Sync + 'static> StopSignal<'g
         let target = self
             .events
             .get()
-            .and_then(|router| router.targets.get(&(callback.into(), ordinal)))
+            .and_then(|router| router.targets.get(callback))
+            .and_then(|targets| targets.get(&ordinal))
             .ok_or_else(|| format!("unknown event recipient '{callback}' subscriber {ordinal}"))?;
         if target.channel != channel {
             return Err(format!(
@@ -110,6 +110,10 @@ impl<'graph_storage, A: Allocator + Clone + Send + Sync + 'static> StopSignal<'g
     pub fn is_stopped(&self) -> bool {
         self.scheduler.is_stopped()
     }
+    /// True when no callback is queued or running.
+    pub fn is_idle(&self) -> bool {
+        self.scheduler.is_idle()
+    }
     /// Block until shutdown is requested, including a worker failure.
     pub fn wait(&self) {
         let _ = self.scheduler.stop_rx.recv();
@@ -121,9 +125,7 @@ impl<'graph_storage, A: Allocator + Clone + Send + Sync + 'static> StopSignal<'g
     }
 }
 
-impl<A: Allocator + Clone + Send + Sync + 'static> task::executor::ExecutorStopSignal
-    for StopSignal<'_, A>
-{
+impl task::executor::ExecutorStopSignal for StopSignal<'_> {
     fn request_stop(&self) {
         StopSignal::request_stop(self);
     }
