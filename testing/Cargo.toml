@@ -23,6 +23,7 @@ iceoryx2 = [
 [dev-dependencies]
 logging = { path = "../logging" }
 serde_json = { workspace = true }
+googletest = { workspace = true }
 task_macros = { path = "../task_macros" }
 
 [lints]
