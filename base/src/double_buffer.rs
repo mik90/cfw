@@ -1,8 +1,8 @@
 use crate::arena::{ArenaPtr, ArenaReaderPtr};
 use crate::mpsc_queue::MpscQueue;
-use std::cell::{RefCell, RefMut};
-use std::collections::VecDeque;
-use std::sync::Arc;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::cell::{RefCell, RefMut};
 
 #[derive(Debug)]
 pub(crate) struct Buffer<'arena, T> {

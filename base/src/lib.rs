@@ -1,3 +1,8 @@
+// no_std unless the std feature is enabled
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 pub mod arena;
 pub mod double_buffer;
 pub mod experimental_mpsc_queue;

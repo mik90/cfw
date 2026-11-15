@@ -1,7 +1,7 @@
 //! Fixed-capacity inline sequence.
-use std::mem;
-use std::ops::Deref;
-use std::slice;
+use core::mem;
+use core::ops::Deref;
+use core::slice;
 
 /// Inline sequence of at most `N` entries. Never allocates.
 #[derive(Debug)]
@@ -226,14 +226,14 @@ where
     T: Copy + Default + serde::Deserialize<'de>,
 {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor<T, const N: usize>(std::marker::PhantomData<T>);
+        struct Visitor<T, const N: usize>(core::marker::PhantomData<T>);
         impl<'de, T, const N: usize> serde::de::Visitor<'de> for Visitor<T, N>
         where
             T: Copy + Default + serde::Deserialize<'de>,
         {
             type Value = StaticVec<T, N>;
 
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 write!(f, "a sequence of at most {N} entries")
             }
 
@@ -252,13 +252,13 @@ where
                 Ok(values)
             }
         }
-        deserializer.deserialize_seq(Visitor::<T, N>(std::marker::PhantomData))
+        deserializer.deserialize_seq(Visitor::<T, N>(core::marker::PhantomData))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
     use super::*;
     use googletest::prelude::*;

@@ -1,10 +1,12 @@
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::UnsafeCell;
+use core::mem::{ManuallyDrop, MaybeUninit};
+use core::ops::Deref;
+use core::sync::atomic;
+use core::sync::atomic::AtomicUsize;
 use crossbeam_queue::ArrayQueue;
-use std::cell::UnsafeCell;
-use std::mem::{ManuallyDrop, MaybeUninit};
-use std::ops::Deref;
-use std::sync::atomic;
-use std::sync::atomic::AtomicUsize;
-use std::vec::Vec;
 
 #[derive(Debug)]
 pub struct ArenaPtr<'arena, T> {
@@ -460,7 +462,7 @@ mod tests {
         let free_list = ArrayQueue::new(1);
         free_list.force_push(0);
 
-        let maybe_ptr = ArenaPtr::try_new(std::slice::from_ref(&slot), &free_list);
+        let maybe_ptr = ArenaPtr::try_new(core::slice::from_ref(&slot), &free_list);
         assert!(maybe_ptr.is_some());
 
         let ptr = maybe_ptr.unwrap();
@@ -474,7 +476,7 @@ mod tests {
     // A slot must remain unavailable until its payload destructor completes.
     #[test]
     fn test_drop_reuse_race() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use core::sync::atomic::{AtomicBool, Ordering};
         use std::thread;
 
         // Statics rather than locals: Drop::drop only receives &mut self and cannot
@@ -501,10 +503,10 @@ mod tests {
                 // Pause while the payload is still being destroyed.
                 DROP_STARTED.store(true, Ordering::Release);
                 while !DROP_CAN_FINISH.load(Ordering::Acquire) {
-                    std::hint::spin_loop();
+                    core::hint::spin_loop();
                 }
                 // Reusing this slot prematurely would race with this read.
-                let _ = std::hint::black_box(self.value);
+                let _ = core::hint::black_box(self.value);
             }
         }
 
@@ -520,7 +522,7 @@ mod tests {
 
             // Wait until assume_init_drop has started but hasn't finished.
             while !DROP_STARTED.load(Ordering::Acquire) {
-                std::hint::spin_loop();
+                core::hint::spin_loop();
             }
 
             // The slot's index is not queued until its destructor completes.
@@ -625,7 +627,7 @@ mod tests {
             big_array: [u64; LARGE_SIZE],
         }
         const {
-            if std::mem::size_of::<LargeMessage>() < DEFAULT_STACK_HEIGHT_BYTES {
+            if core::mem::size_of::<LargeMessage>() < DEFAULT_STACK_HEIGHT_BYTES {
                 panic!("LargeMessage isn't large enough");
             }
         }

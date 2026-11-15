@@ -1,5 +1,5 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam_queue::ArrayQueue;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A bounded, lock-free MPSC queue backed by `crossbeam_queue::ArrayQueue`.
 /// When the queue is full, `push` displaces the oldest element (front) to make room.

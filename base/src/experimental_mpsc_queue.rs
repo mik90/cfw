@@ -1,8 +1,10 @@
-use std::cell::UnsafeCell;
-use std::hint;
-use std::mem::MaybeUninit;
-use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{
+use alloc::vec::Vec;
+use core::cell::UnsafeCell;
+use core::hint;
+use core::mem::MaybeUninit;
+use core::ops::{Deref, DerefMut};
+use core::ptr;
+use core::sync::atomic::{
     AtomicUsize,
     Ordering::{Acquire, Relaxed, Release},
 };
@@ -172,7 +174,7 @@ impl<T> ExperimentalMpscQueue<T> {
                     // SAFETY: We own this slot after the CAS. Its data is
                     // initialized (producer published with Release on sequence).
                     unsafe {
-                        std::ptr::swap((*slot.value.get()).as_mut_ptr(), return_value.as_mut_ptr());
+                        ptr::swap((*slot.value.get()).as_mut_ptr(), return_value.as_mut_ptr());
                     }
                     // Free the slot for the writer at position h + capacity.
                     slot.sequence.store(h + self.capacity, Release);
@@ -210,7 +212,7 @@ impl<T> Drop for ExperimentalMpscQueue<T> {
             let slot = &mut self.slots[pos % self.capacity];
             // SAFETY: All slots between head and tail should be occupied
             unsafe {
-                std::ptr::drop_in_place(slot.value.get_mut().as_mut_ptr());
+                ptr::drop_in_place(slot.value.get_mut().as_mut_ptr());
             }
         }
     }

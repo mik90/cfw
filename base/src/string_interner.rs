@@ -1,7 +1,10 @@
-use std::cmp::{Eq, PartialEq};
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::marker::PhantomData;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+#[cfg(feature = "serde")]
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::hash::Hash;
+use core::marker::PhantomData;
 
 /// Strong-type for accessing interned channel names or task names
 #[derive(Debug)]
@@ -45,8 +48,20 @@ impl<MarkerType> PartialEq for InternId<MarkerType> {
 
 impl<MarkerType> Eq for InternId<MarkerType> {}
 
+impl<MarkerType> PartialOrd for InternId<MarkerType> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<MarkerType> Ord for InternId<MarkerType> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
 impl<MarkerType> Hash for InternId<MarkerType> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
     }
 }
@@ -54,15 +69,15 @@ impl<MarkerType> Hash for InternId<MarkerType> {
 /// Bidirectional map for looking up data given ID, or ID given data
 #[derive(Clone, Debug)]
 pub struct StringInterner<InternType> {
-    id_to_data: HashMap<InternId<InternType>, String>,
-    data_to_id: HashMap<String, InternId<InternType>>,
+    id_to_data: BTreeMap<InternId<InternType>, String>,
+    data_to_id: BTreeMap<String, InternId<InternType>>,
 }
 
 impl<InternType> StringInterner<InternType> {
     pub fn new() -> Self {
         StringInterner {
-            id_to_data: HashMap::default(),
-            data_to_id: HashMap::default(),
+            id_to_data: BTreeMap::new(),
+            data_to_id: BTreeMap::new(),
         }
     }
 
@@ -101,8 +116,11 @@ impl<InternType> StringInterner<InternType> {
     /// Minimizes size before passing to users, should not increase in size since users willlll
     /// get this as immutable
     pub fn shrink_to_fit(&mut self) {
-        self.id_to_data.shrink_to_fit();
-        self.data_to_id.shrink_to_fit();
+        // BTreeMap has no shrink_to_fit; rebuilding releases excess nodes.
+        let id_to_data = core::mem::take(&mut self.id_to_data);
+        let data_to_id = core::mem::take(&mut self.data_to_id);
+        self.id_to_data = id_to_data.into_iter().collect();
+        self.data_to_id = data_to_id.into_iter().collect();
     }
 }
 

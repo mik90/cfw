@@ -1,4 +1,5 @@
-use std::{
+use alloc::string::String;
+use core::{
     any::type_name,
     borrow::Borrow,
     fmt,
@@ -92,13 +93,13 @@ impl<Tag> From<String> for TaggedName<Tag> {
 
 impl<Tag> PartialOrd for TaggedName<Tag> {
     #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl<Tag> Ord for TaggedName<Tag> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.value.cmp(&other.value)
     }
 }
