@@ -23,12 +23,34 @@ rust_test(
 
 miri_test(
     name = "execution_log_test_miri",
+    slow = True,
     srcs = ["tests/execution_log.rs"],
-    deps = all_crate_deps(normal = True),
+    deps = [
+        "//logging:logging",
+        "//simulation_executor:simulation_executor",
+        "//task:task",
+        "//task_graph:task_graph",
+        "//task_macros:task_macros",
+    ] + all_crate_deps(
+        cargo_only = True,
+        normal = True,
+        normal_dev = True,
+    ),
 )
 
 miri_test(
     name = "recording_test_miri",
+    slow = True,
     srcs = ["tests/recording.rs"],
-    deps = all_crate_deps(normal = True),
+    deps = [
+        "//logging:logging",
+        "//simulation_executor:simulation_executor",
+        "//task:task",
+        "//task_graph:task_graph",
+        "//task_macros:task_macros",
+    ] + all_crate_deps(
+        cargo_only = True,
+        normal = True,
+        normal_dev = True,
+    ),
 )

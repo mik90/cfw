@@ -47,5 +47,20 @@ bazel-lint:
     buildifier -r --lint=fix .
     buildifier -r -mode=check --lint=warn .
 
+bazel-test *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bazel test //... "$@"
+
+bazel-miri *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bazel test --test_tag_filters=-slow //:miri "$@"
+
+bazel-miri-full *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bazel test //:miri "$@"
+
 no-std:
     cargo check -p base -p task --no-default-features --target thumbv7em-none-eabihf

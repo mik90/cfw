@@ -44,6 +44,7 @@ rust_benchmark(
 
 miri_test(
     name = "task_miri",
+    slow = True,
     srcs = glob(["src/**/*.rs"]),
     rustc_flags = [
         "--cfg",
@@ -53,5 +54,11 @@ miri_test(
         "--cfg",
         'feature="testing"',
     ],
-    deps = all_crate_deps(normal = True),
+    deps = [
+        "//base:base",
+    ] + all_crate_deps(
+        cargo_only = True,
+        normal = True,
+        normal_dev = True,
+    ),
 )

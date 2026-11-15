@@ -107,12 +107,15 @@ def rust_benchmark(name, srcs, deps):
     )
 
 def miri_test(**kwargs):
+    tags = [
+        "manual",
+        "miri",
+    ]
+    if kwargs.pop("slow", False):
+        tags.append("slow")
     _miri_test(
         edition = "2024",
-        tags = [
-            "manual",
-            "miri",
-        ],
+        tags = tags,
         timeout = "long",
         **kwargs
     )

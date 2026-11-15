@@ -43,5 +43,9 @@ miri_test(
         "--cfg",
         'feature="std"',
     ],
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(
+        cargo_only = True,
+        normal = True,
+        normal_dev = True,
+    ),
 )
