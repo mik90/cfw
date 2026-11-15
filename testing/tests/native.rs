@@ -63,7 +63,7 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
     let mut values = Vec::new();
     let mut stamps = Vec::new();
     assert_eq!(
-        capture.messages(|index, message| {
+        capture.consume(|index, message| {
             assert_eq!(index, values.len());
             values.push(message.message);
             stamps.push(message.header.published_at);
@@ -115,7 +115,7 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
     sender.send(2);
     let mut stamps = Vec::new();
     assert_eq!(
-        capture.messages(|_, message| stamps.push(message.header.published_at)),
+        capture.consume(|_, message| stamps.push(message.header.published_at)),
         2
     );
     assert_eq!(stamps, [at(100), at(110)]);
@@ -138,7 +138,7 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
     let capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
     sender.send(1);
     sender.send(2);
-    let (count, dropped) = capture.try_messages(|index, message| {
+    let (count, dropped) = capture.try_consume(|index, message| {
         assert_eq!((index, message.message), (0, 2));
     });
     assert_eq!((count, dropped.writer, dropped.reader), (1, 1, 0));
@@ -146,11 +146,11 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
     sender.send(3);
     assert_eq!(
         capture
-            .try_messages(|index, m| assert_eq!((index, m.message), (0, 3)))
+            .try_consume(|index, m| assert_eq!((index, m.message), (0, 3)))
             .0,
         1
     );
-    assert_eq!(capture.try_messages(|_, _| panic!("empty batch")).0, 0);
+    assert_eq!(capture.try_consume(|_, _| panic!("empty batch")).0, 0);
 }
 
 struct Fails;
@@ -190,7 +190,7 @@ fn failed_step_cancels_capture_and_poisons_executor() {
     sender.send(9);
     let mut observed = None;
     assert_eq!(
-        capture.messages(|_, message| {
+        capture.consume(|_, message| {
             observed = Some((message.message, message.header.published_at))
         }),
         1

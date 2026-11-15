@@ -90,7 +90,7 @@ fn output_fixture<T: Debug + ZeroCopySend + Send + Sync + 'static>(
     })
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Capture for Iox2Subscriber<T> {
-    fn try_messages(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
+    fn try_consume(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
         self.update();
         assert_eq!(self.receive_errors(), 0, "IPC capture receive failed");
         (

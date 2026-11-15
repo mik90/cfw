@@ -141,24 +141,24 @@ impl<T: 'static> TestOutput<T> {
         );
         &*executor.captures[self.index]
     }
-    pub fn try_messages(
+    pub fn try_consume(
         &self,
         executor: &UnitTestExecutor<'_>,
         mut inspect: impl FnMut(usize, &Message<T>),
     ) -> (usize, DroppedMessages) {
-        self.capture(executor).try_messages(&mut |index, value| {
+        self.capture(executor).try_consume(&mut |index, value| {
             inspect(
                 index,
                 value.downcast_ref().expect("capture payload identity"),
             )
         })
     }
-    pub fn messages(
+    pub fn consume(
         &self,
         executor: &UnitTestExecutor<'_>,
         inspect: impl FnMut(usize, &Message<T>),
     ) -> usize {
-        let (count, drops) = self.try_messages(executor, inspect);
+        let (count, drops) = self.try_consume(executor, inspect);
         assert!(!drops.any(), "test output overflow: {drops:?}");
         count
     }
@@ -184,7 +184,7 @@ impl<T: 'static> TestOutput<T> {
         assert!(!drops.any(), "test output overflow: {drops:?}");
         count
     }
-    /// Messages currently available to `messages`.
+    /// Messages currently available to `consume`.
     pub fn message_count(&self, executor: &UnitTestExecutor<'_>) -> usize {
         self.capture(executor).message_count()
     }
@@ -198,7 +198,7 @@ pub(crate) trait InputPump<'graph_storage>: Send {
 pub(crate) trait Capture: Send {
     /// Move the next batch out of the backend reader and report it. Dropped
     /// counts are returned instead of asserted so callers choose the policy.
-    fn try_messages(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages);
+    fn try_consume(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages);
 
     fn try_peek(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages);
 
@@ -207,8 +207,8 @@ pub(crate) trait Capture: Send {
     fn message_count(&self) -> usize;
 }
 impl<T: Send + Sync + 'static> Capture for TestSubscriber<'_, T> {
-    fn try_messages(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
-        TestSubscriber::try_messages(self, |i, message| inspect(i, message))
+    fn try_consume(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
+        TestSubscriber::try_consume(self, |i, message| inspect(i, message))
     }
 
     fn try_peek(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {

@@ -19,8 +19,8 @@ impl DroppedMessages {
     }
 }
 
-/// Capture endpoint whose messages may outlive both the fixture and executor.
-/// The application must retain graph storage until all messages are dropped.
+/// Capture endpoint over graph storage. Messages are inspected through
+/// callbacks and are never retained by this handle.
 pub struct TestSubscriber<'graph_storage, T> {
     subscriber: Subscriber<'graph_storage, T>,
 }
@@ -31,7 +31,7 @@ impl<'graph_storage, T> TestSubscriber<'graph_storage, T> {
 
     /// Inspect the next batch and consume it. Message references do not escape
     /// the callback, so payloads need not be Clone.
-    pub fn try_messages(
+    pub fn try_consume(
         &self,
         mut inspect: impl FnMut(usize, &Message<T>),
     ) -> (usize, DroppedMessages) {
@@ -45,15 +45,15 @@ impl<'graph_storage, T> TestSubscriber<'graph_storage, T> {
         (count, dropped)
     }
 
-    pub fn messages(&self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
-        let (count, dropped) = self.try_messages(inspect);
+    pub fn consume(&self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
+        let (count, dropped) = self.try_consume(inspect);
         assert!(!dropped.any(), "test subscriber drops: {dropped:?}");
         count
     }
 
     /// Inspect the next batch without consuming it. Pending writer-side
     /// publications are moved into the reader buffer first, so this matches the
-    /// batch a later `messages` call would return.
+    /// batch a later `consume` call would return.
     pub fn try_peek(
         &self,
         mut inspect: impl FnMut(usize, &Message<T>),
@@ -73,7 +73,7 @@ impl<'graph_storage, T> TestSubscriber<'graph_storage, T> {
         count
     }
 
-    /// Messages currently available to `messages`. Writer-side publications are
+    /// Messages currently available to `consume`. Writer-side publications are
     /// moved into the reader buffer first; the result is bounded by the reader
     /// capacity, so overflow is reported by the consuming calls instead.
     pub fn message_count(&self) -> usize {

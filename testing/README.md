@@ -27,12 +27,21 @@ let output = builder.add_test_subscriber::<u64>("output");
 builder.run(|mut executor| {
     input.send(21);
     executor.step();
-    assert_eq!(output.messages(&mut executor, |index, message| {
+    assert_eq!(output.consume(&executor, |index, message| {
         assert_eq!(index, 0);
         assert_eq!(message.message, 42);
     }), 1);
 });
 ```
+
+`consume(inspect)` drains the next batch during the callback, while `peek(inspect)`
+visits the same batch without consuming it, and `message_count()` reports how many
+messages are currently available. 
+
+Although it's a bit clunkier, the closure API lets us avoid requirements on `Clone` or `Copy` for the message type.
+
+Use the `try_` variants (`try_consume`, `try_peek`) when overflow is expected since
+ they return `DroppedMessages` instead of asserting on a lack of drops.
 
 For ordinary control flow outside a closure, keep the allocated `UnitTestStorage` in scope.
 It owns channel storage and the single-use task/fixture construction state; its
@@ -44,7 +53,7 @@ let mut executor = storage.build();
 
 input.send_at(task::time::FrameworkTime::from_nanoseconds(1_000_000), 21);
 executor.run_until_idle(16).unwrap();
-output.messages(&mut executor, |_, message| {
+output.consume(&executor, |_, message| {
     assert_eq!(message.message, 42);
     assert_eq!(message.header.published_at.to_nanoseconds(), 1_000_000);
 });
@@ -115,7 +124,7 @@ let mut executor = storage.build();
 input.send(21);
 input.send_at(task::time::FrameworkTime::from_nanos(1_000_000), 22);
 executor.run_until_idle(16).unwrap();
-assert_eq!(output.messages(&mut executor, |index, message| {
+assert_eq!(output.consume(&executor, |index, message| {
     assert_eq!(message.message, if index == 0 { 42 } else { 44 });
     assert_eq!(message.header.published_at.to_nanoseconds(), if index == 0 { 0 } else { 1_000_000 });
 }), 2);

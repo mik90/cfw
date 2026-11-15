@@ -17,7 +17,7 @@ mod input_span {
                 input.send(value);
             }
             executor.step();
-            output.messages(&executor, |_, message| {
+            output.consume(&executor, |_, message| {
                 reports.push(message.message.clone());
             });
         });

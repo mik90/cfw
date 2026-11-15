@@ -59,7 +59,7 @@ mod tests {
             input.send_at(FrameworkTime::from_millis(3), 9);
             for _ in 0..3 {
                 executor.step();
-                output.messages(&executor, |_, message| {
+                output.consume(&executor, |_, message| {
                     reports.push(message.message.clone());
                 });
             }
@@ -83,10 +83,10 @@ mod tests {
         builder.run(|mut executor| {
             input.send(6);
             executor.step();
-            numbers.messages(&executor, |_, message| {
+            numbers.consume(&executor, |_, message| {
                 collected_numbers.push(message.message);
             });
-            labels.messages(&executor, |_, message| {
+            labels.consume(&executor, |_, message| {
                 collected_labels.push(message.message.clone());
             });
         });
@@ -104,12 +104,12 @@ mod tests {
         builder.run(|mut executor| {
             input.send(0);
             executor.step();
-            labels.messages(&executor, |_, message| {
+            labels.consume(&executor, |_, message| {
                 collected.push(message.message.clone());
             });
             input.send(2);
             executor.step();
-            labels.messages(&executor, |_, message| {
+            labels.consume(&executor, |_, message| {
                 collected.push(message.message.clone());
             });
         });
@@ -130,7 +130,7 @@ mod tests {
                 z: 12.0,
             });
             executor.step();
-            output.messages(&executor, |_, message| lengths.push(message.message));
+            output.consume(&executor, |_, message| lengths.push(message.message));
         });
         assert_eq!(lengths, vec![13.0]);
     }

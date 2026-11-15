@@ -34,7 +34,7 @@ fn send_recv_zst() {
     builder.run(|mut executor| {
         test_publisher.send(ZstMessageA {});
         executor.step();
-        test_subscriber.messages(&executor, |index, message| {
+        test_subscriber.consume(&executor, |index, message| {
             expect_eq!(index, 0);
             expect_eq!(message.header.published_at, FrameworkTime::from_millis(0));
         });
