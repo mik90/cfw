@@ -1,8 +1,4 @@
 use simulation_executor::StepError;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
 use std::time::Duration;
 use task::{ChannelPlan, LoanError, Output, RequiredInput, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphBuilder, PoolIndex, ThreadPoolConfigList};
@@ -51,7 +47,7 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
         },
     );
     let mut sender = executor.add_test_publisher(input.take_publisher(&sender).unwrap());
-    let mut capture = executor.add_test_subscriber(output.take_subscriber(&capture).unwrap());
+    let capture = executor.add_test_subscriber(output.take_subscriber(&capture).unwrap());
     drop((input, output));
     assert!(executor.step().idle);
     sender.send(21);
@@ -64,20 +60,20 @@ fn fixture_round_trip_timestamps_idle_restart_and_executor_first_drop() {
     assert!(sender.try_send_at(at(109), 23).is_err());
     drop(executor);
     assert!(sender.try_send_at(at(200), 23).is_err());
-    let retained = capture.take_messages();
-    assert!(capture.take_messages().is_empty());
+    let mut values = Vec::new();
+    let mut stamps = Vec::new();
+    assert_eq!(
+        capture.messages(|index, message| {
+            assert_eq!(index, values.len());
+            values.push(message.message);
+            stamps.push(message.header.published_at);
+        }),
+        2
+    );
+    assert_eq!(capture.message_count(), 0);
     drop((capture, sender));
-    assert_eq!(
-        retained.iter().map(|m| m.message).collect::<Vec<_>>(),
-        [42, 44]
-    );
-    assert_eq!(
-        retained
-            .iter()
-            .map(|m| m.header.published_at)
-            .collect::<Vec<_>>(),
-        [at(100), at(110)]
-    );
+    assert_eq!(values, [42, 44]);
+    assert_eq!(stamps, [at(100), at(110)]);
 }
 
 struct Tick;
@@ -111,15 +107,18 @@ fn fixture_clock_tracks_virtual_time_and_custom_configuration() {
         },
     );
     let mut sender = executor.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
-    let mut capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
+    let capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
     sender.send(1);
     let step = executor.step();
     assert_eq!((step.before, step.after), (at(100), at(110)));
     assert_eq!(executor.current_time(), at(110));
     sender.send(2);
-    let messages = capture.take_messages();
-    assert_eq!(messages[0].header.published_at, at(100));
-    assert_eq!(messages[1].header.published_at, at(110));
+    let mut stamps = Vec::new();
+    assert_eq!(
+        capture.messages(|_, message| stamps.push(message.header.published_at)),
+        2
+    );
+    assert_eq!(stamps, [at(100), at(110)]);
 }
 
 #[test]
@@ -136,7 +135,7 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
         Default::default(),
     );
     let mut sender = executor.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
-    let mut capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
+    let capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
     sender.send(1);
     sender.send(2);
     let (count, dropped) = capture.try_messages(|index, message| {
@@ -152,38 +151,6 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
         1
     );
     assert_eq!(capture.try_messages(|_, _| panic!("empty batch")).0, 0);
-}
-
-struct Tracked(Arc<AtomicUsize>);
-impl Drop for Tracked {
-    fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-#[test]
-fn retained_payload_drops_exactly_once_after_all_endpoints_and_executor() {
-    let mut plan = ChannelPlan::new("tracked");
-    let publisher = plan.publisher(1);
-    let subscriber = plan.subscriber(1);
-    let storage = plan.allocate().unwrap();
-    let bindings = storage.bind();
-    let mut executor = UnitTestExecutor::new_with_graph(
-        GraphBuilder::with_channel_names([storage.name()])
-            .build()
-            .unwrap(),
-        Default::default(),
-    );
-    let mut sender = executor.add_test_publisher(bindings.take_publisher(&publisher).unwrap());
-    let mut capture = executor.add_test_subscriber(bindings.take_subscriber(&subscriber).unwrap());
-    let drops = Arc::new(AtomicUsize::new(0));
-    sender.send(Tracked(drops.clone()));
-    let retained = capture.take_messages();
-    sender.send(Tracked(drops.clone()));
-    drop((bindings, executor, sender, capture));
-    assert_eq!(drops.load(Ordering::Relaxed), 1);
-    drop(retained);
-    assert_eq!(drops.load(Ordering::Relaxed), 2);
 }
 
 struct Fails;
@@ -212,18 +179,23 @@ fn failed_step_cancels_capture_and_poisons_executor() {
         || Ok(Fails.bind(declaration, &bindings)?),
     );
     let mut executor = UnitTestExecutor::new_with_graph(graph.build().unwrap(), Default::default());
-    let mut capture = executor.add_test_subscriber(bindings.take_subscriber(&capture).unwrap());
+    let capture = executor.add_test_subscriber(bindings.take_subscriber(&capture).unwrap());
     let mut sender = executor.add_test_publisher(bindings.take_publisher(&sender).unwrap());
     assert_eq!(executor.step().after, at(10));
     assert!(matches!(
         executor.try_step(),
         Err(StepError::Callback { .. })
     ));
-    assert!(capture.take_messages().is_empty());
+    assert_eq!(capture.message_count(), 0);
     sender.send(9);
-    let messages = capture.take_messages();
-    assert_eq!(messages[0].message, 9);
-    assert_eq!(messages[0].header.published_at, at(10));
+    let mut observed = None;
+    assert_eq!(
+        capture.messages(|_, message| {
+            observed = Some((message.message, message.header.published_at))
+        }),
+        1
+    );
+    assert_eq!(observed, Some((9, at(10))));
     assert!(matches!(executor.try_step(), Err(StepError::Poisoned)));
     assert!(sender.try_send_at(at(20), 10).is_err());
 }

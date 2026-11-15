@@ -1833,7 +1833,6 @@ dependencies = [
 name = "testing"
 version = "0.1.0"
 dependencies = [
- "base",
  "googletest",
  "iceoryx2",
  "logging",

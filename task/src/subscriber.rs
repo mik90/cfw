@@ -93,6 +93,11 @@ impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
         self.buffer.read_buffer().len() + self.buffer.write_buffer().len()
     }
 
+    /// Messages retained in the read buffer.
+    pub fn reader_len(&self) -> usize {
+        self.buffer.read_buffer().len()
+    }
+
     pub fn requests_execution(&self) -> bool {
         self.policy.trigger && !self.buffer.write_buffer().is_empty()
     }

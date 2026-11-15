@@ -1,4 +1,3 @@
-use base::arena::ArenaReaderPtr;
 use task::{Subscriber, message::Message};
 
 pub const DEFAULT_TEST_SUBSCRIBER_CAPACITY: usize = 10;
@@ -30,43 +29,62 @@ impl<'graph_storage, T> TestSubscriber<'graph_storage, T> {
         Self { subscriber }
     }
 
+    /// Inspect the next batch and consume it. Message references do not escape
+    /// the callback, so payloads need not be Clone.
     pub fn try_messages(
-        &mut self,
+        &self,
         mut inspect: impl FnMut(usize, &Message<T>),
     ) -> (usize, DroppedMessages) {
-        let (messages, dropped) = self.try_take_messages();
-        for (index, message) in messages.iter().enumerate() {
-            inspect(index, message);
+        self.subscriber.update();
+        let dropped = self.dropped();
+        let mut input = self.subscriber.input_readonly();
+        let count = input.len();
+        for (index, message) in input.drain().enumerate() {
+            inspect(index, &message);
         }
-        (messages.len(), dropped)
+        (count, dropped)
     }
 
-    pub fn messages(&mut self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
+    pub fn messages(&self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
         let (count, dropped) = self.try_messages(inspect);
         assert!(!dropped.any(), "test subscriber drops: {dropped:?}");
         count
     }
 
-    pub fn try_take_messages(
-        &mut self,
-    ) -> (
-        Vec<ArenaReaderPtr<'graph_storage, Message<T>>>,
-        DroppedMessages,
-    ) {
+    /// Inspect the next batch without consuming it. Pending writer-side
+    /// publications are moved into the reader buffer first, so this matches the
+    /// batch a later `messages` call would return.
+    pub fn try_peek(
+        &self,
+        mut inspect: impl FnMut(usize, &Message<T>),
+    ) -> (usize, DroppedMessages) {
         self.subscriber.update();
-        let dropped = DroppedMessages {
-            writer: self.subscriber.writer_drops(),
-            reader: self.subscriber.reader_drops(),
-        };
-        (
-            self.subscriber.input_forwardable().drain().collect(),
-            dropped,
-        )
+        let dropped = self.dropped();
+        let input = self.subscriber.input_readonly();
+        for (index, message) in input.inputs().enumerate() {
+            inspect(index, message);
+        }
+        (input.len(), dropped)
     }
 
-    pub fn take_messages(&mut self) -> Vec<ArenaReaderPtr<'graph_storage, Message<T>>> {
-        let (messages, dropped) = self.try_take_messages();
+    pub fn peek(&self, inspect: impl FnMut(usize, &Message<T>)) -> usize {
+        let (count, dropped) = self.try_peek(inspect);
         assert!(!dropped.any(), "test subscriber drops: {dropped:?}");
-        messages
+        count
+    }
+
+    /// Messages currently available to `messages`. Writer-side publications are
+    /// moved into the reader buffer first; the result is bounded by the reader
+    /// capacity, so overflow is reported by the consuming calls instead.
+    pub fn message_count(&self) -> usize {
+        self.subscriber.update();
+        self.subscriber.reader_len()
+    }
+
+    fn dropped(&self) -> DroppedMessages {
+        DroppedMessages {
+            writer: self.subscriber.writer_drops(),
+            reader: self.subscriber.reader_drops(),
+        }
     }
 }

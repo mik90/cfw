@@ -54,7 +54,7 @@ mod tests {
 
         test_executor.step();
 
-        let count = large_message_subscriber.messages(&mut test_executor, |index, message| {
+        let count = large_message_subscriber.messages(&test_executor, |index, message| {
             assert_eq!(index, 0);
             assert_eq!(
                 message.header.published_at,

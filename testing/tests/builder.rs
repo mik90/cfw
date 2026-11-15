@@ -48,17 +48,15 @@ fn feedback_captures_exclude_fixture_publications_without_breaking_feedback() {
         input.send(3);
         executor.step();
         let mut outputs = Vec::new();
-        output.messages(&mut executor, |_, message| outputs.push(message.message));
+        output.messages(&executor, |_, message| outputs.push(message.message));
         assert_eq!(outputs, [6]);
         let mut publications = Vec::new();
-        all.messages(&mut executor, |_, message| {
-            publications.push(message.message)
-        });
+        all.messages(&executor, |_, message| publications.push(message.message));
         publications.sort();
         assert_eq!(publications, [3, 6]);
         executor.step();
         assert_eq!(
-            output.messages(&mut executor, |_, message| assert_eq!(message.message, 12)),
+            output.messages(&executor, |_, message| assert_eq!(message.message, 12)),
             1
         );
     });
@@ -105,11 +103,11 @@ fn scheduled_inputs_wait_for_their_deadline_and_respect_virtual_pool_capacity() 
             input.send_at(at(10), 2);
             executor.run_until(at(10), 8).unwrap();
             assert_eq!(
-                left.messages(&mut executor, |_, _| panic!("published early")),
+                left.messages(&executor, |_, _| panic!("published early")),
                 0
             );
             assert_eq!(
-                right.messages(&mut executor, |_, _| panic!("published early")),
+                right.messages(&executor, |_, _| panic!("published early")),
                 0
             );
             // Insert a new deadline ahead of an already scheduled publication.
@@ -119,7 +117,7 @@ fn scheduled_inputs_wait_for_their_deadline_and_respect_virtual_pool_capacity() 
             assert_eq!(steps[0].executed.len(), threads);
             for (capture, delay) in [(&left, 0), (&right, if threads == 1 { 5 } else { 0 })] {
                 let mut actual = Vec::new();
-                capture.messages(&mut executor, |_, message| {
+                capture.messages(&executor, |_, message| {
                     actual.push((message.header.published_at, message.message.clone()));
                 });
                 assert_eq!(
@@ -136,7 +134,7 @@ fn scheduled_inputs_wait_for_their_deadline_and_respect_virtual_pool_capacity() 
             input.send_at(at(50), 5);
             executor.run_until_idle(8).unwrap();
             assert_eq!(
-                left.messages(&mut executor, |_, message| assert_eq!(
+                left.messages(&executor, |_, message| assert_eq!(
                     message.header.published_at,
                     at(50)
                 )),
@@ -202,20 +200,17 @@ fn scoped_and_explicit_forms_share_binding_and_send_time() {
             assert_eq!(step.executed, [0]);
             assert_eq!((step.before, step.after), (at(100), at(110)));
             assert_eq!(
-                output.messages(&mut executor, |index, m| {
+                output.messages(&executor, |index, m| {
                     assert_eq!((index, m.message, m.header.published_at), (0, 42, at(100)));
                 }),
                 1
             );
             input.send(22);
             executor.step();
-            output.messages(&mut executor, |index, m| {
+            output.messages(&executor, |index, m| {
                 assert_eq!((index, m.message, m.header.published_at), (0, 44, at(110)))
             });
-            assert_eq!(
-                output.messages(&mut executor, |_, _| panic!("empty batch")),
-                0
-            );
+            assert_eq!(output.messages(&executor, |_, _| panic!("empty batch")), 0);
             executor.step_count().0
         };
         if scoped {
@@ -240,6 +235,42 @@ fn scoped_and_explicit_forms_share_binding_and_send_time() {
                 .contains("closed")
         );
     }
+}
+
+#[test]
+fn peek_and_message_count_track_the_unconsumed_batch() {
+    let mut builder = UnitTestExecutorBuilder::new();
+    builder.add_task("double", Double, ns(1));
+    let mut input = builder.add_test_publisher::<u64>("input");
+    let output = builder.add_test_subscriber::<u64>("output");
+    builder.run(|mut executor| {
+        assert_eq!(output.message_count(&executor), 0);
+        assert_eq!(
+            output.peek(&executor, |_, _| panic!("nothing published")),
+            0
+        );
+        input.send(3);
+        executor.step();
+        assert_eq!(output.message_count(&executor), 1);
+        assert_eq!(
+            output.peek(&executor, |index, message| {
+                assert_eq!(
+                    (index, message.message, message.header.published_at),
+                    (0, 6, at(0))
+                )
+            }),
+            1
+        );
+        // Peeking leaves the batch in place for the consuming call.
+        assert_eq!(output.message_count(&executor), 1);
+        assert_eq!(
+            output.messages(&executor, |index, message| {
+                assert_eq!((index, message.message), (0, 6))
+            }),
+            1
+        );
+        assert_eq!(output.message_count(&executor), 0);
+    });
 }
 
 struct Batch;
@@ -361,7 +392,7 @@ fn arbitrary_input_handle_count_and_fanout_fanin() {
         }
         assert_eq!(executor.step().executed, [0, 1]);
         assert_eq!(
-            output.messages(&mut executor, |index, m| assert_eq!(
+            output.messages(&executor, |index, m| assert_eq!(
                 m.message,
                 (index % 20) as u64
             )),
@@ -396,12 +427,12 @@ fn same_type_channels_are_independent_and_tasks_wire_automatically() {
         input.send(21);
         assert_eq!(executor.step().executed, [0]);
         assert_eq!(
-            result.messages(&mut executor, |_, _| panic!("premature downstream result")),
+            result.messages(&executor, |_, _| panic!("premature downstream result")),
             0
         );
-        middle.messages(&mut executor, |_, m| assert_eq!(m.message, 42));
+        middle.messages(&executor, |_, m| assert_eq!(m.message, 42));
         assert_eq!(executor.step().executed, [1]);
-        result.messages(&mut executor, |_, m| {
+        result.messages(&executor, |_, m| {
             assert_eq!((m.message, m.header.published_at), (43, at(10)))
         });
         assert_eq!(executor.current_time(), at(30));
@@ -453,7 +484,7 @@ fn nonclone_inspection_and_assertion_panics_release_queued_and_arena_values() {
             assert_eq!(drops.load(Ordering::SeqCst), 1);
             assert!(
                 catch_unwind(AssertUnwindSafe(|| output.messages(
-                    &mut executor,
+                    &executor,
                     |index, m| {
                         assert_eq!((index, m.message.value), (0, 42));
                         panic!("inspection assertion");
@@ -463,7 +494,7 @@ fn nonclone_inspection_and_assertion_panics_release_queued_and_arena_values() {
             );
             assert_eq!(drops.load(Ordering::SeqCst), 2);
             assert_eq!(
-                output.messages(&mut executor, |_, _| panic!("already consumed")),
+                output.messages(&executor, |_, _| panic!("already consumed")),
                 0
             );
             input.send(Counted {
@@ -499,24 +530,22 @@ fn capture_capacity_and_cumulative_overflow_are_preserved() {
             executor.step();
         }
         assert_eq!(
-            default_capture.messages(&mut executor, |i, m| assert_eq!(m.message, i as u64 * 2)),
+            default_capture.messages(&executor, |i, m| assert_eq!(m.message, i as u64 * 2)),
             10
         );
         let (count, drops) =
-            small.try_messages(&mut executor, |i, m| assert_eq!((i, m.message), (0, 18)));
+            small.try_messages(&executor, |i, m| assert_eq!((i, m.message), (0, 18)));
         assert_eq!((count, drops.writer, drops.reader), (1, 9, 0));
         input.send(10);
         executor.step();
         assert_eq!(
             small
-                .try_messages(&mut executor, |i, m| assert_eq!((i, m.message), (0, 20)))
+                .try_messages(&executor, |i, m| assert_eq!((i, m.message), (0, 20)))
                 .1
                 .writer,
             9
         );
-        assert!(
-            catch_unwind(AssertUnwindSafe(|| small.messages(&mut executor, |_, _| {}))).is_err()
-        );
+        assert!(catch_unwind(AssertUnwindSafe(|| small.messages(&executor, |_, _| {}))).is_err());
     });
 }
 
@@ -578,13 +607,8 @@ fn setup_errors_close_handles_and_foreign_outputs_are_rejected() {
     );
     let mut foreign = UnitTestExecutorBuilder::new();
     let output = foreign.add_test_subscriber::<u64>("output");
-    UnitTestExecutorBuilder::new().run(|mut executor| {
-        assert!(
-            catch_unwind(AssertUnwindSafe(
-                || output.messages(&mut executor, |_, _| {})
-            ))
-            .is_err()
-        );
+    UnitTestExecutorBuilder::new().run(|executor| {
+        assert!(catch_unwind(AssertUnwindSafe(|| output.messages(&executor, |_, _| {}))).is_err());
     });
     assert!(catch_unwind(AssertUnwindSafe(|| foreign.allocate())).is_err());
 }
@@ -653,7 +677,7 @@ fn explicit_fixed_dynamic_durations_pools_and_completion_deadlines() {
     let mut invocations = Vec::new();
     for _ in 0..10 {
         let step = executor.step();
-        output.messages(&mut executor, |_, m| invocations.push(m.message));
+        output.messages(&executor, |_, m| invocations.push(m.message));
         if step.idle {
             break;
         }
@@ -685,10 +709,7 @@ fn failed_step_cancels_outputs_and_closes_injection_handles() {
         input.send(1);
         assert!(executor.try_step().is_err());
         assert!(input.try_send(2).is_err());
-        assert_eq!(
-            output.messages(&mut executor, |_, _| panic!("uncommitted")),
-            0
-        );
+        assert_eq!(output.messages(&executor, |_, _| panic!("uncommitted")), 0);
         assert!(matches!(
             executor.try_step(),
             Err(simulation_executor::StepError::Poisoned)

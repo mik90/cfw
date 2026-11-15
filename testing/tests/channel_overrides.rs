@@ -40,22 +40,22 @@ fn overrides_are_per_instance_and_preserve_annotation_and_argument_defaults() {
         left_gain.send(2);
         executor.step();
         assert_eq!(
-            left_result.messages(&mut executor, |_, m| assert_eq!(m.message, 42)),
+            left_result.messages(&executor, |_, m| assert_eq!(m.message, 42)),
             1
         );
         assert_eq!(
-            default_result.messages(&mut executor, |_, _| panic!("wrong task instance")),
+            default_result.messages(&executor, |_, _| panic!("wrong task instance")),
             0
         );
         default.send(7);
         default_gain.send(3);
         executor.step();
         assert_eq!(
-            default_result.messages(&mut executor, |_, m| assert_eq!(m.message, 21)),
+            default_result.messages(&executor, |_, m| assert_eq!(m.message, 21)),
             1
         );
         assert_eq!(
-            left_result.messages(&mut executor, |_, _| panic!("globally renamed channel")),
+            left_result.messages(&executor, |_, _| panic!("globally renamed channel")),
             0
         );
     });

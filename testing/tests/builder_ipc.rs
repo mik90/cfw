@@ -71,15 +71,29 @@ fn ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
         gate.send(11);
         assert_eq!(executor.step().executed, [0]);
         assert_eq!(executor.current_time().to_nanoseconds(), 10);
+        assert_eq!(output.message_count(&executor), 1);
         assert_eq!(
-            output.messages(&mut executor, |i, m| assert_eq!(
+            output.peek(&executor, |index, message| assert_eq!(
+                (
+                    index,
+                    message.message.value,
+                    message.header.published_at.to_nanoseconds()
+                ),
+                (0, 88, 0)
+            )),
+            1
+        );
+        // Peeking stages the batch without consuming it.
+        assert_eq!(output.message_count(&executor), 1);
+        assert_eq!(
+            output.messages(&executor, |i, m| assert_eq!(
                 (i, m.message.value, m.header.published_at.to_nanoseconds()),
                 (0, 88, 0)
             )),
             1
         );
         assert_eq!(
-            output.messages(&mut executor, |_, _| panic!("already consumed")),
+            output.messages(&executor, |_, _| panic!("already consumed")),
             0
         );
         assert!(
@@ -91,13 +105,13 @@ fn ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
         events.notify_at(deadline, EventId::new(4), 2);
         executor.run_until(deadline, 8).unwrap();
         assert_eq!(
-            output.messages(&mut executor, |_, _| panic!("published early")),
+            output.messages(&executor, |_, _| panic!("published early")),
             0
         );
         executor.run_until_idle(8).unwrap();
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| output.messages(
-                &mut executor,
+                &executor,
                 |i, m| {
                     assert_eq!(
                         (i, m.message.value, m.header.published_at.to_nanoseconds()),
@@ -109,7 +123,7 @@ fn ipc_fixtures_event_first_binding_gating_and_send_timestamps() {
             .is_err()
         );
         assert_eq!(
-            output.messages(&mut executor, |_, _| panic!("panic must consume batch")),
+            output.messages(&executor, |_, _| panic!("panic must consume batch")),
             0
         );
     });
@@ -275,16 +289,16 @@ fn ipc_fixture_captures_distinguish_injection_from_feedback() {
             executor.step();
         }
         let mut outputs = Vec::new();
-        output.messages(&mut executor, |_, message| outputs.push(message.message));
+        output.messages(&executor, |_, message| outputs.push(message.message));
         assert!(!outputs.is_empty());
         assert!(outputs.iter().all(|value| *value >= 6));
         let mut seen = Vec::new();
-        all.messages(&mut executor, |_, message| seen.push(message.message));
+        all.messages(&executor, |_, message| seen.push(message.message));
         assert!(seen.contains(&3));
         let mut count = 0;
         for _ in 0..3 {
             executor.step();
-            count += output.messages(&mut executor, |_, message| assert!(message.message >= 12));
+            count += output.messages(&executor, |_, message| assert!(message.message >= 12));
         }
         assert!(count > 0);
     });
@@ -335,7 +349,7 @@ fn overrides_bind_ipc_data_events_notifiers_and_native_gates() {
         assert_eq!(executor.step().executed, [1]);
         assert_eq!(executor.step().executed, [0]);
         assert_eq!(
-            output.messages(&mut executor, |_, message| {
+            output.messages(&executor, |_, message| {
                 assert_eq!(message.message.value, 88);
                 assert_eq!(message.header.published_at.to_nanoseconds(), 1);
             }),

@@ -131,11 +131,7 @@ pub struct TestOutput<T> {
     payload: PhantomData<fn(T) -> T>,
 }
 impl<T: 'static> TestOutput<T> {
-    pub fn try_messages(
-        &self,
-        executor: &mut UnitTestExecutor<'_>,
-        mut inspect: impl FnMut(usize, &Message<T>),
-    ) -> (usize, DroppedMessages) {
+    fn capture<'a>(&self, executor: &'a UnitTestExecutor<'_>) -> &'a dyn Capture {
         assert!(
             executor
                 .session
@@ -143,7 +139,14 @@ impl<T: 'static> TestOutput<T> {
                 .is_some_and(|s| Arc::ptr_eq(&s.0, &self.session)),
             "test output belongs to another executor"
         );
-        executor.captures[self.index].messages(&mut |index, value| {
+        &*executor.captures[self.index]
+    }
+    pub fn try_messages(
+        &self,
+        executor: &UnitTestExecutor<'_>,
+        mut inspect: impl FnMut(usize, &Message<T>),
+    ) -> (usize, DroppedMessages) {
+        self.capture(executor).try_messages(&mut |index, value| {
             inspect(
                 index,
                 value.downcast_ref().expect("capture payload identity"),
@@ -152,12 +155,38 @@ impl<T: 'static> TestOutput<T> {
     }
     pub fn messages(
         &self,
-        executor: &mut UnitTestExecutor<'_>,
+        executor: &UnitTestExecutor<'_>,
         inspect: impl FnMut(usize, &Message<T>),
     ) -> usize {
         let (count, drops) = self.try_messages(executor, inspect);
         assert!(!drops.any(), "test output overflow: {drops:?}");
         count
+    }
+    /// Inspect the next batch without consuming it.
+    pub fn try_peek(
+        &self,
+        executor: &UnitTestExecutor<'_>,
+        mut inspect: impl FnMut(usize, &Message<T>),
+    ) -> (usize, DroppedMessages) {
+        self.capture(executor).try_peek(&mut |index, value| {
+            inspect(
+                index,
+                value.downcast_ref().expect("capture payload identity"),
+            )
+        })
+    }
+    pub fn peek(
+        &self,
+        executor: &UnitTestExecutor<'_>,
+        inspect: impl FnMut(usize, &Message<T>),
+    ) -> usize {
+        let (count, drops) = self.try_peek(executor, inspect);
+        assert!(!drops.any(), "test output overflow: {drops:?}");
+        count
+    }
+    /// Messages currently available to `messages`.
+    pub fn message_count(&self, executor: &UnitTestExecutor<'_>) -> usize {
+        self.capture(executor).message_count()
     }
 }
 pub(crate) trait InputPump<'graph_storage>: Send {
@@ -167,11 +196,27 @@ pub(crate) trait InputPump<'graph_storage>: Send {
     ) -> Result<(), simulation_executor::StepError>;
 }
 pub(crate) trait Capture: Send {
-    fn messages(&mut self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages);
+    /// Move the next batch out of the backend reader and report it. Dropped
+    /// counts are returned instead of asserted so callers choose the policy.
+    fn try_messages(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages);
+
+    fn try_peek(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages);
+
+    /// Count of messages already staged in the reader buffer, after moving
+    /// pending writer-side or middleware samples into it.
+    fn message_count(&self) -> usize;
 }
 impl<T: Send + Sync + 'static> Capture for TestSubscriber<'_, T> {
-    fn messages(&mut self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
-        self.try_messages(|i, message| inspect(i, message))
+    fn try_messages(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
+        TestSubscriber::try_messages(self, |i, message| inspect(i, message))
+    }
+
+    fn try_peek(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
+        TestSubscriber::try_peek(self, |i, message| inspect(i, message))
+    }
+
+    fn message_count(&self) -> usize {
+        TestSubscriber::message_count(self)
     }
 }
 pub(crate) struct NativePump<'a, T> {

@@ -81,6 +81,25 @@ impl<T: Debug + ZeroCopySend + Send + Sync + Clone + 'static> Iox2TestSubscriber
     pub fn messages(&self) -> Vec<Message<T>> {
         self.try_messages().expect("iox2 fixture capture failed")
     }
+    /// Inspect the next batch without consuming it.
+    pub fn peek(&self, mut inspect: impl FnMut(usize, &Message<T>)) -> usize {
+        self.subscriber.update();
+        assert_eq!(
+            self.subscriber.receive_errors(),
+            0,
+            "iox2 fixture peek failed"
+        );
+        let input = Iox2SpanInput::new(&self.subscriber);
+        for (index, message) in input.inputs().enumerate() {
+            inspect(index, message);
+        }
+        input.len()
+    }
+    /// Messages currently staged in the capture buffer.
+    pub fn message_count(&self) -> usize {
+        self.subscriber.update();
+        Iox2SpanInput::new(&self.subscriber).len()
+    }
 }
 
 /// If iox2 is enabled, add-in some extra iox2 features to the unit test executor.

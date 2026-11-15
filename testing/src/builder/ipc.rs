@@ -1,7 +1,7 @@
 use super::*;
 use iceoryx2::prelude::{EventId, ZeroCopySend};
 use std::fmt::Debug;
-use task::iox2::{EventRecord, Iox2Publisher, Iox2Subscriber};
+use task::iox2::{EventRecord, Iox2Publisher, Iox2SpanInput, Iox2Subscriber};
 pub const DEFAULT_IPC_TEST_SUBSCRIBER_CAPACITY: usize = 1024;
 
 pub struct TestNotifier {
@@ -90,13 +90,26 @@ fn output_fixture<T: Debug + ZeroCopySend + Send + Sync + 'static>(
     })
 }
 impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Capture for Iox2Subscriber<T> {
-    fn messages(&mut self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
+    fn try_messages(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
         self.update();
         assert_eq!(self.receive_errors(), 0, "IPC capture receive failed");
         (
             self.inspect_messages(|i, m| inspect(i, m)),
             DroppedMessages::default(),
         )
+    }
+    fn try_peek(&self, inspect: &mut dyn FnMut(usize, &dyn Any)) -> (usize, DroppedMessages) {
+        self.update();
+        assert_eq!(self.receive_errors(), 0, "IPC capture receive failed");
+        let input = Iox2SpanInput::new(self);
+        for (index, message) in input.inputs().enumerate() {
+            inspect(index, message);
+        }
+        (input.len(), DroppedMessages::default())
+    }
+    fn message_count(&self) -> usize {
+        self.update();
+        Iox2SpanInput::new(self).len()
     }
 }
 struct EventPump {
