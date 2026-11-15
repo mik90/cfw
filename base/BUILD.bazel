@@ -8,6 +8,7 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     crate_features = [
         "serde",
+        "std",
     ],
     include_default_features = False,
     deps = all_crate_deps(normal = True),
@@ -18,6 +19,7 @@ rust_test(
     crate = ":base",
     crate_features = [
         "serde",
+        "std",
     ],
     include_default_features = False,
     deps = all_crate_deps(normal_dev = True),
@@ -38,6 +40,8 @@ miri_test(
     rustc_flags = [
         "--cfg",
         'feature="serde"',
+        "--cfg",
+        'feature="std"',
     ],
     deps = all_crate_deps(normal = True),
 )

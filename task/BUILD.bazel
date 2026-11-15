@@ -9,6 +9,7 @@ rust_library(
     crate_features = [
         "iceoryx2",
         "serde",
+        "std",
         "testing",
     ],
     deps = all_crate_deps(normal = True),
@@ -19,6 +20,7 @@ rust_test(
     crate = ":task",
     crate_features = [
         "serde",
+        "std",
         "testing",
     ],
     deps = all_crate_deps(normal_dev = True),
@@ -46,6 +48,8 @@ miri_test(
     rustc_flags = [
         "--cfg",
         'feature="serde"',
+        "--cfg",
+        'feature="std"',
         "--cfg",
         'feature="testing"',
     ],
