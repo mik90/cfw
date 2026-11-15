@@ -195,25 +195,8 @@ struct Source {
 }
 #[task_callback]
 impl Source {
-    fn run(&mut self, output: Output<Counted>) -> Result<(), LoanError> {
+    fn run(&mut self, output: Output<Counted>) {
         output.write(Counted(self.drops.clone())).send();
-        Ok(())
-    }
-}
-struct Failing {
-    drops: Arc<AtomicUsize>,
-    panic: bool,
-}
-#[task_callback]
-impl Failing {
-    fn run(
-        &mut self,
-        #[trigger(true)] _input: RequiredInput<Counted>,
-        output: Output<Counted>,
-    ) -> Result<(), LoanError> {
-        output.write(Counted(self.drops.clone())).send();
-        assert!(!self.panic, "worker callback panic");
-        Err(LoanError::LoanCapacityReached)
     }
 }
 
@@ -224,7 +207,14 @@ fn callback_errors_and_panics_wake_control_and_leave_captured_messages_valid() {
         let mut source = ChannelPlan::new("source");
         let mut output = ChannelPlan::new("unpublished");
         let source_decl = Source::declare(&mut source).unwrap();
-        let fail_decl = Failing::declare(&mut source, &mut output).unwrap();
+        let fail_input = source.subscriber_with_policy(
+            1,
+            task::SubscriberPolicy {
+                trigger: true,
+                keep_across_runs: false,
+            },
+        );
+        let fail_output = output.publisher(1);
         let capture_key = source.subscriber(1);
         let storage = (source.allocate().unwrap(), output.allocate().unwrap());
         let source = storage.0.bind();
@@ -238,11 +228,20 @@ fn callback_errors_and_panics_wake_control_and_leave_captured_messages_valid() {
             .bind(source_decl, &source)?)
         });
         builder.add_callback("failure", || {
-            Ok(Failing {
-                drops: drops.clone(),
-                panic,
-            }
-            .bind(fail_decl, &source, &output)?)
+            let input = task::Required(source.take_subscriber(&fail_input)?);
+            let publisher = output.take_publisher(&fail_output)?;
+            let drops = drops.clone();
+            Ok(task::CallbackNode::new(
+                input,
+                publisher,
+                move |_: &task::Required<task::Subscriber<'_, Counted>>,
+                      output: &mut task::Publisher<'_, Counted>,
+                      _: &Context| {
+                    output.publish(Counted(drops.clone()))?;
+                    assert!(!panic, "worker callback panic");
+                    Err(LoanError::LoanCapacityReached)
+                },
+            ))
         });
         let executor = LiveExecutor::new_multi_pool_with_time(
             ThreadPoolConfigList::try_from([3]).unwrap(),

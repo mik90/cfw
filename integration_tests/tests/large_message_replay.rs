@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 use task::{
-    LoanError, Output, RequiredInput,
+    Output, RequiredInput,
     loggable::{DeserializeError, Loggable, SerializeError},
 };
 use task_graph::{ApplicationBuilder, CallbackSchedule, GraphPlan, PoolIndex};
@@ -123,9 +123,9 @@ struct LargeMessagePublisher {
 }
 #[task_callback]
 impl LargeMessagePublisher {
-    fn run(&mut self, mut output: Output<LargeMessage>) -> Result<(), LoanError> {
+    fn run(&mut self, mut output: Output<LargeMessage>) {
         if self.remaining == 0 {
-            return Ok(());
+            return;
         }
         let slot = output.payload_uninit();
         let ptr = slot.as_mut_ptr();
@@ -143,7 +143,6 @@ impl LargeMessagePublisher {
         unsafe { output.assume_init() }.send();
         self.next_sequence += 1;
         self.remaining -= 1;
-        Ok(())
     }
 }
 

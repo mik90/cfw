@@ -12,13 +12,8 @@ fn at(n: i64) -> FrameworkTime {
 struct Double;
 #[task_callback]
 impl Double {
-    fn run(
-        &self,
-        #[trigger(true)] input: RequiredInput<u64>,
-        output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) {
         output.write(*input * 2).send();
-        Ok(())
     }
 }
 
@@ -153,18 +148,10 @@ fn capture_reports_overflow_and_indexes_each_batch_from_zero() {
     assert_eq!(capture.try_consume(|_, _| panic!("empty batch")).0, 0);
 }
 
-struct Fails;
-#[task_callback]
-impl Fails {
-    fn run(&self, output: Output<u64>) -> Result<(), LoanError> {
-        output.write(7).send();
-        Err(LoanError::PendingBatchNotEmpty)
-    }
-}
 #[test]
 fn failed_step_cancels_capture_and_poisons_executor() {
     let mut plan = ChannelPlan::new("failure");
-    let declaration = Fails::declare(&mut plan).unwrap();
+    let callback_key = plan.publisher(1);
     let capture = plan.subscriber(1);
     let sender = plan.publisher(1);
     let storage = plan.allocate().unwrap();
@@ -173,11 +160,17 @@ fn failed_step_cancels_capture_and_poisons_executor() {
     let mut schedule = CallbackSchedule::periodic(Duration::from_nanos(10))
         .with_execution_duration(Duration::ZERO);
     schedule.run_on_start = false;
-    graph.add_scheduled_callback(
-        "fails",
-        schedule,
-        || Ok(Fails.bind(declaration, &bindings)?),
-    );
+    graph.add_scheduled_callback("fails", schedule, || {
+        Ok(task::testing::FakePublisherCallback {
+            publisher: bindings.take_publisher(&callback_key)?,
+            body: Box::new(|publisher, _| {
+                publisher.publish(7)?;
+                Err(LoanError::PendingBatchNotEmpty)
+            }),
+            ordinal: 0,
+            panic_on_flush: false,
+        })
+    });
     let mut executor = UnitTestExecutor::new_with_graph(graph.build().unwrap(), Default::default());
     let capture = executor.add_test_subscriber(bindings.take_subscriber(&capture).unwrap());
     let mut sender = executor.add_test_publisher(bindings.take_publisher(&sender).unwrap());

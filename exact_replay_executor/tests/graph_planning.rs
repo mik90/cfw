@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use task::loggable::Loggable;
-use task::{InputSpan, LoanError, Output, OutputSpan, time::FrameworkTime};
+use task::{InputSpan, Output, OutputSpan, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 type SourcePtr<'a, T> = task::ArenaReaderPtr<'a, task::message::Message<T>>;
@@ -28,13 +28,12 @@ struct Value(u64);
 struct Source(u64);
 #[task_callback]
 impl Source {
-    fn run(&mut self, #[capacity(2)] output: OutputSpan<Value>) -> Result<(), LoanError> {
-        let a = output.loan(Value(self.0))?;
-        let b = output.loan(Value(self.0 + 1))?;
+    fn run(&mut self, #[capacity(2)] output: OutputSpan<Value>) {
+        let a = output.loan(Value(self.0)).unwrap();
+        let b = output.loan(Value(self.0 + 1)).unwrap();
         b.send();
         a.send();
         self.0 += 2;
-        Ok(())
     }
 }
 struct Sum;
@@ -49,14 +48,13 @@ impl Sum {
         #[capacity(2)]
         second: InputSpan<Value>,
         output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         output
             .write(
                 first.inputs().map(|m| m.message.0).sum::<u64>()
                     + second.inputs().map(|m| m.message.0).sum::<u64>(),
             )
             .send();
-        Ok(())
     }
 }
 fn source(plan: &mut GraphPlan, name: &str, value: u64) {
@@ -241,10 +239,9 @@ struct PairSources<'s> {
 struct PairProducer;
 #[task_callback]
 impl PairProducer {
-    fn run(&self, left: Output<u64>, right: Output<u32>) -> Result<(), LoanError> {
+    fn run(&self, left: Output<u64>, right: Output<u32>) {
         left.write(7).send();
         right.write(5).send();
-        Ok(())
     }
 }
 struct PairForward;
@@ -277,14 +274,13 @@ impl PairSink {
         &self,
         #[trigger(true)] pair: task::RequiredInput<'_, 's, task::Forwarded<bool, PairSources<'s>>>,
         result: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         result
             .write(
                 pair.forwarded_messages.left.message
                     + u64::from(pair.forwarded_messages.right.message),
             )
             .send();
-        Ok(())
     }
 }
 fn pair_tasks(plan: &mut GraphPlan, reverse: bool) {
@@ -406,10 +402,9 @@ fn heterogeneous_bundles_replay_logged_and_reproduced_sources() {
 struct ForwardSource(u64);
 #[task_callback]
 impl ForwardSource {
-    fn run(&mut self, output: Output<u64>) -> Result<(), LoanError> {
+    fn run(&mut self, output: Output<u64>) {
         output.write(self.0).send();
         self.0 += 1;
-        Ok(())
     }
 }
 struct ForwardTask;
@@ -425,11 +420,13 @@ impl ForwardTask {
             'graph_storage,
             task::Forwarded<bool, SourcePtr<'graph_storage, u64>>,
         >,
-    ) -> Result<(), LoanError> {
+    ) {
         for source in input.drain() {
-            output.loan(task::Forwarded::new(true, source))?.send();
+            output
+                .loan(task::Forwarded::new(true, source))
+                .unwrap()
+                .send();
         }
-        Ok(())
     }
 }
 struct ForwardSink;
@@ -443,13 +440,13 @@ impl ForwardSink {
             task::Forwarded<bool, SourcePtr<'graph_storage, u64>>,
         >,
         #[capacity(1)] output: OutputSpan<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         for forwarded in input.drain() {
             output
-                .loan(forwarded.message.forwarded_messages.message + 1)?
+                .loan(forwarded.message.forwarded_messages.message + 1)
+                .unwrap()
                 .send();
         }
-        Ok(())
     }
 }
 fn forwarding_tasks(plan: &mut GraphPlan, reverse: bool) {
@@ -591,9 +588,8 @@ impl task::loggable::Loggable for Contextual {
 struct ContextualSource;
 #[task_callback]
 impl ContextualSource {
-    fn run(&self, output: Output<Contextual>) -> Result<(), LoanError> {
+    fn run(&self, output: Output<Contextual>) {
         output.write(Contextual(42)).send();
-        Ok(())
     }
 }
 #[test]

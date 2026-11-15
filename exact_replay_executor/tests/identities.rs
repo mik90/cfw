@@ -7,9 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use task::loggable::Loggable;
-use task::{
-    ChannelPlan, Forwarded, Input, InputSpan, LoanError, Output, OutputSpan, time::FrameworkTime,
-};
+use task::{ChannelPlan, Forwarded, Input, InputSpan, Output, OutputSpan, time::FrameworkTime};
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
 type SourcePtr<'a> = task::ArenaReaderPtr<'a, task::message::Message<Value>>;
@@ -31,13 +29,12 @@ struct Value(u64);
 struct Source(u64);
 #[task_callback]
 impl Source {
-    fn run(&mut self, #[capacity(2)] output: OutputSpan<Value>) -> Result<(), LoanError> {
-        let first = output.loan(Value(self.0))?;
-        let second = output.loan(Value(self.0 + 1))?;
+    fn run(&mut self, #[capacity(2)] output: OutputSpan<Value>) {
+        let first = output.loan(Value(self.0)).unwrap();
+        let second = output.loan(Value(self.0 + 1)).unwrap();
         second.send();
         first.send();
         self.0 += 2;
-        Ok(())
     }
 }
 struct Forward;
@@ -51,11 +48,10 @@ impl Forward {
         #[forwards(source = input)]
         #[capacity(4)]
         output: OutputSpan<'_, 'graph_storage, Forwarded<bool, SourcePtr<'graph_storage>>>,
-    ) -> Result<(), LoanError> {
+    ) {
         for value in input.drain() {
-            output.loan(Forwarded::new(true, value))?.send();
+            output.loan(Forwarded::new(true, value)).unwrap().send();
         }
-        Ok(())
     }
 }
 struct Observe;
@@ -67,11 +63,10 @@ impl Observe {
         #[capacity(8)]
         input: InputSpan<Value>,
         output: Output<Vec<u64>>,
-    ) -> Result<(), LoanError> {
+    ) {
         output
             .write(input.inputs().map(|m| m.message.0).collect())
             .send();
-        Ok(())
     }
 }
 struct Consume;
@@ -83,7 +78,7 @@ impl Consume {
         #[capacity(8)]
         input: InputSpan<Forwarded<bool, SourcePtr<'_>>>,
         output: Output<Vec<u64>>,
-    ) -> Result<(), LoanError> {
+    ) {
         output
             .write(
                 input
@@ -92,7 +87,6 @@ impl Consume {
                     .collect(),
             )
             .send();
-        Ok(())
     }
 }
 

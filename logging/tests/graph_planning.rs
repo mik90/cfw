@@ -1,7 +1,7 @@
 use logging::{CaptureOptions, GraphCapturePlan};
 use logging::{GraphReplayPlan, ReplayOptions};
 use task::{
-    InputSpan, LoanError, Output, OutputSpan,
+    InputSpan, Output, OutputSpan,
     loggable::{DeserializeError, Loggable, SerializeError},
     time::FrameworkTime,
 };
@@ -40,17 +40,12 @@ impl Loggable for Contextual {
 struct Source(u64);
 #[task_callback]
 impl Source {
-    fn run(
-        &self,
-        #[capacity(2)] output: OutputSpan<Value>,
-        hidden: Output<Hidden>,
-    ) -> Result<(), LoanError> {
-        let first = output.loan(Value(self.0))?;
-        let second = output.loan(Value(self.0 + 1))?;
+    fn run(&self, #[capacity(2)] output: OutputSpan<Value>, hidden: Output<Hidden>) {
+        let first = output.loan(Value(self.0)).unwrap();
+        let second = output.loan(Value(self.0 + 1)).unwrap();
         second.send();
         first.send();
         hidden.write(Hidden).send();
-        Ok(())
     }
 }
 struct Sum;
@@ -62,11 +57,10 @@ impl Sum {
         #[capacity(4)]
         input: InputSpan<Value>,
         summary: Output<Value>,
-    ) -> Result<(), LoanError> {
+    ) {
         summary
             .write(Value(input.inputs().map(|m| m.message.0).sum()))
             .send();
-        Ok(())
     }
 }
 
@@ -173,9 +167,8 @@ fn nonloggable_only_graph_has_no_automatic_captures() {
     struct Task;
     #[task_callback]
     impl Task {
-        fn run(&self, output: Output<Hidden>) -> Result<(), LoanError> {
+        fn run(&self, output: Output<Hidden>) {
             output.write(Hidden).send();
-            Ok(())
         }
     }
     let mut plan = GraphPlan::default();
@@ -392,9 +385,8 @@ fn serde_payloads_are_discovered_without_explicit_codec_registration() {
     struct SerdeSource;
     #[task_callback]
     impl SerdeSource {
-        fn run(&self, output: Output<u64>) -> Result<(), LoanError> {
+        fn run(&self, output: Output<u64>) {
             output.write(42).send();
-            Ok(())
         }
     }
     let mut plan = GraphPlan::default();

@@ -297,7 +297,6 @@ def _cxx_task_src_impl(ctx):
         ])
     payload_block = "{\n%s\n    }" % "\n".join(payload_lines) if payload_lines else "{}"
 
-    fallible = "\n    fallible: true," if ctx.attr.fallible else ""
     content = """%stask_cxx_macros::define_cxx_bridge! {
     namespace: %s,
     headers: [%s],
@@ -308,7 +307,7 @@ task_cxx_macros::define_cxx_task! {
     bridge: ffi,
     name: %s,
     cxx_type: %s,
-    factory: %s,%s
+    factory: %s,
     subscribers: {
 %s
     },
@@ -324,7 +323,6 @@ task_cxx_macros::define_cxx_task! {
         ctx.attr.task_name,
         ctx.attr.cxx_type,
         ctx.attr.factory,
-        fallible,
         "\n".join(subscriber_lines),
         "\n".join(publisher_lines),
     )
@@ -336,7 +334,6 @@ _cxx_task_src = rule(
     attrs = rust_source_attrs({
         "cxx_type": attr.string(mandatory = True),
         "factory": attr.string(mandatory = True),
-        "fallible": attr.bool(),
         "headers": attr.string_list(),
         "namespace": attr.string(mandatory = True),
         "payloads": attr.label_list(
@@ -364,7 +361,6 @@ def _cxx_task_impl(
         factory,
         namespace,
         headers,
-        fallible,
         payloads,
         subscribers,
         publishers,
@@ -394,7 +390,6 @@ def _cxx_task_impl(
         name = name + "_cxx_decl",
         cxx_type = cxx_type,
         factory = factory,
-        fallible = fallible,
         headers = headers,
         namespace = namespace,
         payloads = payloads,
@@ -484,11 +479,6 @@ cfw_cxx_task = macro(
             configurable = False,
             providers = [CfwCxxPayloadInfo],
             doc = "Payload aliases produced by cfw_cxx_payload().",
-        ),
-        "fallible": attr.bool(
-            default = False,
-            configurable = False,
-            doc = "Declare the C++ run method as returning Result<()>.",
         ),
         "subscribers": attr.label_list(
             default = [],

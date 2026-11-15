@@ -33,7 +33,6 @@ pub struct CxxTaskSpec {
     pub name: Ident,
     pub cxx_type: Ident,
     pub factory: Ident,
-    pub fallible: bool,
     pub subscribers: Vec<EndpointSpec>,
     pub publishers: Vec<EndpointSpec>,
 }
@@ -48,19 +47,6 @@ impl Parse for CxxTaskSpec {
         input.parse::<Token![,]>()?;
         let factory = parse_key::<Ident>(input, "factory")?;
         input.parse::<Token![,]>()?;
-        let fallible = if input
-            .fork()
-            .parse::<Ident>()
-            .is_ok_and(|ident| ident == "fallible")
-        {
-            let _: Ident = input.parse()?;
-            input.parse::<Token![:]>()?;
-            let value: syn::LitBool = input.parse()?;
-            input.parse::<Token![,]>()?;
-            value.value
-        } else {
-            false
-        };
         let subscribers = task_macro_common::parse_endpoint_block(input, "subscribers")?;
         input.parse::<Token![,]>()?;
         let publishers = task_macro_common::parse_endpoint_block(input, "publishers")?;
@@ -73,7 +59,6 @@ impl Parse for CxxTaskSpec {
             name,
             cxx_type,
             factory,
-            fallible,
             subscribers,
             publishers,
         })
@@ -487,11 +472,6 @@ impl ResolvedTask<'_> {
         let factory = &self.spec.factory;
         let inputs = format_ident!("{}CxxInputs", self.spec.name);
         let outputs = format_ident!("{}CxxOutputs", self.spec.name);
-        let result = if self.spec.fallible {
-            quote!(-> Result<()>)
-        } else {
-            quote!()
-        };
         vec![
             quote!(type #cxx_type;),
             quote! {
@@ -500,7 +480,7 @@ impl ResolvedTask<'_> {
                     inputs: &mut #inputs,
                     outputs: &mut #outputs,
                     context: &Context,
-                ) #result;
+                ) -> Result<()>;
             },
             quote!(fn #factory() -> UniquePtr<#cxx_type>;),
         ]
@@ -652,7 +632,6 @@ mod tests {
             name: Probe,
             cxx_type: ProbeTask,
             factory: make_probe,
-            fallible: true,
             subscribers: {
                 required: RequiredInput<u64> { channel: "required", trigger: true },
                 optional: OptionalInput<f64> { channel: "optional", capacity: 4 },
@@ -678,7 +657,6 @@ mod tests {
         assert_eq!(parsed.bridge.payloads.len(), 1);
         assert_eq!(parsed.tasks.len(), 1);
         assert_eq!(parsed.tasks[0].name.to_string(), "Probe");
-        assert!(parsed.tasks[0].fallible);
     }
 
     #[test]

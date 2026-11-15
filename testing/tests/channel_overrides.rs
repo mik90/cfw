@@ -1,6 +1,6 @@
 use logging::{ExecutionLogOptions, ExecutionLogPlan};
 use std::time::Duration;
-use task::{LoanError, Output, RequiredInput, execution_log_schema::Direction};
+use task::{Output, RequiredInput, execution_log_schema::Direction};
 use task_graph::{CallbackSchedule, GraphPlan, Task};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
@@ -15,9 +15,8 @@ impl Scale {
         input: RequiredInput<u64>,
         #[trigger(false)] gain: RequiredInput<u64>,
         #[channel("results")] output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         output.write(*input * *gain).send();
-        Ok(())
     }
 }
 #[test]
@@ -73,9 +72,8 @@ impl Lazy {
         #[channel(unused_default())]
         input: RequiredInput<u64>,
         output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         output.write(*input).send();
-        Ok(())
     }
 }
 #[test]

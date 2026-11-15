@@ -46,7 +46,7 @@ class OptionalProbeTask {
 std::unique_ptr<OptionalProbeTask> make_optional_probe_task();
 
 /// Computes the norm of a shared-struct payload; throws on a zero-length
-/// vector to exercise the fallible `Result` bridge.
+/// vector to exercise the exception-to-panic bridge.
 class NormTask {
   public:
     void run(NormCalculatorCxxInputs& inputs, NormCalculatorCxxOutputs& outputs,

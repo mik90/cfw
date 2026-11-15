@@ -167,36 +167,29 @@ impl Drop for Counted {
     }
 }
 
-struct Failure {
-    drops: Arc<AtomicUsize>,
-    panic: bool,
-}
-#[task_callback]
-impl Failure {
-    fn run(&mut self, mut output: OutputDefault<Counted>) -> Result<(), LoanError> {
-        output.0 = Some(self.drops.clone());
-        output.send();
-        assert!(!self.panic, "callback failed");
-        Err(LoanError::LoanCapacityReached)
-    }
-}
-
 #[test]
-fn generated_pending_outputs_are_discarded_on_error_and_panic() {
+fn pending_outputs_are_discarded_on_error_and_panic() {
     for panic in [false, true] {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut output = ChannelPlan::new("output");
-        let declaration = Failure::declare(&mut output).unwrap();
+        let publisher_key = output.publisher(1);
         let capture_key = output.subscriber(1);
         let storage = output.allocate().unwrap();
         let bindings = storage.bind();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
-        let mut callback = Failure {
-            drops: drops.clone(),
-            panic,
-        }
-        .bind(declaration, &bindings)
-        .unwrap();
+        let mut callback = task::testing::FakePublisherCallback {
+            publisher: bindings.take_publisher(&publisher_key).unwrap(),
+            body: Box::new({
+                let drops = drops.clone();
+                move |publisher: &mut task::Publisher<'_, Counted>, _: &Context| {
+                    publisher.publish(Counted(Some(drops.clone())))?;
+                    assert!(!panic, "callback failed");
+                    Err(LoanError::LoanCapacityReached)
+                }
+            }),
+            ordinal: 0,
+            panic_on_flush: false,
+        };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             task::execute_callback(
                 &mut callback,
@@ -249,11 +242,11 @@ impl SpanTransform {
         #[channel("span_out")]
         #[capacity(3)]
         output: OutputSpan<SpanValue>,
-    ) -> Result<(), LoanError> {
+    ) {
         self.runs += 1;
         if self.runs == 3 {
             assert!(input.is_empty());
-            return Ok(());
+            return;
         }
         assert_eq!(input.len(), 3);
         for _ in 0..2 {
@@ -267,7 +260,7 @@ impl SpanTransform {
         }
         let mut loans = Vec::new();
         for message in input.inputs() {
-            let loan = output.loan_uninit()?;
+            let loan = output.loan_uninit().unwrap();
             loans.push(loan.write(SpanValue(message.message.0 * 2)));
         }
         assert!(matches!(
@@ -280,7 +273,6 @@ impl SpanTransform {
         if self.runs == 2 {
             assert_eq!(input.drain().count(), 3);
         }
-        Ok(())
     }
 }
 
@@ -332,38 +324,33 @@ fn generated_input_and_output_spans_retain_inputs_and_commit_in_send_order() {
     assert!(capture.input_forwardable().is_empty());
 }
 
-struct SpanFailure {
-    drops: Arc<AtomicUsize>,
-    panic: bool,
-}
-#[task_callback]
-impl SpanFailure {
-    fn run(&self, #[capacity(3)] output: OutputSpan<Counted>) -> Result<(), LoanError> {
-        let first = output.loan_uninit()?;
-        let _unsent = output.loan(Counted(Some(self.drops.clone())))?;
-        first.write(Counted(Some(self.drops.clone()))).send();
-        let _uninitialized = output.loan_uninit()?;
-        assert!(!self.panic, "span callback failed");
-        Err(LoanError::LoanCapacityReached)
-    }
-}
-
 #[test]
-fn generated_span_outputs_cancel_sent_and_unsent_loans_on_failure() {
+fn span_outputs_cancel_sent_and_unsent_loans_on_failure() {
     for panic in [false, true] {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut plan = ChannelPlan::new("span");
-        let declaration = SpanFailure::declare(&mut plan).unwrap();
+        let publisher_key = plan.publisher(3);
         let capture_key = plan.subscriber(3);
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind();
         let capture = bindings.take_subscriber(&capture_key).unwrap();
-        let mut callback = SpanFailure {
-            drops: drops.clone(),
-            panic,
-        }
-        .bind(declaration, &bindings)
-        .unwrap();
+        let mut callback = task::testing::FakePublisherCallback {
+            publisher: bindings.take_publisher(&publisher_key).unwrap(),
+            body: Box::new({
+                let drops = drops.clone();
+                move |publisher: &mut task::Publisher<'_, Counted>, _: &Context| {
+                    let span = publisher.span();
+                    let first = span.loan_uninit().unwrap();
+                    let _unsent = span.loan(Counted(Some(drops.clone()))).unwrap();
+                    first.write(Counted(Some(drops.clone()))).send();
+                    let _uninitialized = span.loan_uninit().unwrap();
+                    assert!(!panic, "span callback failed");
+                    Err(LoanError::LoanCapacityReached)
+                }
+            }),
+            ordinal: 0,
+            panic_on_flush: false,
+        };
         for invocation in 1..=2 {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 task::execute_callback(
@@ -437,11 +424,10 @@ impl Forward {
             'graph_storage,
             task::Forwarded<bool, SourcePtr<'graph_storage>>,
         >,
-    ) -> Result<(), LoanError> {
+    ) {
         for ptr in input.drain() {
-            output.loan(task::Forwarded::new(true, ptr))?.send();
+            output.loan(task::Forwarded::new(true, ptr)).unwrap().send();
         }
-        Ok(())
     }
 }
 
@@ -563,15 +549,10 @@ fn forwarding_retention_fanout_and_rebinding_preserve_source_lifetimes() {
 struct Feedback;
 #[task_callback]
 impl Feedback {
-    fn run(
-        &self,
-        #[trigger(true)] mut input: Input<u64>,
-        output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    fn run(&self, #[trigger(true)] mut input: Input<u64>, output: Output<u64>) {
         if let Some(message) = input.pop() {
             output.write(message.message + 1).send();
         }
-        Ok(())
     }
 }
 

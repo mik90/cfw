@@ -8,7 +8,7 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
-use task::{ChannelPlan, LoanError, Output, RequiredInput, time::FrameworkTime};
+use task::{ChannelPlan, Output, RequiredInput, time::FrameworkTime};
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
 
@@ -112,13 +112,8 @@ struct Transform {
 }
 #[task_callback]
 impl Transform {
-    fn run(
-        &self,
-        #[trigger(true)] input: RequiredInput<Value>,
-        output: Output<Value>,
-    ) -> Result<(), LoanError> {
+    fn run(&self, #[trigger(true)] input: RequiredInput<Value>, output: Output<Value>) {
         output.write(Value(input.0 * self.factor)).send();
-        Ok(())
     }
 }
 fn recorded(log_source: bool) -> ReplayLog {
@@ -636,9 +631,8 @@ impl TwoInputs {
         #[trigger(true)] first: RequiredInput<u64>,
         #[trigger(true)] second: RequiredInput<u64>,
         output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         output.write(*first * 10 + *second).send();
-        Ok(())
     }
 }
 #[test]
@@ -752,7 +746,7 @@ struct TwoOutputs {
 }
 #[task_callback]
 impl TwoOutputs {
-    fn run(&self, first: Output<u64>, second: Output<u64>) -> Result<(), LoanError> {
+    fn run(&self, first: Output<u64>, second: Output<u64>) {
         if self.swapped {
             first.write(7).send();
             second.write(42).send();
@@ -760,7 +754,6 @@ impl TwoOutputs {
             first.write(42).send();
             second.write(7).send();
         }
-        Ok(())
     }
 }
 #[test]
@@ -858,11 +851,10 @@ impl Forward {
             'graph_storage,
             task::Forwarded<bool, SourcePtr<'graph_storage>>,
         >,
-    ) -> Result<(), LoanError> {
+    ) {
         if let Some(value) = input.pop() {
             output.write(task::Forwarded::new(true, value)).send();
         }
-        Ok(())
     }
 }
 struct Consume;
@@ -872,13 +864,12 @@ impl Consume {
         &self,
         #[trigger(true)] input: RequiredInput<task::Forwarded<bool, SourcePtr<'_>>>,
         output: Output<Value>,
-    ) -> Result<(), LoanError> {
+    ) {
         output
             .write(Value(
                 input.forwarded_messages.message.0 + if input.message { 10 } else { 100 },
             ))
             .send();
-        Ok(())
     }
 }
 #[test]

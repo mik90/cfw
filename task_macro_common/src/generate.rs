@@ -316,11 +316,7 @@ pub fn invocation(task: &TaskDefinition) -> TokenStream {
         Some(index) => task.endpoints[*index].argument(),
         None => quote!(__cfw_context),
     });
-    if task.fallible {
-        quote!(__cfw_user.run(#(#arguments),*))
-    } else {
-        quote! { __cfw_user.run(#(#arguments),*); Ok(()) }
-    }
+    quote! { __cfw_user.run(#(#arguments),*); Ok(()) }
 }
 
 impl Endpoint {

@@ -43,7 +43,6 @@ pub struct TaskDefinition {
     pub self_ty: proc_macro2::TokenStream,
     pub endpoints: Vec<Endpoint>,
     pub arguments: Vec<Option<usize>>,
-    pub fallible: bool,
 }
 
 #[derive(Clone)]

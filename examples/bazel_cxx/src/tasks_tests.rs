@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn cxx_fallible_run_surfaces_exceptions() {
+    fn cxx_run_exceptions_surface_as_panics() {
         let mut builder = UnitTestExecutorBuilder::new();
         builder.add_task("norm", NormCalculator::new(), Duration::from_millis(1));
         let mut input = builder.add_test_publisher::<Vec3>("norm_in");

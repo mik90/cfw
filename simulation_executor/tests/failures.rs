@@ -4,9 +4,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
-use task::{ChannelPlan, LoanError, Output, Publisher};
+use task::{ChannelPlan, LoanError, Publisher};
 use task_graph::{CallbackSchedule, GraphBuilder, ThreadPoolConfigList};
-use task_macros::task_callback;
 
 struct Counted(Arc<AtomicUsize>);
 impl Drop for Counted {
@@ -14,19 +13,25 @@ impl Drop for Counted {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
-struct Sender {
-    drops: Arc<AtomicUsize>,
+
+fn sender<'a>(
+    publisher: Publisher<'a, Counted>,
+    drops: &Arc<AtomicUsize>,
     fail: u8,
-}
-#[task_callback]
-impl Sender {
-    fn run(&self, output: Output<Counted>) -> Result<(), LoanError> {
-        output.write(Counted(self.drops.clone())).send();
-        assert!(self.fail != 2, "callback panicked");
-        if self.fail == 1 {
-            return Err(LoanError::LoanCapacityReached);
-        }
-        Ok(())
+) -> task::testing::FakePublisherCallback<'a, Counted> {
+    let drops = drops.clone();
+    task::testing::FakePublisherCallback {
+        publisher,
+        body: Box::new(move |publisher, _| {
+            publisher.publish(Counted(drops.clone()))?;
+            assert!(fail != 2, "callback panicked");
+            if fail == 1 {
+                return Err(LoanError::LoanCapacityReached);
+            }
+            Ok(())
+        }),
+        ordinal: 0,
+        panic_on_flush: false,
     }
 }
 
@@ -35,8 +40,8 @@ fn body_error_panic_and_post_execution_timing_failure_cancel_the_whole_batch() {
     for fail in [1, 2, 3] {
         let drops = Arc::new(AtomicUsize::new(0));
         let mut plan = ChannelPlan::new("output");
-        let first = Sender::declare(&mut plan).unwrap();
-        let second = Sender::declare(&mut plan).unwrap();
+        let first = plan.publisher(1);
+        let second = plan.publisher(1);
         let capture_key = plan.subscriber(2);
         let storage = plan.allocate().unwrap();
         let bindings = storage.bind();
@@ -45,13 +50,7 @@ fn body_error_panic_and_post_execution_timing_failure_cancel_the_whole_batch() {
         builder.add_scheduled_callback(
             "first",
             CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
-            || {
-                Ok(Sender {
-                    drops: drops.clone(),
-                    fail: 0,
-                }
-                .bind(first, &bindings)?)
-            },
+            || Ok(sender(bindings.take_publisher(&first)?, &drops, 0)),
         );
         let schedule = if fail == 3 {
             CallbackSchedule::on_start().with_execution_duration(Duration::MAX)
@@ -59,11 +58,7 @@ fn body_error_panic_and_post_execution_timing_failure_cancel_the_whole_batch() {
             CallbackSchedule::on_start().with_execution_duration(Duration::ZERO)
         };
         builder.add_scheduled_callback("second", schedule, || {
-            Ok(Sender {
-                drops: drops.clone(),
-                fail,
-            }
-            .bind(second, &bindings)?)
+            Ok(sender(bindings.take_publisher(&second)?, &drops, fail))
         });
         let mut simulation = SimulationState::with_config(
             builder.build().unwrap(),
@@ -103,7 +98,7 @@ fn panic_during_commit_preserves_already_published_messages_and_cancels_remainin
     }
     let drops = Arc::new(AtomicUsize::new(0));
     let mut plan = ChannelPlan::new("output");
-    let first = Sender::declare(&mut plan).unwrap();
+    let first = plan.publisher(1);
     let second = plan.publisher(1);
     let capture_key = plan.subscriber(2);
     let storage = plan.allocate().unwrap();
@@ -113,13 +108,7 @@ fn panic_during_commit_preserves_already_published_messages_and_cancels_remainin
     builder.add_scheduled_callback(
         "first",
         CallbackSchedule::on_start().with_execution_duration(Duration::ZERO),
-        || {
-            Ok(Sender {
-                drops: drops.clone(),
-                fail: 0,
-            }
-            .bind(first, &bindings)?)
-        },
+        || Ok(sender(bindings.take_publisher(&first)?, &drops, 0)),
     );
     builder.add_scheduled_callback(
         "second",

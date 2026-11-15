@@ -5,9 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     time::Duration,
 };
-use task::{
-    ChannelPlan, InputSpan, LoanError, OutputSpan, message::MessageHeader, time::FrameworkTime,
-};
+use task::{ChannelPlan, InputSpan, OutputSpan, message::MessageHeader, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphBuilder, ThreadPoolConfigList};
 use task_macros::task_callback;
 
@@ -33,11 +31,10 @@ impl Double {
         #[capacity(8)]
         mut input: InputSpan<u64>,
         #[capacity(8)] output: OutputSpan<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         for value in input.drain() {
-            output.loan(value.message * 2)?.send();
+            output.loan(value.message * 2).unwrap().send();
         }
-        Ok(())
     }
 }
 

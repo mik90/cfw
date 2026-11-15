@@ -11,8 +11,7 @@ use std::{
     time::Duration,
 };
 use task::{
-    ChannelPlan, LoanError, Output, RequiredInput, SubscriberPolicy, executor::TimeSource,
-    time::FrameworkTime,
+    ChannelPlan, Output, RequiredInput, SubscriberPolicy, executor::TimeSource, time::FrameworkTime,
 };
 use task_graph::GraphBuilder;
 use task_macros::task_callback;
@@ -68,13 +67,12 @@ impl Double {
         #[keep_across_runs(false)]
         input: RequiredInput<u64>,
         output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         if self.slow {
             std::thread::sleep(Duration::from_millis(5));
         }
         self.calls.fetch_add(1, Ordering::SeqCst);
         output.write(*input * 2).send();
-        Ok(())
     }
 }
 fn row(time: i64, bytes: &[u8]) -> OwnedLogEntry {
@@ -222,9 +220,8 @@ impl Poll {
         #[keep_across_runs(false)]
         input: RequiredInput<u64>,
         output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         output.write(*input).send();
-        Ok(())
     }
 }
 #[test]
@@ -271,10 +268,9 @@ impl Feedback {
         #[keep_across_runs(false)]
         input: task::OptionalInput<u64>,
         output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         let _ = input;
         output.write(1).send();
-        Ok(())
     }
 }
 struct Panics;

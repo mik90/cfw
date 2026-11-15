@@ -3,7 +3,6 @@ use iceoryx2::prelude::ZeroCopySend;
 use logging::{CaptureOptions, GraphCapturePlan};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use task::{
-    LoanError,
     iox2::{Iox2NotifyOutput, Iox2Output},
     loggable::{DeserializeError, Loggable, SerializeError},
     time::FrameworkTime,
@@ -84,11 +83,10 @@ impl Loggable for Wire {
 struct Source;
 #[task_callback]
 impl Source {
-    fn run(&self, mut output: Iox2Output<Wire>, notify: Iox2NotifyOutput) -> Result<(), LoanError> {
+    fn run(&self, mut output: Iox2Output<Wire>, notify: Iox2NotifyOutput) {
         output.0 = 42;
         output.send();
         notify.send();
-        Ok(())
     }
 }
 fn names() -> (String, String) {

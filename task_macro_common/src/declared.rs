@@ -351,7 +351,6 @@ pub fn expand_declared(spec: DeclaredTask) -> syn::Result<proc_macro2::TokenStre
         self_ty: dollar_ty(),
         endpoints,
         arguments: Vec::new(),
-        fallible: false,
     };
     Ok(generate::bazel_api(
         &task,

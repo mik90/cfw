@@ -1,6 +1,6 @@
 #![cfg(feature = "log_simulation")]
 use logging::{CaptureOptions, GraphCapturePlan, GraphReplayPlan, ReplayOptions};
-use task::{InputSpan, LoanError, Output, message::MessageHeader, time::FrameworkTime};
+use task::{InputSpan, Output, message::MessageHeader, time::FrameworkTime};
 use task_graph::{CallbackSchedule, GraphPlan, TaskRegistration};
 use task_macros::task_callback;
 struct Sum;
@@ -12,11 +12,10 @@ impl Sum {
         #[capacity(4)]
         input: InputSpan<u64>,
         output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         output
             .write(input.inputs().map(|message| message.message).sum())
             .send();
-        Ok(())
     }
 }
 #[test]

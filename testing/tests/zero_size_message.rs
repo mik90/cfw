@@ -1,6 +1,6 @@
 use googletest::prelude::*;
 use std::time::Duration;
-use task::{LoanError, Output, RequiredInput, time::FrameworkTime};
+use task::{Output, RequiredInput, time::FrameworkTime};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
@@ -16,9 +16,8 @@ impl ZstTask {
         #[channel("input")]
         _input: RequiredInput<ZstMessageA>,
         #[channel("output")] output: Output<ZstMessageB>,
-    ) -> Result<(), LoanError> {
+    ) {
         output.write(ZstMessageB {}).send();
-        Ok(())
     }
 }
 

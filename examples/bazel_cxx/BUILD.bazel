@@ -221,7 +221,6 @@ cfw_cxx_task(
     name = "norm_calculator",
     cxx_type = "NormTask",
     factory = "make_norm_task",
-    fallible = True,
     headers = ["cxx_fizz_buzz/src/fizz_buzz.hpp"],
     include_prefix = "cxx_fizz_buzz",
     namespace = "cfw::fizz_buzz",

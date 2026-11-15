@@ -6,7 +6,7 @@ use std::{
     },
     time::Duration,
 };
-use task::{Context, InputSpan, LoanError, Output, OutputSpan, RequiredInput, time::FrameworkTime};
+use task::{Context, InputSpan, Output, OutputSpan, RequiredInput, time::FrameworkTime};
 use task_graph::{CallbackSchedule, PoolIndex, ThreadPoolConfigList};
 use task_macros::task_callback;
 use testing::{ExecutionDuration, UnitTestExecutorBuilder, UnitTestExecutorConfig};
@@ -20,13 +20,8 @@ fn at(n: i64) -> FrameworkTime {
 struct Double;
 #[task_callback]
 impl Double {
-    fn run(
-        &self,
-        #[trigger(true)] input: RequiredInput<u64>,
-        output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) {
         output.write(*input * 2).send();
-        Ok(())
     }
 }
 
@@ -73,11 +68,10 @@ impl ScheduledBatch {
         #[capacity(4)]
         mut input: InputSpan<u64>,
         output: Output<Vec<u64>>,
-    ) -> Result<(), LoanError> {
+    ) {
         output
             .write(input.drain().map(|message| message.message).collect())
             .send();
-        Ok(())
     }
 }
 
@@ -299,11 +293,13 @@ impl BorrowingForward {
             'graph_storage,
             task::Forwarded<bool, BorrowedSourcePtr<'graph_storage>>,
         >,
-    ) -> Result<(), LoanError> {
+    ) {
         for source in input.drain() {
-            output.loan(task::Forwarded::new(true, source))?.send();
+            output
+                .loan(task::Forwarded::new(true, source))
+                .unwrap()
+                .send();
         }
-        Ok(())
     }
 }
 struct RetainForwarded(Arc<AtomicUsize>);
@@ -363,11 +359,10 @@ impl Batch {
         #[capacity(32)]
         mut input: InputSpan<u64>,
         #[capacity(32)] output: OutputSpan<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         for m in input.drain() {
-            output.loan(m.message)?.send();
+            output.loan(m.message).unwrap().send();
         }
-        Ok(())
     }
 }
 #[test]
@@ -407,9 +402,8 @@ impl Bridge {
         #[channel("output")]
         input: RequiredInput<u64>,
         result: Output<u64>,
-    ) -> Result<(), LoanError> {
+    ) {
         result.write(*input + 1).send();
-        Ok(())
     }
 }
 #[test]
@@ -454,14 +448,13 @@ impl NonClone {
         #[keep_across_runs(false)]
         input: RequiredInput<Counted>,
         output: Output<Counted>,
-    ) -> Result<(), LoanError> {
+    ) {
         output
             .write(Counted {
                 value: input.value * 2,
                 drops: input.drops.clone(),
             })
             .send();
-        Ok(())
     }
 }
 #[test]
@@ -615,10 +608,9 @@ struct Tick {
 }
 #[task_callback]
 impl Tick {
-    fn run(&self, output: Output<u64>, context: &Context) -> Result<(), LoanError> {
+    fn run(&self, output: Output<u64>, context: &Context) {
         self.calls.fetch_add(1, Ordering::SeqCst);
         output.write(context.now().to_nanoseconds() as u64).send();
-        Ok(())
     }
 }
 #[test]
@@ -687,13 +679,9 @@ fn explicit_fixed_dynamic_durations_pools_and_completion_deadlines() {
 struct Fails;
 #[task_callback]
 impl Fails {
-    fn run(
-        &self,
-        #[trigger(true)] input: RequiredInput<u64>,
-        output: Output<u64>,
-    ) -> Result<(), LoanError> {
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) {
         output.write(*input).send();
-        Err(LoanError::LoanCapacityReached)
+        panic!("callback failed");
     }
 }
 #[test]

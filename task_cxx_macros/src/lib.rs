@@ -88,10 +88,10 @@ pub fn define_cxx_bridge(input: TokenStream) -> TokenStream {
 /// Both input kinds also expose `foo_header(&self) -> MessageHeader`, where the
 /// bridge aliases `type MessageHeader = ::task_cxx::ffi::MessageHeader`.
 ///
-/// Set `fallible: true` to declare `run` as returning `Result<()>` in the bridge.
-/// C++ exceptions are then caught by cxx and surfaced as callback panics
-/// (`BatchFailure::Panic` to executors, like any panicking task) instead of
-/// terminating the process.
+/// The bridge always declares `run` as returning `Result<()>` so cxx catches
+/// C++ exceptions. C++ still implements `run` with no return type. Exceptions
+/// surface as callback panics (`BatchFailure::Panic` to executors, like any
+/// panicking task) instead of terminating the process.
 #[proc_macro]
 pub fn define_cxx_task(input: TokenStream) -> TokenStream {
     let spec = syn::parse_macro_input!(input as CxxTaskSpec);
@@ -106,7 +106,6 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
         name,
         cxx_type,
         factory,
-        fallible,
         subscribers,
         publishers,
     } = spec;
@@ -125,7 +124,6 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
         self_ty: quote!(#name),
         endpoints,
         arguments: Vec::new(),
-        fallible,
     };
     let endpoints = &task.endpoints;
 
@@ -134,7 +132,7 @@ fn expand(spec: CxxTaskSpec) -> Result<TokenStream2> {
     let input_collection = generate::collection(endpoints, &inputs, true);
     let output_collection = generate::collection(endpoints, &outputs, false);
     let views = view_definitions(&name, &view_inputs, &view_outputs, endpoints);
-    let invocation = invocation(&name, &view_inputs, &view_outputs, endpoints, fallible);
+    let invocation = invocation(&name, &view_inputs, &view_outputs, endpoints);
     let binding = generate::binding(&task, &declaration, &inputs, &outputs, &invocation);
 
     let task_struct = quote! {
@@ -713,7 +711,6 @@ fn invocation(
     view_inputs: &Ident,
     view_outputs: &Ident,
     endpoints: &[Endpoint],
-    fallible: bool,
 ) -> TokenStream2 {
     let mut prelude = Vec::new();
     let mut input_args = Vec::new();
@@ -767,22 +764,13 @@ fn invocation(
             }
         }
     }
-    let call = if fallible {
-        quote! {
-            if let ::core::result::Result::Err(error) = __cfw_user
-                .task
-                .pin_mut()
-                .run(&mut __cfw_cxx_inputs, &mut __cfw_cxx_outputs, &__cfw_cxx_context)
-            {
-                ::std::panic!("{} failed: {error}", ::core::stringify!(#name));
-            }
-        }
-    } else {
-        quote! {
-            __cfw_user
-                .task
-                .pin_mut()
-                .run(&mut __cfw_cxx_inputs, &mut __cfw_cxx_outputs, &__cfw_cxx_context);
+    let call = quote! {
+        if let ::core::result::Result::Err(error) = __cfw_user
+            .task
+            .pin_mut()
+            .run(&mut __cfw_cxx_inputs, &mut __cfw_cxx_outputs, &__cfw_cxx_context)
+        {
+            ::std::panic!("{} failed: {error}", ::core::stringify!(#name));
         }
     };
     quote! {
@@ -850,14 +838,13 @@ mod tests {
     }
 
     #[test]
-    fn fallible_run_maps_errors_to_panics() {
+    fn run_errors_map_to_panics() {
         let tokens = expand_source(
             r#"
             bridge: ffi,
             name: Probe,
             cxx_type: ProbeTask,
             factory: make_probe_task,
-            fallible: true,
             subscribers: {
                 integer: RequiredInput<u64> { channel: "integer" },
             },

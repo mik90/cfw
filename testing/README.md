@@ -6,16 +6,15 @@ scope exit, including when an assertion panics.
 
 ```rust
 use std::time::Duration;
-use task::{RequiredInput, Output, LoanError};
+use task::{RequiredInput, Output};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
 struct Double;
 #[task_callback]
 impl Double {
-    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) -> Result<(), LoanError> {
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) {
         output.write(*input * 2).send();
-        Ok(())
     }
 }
 
@@ -100,16 +99,15 @@ timed schedules. All execution uses the simulation scheduler.
 
 ```rust
 use std::time::Duration;
-use task::{RequiredInput, Output, LoanError};
+use task::{RequiredInput, Output};
 use task_macros::task_callback;
 use testing::UnitTestExecutorBuilder;
 
 struct Double;
 #[task_callback]
 impl Double {
-    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) -> Result<(), LoanError> {
+    fn run(&self, #[trigger(true)] input: RequiredInput<u64>, output: Output<u64>) {
         output.write(*input * 2).send();
-        Ok(())
     }
 }
 

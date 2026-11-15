@@ -277,27 +277,12 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
             keep,
         });
     }
-    let fallible = match &run.sig.output {
-        ReturnType::Default => false,
-        ReturnType::Type(_, ty) if matches!(ty.as_ref(), Type::Tuple(t) if t.elems.is_empty()) => {
-            false
-        }
-        ReturnType::Type(_, ty) => {
-            let Type::Path(path) = ty.as_ref() else {
-                return Err(syn::Error::new_spanned(
-                    ty,
-                    "run must return () or Result<(), LoanError>",
-                ));
-            };
-            if path.path.segments.last().unwrap().ident != "Result" {
-                return Err(syn::Error::new_spanned(
-                    ty,
-                    "run must return () or Result<(), LoanError>",
-                ));
-            }
-            true
-        }
-    };
+    if !matches!(run.sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            &run.sig.output,
+            "run must not declare a return type; communicate results through input and output endpoints",
+        ));
+    }
 
     Ok(TaskDefinition {
         item: Some(item),
@@ -305,7 +290,6 @@ fn parse_task(mut item: ItemImpl) -> syn::Result<TaskDefinition> {
         self_ty: quote!(#task_name),
         endpoints,
         arguments,
-        fallible,
     })
 }
 
@@ -327,6 +311,16 @@ mod tests {
             "impl Task { fn run(&mut self, input: InputSpan<u64>) {} }",
             "impl Task { fn run(&mut self, output: OutputSpan<u64>) {} }",
             "impl Task { fn run(&mut self, input: Iox2SpanInput<u64>) {} }",
+        ] {
+            assert!(expand(syn::parse_str(source).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_declared_return_types() {
+        for source in [
+            "impl Task { fn run(&mut self) -> Result<(), task::LoanError> {} }",
+            "impl Task { fn run(&mut self) -> () {} }",
         ] {
             assert!(expand(syn::parse_str(source).unwrap()).is_err());
         }

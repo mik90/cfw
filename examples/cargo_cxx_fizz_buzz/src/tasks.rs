@@ -67,7 +67,6 @@ task_cxx_macros::define_cxx_task! {
     name: NormCalculator,
     cxx_type: NormTask,
     factory: make_norm_task,
-    fallible: true,
     subscribers: {
         value: RequiredInput<Vec3> { channel: "norm_in", trigger: true },
     },
@@ -218,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn cxx_fallible_run_surfaces_exceptions() {
+    fn cxx_run_exceptions_surface_as_panics() {
         let mut builder = UnitTestExecutorBuilder::new();
         builder.add_task("norm", NormCalculator::new(), Duration::from_millis(1));
         let mut input = builder.add_test_publisher::<Vec3>(NORM_IN_CHANNEL);
