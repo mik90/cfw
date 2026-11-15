@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use base::arena::Arena;
 use task::message::Message;
 use task::time::FrameworkTime;
-use task::{Forwarded, LoanError, Publisher, Subscriber};
+use task::{Forwarded, LoanError, Publisher, Subscriber, TakeEntry};
 
 struct Counted(Arc<AtomicUsize>);
 
@@ -233,7 +233,7 @@ fn loans_are_exclusive_and_cancelled_outputs_release_capacity() {
 }
 
 #[test]
-fn span_loans_share_quota_and_publish_in_send_order() {
+fn span_entries_share_quota_and_publish_in_send_order() {
     let arena = Arena::new(4);
     let subscriber = Subscriber::new(4);
     let mut publisher = Publisher::new(arena.allocator(), 4);
@@ -241,15 +241,13 @@ fn span_loans_share_quota_and_publish_in_send_order() {
     publisher.publish(10).unwrap();
     {
         let span = publisher.span();
-        let first = span.loan_uninit().unwrap();
-        let second = span.loan_uninit().unwrap();
-        let cancelled = span.loan(99).unwrap();
-        assert!(matches!(
-            span.loan_uninit(),
-            Err(LoanError::LoanCapacityReached)
-        ));
+        let first = span.take_entry_uninit().unwrap();
+        let second = span.take_entry_uninit().unwrap();
+        let cancelled = span.take_entry(99).unwrap();
+        assert!(span.take_entry_uninit().is_none());
+        assert!(matches!(span.try_take_entry_uninit(), TakeEntry::Full));
         drop(cancelled);
-        let mut third = span.loan_uninit().unwrap();
+        let mut third = span.take_entry_uninit().unwrap();
         third.payload_uninit().write(30);
         // SAFETY: The entire u64 payload was initialized above.
         let third = unsafe { third.assume_init() };
@@ -259,10 +257,7 @@ fn span_loans_share_quota_and_publish_in_send_order() {
         third.send();
         first.send();
         second.send();
-        assert!(matches!(
-            span.loan_uninit(),
-            Err(LoanError::LoanCapacityReached)
-        ));
+        assert!(span.take_entry_uninit().is_none());
     }
     assert!(subscriber.input_forwardable().is_empty());
     publisher.flush(timestamp());
@@ -290,7 +285,7 @@ fn span_loans_share_quota_and_publish_in_send_order() {
         [(0, 0), (0, 1), (0, 2), (0, 3)]
     );
     subscriber.clear();
-    publisher.span().loan(40).unwrap().send();
+    publisher.span().take_entry(40).unwrap().send();
     publisher.discard_pending();
     assert!(arena.try_allocate_uninit().is_some());
 }
@@ -302,19 +297,25 @@ fn span_arena_exhaustion_and_unwind_release_unsent_and_cancel_sent_outputs() {
     let mut publisher = Publisher::new(arena.allocator(), 3);
     {
         let span = publisher.span();
-        let first = span.loan_uninit().unwrap();
-        let second = span.loan(Counted(drops.clone())).unwrap();
-        assert!(matches!(span.loan_uninit(), Err(LoanError::ArenaExhausted)));
+        let first = span.take_entry_uninit().unwrap();
+        let second = span.take_entry(Counted(drops.clone())).unwrap();
+        assert!(matches!(
+            span.try_take_entry_uninit(),
+            TakeEntry::ArenaExhausted
+        ));
+        let panic =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| span.take_entry_uninit()));
+        assert!(panic.is_err());
         drop(first);
-        drop(span.loan_uninit().unwrap());
+        drop(span.take_entry_uninit().unwrap());
         second.send();
     }
     publisher.discard_pending();
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let span = publisher.span();
-        let _unsent = span.loan(Counted(drops.clone())).unwrap();
-        span.loan(Counted(drops.clone())).unwrap().send();
+        let _unsent = span.take_entry(Counted(drops.clone())).unwrap();
+        span.take_entry(Counted(drops.clone())).unwrap().send();
         panic!("callback initialization failed");
     }));
     assert!(failure.is_err());
@@ -322,8 +323,8 @@ fn span_arena_exhaustion_and_unwind_release_unsent_and_cancel_sent_outputs() {
     publisher.discard_pending();
     assert_eq!(drops.load(Ordering::Relaxed), 3);
     let span = publisher.span();
-    let _first = span.loan_uninit().unwrap();
-    let _second = span.loan_uninit().unwrap();
+    let _first = span.take_entry_uninit().unwrap();
+    let _second = span.take_entry_uninit().unwrap();
 }
 
 #[test]

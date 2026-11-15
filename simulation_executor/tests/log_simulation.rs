@@ -33,7 +33,7 @@ impl Double {
         #[capacity(8)] output: OutputSpan<u64>,
     ) {
         for value in input.drain() {
-            output.loan(value.message * 2).unwrap().send();
+            output.take_entry(value.message * 2).unwrap().send();
         }
     }
 }

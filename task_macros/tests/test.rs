@@ -260,13 +260,10 @@ impl SpanTransform {
         }
         let mut loans = Vec::new();
         for message in input.inputs() {
-            let loan = output.loan_uninit().unwrap();
+            let loan = output.take_entry_uninit().unwrap();
             loans.push(loan.write(SpanValue(message.message.0 * 2)));
         }
-        assert!(matches!(
-            output.loan_uninit(),
-            Err(LoanError::LoanCapacityReached)
-        ));
+        assert!(output.take_entry_uninit().is_none());
         for loan in loans.into_iter().rev() {
             loan.send();
         }
@@ -340,10 +337,10 @@ fn span_outputs_cancel_sent_and_unsent_loans_on_failure() {
                 let drops = drops.clone();
                 move |publisher: &mut task::Publisher<'_, Counted>, _: &Context| {
                     let span = publisher.span();
-                    let first = span.loan_uninit().unwrap();
-                    let _unsent = span.loan(Counted(Some(drops.clone()))).unwrap();
+                    let first = span.take_entry_uninit().unwrap();
+                    let _unsent = span.take_entry(Counted(Some(drops.clone()))).unwrap();
                     first.write(Counted(Some(drops.clone()))).send();
-                    let _uninitialized = span.loan_uninit().unwrap();
+                    let _uninitialized = span.take_entry_uninit().unwrap();
                     assert!(!panic, "span callback failed");
                     Err(LoanError::LoanCapacityReached)
                 }
@@ -426,7 +423,10 @@ impl Forward {
         >,
     ) {
         for ptr in input.drain() {
-            output.loan(task::Forwarded::new(true, ptr)).unwrap().send();
+            output
+                .take_entry(task::Forwarded::new(true, ptr))
+                .unwrap()
+                .send();
         }
     }
 }

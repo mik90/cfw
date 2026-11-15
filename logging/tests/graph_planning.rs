@@ -41,8 +41,8 @@ struct Source(u64);
 #[task_callback]
 impl Source {
     fn run(&self, #[capacity(2)] output: OutputSpan<Value>, hidden: Output<Hidden>) {
-        let first = output.loan(Value(self.0)).unwrap();
-        let second = output.loan(Value(self.0 + 1)).unwrap();
+        let first = output.take_entry(Value(self.0)).unwrap();
+        let second = output.take_entry(Value(self.0 + 1)).unwrap();
         second.send();
         first.send();
         hidden.write(Hidden).send();

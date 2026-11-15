@@ -82,7 +82,7 @@ pub fn define_cxx_bridge(input: TokenStream) -> TokenStream {
 ///   the payload through the owning `cfw::Output<T>` handle)
 /// - span output (`OutputSpan`, requires `capacity`):
 ///   `fn foo_span(&mut self) -> SpanHandle`; C++ calls
-///   `span.loan_uninit().init<T>(...)` or `span.loan(value)`, and each returned
+///   `span.take_entry_uninit()` or `span.take_entry(value)`, and each returned
 ///   `cfw::Output<T>` sends or releases only its own slot
 ///
 /// Both input kinds also expose `foo_header(&self) -> MessageHeader`, where the
@@ -433,76 +433,112 @@ fn view_definitions(
                 let slot = span_slot_ident(task_name, endpoint);
                 let entries = span_entries_ident(endpoint);
                 let span = format_ident!("{name}_span");
-                let loan_uninit_inner = format_ident!("{name}_span_loan_uninit_inner");
-                let loan_inner = format_ident!("{name}_span_loan_inner");
+                let take_entry_uninit_inner = format_ident!("{name}_span_take_entry_uninit_inner");
+                let take_entry_inner = format_ident!("{name}_span_take_entry_inner");
                 let send_inner = format_ident!("{name}_span_send_inner");
                 let discard_inner = format_ident!("{name}_span_discard_inner");
-                let (loan_uninit_thunk, loan_thunk, send_thunk, discard_thunk) =
+                let (take_entry_uninit_thunk, take_entry_thunk, send_thunk, discard_thunk) =
                     span_thunk_idents(task_name, endpoint);
                 quote! {
-                    /// Returns a span proxy. Each loan returns an owning handle
+                    /// Returns a span proxy. Each take returns an owning handle
                     /// that sends or releases only its own slot.
                     pub fn #span(&mut self) -> ::task_cxx::SpanHandle {
                         ::task_cxx::SpanHandle {
                             context: self as *mut Self as *mut ::core::ffi::c_void,
-                            loan_uninit_fn: #loan_uninit_thunk,
-                            loan_fn: #loan_thunk,
+                            take_entry_uninit_fn: #take_entry_uninit_thunk,
+                            take_entry_fn: #take_entry_thunk,
                         }
                     }
 
-                    fn #loan_uninit_inner(&mut self) -> ::task_cxx::OutputUninit {
+                    fn #take_entry_uninit_inner(&mut self) -> ::task_cxx::SpanEntryOutcome {
                         // SAFETY: view construction guarantees the span outlives the view.
                         let span = unsafe { &*self.#name };
-                        match span.loan_uninit() {
-                            ::core::result::Result::Ok(mut entry) => {
+                        match span.try_take_entry_uninit() {
+                            ::task::TakeEntry::Taken(mut entry) => {
                                 let payload = entry.payload_uninit().as_mut_ptr()
                                     as *mut ::core::ffi::c_void;
                                 let index = self.#entries.len();
                                 self.#entries.push(#slot::Uninit(entry));
-                                ::task_cxx::OutputUninit {
-                                    payload,
-                                    context: self as *mut Self as *mut ::core::ffi::c_void,
-                                    send: #send_thunk,
-                                    discard: #discard_thunk,
-                                    index,
+                                ::task_cxx::SpanEntryOutcome {
+                                    output: ::task_cxx::OutputUninit {
+                                        payload,
+                                        context: self as *mut Self as *mut ::core::ffi::c_void,
+                                        send: #send_thunk,
+                                        discard: #discard_thunk,
+                                        index,
+                                    },
+                                    status: ::task_cxx::SpanEntryStatus::Taken,
                                 }
                             }
-                            ::core::result::Result::Err(_) => {
-                                ::task_cxx::OutputUninit {
-                                    payload: ::core::ptr::null_mut(),
-                                    context: self as *mut Self as *mut ::core::ffi::c_void,
-                                    send: #send_thunk,
-                                    discard: #discard_thunk,
-                                    index: 0,
+                            ::task::TakeEntry::Full => {
+                                ::task_cxx::SpanEntryOutcome {
+                                    output: ::task_cxx::OutputUninit {
+                                        payload: ::core::ptr::null_mut(),
+                                        context: self as *mut Self as *mut ::core::ffi::c_void,
+                                        send: #send_thunk,
+                                        discard: #discard_thunk,
+                                        index: 0,
+                                    },
+                                    status: ::task_cxx::SpanEntryStatus::Full,
+                                }
+                            }
+                            ::task::TakeEntry::ArenaExhausted => {
+                                ::task_cxx::SpanEntryOutcome {
+                                    output: ::task_cxx::OutputUninit {
+                                        payload: ::core::ptr::null_mut(),
+                                        context: self as *mut Self as *mut ::core::ffi::c_void,
+                                        send: #send_thunk,
+                                        discard: #discard_thunk,
+                                        index: 0,
+                                    },
+                                    status: ::task_cxx::SpanEntryStatus::ArenaExhausted,
                                 }
                             }
                         }
                     }
 
-                    fn #loan_inner(&mut self, value: #ty) -> ::task_cxx::OutputUninit {
+                    fn #take_entry_inner(&mut self, value: #ty) -> ::task_cxx::SpanEntryOutcome {
                         // SAFETY: view construction guarantees the span outlives the view.
                         let span = unsafe { &*self.#name };
-                        match span.loan(value) {
-                            ::core::result::Result::Ok(mut entry) => {
+                        match span.try_take_entry(value) {
+                            ::task::TakeEntry::Taken(mut entry) => {
                                 let payload = entry.value_mut() as *mut #ty
                                     as *mut ::core::ffi::c_void;
                                 let index = self.#entries.len();
                                 self.#entries.push(#slot::Written(entry));
-                                ::task_cxx::OutputUninit {
-                                    payload,
-                                    context: self as *mut Self as *mut ::core::ffi::c_void,
-                                    send: #send_thunk,
-                                    discard: #discard_thunk,
-                                    index,
+                                ::task_cxx::SpanEntryOutcome {
+                                    output: ::task_cxx::OutputUninit {
+                                        payload,
+                                        context: self as *mut Self as *mut ::core::ffi::c_void,
+                                        send: #send_thunk,
+                                        discard: #discard_thunk,
+                                        index,
+                                    },
+                                    status: ::task_cxx::SpanEntryStatus::Taken,
                                 }
                             }
-                            ::core::result::Result::Err(_) => {
-                                ::task_cxx::OutputUninit {
-                                    payload: ::core::ptr::null_mut(),
-                                    context: self as *mut Self as *mut ::core::ffi::c_void,
-                                    send: #send_thunk,
-                                    discard: #discard_thunk,
-                                    index: 0,
+                            ::task::TakeEntry::Full => {
+                                ::task_cxx::SpanEntryOutcome {
+                                    output: ::task_cxx::OutputUninit {
+                                        payload: ::core::ptr::null_mut(),
+                                        context: self as *mut Self as *mut ::core::ffi::c_void,
+                                        send: #send_thunk,
+                                        discard: #discard_thunk,
+                                        index: 0,
+                                    },
+                                    status: ::task_cxx::SpanEntryStatus::Full,
+                                }
+                            }
+                            ::task::TakeEntry::ArenaExhausted => {
+                                ::task_cxx::SpanEntryOutcome {
+                                    output: ::task_cxx::OutputUninit {
+                                        payload: ::core::ptr::null_mut(),
+                                        context: self as *mut Self as *mut ::core::ffi::c_void,
+                                        send: #send_thunk,
+                                        discard: #discard_thunk,
+                                        index: 0,
+                                    },
+                                    status: ::task_cxx::SpanEntryStatus::ArenaExhausted,
                                 }
                             }
                         }
@@ -577,32 +613,32 @@ fn view_definitions(
         .map(|endpoint| {
             let name = &endpoint.name;
             let ty = &endpoint.payload;
-            let loan_uninit_inner = format_ident!("{name}_span_loan_uninit_inner");
-            let loan_inner = format_ident!("{name}_span_loan_inner");
+            let take_entry_uninit_inner = format_ident!("{name}_span_take_entry_uninit_inner");
+            let take_entry_inner = format_ident!("{name}_span_take_entry_inner");
             let send_inner = format_ident!("{name}_span_send_inner");
             let discard_inner = format_ident!("{name}_span_discard_inner");
-            let (loan_uninit_thunk, loan_thunk, send_thunk, discard_thunk) =
+            let (take_entry_uninit_thunk, take_entry_thunk, send_thunk, discard_thunk) =
                 span_thunk_idents(task_name, endpoint);
             quote! {
                 #[allow(non_snake_case)]
-                unsafe extern "C" fn #loan_uninit_thunk(
+                unsafe extern "C" fn #take_entry_uninit_thunk(
                     context: *mut ::core::ffi::c_void,
-                ) -> ::task_cxx::OutputUninit {
+                ) -> ::task_cxx::SpanEntryOutcome {
                     // SAFETY: context is the live view for the duration of `run`.
                     let view = unsafe { &mut *(context as *mut #view_outputs) };
-                    view.#loan_uninit_inner()
+                    view.#take_entry_uninit_inner()
                 }
 
                 #[allow(non_snake_case)]
-                unsafe extern "C" fn #loan_thunk(
+                unsafe extern "C" fn #take_entry_thunk(
                     context: *mut ::core::ffi::c_void,
                     value: *mut ::core::ffi::c_void,
-                ) -> ::task_cxx::OutputUninit {
+                ) -> ::task_cxx::SpanEntryOutcome {
                     // SAFETY: C++ always passes a live, moved-in payload pointer.
                     let value = unsafe { value.cast::<#ty>().read() };
                     // SAFETY: context is the live view for the duration of `run`.
                     let view = unsafe { &mut *(context as *mut #view_outputs) };
-                    view.#loan_inner(value)
+                    view.#take_entry_inner(value)
                 }
 
                 #[allow(non_snake_case)]
@@ -689,8 +725,8 @@ fn uninit_thunk_idents(task_name: &Ident, endpoint: &Endpoint) -> (Ident, Ident)
 fn span_thunk_idents(task_name: &Ident, endpoint: &Endpoint) -> (Ident, Ident, Ident, Ident) {
     let name = &endpoint.name;
     (
-        format_ident!("__cfw_{task_name}_{name}_span_loan_uninit"),
-        format_ident!("__cfw_{task_name}_{name}_span_loan"),
+        format_ident!("__cfw_{task_name}_{name}_span_take_entry_uninit"),
+        format_ident!("__cfw_{task_name}_{name}_span_take_entry"),
         format_ident!("__cfw_{task_name}_{name}_span_send"),
         format_ident!("__cfw_{task_name}_{name}_span_discard"),
     )

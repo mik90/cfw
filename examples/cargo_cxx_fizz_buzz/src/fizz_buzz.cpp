@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -88,34 +89,38 @@ void SpanProbeTask::run(SpanProbeCxxInputs& inputs,
 
     // The declared span capacity is four.
     std::array<cfw::Output<std::uint64_t>, 4> slots;
-    std::size_t loans = 0;
+    std::size_t entries = 0;
     for (std::uint64_t index = 0; index < count; ++index) {
-        cfw::Output<std::uint64_t> slot;
+        std::optional<cfw::Output<std::uint64_t>> entry;
         if (index % 2 == 0) {
-            slot = span.loan(index);
+            entry = span.take_entry(index);
         } else {
-            slot = span.loan_uninit().init<std::uint64_t>(index);
+            auto raw = span.take_entry_uninit();
+            if (!raw) {
+                break;
+            }
+            entry = std::move(*raw).init<std::uint64_t>(index);
         }
-        if (!slot || loans == slots.size()) {
+        if (!entry || entries == slots.size()) {
             break;
         }
-        slots[loans++] = std::move(slot);
+        slots[entries++] = std::move(*entry);
     }
 
     // In-place string output: the handle construction uses placement new and
     // owns the value until sent (or destroys it on early return).
     auto label = outputs.label_uninit().init<rust::String>(
-        "span:" + std::to_string(loans));
+        "span:" + std::to_string(entries));
     if (count == 0) {
         return;
     }
     std::move(label).send();
 
-    // Publish the second loan out of order, then the rest in loan order.
-    if (loans > 1) {
+    // Publish the second entry out of order, then the rest in entry order.
+    if (entries > 1) {
         std::move(slots[1]).send();
     }
-    for (std::size_t index = 0; index < loans; ++index) {
+    for (std::size_t index = 0; index < entries; ++index) {
         if (index != 1) {
             std::move(slots[index]).send();
         }

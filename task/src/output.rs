@@ -1,7 +1,6 @@
 use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
 
 use crate::message::Message;
-use crate::publisher::LoanError;
 pub use crate::publisher::Publisher;
 use std::cell::Cell;
 use std::mem::MaybeUninit;
@@ -92,7 +91,7 @@ impl<T> DerefMut for OutputInit<'_, '_, T> {
 pub type OutputDefault<'output, 'graph_storage, T> = OutputInit<'output, 'graph_storage, T>;
 
 /// A callback-local span borrowing one publisher. Each reservation owns a
-/// distinct arena slot. Outstanding and sent loans share the publisher's quota.
+/// distinct arena slot. Outstanding and sent entries share the publisher's quota.
 /// Drop unsent handles to return their slots and quota before reserving again.
 pub struct OutputSpan<'output, 'graph_storage, T> {
     allocator: &'output ArenaAllocator<'graph_storage, Message<T>>,
@@ -100,6 +99,20 @@ pub struct OutputSpan<'output, 'graph_storage, T> {
     loan_capacity: usize,
     pending_len: Cell<usize>,
     outstanding: Cell<usize>,
+}
+
+/// Result of taking one entry from an [`OutputSpan`].
+pub enum TakeEntry<T> {
+    /// An entry was reserved.
+    Taken(T),
+    /// Every entry in the span is already reserved or sent.
+    Full,
+    /// The publisher arena is smaller than the span's declared capacity.
+    ///
+    /// This is an internal invariant violation: a planned publisher reserves
+    /// at least its loan capacity, so this only happens for a manually
+    /// constructed publisher with a mismatched arena.
+    ArenaExhausted,
 }
 
 impl<'output, 'graph_storage, T> OutputSpan<'output, 'graph_storage, T> {
@@ -113,25 +126,66 @@ impl<'output, 'graph_storage, T> OutputSpan<'output, 'graph_storage, T> {
         }
     }
 
-    pub fn loan_uninit(
+    /// Takes an uninitialized entry, or returns [`None`] when the span is full.
+    ///
+    /// Panics if the publisher arena is smaller than the span's declared
+    /// capacity; use [`Self::try_take_entry_uninit`] to observe that case.
+    pub fn take_entry_uninit(
         &self,
-    ) -> Result<OutputSpanEntryUninit<'_, 'output, 'graph_storage, T>, LoanError> {
-        if self.outstanding.get() >= (self.loan_capacity - self.pending_len.get()) {
-            return Err(LoanError::LoanCapacityReached);
+    ) -> Option<OutputSpanEntryUninit<'_, 'output, 'graph_storage, T>> {
+        match self.try_take_entry_uninit() {
+            TakeEntry::Taken(entry) => Some(entry),
+            TakeEntry::Full => None,
+            TakeEntry::ArenaExhausted => {
+                panic!("span entry allocation exceeded planned publisher arena capacity")
+            }
         }
-        let ptr = crate::publisher::allocate_output(self.allocator)?;
+    }
+
+    /// Takes an uninitialized entry, reporting the full-span and invariant
+    /// cases explicitly.
+    pub fn try_take_entry_uninit(
+        &self,
+    ) -> TakeEntry<OutputSpanEntryUninit<'_, 'output, 'graph_storage, T>> {
+        if self.outstanding.get() >= (self.loan_capacity - self.pending_len.get()) {
+            return TakeEntry::Full;
+        }
+        let Ok(ptr) = crate::publisher::allocate_output(self.allocator) else {
+            return TakeEntry::ArenaExhausted;
+        };
         self.outstanding.set(self.outstanding.get() + 1);
-        Ok(OutputSpanEntryUninit {
+        TakeEntry::Taken(OutputSpanEntryUninit {
             ptr,
             reservation: Reservation { span: self },
         })
     }
 
-    pub fn loan(
+    /// Takes an entry initialized with `value`, or returns [`None`] when the
+    /// span is full.
+    ///
+    /// Panics if the publisher arena is smaller than the span's declared
+    /// capacity; use [`Self::try_take_entry`] to observe that case.
+    pub fn take_entry(&self, value: T) -> Option<OutputSpanEntry<'_, 'output, 'graph_storage, T>> {
+        match self.try_take_entry(value) {
+            TakeEntry::Taken(entry) => Some(entry),
+            TakeEntry::Full => None,
+            TakeEntry::ArenaExhausted => {
+                panic!("span entry allocation exceeded planned publisher arena capacity")
+            }
+        }
+    }
+
+    /// Takes an entry initialized with `value`, reporting the full-span and
+    /// invariant cases explicitly.
+    pub fn try_take_entry(
         &self,
         value: T,
-    ) -> Result<OutputSpanEntry<'_, 'output, 'graph_storage, T>, LoanError> {
-        self.loan_uninit().map(|loan| loan.write(value))
+    ) -> TakeEntry<OutputSpanEntry<'_, 'output, 'graph_storage, T>> {
+        match self.try_take_entry_uninit() {
+            TakeEntry::Taken(entry) => TakeEntry::Taken(entry.write(value)),
+            TakeEntry::Full => TakeEntry::Full,
+            TakeEntry::ArenaExhausted => TakeEntry::ArenaExhausted,
+        }
     }
 
     fn enqueue(&self, ptr: ArenaPtr<'graph_storage, Message<T>>) {

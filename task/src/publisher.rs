@@ -222,7 +222,7 @@ impl<'graph_storage, T> Publisher<'graph_storage, T> {
         Ok(())
     }
 
-    /// Borrow this publisher for a span of simultaneously outstanding loans.
+    /// Borrow this publisher for a span of simultaneously outstanding entries.
     /// Sent outputs join the ordinary pending queue in send order; the executor
     /// stamps and publishes them only after the callback succeeds.
     ///
@@ -233,8 +233,8 @@ impl<'graph_storage, T> Publisher<'graph_storage, T> {
     /// let mut publisher = Publisher::new(storage.allocator(), 2);
     /// {
     ///     let span = publisher.span();
-    ///     let first = span.loan_uninit().unwrap();
-    ///     let second = span.loan_uninit().unwrap();
+    ///     let first = span.take_entry_uninit().unwrap();
+    ///     let second = span.take_entry_uninit().unwrap();
     ///     let first = first.write(10);
     ///     let second = second.write(*first + 1);
     ///     second.send();

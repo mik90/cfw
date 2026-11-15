@@ -38,6 +38,7 @@ pub use forwarded_message::{Forwarded, ForwardedSources};
 pub use input::{Forwardable, Input, InputSpan, OptionalInput, ReadOnly, RequiredInput};
 pub use output::{
     Output, OutputDefault, OutputInit, OutputSpan, OutputSpanEntry, OutputSpanEntryUninit,
+    TakeEntry,
 };
 pub use publisher::{LoanError, Publisher};
 pub use storage::StorageError;

@@ -39,17 +39,40 @@ unsafe impl cxx::ExternType for OutputUninit {
 
 /// Trivial proxy for a span publisher, mirroring Rust's `OutputSpan`.
 ///
-/// C++ calls [`SpanHandle::loan`] / [`SpanHandle::loan_uninit`]; each call
-/// returns an owning output handle that sends or releases its own slot.
+/// C++ calls [`SpanHandle::take_entry`] / [`SpanHandle::take_entry_uninit`];
+/// each call returns an owning output handle that sends or releases its own
+/// slot.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SpanHandle {
     /// The live view; only valid during the C++ `run` call.
     pub context: *mut c_void,
-    /// Reserves an uninitialized slot.
-    pub loan_uninit_fn: unsafe extern "C" fn(*mut c_void) -> OutputUninit,
-    /// Reserves a slot initialized from a moved-in payload.
-    pub loan_fn: unsafe extern "C" fn(*mut c_void, *mut c_void) -> OutputUninit,
+    /// Takes an uninitialized entry.
+    pub take_entry_uninit_fn: unsafe extern "C" fn(*mut c_void) -> SpanEntryOutcome,
+    /// Takes an entry initialized from a moved-in payload.
+    pub take_entry_fn: unsafe extern "C" fn(*mut c_void, *mut c_void) -> SpanEntryOutcome,
+}
+
+/// Result of taking an entry through a span thunk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SpanEntryOutcome {
+    /// The reserved entry, or a null handle when no entry was taken.
+    pub output: OutputUninit,
+    /// Why the entry was or was not taken.
+    pub status: SpanEntryStatus,
+}
+
+/// Status returned by a span entry thunk.
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SpanEntryStatus {
+    /// An entry was reserved.
+    Taken,
+    /// Every entry in the span is already reserved or sent.
+    Full,
+    /// The publisher arena is smaller than the span's declared capacity.
+    ArenaExhausted,
 }
 
 // SAFETY: `SpanHandle` is a plain C-layout struct of pointers with no drop

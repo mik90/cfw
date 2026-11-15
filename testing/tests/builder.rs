@@ -296,7 +296,7 @@ impl BorrowingForward {
     ) {
         for source in input.drain() {
             output
-                .loan(task::Forwarded::new(true, source))
+                .take_entry(task::Forwarded::new(true, source))
                 .unwrap()
                 .send();
         }
@@ -361,7 +361,7 @@ impl Batch {
         #[capacity(32)] output: OutputSpan<u64>,
     ) {
         for m in input.drain() {
-            output.loan(m.message).unwrap().send();
+            output.take_entry(m.message).unwrap().send();
         }
     }
 }

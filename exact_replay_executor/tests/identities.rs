@@ -30,8 +30,8 @@ struct Source(u64);
 #[task_callback]
 impl Source {
     fn run(&mut self, #[capacity(2)] output: OutputSpan<Value>) {
-        let first = output.loan(Value(self.0)).unwrap();
-        let second = output.loan(Value(self.0 + 1)).unwrap();
+        let first = output.take_entry(Value(self.0)).unwrap();
+        let second = output.take_entry(Value(self.0 + 1)).unwrap();
         second.send();
         first.send();
         self.0 += 2;
@@ -50,7 +50,10 @@ impl Forward {
         output: OutputSpan<'_, 'graph_storage, Forwarded<bool, SourcePtr<'graph_storage>>>,
     ) {
         for value in input.drain() {
-            output.loan(Forwarded::new(true, value)).unwrap().send();
+            output
+                .take_entry(Forwarded::new(true, value))
+                .unwrap()
+                .send();
         }
     }
 }

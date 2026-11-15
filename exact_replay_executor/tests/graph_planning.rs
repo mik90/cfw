@@ -29,8 +29,8 @@ struct Source(u64);
 #[task_callback]
 impl Source {
     fn run(&mut self, #[capacity(2)] output: OutputSpan<Value>) {
-        let a = output.loan(Value(self.0)).unwrap();
-        let b = output.loan(Value(self.0 + 1)).unwrap();
+        let a = output.take_entry(Value(self.0)).unwrap();
+        let b = output.take_entry(Value(self.0 + 1)).unwrap();
         b.send();
         a.send();
         self.0 += 2;
@@ -423,7 +423,7 @@ impl ForwardTask {
     ) {
         for source in input.drain() {
             output
-                .loan(task::Forwarded::new(true, source))
+                .take_entry(task::Forwarded::new(true, source))
                 .unwrap()
                 .send();
         }
@@ -443,7 +443,7 @@ impl ForwardSink {
     ) {
         for forwarded in input.drain() {
             output
-                .loan(forwarded.message.forwarded_messages.message + 1)
+                .take_entry(forwarded.message.forwarded_messages.message + 1)
                 .unwrap()
                 .send();
         }

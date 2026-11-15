@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <new>
+#include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -18,9 +21,9 @@ class Output;
 /// Reserved but uninitialized output slot.
 ///
 /// Returned by value from a task's `*_uninit` bridge method or by
-/// `SpanHandle::loan_uninit()`. It is deliberately trivially relocatable (see
-/// the Rust side in `task_cxx/src/output.rs`) so cxx can pass it across the
-/// FFI. It must not outlive the C++ `run` call.
+/// `SpanHandle::take_entry_uninit()`. It is deliberately trivially relocatable
+/// (see the Rust side in `task_cxx/src/output.rs`) so cxx can pass it across
+/// the FFI. It must not outlive the C++ `run` call.
 struct OutputUninit {
     void* payload = nullptr;
     void* context = nullptr;
@@ -100,7 +103,7 @@ class Output {
 
     /// Publishes the payload and disarms the handle. Like Rust's
     /// `OutputSpanEntry::send`, this consumes the output.
-    void send() && noexcept {
+    void send() && {
         if (payload_ != nullptr) {
             if (send_ != nullptr) {
                 send_(context_, index_);
@@ -150,29 +153,69 @@ class Output {
     bool owns_payload_ = false;
 };
 
+/// Status returned by a span entry thunk.
+enum class SpanEntryStatus : std::uint8_t {
+    Taken = 0,
+    Full = 1,
+    ArenaExhausted = 2,
+};
+
+/// Result of taking an entry through a span thunk.
+struct SpanEntryOutcome {
+    OutputUninit output;
+    SpanEntryStatus status;
+};
+
 /// Trivial proxy for a span publisher, mirroring Rust's `OutputSpan`.
 ///
-/// Each loan returns an owning `Output<T>` that sends or releases its own slot.
+/// Each take returns an owning `Output<T>` that sends or releases its own slot.
 /// It must not outlive the C++ `run` call.
 struct SpanHandle {
     void* context = nullptr;
-    OutputUninit (*loan_uninit_fn)(void*) = nullptr;
-    OutputUninit (*loan_fn)(void*, void*) = nullptr;
+    SpanEntryOutcome (*take_entry_uninit_fn)(void*) = nullptr;
+    SpanEntryOutcome (*take_entry_fn)(void*, void*) = nullptr;
 
-    /// Reserves an uninitialized slot.
-    OutputUninit loan_uninit() const noexcept {
-        return loan_uninit_fn(context);
+    /// Takes an uninitialized entry.
+    ///
+    /// Returns `std::nullopt` when every entry is already reserved or sent.
+    /// Throws `std::runtime_error` if the publisher arena is smaller than the
+    /// span's declared capacity.
+    std::optional<OutputUninit> take_entry_uninit() const {
+        SpanEntryOutcome outcome = take_entry_uninit_fn(context);
+        switch (outcome.status) {
+        case SpanEntryStatus::Taken:
+            return outcome.output;
+        case SpanEntryStatus::Full:
+            return std::nullopt;
+        case SpanEntryStatus::ArenaExhausted:
+            throw std::runtime_error(
+                "cfw span entry exceeded planned publisher arena capacity");
+        }
+        throw std::runtime_error("cfw span entry returned an unknown status");
     }
 
-    /// Reserves a slot initialized with `value`.
+    /// Takes an entry initialized with `value`.
+    ///
+    /// Returns `std::nullopt` when every entry is already reserved or sent.
+    /// Throws `std::runtime_error` if the publisher arena is smaller than the
+    /// span's declared capacity. Rust always consumes the staged value, whether
+    /// or not an entry was available.
     template <typename T>
-    Output<T> loan(T value) const {
+    std::optional<Output<T>> take_entry(T value) const {
         alignas(T) unsigned char storage[sizeof(T)];
         T* staged = ::new (static_cast<void*>(storage)) T(std::move(value));
-        OutputUninit raw = loan_fn(context, staged);
-        // Rust always takes ownership of the staged value, whether or not the
-        // reservation succeeded, so C++ must not destroy it afterwards.
-        return std::move(raw).adopt<T>();
+        SpanEntryOutcome outcome = take_entry_fn(context, staged);
+        switch (outcome.status) {
+        case SpanEntryStatus::Taken:
+            return std::optional<Output<T>>(
+                std::move(outcome.output).adopt<T>());
+        case SpanEntryStatus::Full:
+            return std::nullopt;
+        case SpanEntryStatus::ArenaExhausted:
+            throw std::runtime_error(
+                "cfw span entry exceeded planned publisher arena capacity");
+        }
+        throw std::runtime_error("cfw span entry returned an unknown status");
     }
 };
 

@@ -16,7 +16,7 @@
 use std::pin::Pin;
 
 mod output;
-pub use output::{OutputUninit, SpanHandle};
+pub use output::{OutputUninit, SpanEntryOutcome, SpanEntryStatus, SpanHandle};
 
 #[cxx::bridge(namespace = "cfw")]
 pub mod ffi {
