@@ -1,6 +1,6 @@
 pub use crate::subscriber::Input;
 use crate::{Subscriber, message::MessageHeader};
-use std::ops::Deref;
+use core::ops::Deref;
 
 /// Default callback input capability. Readers can only read the input and can't extend its lifetime.
 /// ```compile_fail

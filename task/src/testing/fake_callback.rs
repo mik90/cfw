@@ -136,7 +136,7 @@ impl<T: Send + Sync> Callback for FakePublisherCallback<'_, T> {
             channel: self.publisher.channel_name().into(),
             direction: Direction::Published,
             transport: Transport::Native,
-            payload_type: std::any::type_name::<T>().into(),
+            payload_type: core::any::type_name::<T>().into(),
             publisher_index: Some(self.publisher.publisher_index()),
         }])
     }

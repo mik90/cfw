@@ -1,8 +1,8 @@
 use crate::time::FrameworkTime;
 #[cfg(feature = "iceoryx2")]
-use iceoryx2::prelude::ZeroCopySend;
+use core::fmt::Debug;
 #[cfg(feature = "iceoryx2")]
-use std::fmt::Debug;
+use iceoryx2::prelude::ZeroCopySend;
 
 /// Metadata attached to every message as it passes through the pub/sub system.
 /// Set by the executor at flush time — the executor is the sole source of time.
@@ -80,7 +80,7 @@ impl<T: Default> Default for Message<T> {
 #[cfg(all(test, feature = "iceoryx2"))]
 mod iox2_layout_tests {
     use super::*;
-    use std::mem::{align_of, offset_of, size_of};
+    use core::mem::{align_of, offset_of, size_of};
 
     #[repr(C)]
     #[repr(align(16))]

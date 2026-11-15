@@ -51,7 +51,7 @@ impl Iox2Runtime {
         }))
     }
 }
-fn transport(error: impl std::fmt::Display) -> StorageError {
+fn transport(error: impl core::fmt::Display) -> StorageError {
     StorageError::Transport(error.to_string())
 }
 
@@ -244,7 +244,7 @@ impl<T> Iox2ChannelPlan<T> {
         crate::channel::ChannelTopology {
             forwarding_retention_per_publisher: 0,
             name: crate::ChannelName::new(&*self.name),
-            payload_type: std::any::type_name::<T>(),
+            payload_type: core::any::type_name::<T>(),
             transport: crate::execution_log_schema::Transport::Iox2Data,
             publishers: self
                 .publishers
@@ -1139,7 +1139,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
     /// Inspect and consume the prepared batch without requiring Clone. References
     /// cannot escape the visitor, and unwinding releases all remaining samples.
     pub fn inspect_messages(&self, mut inspect: impl FnMut(usize, &Message<T>)) -> usize {
-        let batch = std::mem::take(&mut *self.read.borrow_mut());
+        let batch = core::mem::take(&mut *self.read.borrow_mut());
         let count = batch.len();
         for (index, sample) in batch.into_iter().enumerate() {
             inspect(index, &sample);
@@ -1149,7 +1149,7 @@ impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Iox2Subscriber<T> {
     pub fn update(&self) {
         let mut read = self.read.borrow_mut();
         if let Some(queue) = &self.replay {
-            for message in std::mem::take(&mut *queue.lock().unwrap()) {
+            for message in core::mem::take(&mut *queue.lock().unwrap()) {
                 if read.len() == self.capacity {
                     read.pop_front();
                 }
@@ -1336,15 +1336,15 @@ impl<'a> EventObserver<'a> {
         Self(Arc::new(f))
     }
 }
-impl<'a> std::ops::Deref for EventObserver<'a> {
+impl<'a> core::ops::Deref for EventObserver<'a> {
     type Target = dyn Fn(FrameworkTime, EventRecord) + Send + Sync + 'a;
     fn deref(&self) -> &Self::Target {
         &*self.0
     }
 }
 
-impl std::fmt::Debug for EventObserver<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for EventObserver<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_tuple("EventObserver")
             .field(&format_args!("{:p}", &**self))
             .finish()
@@ -1372,8 +1372,8 @@ impl<'a> Iox2EventTarget<'a> {
     }
 }
 
-impl std::fmt::Debug for Iox2EventTarget<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Iox2EventTarget<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Iox2EventTarget")
             .field("channel", &self.channel)
             .field("staging", &self.staging)
@@ -1451,7 +1451,7 @@ impl Iox2Notifier {
         self.pending = false;
     }
     pub fn flush(&mut self, _timestamp: FrameworkTime) {
-        if std::mem::take(&mut self.pending) && self.delivery == OutputDelivery::Transport {
+        if core::mem::take(&mut self.pending) && self.delivery == OutputDelivery::Transport {
             self.port.notify().expect("iceoryx2 notification failed");
         }
     }

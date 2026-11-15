@@ -1,6 +1,8 @@
-use std::cell::RefCell;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::cell::RefCell;
+use core::marker::PhantomData;
 
 use super::{Publisher, Subscriber};
 use crate::{
@@ -114,7 +116,7 @@ impl<T> ChannelPlan<T> {
         ChannelTopology {
             forwarding_retention_per_publisher: self.forwarding_retention,
             name: self.name.as_ref().clone(),
-            payload_type: std::any::type_name::<T>(),
+            payload_type: core::any::type_name::<T>(),
             transport: crate::execution_log_schema::Transport::Native,
             publishers: self
                 .publishers
@@ -425,8 +427,8 @@ pub struct DeclarationError {
     pub actual: String,
 }
 
-impl std::fmt::Display for DeclarationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for DeclarationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "endpoint '{}' expects channel '{}', got '{}'",
@@ -435,10 +437,10 @@ impl std::fmt::Display for DeclarationError {
     }
 }
 
-impl std::error::Error for DeclarationError {}
+impl core::error::Error for DeclarationError {}
 
-impl std::fmt::Display for EndpointError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for EndpointError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::WrongChannel => f.write_str("endpoint key names another channel"),
             Self::InvalidIndex(index) => {
@@ -449,7 +451,7 @@ impl std::fmt::Display for EndpointError {
     }
 }
 
-impl std::error::Error for EndpointError {}
+impl core::error::Error for EndpointError {}
 
 /// Temporary construction bindings. Taken endpoints borrow storage, not this
 /// table, so it can be dropped immediately after building callbacks and fixtures.

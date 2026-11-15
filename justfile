@@ -46,3 +46,6 @@ bazel-lint:
     set -euo pipefail
     buildifier -r --lint=fix .
     buildifier -r -mode=check --lint=warn .
+
+no-std:
+    cargo check -p base -p task --no-default-features --target thumbv7em-none-eabihf

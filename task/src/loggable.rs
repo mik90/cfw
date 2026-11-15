@@ -1,10 +1,22 @@
 //! Typed serialization and arena-backed forwarded-message resolution.
 use crate::message::{Message, MessageHeader};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use base::arena::ArenaReaderPtr;
-use std::{io::Write, mem::MaybeUninit};
+use core::mem::MaybeUninit;
 
-pub type SerializeError = Box<dyn std::error::Error + Send + Sync>;
-pub type DeserializeError = Box<dyn std::error::Error + Send + Sync>;
+pub type SerializeError = Box<dyn core::error::Error + Send + Sync>;
+pub type DeserializeError = Box<dyn core::error::Error + Send + Sync>;
+
+#[cfg(feature = "std")]
+pub use std::io::Write;
+
+/// Minimal byte sink for `no_std` builds. The `std` build re-exports
+/// [`std::io::Write`] instead.
+#[cfg(not(feature = "std"))]
+pub trait Write {
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), SerializeError>;
+}
 pub trait Loggable: Sized {
     type Context<'a>
     where

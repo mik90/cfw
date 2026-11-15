@@ -1,5 +1,8 @@
 use crate::output::{Output, OutputInit, OutputSpan};
 use crate::subscriber::SubscriberWriter;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
 use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
 
 use super::Subscriber;
@@ -76,7 +79,7 @@ impl<'de> serde::Deserialize<'de> for LoanError {
         struct Visitor;
         impl<'de> serde::de::Visitor<'de> for Visitor {
             type Value = LoanError;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 f.write_str("a loan error")
             }
             fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
@@ -118,8 +121,8 @@ pub struct Publisher<'graph_storage, MessageType> {
     observers: Vec<PublishObserver<'graph_storage, MessageType>>,
 }
 
-impl<'graph_storage, T> std::fmt::Debug for Publisher<'graph_storage, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'graph_storage, T> core::fmt::Debug for Publisher<'graph_storage, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Publisher")
             .field("allocator_capacity", &self.allocator.capacity())
             .field("loan_capacity", &self.loan_capacity)

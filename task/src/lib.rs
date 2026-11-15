@@ -1,3 +1,7 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 pub mod callback;
 pub mod callback_name;
 pub mod channel;
@@ -11,6 +15,7 @@ pub mod input;
 pub mod iox2;
 pub mod loggable;
 pub mod message;
+mod once;
 pub mod output;
 pub mod publisher;
 pub mod storage;

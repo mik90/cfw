@@ -2,11 +2,11 @@ use base::arena::ArenaReaderPtr;
 use base::double_buffer::{DoubleBuffer, ReadBufferGuard, WriteBufferHandle};
 
 use crate::message::{Message, MessageHeader};
+use crate::once::OnceLock;
 use crate::wake::{WakeHandle, WakeRegistration};
-use std::{
-    cell::Cell,
-    sync::{Arc, OnceLock},
-};
+use alloc::string::String;
+use alloc::sync::Arc;
+use core::cell::Cell;
 
 /// A typed subscriber retaining messages for the storage lifetime.
 pub struct Subscriber<'graph_storage, MessageType> {
@@ -19,8 +19,8 @@ pub struct Subscriber<'graph_storage, MessageType> {
     prepared_len: Cell<usize>,
 }
 
-impl<'graph_storage, MessageType> std::fmt::Debug for Subscriber<'graph_storage, MessageType> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'graph_storage, MessageType> core::fmt::Debug for Subscriber<'graph_storage, MessageType> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Subscriber")
             .field(
                 "each_buffer_capacity",
@@ -76,6 +76,11 @@ impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
         &self.channel
     }
 
+    /// Install the executor's waker. Called once during executor setup, before
+    /// workers run. Some execution paths intentionally omit wakers (manual
+    /// bindings, benchmarks, exact replay) and rely on explicit readiness checks;
+    /// publishers in those setups queue without notifying. A publisher racing
+    /// this call observes `None` and also relies on the initial/readiness path.
     pub fn set_waker(&mut self, wake: WakeHandle) {
         assert!(
             self.wake.set(wake).is_ok(),
@@ -140,7 +145,7 @@ impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
     pub fn input_readonly(&self) -> Input<'_, 'graph_storage, MessageType, crate::input::ReadOnly> {
         Input {
             guard: self.buffer.read_buffer(),
-            capability: std::marker::PhantomData,
+            capability: core::marker::PhantomData,
         }
     }
 
@@ -149,7 +154,7 @@ impl<'graph_storage, MessageType> Subscriber<'graph_storage, MessageType> {
     ) -> Input<'_, 'graph_storage, MessageType, crate::input::Forwardable> {
         Input {
             guard: self.buffer.read_buffer(),
-            capability: std::marker::PhantomData,
+            capability: core::marker::PhantomData,
         }
     }
 
@@ -193,8 +198,8 @@ pub(crate) struct SubscriberWriter<'graph_storage, T> {
     trigger: bool,
 }
 
-impl<'graph_storage, T> std::fmt::Debug for SubscriberWriter<'graph_storage, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'graph_storage, T> core::fmt::Debug for SubscriberWriter<'graph_storage, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SubscriberWriter")
             .field("queue_length", &self.queue.len())
             .field("trigger", &self.trigger)
@@ -205,6 +210,11 @@ impl<'graph_storage, T> std::fmt::Debug for SubscriberWriter<'graph_storage, T> 
 impl<'graph_storage, T> SubscriberWriter<'graph_storage, T> {
     pub(crate) fn write(&self, ptr: base::arena::ArenaPtr<'graph_storage, Message<T>>) {
         self.queue.write(ptr);
+        // Not every execution setup installs a waker. Synchronous/manual drivers
+        // (direct bindings, benchmarks, exact replay) queue messages and check
+        // readiness explicitly instead of waiting for a notification. Delivery
+        // is already complete; in that mode only the wake is intentionally
+        // omitted.
         if let Some(wake) = self.wake.get() {
             if self.trigger {
                 wake.wake();
@@ -218,7 +228,7 @@ impl<'graph_storage, T> SubscriberWriter<'graph_storage, T> {
 /// The buffer guard's borrow is independent of retained message lifetimes.
 pub struct Input<'input, 'graph_storage, MessageType, Modifiers = crate::input::ReadOnly> {
     guard: ReadBufferGuard<'input, 'graph_storage, Message<MessageType>>,
-    capability: std::marker::PhantomData<Modifiers>,
+    capability: core::marker::PhantomData<Modifiers>,
 }
 
 impl<'graph_storage, MessageType, Modifiers> Input<'_, 'graph_storage, MessageType, Modifiers> {

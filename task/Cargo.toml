@@ -6,14 +6,15 @@ edition = "2024"
 [lib]
 
 [features]
-testing = []
-default = ["iceoryx2"]                  # Just enable by default for ease of iteration
-serde = ["dep:serde", "dep:serde_json"]
-iceoryx2 = ["dep:iceoryx2"]
+default = ["std", "iceoryx2"] # Just enable by default for ease of iteration
+std = ["base/std", "dep:libc"]
+testing = ["std"]
+serde = ["std", "dep:serde", "dep:serde_json", "base/serde"]
+iceoryx2 = ["std", "dep:iceoryx2"]
 
 [dependencies]
-base = { path = "../base" }
-libc = "0.2.186"                                   # Used for retreiving time from the system
+base = { path = "../base", default-features = false }
+libc = { version = "0.2.186", optional = true } # Used for retrieving time from the system
 serde = { workspace = true, optional = true }      # Allows serde loggability for task types
 serde_json = { workspace = true, optional = true } # Default backend for loggability
 iceoryx2 = { workspace = true, optional = true }   # Optional iceoryx2 integration

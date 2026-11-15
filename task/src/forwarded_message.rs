@@ -1,4 +1,7 @@
 use crate::message::Message;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 use base::arena::ArenaReaderPtr;
 
 /// Bind a forwarded publisher key to the lifetime of its source storage.
@@ -41,7 +44,7 @@ impl<MessageType, ForwardedMessages> Forwarded<MessageType, ForwardedMessages> {
 /// Every field must be described exactly once, in declaration order.
 pub unsafe trait ForwardedSources: Send + Sync + 'static {
     type Bound<'a>: Send + Sync + 'a;
-    fn fields() -> Vec<(&'static str, std::any::TypeId)>;
+    fn fields() -> Vec<(&'static str, core::any::TypeId)>;
 }
 
 pub trait SerializableForward: Sized {
@@ -62,8 +65,8 @@ pub trait SerializableForward: Sized {
 // SAFETY: The rebound type changes only the source handle's lifetime.
 unsafe impl<S: Send + Sync + 'static> ForwardedSources for ArenaReaderPtr<'static, Message<S>> {
     type Bound<'a> = ArenaReaderPtr<'a, Message<S>>;
-    fn fields() -> Vec<(&'static str, std::any::TypeId)> {
-        vec![("source", std::any::TypeId::of::<S>())]
+    fn fields() -> Vec<(&'static str, core::any::TypeId)> {
+        vec![("source", core::any::TypeId::of::<S>())]
     }
 }
 impl<'graph_storage, T> SerializableForward for ArenaReaderPtr<'graph_storage, Message<T>> {
@@ -104,7 +107,7 @@ where
         Self: 'a;
     fn serialize(
         &self,
-        writer: &mut dyn std::io::Write,
+        writer: &mut dyn crate::loggable::Write,
     ) -> Result<(), crate::loggable::SerializeError> {
         serde_json::to_writer(writer, &(&self.message, self.forwarded_messages.headers()))
             .map_err(Into::into)

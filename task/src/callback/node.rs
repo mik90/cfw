@@ -7,6 +7,7 @@ use crate::{
     time::FrameworkTime,
     wake::WakeHandle,
 };
+use alloc::vec::Vec;
 
 /// A callback with typed endpoint collections and a statically dispatched body.
 /// Collections may be individual endpoints, pairs, or structs implementing
@@ -268,7 +269,7 @@ impl Descriptors {
             direction,
             channel: endpoint.channel_name().into(),
             transport: endpoint.transport(),
-            payload_type: std::any::type_name::<P::Payload>().into(),
+            payload_type: core::any::type_name::<P::Payload>().into(),
             publisher_index: endpoint.publisher_index(),
         });
         self.ordinal += 1;
@@ -511,8 +512,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             container_eq([("numbers", 0), ("labels", 1), ("results", 0)])
         );
-        expect_eq!(descriptors[0].payload_type, std::any::type_name::<u32>());
-        expect_eq!(descriptors[1].payload_type, std::any::type_name::<String>());
+        expect_eq!(descriptors[0].payload_type, core::any::type_name::<u32>());
+        expect_eq!(
+            descriptors[1].payload_type,
+            core::any::type_name::<String>()
+        );
         expect_eq!(descriptors[2].direction, Direction::Published);
         assert_true!(node.outputs_are_local());
     }
@@ -601,7 +605,7 @@ mod tests {
                   _: &Context| {
                 let number = inputs.0.input_readonly().value().copied().unwrap();
                 output.publish(u64::from(number))?;
-                if std::mem::take(&mut fail_next) {
+                if core::mem::take(&mut fail_next) {
                     return Err(LoanError::LoanCapacityReached);
                 }
                 Ok(())

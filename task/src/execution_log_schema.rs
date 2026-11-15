@@ -3,7 +3,9 @@ use crate::{
     LoanError, StaticVec, callback_name::CallbackName, channel_name::ChannelName,
     message::MessageHeader, time::FrameworkTime,
 };
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
 pub const EXECUTION_LOG_CHANNEL: &str = "execution_log";
 /// Maximum number of input/output messages recorded per execution.
 pub const MAX_RECORDED_MESSAGES: usize = 16;

@@ -238,8 +238,8 @@ mod ipc {
     use crate::iox2::{
         Iox2EventRegistration, Iox2EventSubscriber, Iox2Notifier, Iox2Publisher, Iox2Subscriber,
     };
+    use core::fmt::Debug;
     use iceoryx2::prelude::ZeroCopySend;
-    use std::fmt::Debug;
 
     impl<T: Debug + ZeroCopySend + Send + Sync + 'static> Endpoint for Iox2Subscriber<T> {
         type Payload = T;

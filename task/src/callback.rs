@@ -1,4 +1,5 @@
-use std::fmt::Debug;
+use alloc::vec::Vec;
+use core::fmt::Debug;
 
 use crate::execution_log_schema::{LoggedIox2Event, LoggedMessage};
 use crate::time::FrameworkTime;
@@ -18,8 +19,8 @@ pub enum CallbackError {
     /// The endpoint rejected the staged event.
     EventStaging(LoanError),
 }
-impl std::fmt::Display for CallbackError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for CallbackError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::ResetUnsupported => f.write_str("callback cannot reset buffered inputs"),
             Self::UnknownEventEndpoint => f.write_str("unknown IPC event endpoint"),
@@ -27,7 +28,7 @@ impl std::fmt::Display for CallbackError {
         }
     }
 }
-impl std::error::Error for CallbackError {}
+impl core::error::Error for CallbackError {}
 
 /// Callback body and IO lifecycle, shared by live and deterministic executors.
 /// Executors invoke `execute_callback` or `execute_callback_batch` rather than
@@ -211,8 +212,8 @@ pub struct Invocation<'a> {
     ran: bool,
 }
 
-impl<'a> std::fmt::Debug for Invocation<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<'a> core::fmt::Debug for Invocation<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Invocation")
             .field("ran", &self.ran)
             .finish()

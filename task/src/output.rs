@@ -2,9 +2,10 @@ use base::arena::{ArenaAllocator, ArenaPtr, ArenaPtrUninit};
 
 use crate::message::Message;
 pub use crate::publisher::Publisher;
-use std::cell::Cell;
-use std::mem::MaybeUninit;
-use std::ops::{Deref, DerefMut};
+use alloc::vec::Vec;
+use core::cell::Cell;
+use core::mem::MaybeUninit;
+use core::ops::{Deref, DerefMut};
 
 /// Exclusive in-place output reservation. A normal drop releases the slot
 /// without dropping a potentially partially initialized payload. It is up

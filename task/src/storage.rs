@@ -1,4 +1,6 @@
-use std::marker::PhantomData;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use base::arena::Arena;
 

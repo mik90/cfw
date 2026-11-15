@@ -1,11 +1,13 @@
-use std::{
+#[cfg(target_has_atomic = "64")]
+use core::sync::atomic::{AtomicI64, Ordering};
+use core::{
     ops::{Add, AddAssign, Sub, SubAssign},
-    sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
 
 #[cfg(feature = "iceoryx2")]
 use iceoryx2::prelude::ZeroCopySend;
+#[cfg(feature = "std")]
 use libc::{self, CLOCK_MONOTONIC};
 /// Monotonic clock with fixed size
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -38,13 +40,14 @@ impl FrameworkTime {
     }
 
     /// Formats as $SECONDS.$NANOSECONDS, kidna like journalctl's `-o short-monotonic` but more sig figs
-    pub fn fmt_as_fractional_sec(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub fn fmt_as_fractional_sec(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let seconds = self.nanoseconds / 1_000_000_000;
         let nanos = (self.nanoseconds % 1_000_000_000).abs();
         write!(f, "{}.{}", seconds, nanos)
     }
 
     // Get current time via monotonic libc clock
+    #[cfg(feature = "std")]
     pub fn from_wall_clock() -> FrameworkTime {
         let mut timespec = libc::timespec {
             tv_sec: 0,
@@ -82,9 +85,9 @@ impl FrameworkTime {
     }
 }
 
-impl Add<std::time::Duration> for FrameworkTime {
+impl Add<core::time::Duration> for FrameworkTime {
     type Output = FrameworkTime;
-    fn add(self, rhs: std::time::Duration) -> Self::Output {
+    fn add(self, rhs: core::time::Duration) -> Self::Output {
         // Naively attempt to clamp duration to i64 even though we'd just overflow anyways if we add
         let rhs_nanos = rhs
             .as_nanos()
@@ -95,16 +98,16 @@ impl Add<std::time::Duration> for FrameworkTime {
     }
 }
 
-impl AddAssign<std::time::Duration> for FrameworkTime {
-    fn add_assign(&mut self, rhs: std::time::Duration) {
+impl AddAssign<core::time::Duration> for FrameworkTime {
+    fn add_assign(&mut self, rhs: core::time::Duration) {
         self.nanoseconds = self.add(rhs).nanoseconds;
     }
 }
 
-impl Sub<std::time::Duration> for FrameworkTime {
+impl Sub<core::time::Duration> for FrameworkTime {
     type Output = FrameworkTime;
 
-    fn sub(self, rhs: std::time::Duration) -> Self::Output {
+    fn sub(self, rhs: core::time::Duration) -> Self::Output {
         // Naively attempt to clamp duration to i64 even though we'd just overflow anyways if we add
         let rhs_nanos = rhs
             .as_nanos()
@@ -115,14 +118,14 @@ impl Sub<std::time::Duration> for FrameworkTime {
     }
 }
 
-impl SubAssign<std::time::Duration> for FrameworkTime {
-    fn sub_assign(&mut self, rhs: std::time::Duration) {
+impl SubAssign<core::time::Duration> for FrameworkTime {
+    fn sub_assign(&mut self, rhs: core::time::Duration) {
         self.nanoseconds = self.sub(rhs).nanoseconds
     }
 }
 
-impl std::fmt::Display for FrameworkTime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for FrameworkTime {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.fmt_as_fractional_sec(f)
     }
 }
@@ -133,9 +136,15 @@ impl std::fmt::Display for FrameworkTime {
 ///
 /// Convention: [`FrameworkTime::INVALID`] is the "no time" sentinel —
 /// `load` returns it when unset, and `store(INVALID)` clears the value.
+///
+/// Only available on targets with native 64-bit atomics. A few 32-bit
+/// targets provide them (for example via the architecture or kernel), in
+/// which case `target_has_atomic = "64"` is still true.
+#[cfg(target_has_atomic = "64")]
 #[derive(Debug, Default)]
 pub struct AtomicFrameworkTime(AtomicI64);
 
+#[cfg(target_has_atomic = "64")]
 impl AtomicFrameworkTime {
     pub const fn new(time: FrameworkTime) -> Self {
         AtomicFrameworkTime(AtomicI64::new(time.to_nanoseconds()))
@@ -158,6 +167,7 @@ impl AtomicFrameworkTime {
     }
 }
 
+#[cfg(target_has_atomic = "64")]
 impl From<FrameworkTime> for AtomicFrameworkTime {
     fn from(time: FrameworkTime) -> Self {
         AtomicFrameworkTime::new(time)
@@ -221,6 +231,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_has_atomic = "64")]
     #[gtest]
     fn atomic_framework_time_round_trips() {
         let t = AtomicFrameworkTime::new(FrameworkTime::from_nanos(1234));
@@ -236,6 +247,7 @@ mod tests {
         assert_eq!(t.load(Ordering::Relaxed), FrameworkTime::INVALID);
     }
 
+    #[cfg(target_has_atomic = "64")]
     #[gtest]
     fn atomic_framework_time_from_conversion() {
         let t: AtomicFrameworkTime = FrameworkTime::from_nanos(-42).into();
