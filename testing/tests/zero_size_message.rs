@@ -30,12 +30,14 @@ fn send_recv_zst() {
     builder.add_task("ZstTask", ZstTask, Duration::from_millis(1));
     let mut test_publisher = builder.add_test_publisher::<ZstMessageA>("input");
     let test_subscriber = builder.add_test_subscriber::<ZstMessageB>("output");
-    builder.run(|mut executor| {
-        test_publisher.send(ZstMessageA {});
-        executor.step();
-        test_subscriber.consume(&executor, |index, message| {
-            expect_eq!(index, 0);
-            expect_eq!(message.header.published_at, FrameworkTime::from_millis(0));
-        });
+
+    let storage = builder.allocate();
+    let mut executor = storage.build();
+
+    test_publisher.send(ZstMessageA {});
+    executor.step();
+    test_subscriber.consume(&executor, |index, message| {
+        expect_eq!(index, 0);
+        expect_eq!(message.header.published_at, FrameworkTime::from_millis(0));
     });
 }
