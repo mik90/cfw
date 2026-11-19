@@ -12,7 +12,7 @@ pub struct StaticVec<T, const N: usize> {
 }
 
 impl<T, const N: usize> StaticVec<T, N> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             // Const block allows this to build for some reason, presumably because
             // it creates a new uninit instead of copying the same uninit repeatedly.
@@ -29,6 +29,14 @@ impl<T, const N: usize> StaticVec<T, N> {
         self.len += 1;
         self.entries[self.len - 1] = mem::MaybeUninit::new(value);
         true
+    }
+
+    /// Helper that's really meant for constructing vec in a const context
+    pub const fn push_const(mut self, value: T) -> Self {
+        assert!(self.len < self.capacity(), "StaticVec is at capacity");
+        self.entries[self.len] = mem::MaybeUninit::new(value);
+        self.len += 1;
+        self
     }
 
     /// Removes element from back
@@ -120,12 +128,16 @@ impl<T, const N: usize> StaticVec<T, N> {
         self.len = 0;
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    pub const fn is_full(&self) -> bool {
+        self.len == self.capacity()
     }
 
     /// Pointer as contained type
@@ -345,6 +357,24 @@ mod tests {
             4,
             "Clearing two elements should bump us to 4"
         );
+    }
+
+    #[gtest]
+    fn const_support() {
+        {
+            const EMPTY_VEC: StaticVec<u32, 2> = StaticVec::new();
+
+            let empty = EMPTY_VEC.is_empty();
+            expect_true!(empty);
+        }
+
+        {
+            const FULL_VEC: StaticVec<u32, 2> = StaticVec::new().push_const(1).push_const(2);
+            let full = FULL_VEC.is_full();
+            expect_true!(full);
+            let len = FULL_VEC.len();
+            expect_eq!(len, 2);
+        }
     }
 
     #[cfg(feature = "serde")]
