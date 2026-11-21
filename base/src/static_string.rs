@@ -1,8 +1,7 @@
 use crate::StaticVec;
 
-#[derive(Debug)]
 pub struct StaticString<const CAPACITY: usize> {
-    char_vec: StaticVec<u8, CAPACITY>,
+    static_vec: StaticVec<u8, CAPACITY>,
 }
 
 pub struct TruncatedStrResult<const CAPACITY: usize> {
@@ -13,16 +12,16 @@ pub struct TruncatedStrResult<const CAPACITY: usize> {
 impl<const CAPACITY: usize> StaticString<CAPACITY> {
     pub const fn new() -> Self {
         Self {
-            char_vec: StaticVec::new(),
+            static_vec: StaticVec::new(),
         }
     }
 
     pub const fn is_empty(&self) -> bool {
-        self.char_vec.is_empty()
+        self.static_vec.is_empty()
     }
 
     pub const fn len(&self) -> usize {
-        self.char_vec.len()
+        self.static_vec.len()
     }
 
     /// Returns string and number of dropped bytes
@@ -42,14 +41,30 @@ impl<const CAPACITY: usize> StaticString<CAPACITY> {
 
         // Using floor_char_boundary ensures that we get valid utf8 from the input string
         for b in truncated_str.as_bytes() {
-            string.char_vec.push(*b);
+            string.static_vec.push(*b);
         }
         (string, dropped_bytes)
     }
 
     pub fn as_str(&self) -> &str {
         // SAFETY: We made sure that the input str was utf8 in [`from_str_truncated`]
-        unsafe { str::from_utf8_unchecked(self.char_vec.as_slice()) }
+        unsafe { str::from_utf8_unchecked(self.static_vec.as_slice()) }
+    }
+}
+
+impl<const CAPACITY: usize> core::fmt::Debug for StaticString<CAPACITY> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StaticString")
+            .field("CAPACITY", &CAPACITY)
+            .field("len", &self.len())
+            .field("as_str", &self.as_str())
+            .finish()
+    }
+}
+
+impl<const CAPACITY: usize> core::fmt::Display for StaticString<CAPACITY> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -71,8 +86,8 @@ impl<const CAPACITY: usize> PartialEq<&str> for StaticString<CAPACITY> {
     }
 }
 
-impl<const CAPACITY: usize> PartialEq<String> for StaticString<CAPACITY> {
-    fn eq(&self, other: &String) -> bool {
+impl<const CAPACITY: usize> PartialEq<alloc::string::String> for StaticString<CAPACITY> {
+    fn eq(&self, other: &alloc::string::String) -> bool {
         self.as_str() == other
     }
 }
@@ -121,5 +136,43 @@ mod tests {
         let (string, dropped) = StaticString::<10>::from_str_truncated("hello");
         expect_eq!(dropped, 0);
         expect_eq!(string, "hello");
+    }
+
+    #[gtest]
+    fn truncate_at_boundary() {
+        let full_string = "❤️🧡💛💚💙💜";
+
+        expect_eq!(full_string.len(), 26);
+        assert_false!(
+            full_string.is_char_boundary(13),
+            "find a byte index that cuts off an emoji"
+        );
+
+        let expected_string = "❤️🧡";
+        assert_that!(expected_string.len(), eq(10));
+        let (truncated_string, dropped_bytes) = StaticString::<10>::from_str_truncated(full_string);
+        expect_eq!(
+            dropped_bytes,
+            16,
+            "Drop off the byte size difference between the full and expected string"
+        );
+        expect_eq!(truncated_string, expected_string);
+    }
+
+    #[gtest]
+    fn fmt_display() {
+        let (string, drops) = StaticString::<12>::from_str_truncated("some data");
+        expect_eq!(drops, 0);
+        expect_eq!("some data", format!("{}", string));
+    }
+
+    #[gtest]
+    fn fmt_debug() {
+        let (string, drops) = StaticString::<12>::from_str_truncated("some data");
+        expect_eq!(drops, 0);
+        expect_eq!(
+            "StaticString { CAPACITY: 12, len: 9, as_str: \"some data\" }",
+            format!("{:?}", string)
+        );
     }
 }

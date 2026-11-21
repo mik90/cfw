@@ -3,27 +3,26 @@ use core::mem;
 use core::ops::Deref;
 use core::slice;
 
-/// Inline sequence of at most `N` entries. Never allocates.
-#[derive(Debug)]
-pub struct StaticVec<T, const N: usize> {
+/// Inline sequence of at most `CAPACITY` entries. Never allocates.
+pub struct StaticVec<T, const CAPACITY: usize> {
     /// Array of possibly initialized entries
-    entries: [mem::MaybeUninit<T>; N],
+    entries: [mem::MaybeUninit<T>; CAPACITY],
     len: usize,
 }
 
-impl<T, const N: usize> StaticVec<T, N> {
+impl<T, const CAPACITY: usize> StaticVec<T, CAPACITY> {
     pub const fn new() -> Self {
         Self {
             // Const block allows this to build for some reason, presumably because
             // it creates a new uninit instead of copying the same uninit repeatedly.
-            entries: [const { mem::MaybeUninit::uninit() }; N],
+            entries: [const { mem::MaybeUninit::uninit() }; CAPACITY],
             len: 0,
         }
     }
 
     /// Append `value`, returning false when the sequence is full.
     pub fn push(&mut self, value: T) -> bool {
-        if self.len == N {
+        if self.len == CAPACITY {
             return false;
         }
         self.len += 1;
@@ -53,7 +52,7 @@ impl<T, const N: usize> StaticVec<T, N> {
     }
 
     pub const fn capacity(&self) -> usize {
-        N
+        CAPACITY
     }
 
     pub fn front(&self) -> Option<&T> {
@@ -167,7 +166,30 @@ impl<T, const N: usize> StaticVec<T, N> {
     }
 }
 
-impl<T: Clone, const N: usize> Clone for StaticVec<T, N> {
+impl<T: core::fmt::Debug, const CAPACITY: usize> core::fmt::Debug for StaticVec<T, CAPACITY> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StaticVec")
+            .field("CAPACITY", &CAPACITY)
+            .field("len", &self.len())
+            .field("entries", &self.as_slice())
+            .finish()
+    }
+}
+
+impl<T: core::fmt::Display, const CAPACITY: usize> core::fmt::Display for StaticVec<T, CAPACITY> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "[")?;
+        for (i, entry) in self.as_slice().iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", entry)?;
+        }
+        write!(f, "]")
+    }
+}
+
+impl<T: Clone, const CAPACITY: usize> Clone for StaticVec<T, CAPACITY> {
     fn clone(&self) -> Self {
         let mut cloned = Self::new();
         cloned.len = self.len;
@@ -184,9 +206,9 @@ impl<T: Clone, const N: usize> Clone for StaticVec<T, N> {
     }
 }
 
-impl<T: Clone, const N: usize> StaticVec<T, N> {
+impl<T: Clone, const CAPACITY: usize> StaticVec<T, CAPACITY> {
     pub fn push_cloned(&mut self, value: &T) -> bool {
-        if self.len == N {
+        if self.len == CAPACITY {
             return false;
         }
         self.entries[self.len - 1] = mem::MaybeUninit::new(value.clone());
@@ -195,7 +217,7 @@ impl<T: Clone, const N: usize> StaticVec<T, N> {
     }
 }
 
-impl<T: PartialEq, const N: usize> PartialEq for StaticVec<T, N> {
+impl<T: PartialEq, const CAPACITY: usize> PartialEq for StaticVec<T, CAPACITY> {
     fn eq(&self, other: &Self) -> bool {
         let initialized_iter = self.as_slice().iter();
 
@@ -205,19 +227,19 @@ impl<T: PartialEq, const N: usize> PartialEq for StaticVec<T, N> {
     }
 }
 
-impl<T, const N: usize> Drop for StaticVec<T, N> {
+impl<T, const CAPACITY: usize> Drop for StaticVec<T, CAPACITY> {
     fn drop(&mut self) {
         self.clear();
     }
 }
 
-impl<T: Copy + Default, const N: usize> Default for StaticVec<T, N> {
+impl<T: Copy + Default, const CAPACITY: usize> Default for StaticVec<T, CAPACITY> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Copy + Default, const N: usize> Deref for StaticVec<T, N> {
+impl<T: Copy + Default, const CAPACITY: usize> Deref for StaticVec<T, CAPACITY> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -226,27 +248,29 @@ impl<T: Copy + Default, const N: usize> Deref for StaticVec<T, N> {
 }
 
 #[cfg(feature = "serde")]
-impl<T: Copy + Default + serde::Serialize, const N: usize> serde::Serialize for StaticVec<T, N> {
+impl<T: Copy + Default + serde::Serialize, const CAPACITY: usize> serde::Serialize
+    for StaticVec<T, CAPACITY>
+{
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serde::Serialize::serialize(self.as_slice(), serializer)
     }
 }
 
 #[cfg(feature = "serde")]
-impl<'de, T, const N: usize> serde::Deserialize<'de> for StaticVec<T, N>
+impl<'de, T, const CAPACITY: usize> serde::Deserialize<'de> for StaticVec<T, CAPACITY>
 where
     T: Copy + Default + serde::Deserialize<'de>,
 {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor<T, const N: usize>(core::marker::PhantomData<T>);
-        impl<'de, T, const N: usize> serde::de::Visitor<'de> for Visitor<T, N>
+        struct Visitor<T, const CAPACITY: usize>(core::marker::PhantomData<T>);
+        impl<'de, T, const CAPACITY: usize> serde::de::Visitor<'de> for Visitor<T, CAPACITY>
         where
             T: Copy + Default + serde::Deserialize<'de>,
         {
-            type Value = StaticVec<T, N>;
+            type Value = StaticVec<T, CAPACITY>;
 
             fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(f, "a sequence of at most {N} entries")
+                write!(f, "a sequence of at most {CAPACITY} entries")
             }
 
             fn visit_seq<A: serde::de::SeqAccess<'de>>(
@@ -257,14 +281,14 @@ where
                 while let Some(value) = seq.next_element()? {
                     if !values.push(value) {
                         return Err(serde::de::Error::custom(format!(
-                            "sequence exceeds StaticVec capacity {N}"
+                            "sequence exceeds StaticVec capacity {CAPACITY}"
                         )));
                     }
                 }
                 Ok(values)
             }
         }
-        deserializer.deserialize_seq(Visitor::<T, N>(core::marker::PhantomData))
+        deserializer.deserialize_seq(Visitor::<T, CAPACITY>(core::marker::PhantomData))
     }
 }
 
@@ -375,6 +399,23 @@ mod tests {
             let len = FULL_VEC.len();
             expect_eq!(len, 2);
         }
+    }
+
+    #[gtest]
+    fn fmt_debug() {
+        let vec = StaticVec::<usize, 2>::new().push_const(1).push_const(2);
+
+        expect_eq!(
+            "StaticVec { CAPACITY: 2, len: 2, entries: [1, 2] }",
+            format!("{:?}", vec)
+        );
+    }
+
+    #[gtest]
+    fn fmt_display() {
+        let vec = StaticVec::<usize, 2>::new().push_const(1).push_const(2);
+
+        expect_eq!("[1, 2]", format!("{}", vec));
     }
 
     #[cfg(feature = "serde")]
