@@ -19,12 +19,12 @@ rust_test(
 
 miri_test(
     name = "live_executor_miri",
-    slow = True,
     srcs = glob(["src/**/*.rs"]),
+    slow = True,
     deps = [
-        "//task:task",
-        "//task_graph:task_graph",
-        "//task_macros:task_macros",
+        "//task",
+        "//task_graph",
+        "//task_macros",
     ] + all_crate_deps(
         cargo_only = True,
         normal = True,

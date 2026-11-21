@@ -27,7 +27,6 @@ rust_test(
 
 miri_test(
     name = "logging_miri",
-    slow = True,
     srcs = glob(["src/**/*.rs"]),
     rustc_flags = [
         "--cfg",
@@ -35,13 +34,14 @@ miri_test(
         "--cfg",
         'feature="testing"',
     ],
+    slow = True,
     deps = [
-        "//task:task",
-        "//task_graph:task_graph",
-        "//testing:testing",
-        "//task_macros:task_macros",
-        "//simulation_executor:simulation_executor",
-        "//live_executor:live_executor",
+        "//live_executor",
+        "//simulation_executor",
+        "//task",
+        "//task_graph",
+        "//task_macros",
+        "//testing",
     ] + all_crate_deps(
         cargo_only = True,
         normal = True,

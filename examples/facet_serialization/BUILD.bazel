@@ -20,14 +20,14 @@ rust_test(
 
 miri_test(
     name = "facet_serialization_miri",
-    slow = True,
     srcs = ["src/main.rs"],
+    slow = True,
     deps = [
-        "//task:task",
-        "//task_graph:task_graph",
-        "//live_executor:live_executor",
-        "//logging:logging",
-        "//task_macros:task_macros",
+        "//live_executor",
+        "//logging",
+        "//task",
+        "//task_graph",
+        "//task_macros",
     ] + all_crate_deps(
         cargo_only = True,
         normal = True,

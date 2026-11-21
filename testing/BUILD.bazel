@@ -24,15 +24,15 @@ rust_test(
 
 miri_test(
     name = "testing_miri",
-    slow = True,
     srcs = glob(["src/**/*.rs"]),
     data = [":readme"],
+    slow = True,
     deps = [
-        "//task:task",
-        "//task_graph:task_graph",
-        "//simulation_executor:simulation_executor",
-        "//logging:logging",
-        "//task_macros:task_macros",
+        "//logging",
+        "//simulation_executor",
+        "//task",
+        "//task_graph",
+        "//task_macros",
     ] + all_crate_deps(
         cargo_only = True,
         normal = True,

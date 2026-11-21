@@ -17,13 +17,13 @@ rust_test(
 
 miri_test(
     name = "live_replay_executor_miri",
-    slow = True,
     srcs = glob(["src/**/*.rs"]),
+    slow = True,
     deps = [
-        "//task:task",
-        "//task_graph:task_graph",
-        "//logging:logging",
-        "//live_executor:live_executor",
+        "//live_executor",
+        "//logging",
+        "//task",
+        "//task_graph",
     ] + all_crate_deps(
         cargo_only = True,
         normal = True,

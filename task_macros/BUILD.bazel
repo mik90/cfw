@@ -21,8 +21,8 @@ rust_test(
 
 miri_test(
     name = "task_macros_test_miri",
-    slow = True,
     srcs = ["tests/test.rs"],
+    slow = True,
     deps = [
         ":task_macros",
         "//task",
@@ -47,8 +47,8 @@ rust_test(
 
 miri_test(
     name = "forwarding_miri",
-    slow = True,
     srcs = ["tests/forwarding.rs"],
+    slow = True,
     deps = [
         ":task_macros",
         "//task",
