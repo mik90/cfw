@@ -16,6 +16,26 @@ impl<const CAPACITY: usize> StaticString<CAPACITY> {
         }
     }
 
+    /// Builds a string from a compile-time `&str`, asserting that it fits.
+    ///
+    /// This will be very inefficient outside of a const context.
+    ///
+    /// Prefer the [`static_string!`](crate::static_string!) macro, which sizes the
+    /// capacity from the input.
+    pub const fn from_str_const(s: &str) -> Self {
+        assert!(s.len() <= CAPACITY, "string exceeds StaticString capacity");
+
+        let bytes = s.as_bytes();
+        let mut static_vec = StaticVec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            static_vec = static_vec.push_const(bytes[i]);
+            i += 1;
+        }
+
+        Self { static_vec }
+    }
+
     pub const fn is_empty(&self) -> bool {
         self.static_vec.is_empty()
     }
@@ -105,10 +125,43 @@ impl<const CAPACITY: usize> TryFrom<&str> for StaticString<CAPACITY> {
     }
 }
 
+/// Creates a [`StaticString`] with capacity equal to the byte length of the input.
+///
+/// The input must be a constant expression (a literal, `concat!`, a `const`
+/// item, and so on) so its length can size the string. Works in const contexts.
+///
+/// To create a static string usable in either runtime or const contexts:
+///
+/// ```
+/// const HELLO: base::StaticString<5> = base::static_string!("hello");
+/// assert_eq!(HELLO.as_str(), "hello");
+/// ```
+///
+/// To create a new const variable, so the capacity does not have to be written out (`pub` is
+/// supported):
+///
+/// ```
+/// base::static_string!(const HELLO = "hello");
+/// assert_eq!(HELLO.as_str(), "hello");
+/// ```
+#[macro_export]
+macro_rules! static_string {
+    ($vis:vis const $name:ident = $s:expr $(,)?) => {
+        $vis const $name: $crate::StaticString<{ ($s).len() }> =
+            $crate::StaticString::from_str_const($s);
+    };
+    ($s:expr $(,)?) => {{
+        const S: &str = $s;
+        const { $crate::StaticString::<{ S.len() }>::from_str_const(S) }
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use googletest::prelude::*;
+
+    static_string!(pub const PUBLIC_HELLO = "hello");
 
     #[gtest]
     fn construct_empty() {
@@ -174,5 +227,50 @@ mod tests {
             "StaticString { CAPACITY: 12, len: 9, as_str: \"some data\" }",
             format!("{:?}", string)
         );
+    }
+
+    #[gtest]
+    fn macro_constructs_string() {
+        let string = static_string!("hello");
+        expect_eq!(string.len(), 5);
+        expect_eq!(string.as_str(), "hello");
+    }
+
+    #[gtest]
+    fn macro_works_in_const_context() {
+        const HELLO: StaticString<5> = static_string!("hello");
+        expect_eq!(HELLO.as_str(), "hello");
+        expect_eq!(HELLO.len(), 5);
+    }
+
+    #[gtest]
+    fn macro_const_item_infers_capacity() {
+        static_string!(const HELLO = "hello");
+        expect_eq!(HELLO.len(), 5);
+        expect_eq!(HELLO.as_str(), "hello");
+
+        static_string!(const ACCENTED = "héllo",);
+        expect_eq!(ACCENTED.len(), 6);
+        expect_eq!(ACCENTED.as_str(), "héllo");
+    }
+
+    #[gtest]
+    fn macro_pub_const_item() {
+        expect_eq!(PUBLIC_HELLO.len(), 5);
+        expect_eq!(PUBLIC_HELLO.as_str(), "hello");
+    }
+
+    #[gtest]
+    fn macro_uses_byte_length() {
+        let string = static_string!("héllo",);
+        expect_eq!(string.len(), 6);
+        expect_eq!(string.as_str(), "héllo");
+    }
+
+    #[gtest]
+    fn macro_supports_empty() {
+        let string = static_string!("");
+        expect_true!(string.is_empty());
+        expect_eq!(string.as_str(), "");
     }
 }

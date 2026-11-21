@@ -20,6 +20,24 @@ impl<T, const CAPACITY: usize> StaticVec<T, CAPACITY> {
         }
     }
 
+    /// Constructs a [`StaticVec`] from an array. Takes ownership fo the array to avoid
+    /// requiring Copy or Clone on the type.
+    /// This could overflow a stack, not a huge fan of it.
+    pub const fn from_array(array: [T; CAPACITY]) -> Self {
+        // SAFETY: `MaybeUninit<T>` has the same layout as `T`, so reinterpreting the
+        // array initializes each entry without moving the values.
+        let entries = unsafe {
+            core::ptr::read((&raw const array).cast::<[mem::MaybeUninit<T>; CAPACITY]>())
+        };
+        // We're transferring ownership of the array to the StaticVec which will handle drops.
+        mem::forget(array);
+
+        Self {
+            entries,
+            len: CAPACITY,
+        }
+    }
+
     /// Append `value`, returning false when the sequence is full.
     pub fn push(&mut self, value: T) -> bool {
         if self.len == CAPACITY {
@@ -211,7 +229,7 @@ impl<T: Clone, const CAPACITY: usize> StaticVec<T, CAPACITY> {
         if self.len == CAPACITY {
             return false;
         }
-        self.entries[self.len - 1] = mem::MaybeUninit::new(value.clone());
+        self.entries[self.len] = mem::MaybeUninit::new(value.clone());
         self.len += 1;
         true
     }
@@ -292,6 +310,14 @@ where
     }
 }
 
+/// Creates a [`StaticVec`] with capacity equal to the number of entries.
+#[macro_export]
+macro_rules! static_vec {
+    ($($x:expr),* $(,)?) => {
+        $crate::StaticVec::from_array([$($x),*])
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -321,6 +347,16 @@ mod tests {
         assert_true!(values.push(2));
         assert_true!(!values.push(3));
         assert_eq!(&*values, &[1, 2]);
+    }
+
+    #[gtest]
+    fn push_cloned_appends() {
+        let mut values = StaticVec::<u32, 3>::new();
+        assert_true!(values.push_cloned(&1));
+        assert_true!(values.push_cloned(&2));
+        assert_true!(values.push_cloned(&3));
+        assert_false!(values.push_cloned(&4));
+        expect_eq!(&*values, &[1, 2, 3]);
     }
 
     #[gtest]
@@ -399,6 +435,39 @@ mod tests {
             let len = FULL_VEC.len();
             expect_eq!(len, 2);
         }
+    }
+
+    #[gtest]
+    fn macro_constructs_vec() {
+        let values = static_vec![1u32, 2, 3];
+        expect_eq!(values.len(), 3);
+        expect_eq!(values.capacity(), 3);
+        expect_eq!(&*values, &[1, 2, 3]);
+    }
+
+    #[gtest]
+    fn macro_supports_const_and_trailing_comma() {
+        const VALUES: StaticVec<u32, 3> = static_vec![1, 2, 3,];
+        expect_eq!(VALUES.len(), 3);
+        expect_eq!(VALUES.capacity(), 3);
+        expect_eq!(&*VALUES, &[1, 2, 3]);
+    }
+
+    #[gtest]
+    fn macro_supports_empty() {
+        let values: StaticVec<u32, 0> = static_vec![];
+        expect_true!(values.is_empty());
+        expect_eq!(values.capacity(), 0);
+    }
+
+    #[gtest]
+    fn macro_moves_non_copy_elements() {
+        use alloc::string::String;
+
+        let values = static_vec![String::from("a"), String::from("bc")];
+        expect_eq!(values.len(), 2);
+        expect_eq!(values.front().map(String::as_str), Some("a"));
+        expect_eq!(values.back().map(String::as_str), Some("bc"));
     }
 
     #[gtest]
