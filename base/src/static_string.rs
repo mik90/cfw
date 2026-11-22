@@ -1,3 +1,6 @@
+//! Fixed-capacity inline UTF8 string.
+use core::debug_assert_matches;
+
 use crate::StaticVec;
 
 pub struct StaticString<const CAPACITY: usize> {
@@ -67,6 +70,10 @@ impl<const CAPACITY: usize> StaticString<CAPACITY> {
     }
 
     pub fn as_str(&self) -> &str {
+        // We only allow for creating utf8 representations, but we can double check
+        // for utf8 validity in debug.
+        debug_assert_matches!(str::from_utf8(&self.static_vec), Ok(_));
+
         // SAFETY: We made sure that the input str was utf8 in [`from_str_truncated`]
         unsafe { str::from_utf8_unchecked(self.static_vec.as_slice()) }
     }
@@ -272,5 +279,22 @@ mod tests {
         let string = static_string!("");
         expect_true!(string.is_empty());
         expect_eq!(string.as_str(), "");
+    }
+
+    #[gtest]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "Utf8Error")]
+    fn assert_on_invalid_utf8() {
+        // Invalid utf8 representation from the str docs
+        let invalid_sparkle_heart_bytes = vec![0, 159, 146, 150];
+
+        let invalid_sparkle_heart_str =
+            // SAFETY: This is actually not safe, but we're testing the case where someone has been unsafe in debug
+            unsafe { str::from_utf8_unchecked(&invalid_sparkle_heart_bytes) };
+
+        let (string, dropped) = StaticString::<10>::from_str_truncated(invalid_sparkle_heart_str);
+        expect_eq!(dropped, 0);
+
+        string.as_str();
     }
 }

@@ -3,10 +3,11 @@ use core::mem;
 use core::ops::{Deref, Index, IndexMut};
 use core::slice;
 
-/// Inline sequence of at most `CAPACITY` entries. Never allocates.
+/// Inline sequence of at most `CAPACITY` entries.
 pub struct StaticVec<T, const CAPACITY: usize> {
     /// Array of possibly initialized entries
     entries: [mem::MaybeUninit<T>; CAPACITY],
+    /// Number of used (initialized) elements
     len: usize,
 }
 
