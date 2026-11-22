@@ -1,6 +1,6 @@
 //! Fixed-capacity inline sequence.
 use core::mem;
-use core::ops::{Deref, Index, IndexMut};
+use core::ops::Deref;
 use core::slice;
 
 /// Inline sequence of at most `CAPACITY` entries.
@@ -266,20 +266,6 @@ impl<T, const CAPACITY: usize> Deref for StaticVec<T, CAPACITY> {
     }
 }
 
-impl<T, const CAPACITY: usize> Index<usize> for StaticVec<T, CAPACITY> {
-    type Output = T;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.as_slice()[index]
-    }
-}
-
-impl<T, const CAPACITY: usize> IndexMut<usize> for StaticVec<T, CAPACITY> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.as_mut_slice()[index]
-    }
-}
-
 #[cfg(feature = "serde")]
 impl<T: serde::Serialize, const CAPACITY: usize> serde::Serialize for StaticVec<T, CAPACITY> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -517,19 +503,21 @@ mod tests {
 
         expect_eq!(vec[0], 1);
         expect_eq!(vec[1], 2);
+        expect_eq!(&vec[..], &[1, 2]);
 
-        vec[0] = 11;
-        vec[1] = 22;
+        vec.as_mut_slice()[0] = 11;
+        vec.as_mut_slice()[1] = 22;
 
         expect_eq!(vec[0], 11);
         expect_eq!(vec[1], 22);
+        expect_eq!(&vec[..], &[11, 22]);
     }
 
     #[gtest]
     #[should_panic(expected = "out of bounds: the len is 2 but the index is 999")]
     fn index_out_of_bounds() {
         let vec = StaticVec::<usize, _>::from_array([1, 2]);
-        vec[999];
+        let _ = vec[999];
     }
 
     #[cfg(feature = "serde")]

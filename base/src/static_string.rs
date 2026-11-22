@@ -47,11 +47,6 @@ impl<const CAPACITY: usize> StaticString<CAPACITY> {
         self.static_vec.len()
     }
 
-    /// SAFETY: Caller must ensure that all input bytes form a valid utf8 string
-    pub unsafe fn push_unsafe(&mut self, byte: u8) -> bool {
-        self.static_vec.push(byte)
-    }
-
     /// Returns string and number of dropped bytes
     pub fn from_str_truncated(s: &str) -> (Self, usize) {
         let mut string = Self::new();
@@ -81,6 +76,13 @@ impl<const CAPACITY: usize> StaticString<CAPACITY> {
 
         // SAFETY: We made sure that the input str was utf8 in [`from_str_truncated`]
         unsafe { str::from_utf8_unchecked(self.static_vec.as_slice()) }
+    }
+
+    /// # Safety
+    /// Caller must ensure that all input bytes form a valid utf8 string
+    /// Use [`StaticString::as_utf8_checked`] to check whether the static string is utf8.
+    pub unsafe fn push_unsafe(&mut self, byte: u8) -> bool {
+        self.static_vec.push(byte)
     }
 
     /// Generally not needed, prefer [`StaticString::as_str`] since invariants will ensure that the
