@@ -1,5 +1,5 @@
 //! Fixed-capacity inline UTF8 string.
-use core::debug_assert_matches;
+use core::{debug_assert_matches, str::Utf8Error};
 
 use crate::StaticVec;
 
@@ -47,6 +47,11 @@ impl<const CAPACITY: usize> StaticString<CAPACITY> {
         self.static_vec.len()
     }
 
+    /// SAFETY: Caller must ensure that all input bytes form a valid utf8 string
+    pub unsafe fn push_unsafe(&mut self, byte: u8) -> bool {
+        self.static_vec.push(byte)
+    }
+
     /// Returns string and number of dropped bytes
     pub fn from_str_truncated(s: &str) -> (Self, usize) {
         let mut string = Self::new();
@@ -76,6 +81,12 @@ impl<const CAPACITY: usize> StaticString<CAPACITY> {
 
         // SAFETY: We made sure that the input str was utf8 in [`from_str_truncated`]
         unsafe { str::from_utf8_unchecked(self.static_vec.as_slice()) }
+    }
+
+    /// Generally not needed, prefer [`StaticString::as_str`] since invariants will ensure that the
+    /// underlying bytes are utf8.
+    pub fn as_utf8_checked(&self) -> Result<&str, Utf8Error> {
+        str::from_utf8(&self.static_vec)
     }
 }
 
@@ -129,6 +140,43 @@ impl<const CAPACITY: usize> TryFrom<&str> for StaticString<CAPACITY> {
         } else {
             Ok(truncated)
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<const CAPACITY: usize> serde::Serialize for StaticString<CAPACITY> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&self.as_str(), serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, const CAPACITY: usize> serde::Deserialize<'de> for StaticString<CAPACITY> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor<const CAPACITY: usize>();
+
+        impl<'de, const CAPACITY: usize> serde::de::Visitor<'de> for Visitor<CAPACITY> {
+            type Value = StaticString<CAPACITY>;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "a static string of at most {CAPACITY} bytes")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let (string, dropped_bytes) = StaticString::<CAPACITY>::from_str_truncated(v);
+                if dropped_bytes > CAPACITY {
+                    return Err(serde::de::Error::custom(format!(
+                        "sequence exceeds StaticVec capacity {CAPACITY}"
+                    )));
+                }
+
+                Ok(string)
+            }
+        }
+        deserializer.deserialize_str(Visitor::<CAPACITY> {})
     }
 }
 
@@ -296,5 +344,36 @@ mod tests {
         expect_eq!(dropped, 0);
 
         string.as_str();
+    }
+
+    #[cfg(feature = "serde")]
+    #[gtest]
+    fn serde_round_trip() {
+        let (input, dropped) = StaticString::<20>::from_str_truncated("hi");
+        assert_that!(dropped, eq(0));
+
+        let json = serde_json::to_string(&input).unwrap();
+        expect_eq!(json, "\"hi\"");
+
+        let round_trip: StaticString<20> = serde_json::from_str(&json).unwrap();
+        expect_eq!(round_trip, input);
+    }
+
+    #[cfg(feature = "serde")]
+    #[gtest]
+    fn serde_rejects_over_capacity() {
+        let (input, dropped) = StaticString::<5>::from_str_truncated("hello");
+        assert_that!(dropped, eq(0));
+
+        let json = serde_json::to_string(&input).unwrap();
+        expect_eq!(json, "\"hello\"");
+
+        let round_trip = serde_json::from_str::<StaticString<2>>(&json);
+        assert_true!(round_trip.is_err());
+        let err_string = format!("{}", round_trip.unwrap_err());
+        expect_that!(
+            err_string,
+            contains_substring("sequence exceeds StaticVec capacity 2")
+        );
     }
 }
