@@ -1,6 +1,6 @@
 //! Fixed-capacity inline sequence.
 use core::mem;
-use core::ops::Deref;
+use core::ops::{Deref, Index, IndexMut};
 use core::slice;
 
 /// Inline sequence of at most `CAPACITY` entries. Never allocates.
@@ -251,17 +251,31 @@ impl<T, const CAPACITY: usize> Drop for StaticVec<T, CAPACITY> {
     }
 }
 
-impl<T: Copy + Default, const CAPACITY: usize> Default for StaticVec<T, CAPACITY> {
+impl<T: Default, const CAPACITY: usize> Default for StaticVec<T, CAPACITY> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Copy + Default, const CAPACITY: usize> Deref for StaticVec<T, CAPACITY> {
+impl<T, const CAPACITY: usize> Deref for StaticVec<T, CAPACITY> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
         self.as_slice()
+    }
+}
+
+impl<T, const CAPACITY: usize> Index<usize> for StaticVec<T, CAPACITY> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.as_slice()[index]
+    }
+}
+
+impl<T, const CAPACITY: usize> IndexMut<usize> for StaticVec<T, CAPACITY> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.as_mut_slice()[index]
     }
 }
 
@@ -485,6 +499,38 @@ mod tests {
         let vec = StaticVec::<usize, 2>::new().push_const(1).push_const(2);
 
         expect_eq!("[1, 2]", format!("{}", vec));
+    }
+
+    #[gtest]
+    fn pin_types() {
+        use std::pin::Pin;
+        type SomePin = Pin<Box<usize>>;
+
+        let pinned = Box::pin(2usize);
+        let vec = StaticVec::<SomePin, 1>::from_array([pinned]);
+
+        expect_eq!(vec.len(), 1);
+    }
+
+    #[gtest]
+    fn index() {
+        let mut vec = StaticVec::<usize, _>::from_array([1, 2]);
+
+        expect_eq!(vec[0], 1);
+        expect_eq!(vec[1], 2);
+
+        vec[0] = 11;
+        vec[1] = 22;
+
+        expect_eq!(vec[0], 11);
+        expect_eq!(vec[1], 22);
+    }
+
+    #[gtest]
+    #[should_panic(expected = "out of bounds: the len is 2 but the index is 999")]
+    fn index_out_of_bounds() {
+        let vec = StaticVec::<usize, _>::from_array([1, 2]);
+        vec[999];
     }
 
     #[cfg(feature = "serde")]
