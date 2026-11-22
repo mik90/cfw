@@ -1,5 +1,5 @@
 //! Fixed-capacity inline UTF8 string.
-use core::{debug_assert_matches, str::Utf8Error};
+use core::debug_assert_matches;
 
 use crate::StaticVec;
 
@@ -74,21 +74,35 @@ impl<const CAPACITY: usize> StaticString<CAPACITY> {
         // for utf8 validity in debug.
         debug_assert_matches!(str::from_utf8(&self.static_vec), Ok(_));
 
-        // SAFETY: We made sure that the input str was utf8 in [`from_str_truncated`]
+        // SAFETY: Every constructor only appends bytes taken from valid `str` values.
         unsafe { str::from_utf8_unchecked(self.static_vec.as_slice()) }
     }
 
-    /// # Safety
-    /// Caller must ensure that all input bytes form a valid utf8 string
-    /// Use [`StaticString::as_utf8_checked`] to check whether the static string is utf8.
-    pub unsafe fn push_unsafe(&mut self, byte: u8) -> bool {
-        self.static_vec.push(byte)
+    /// Appends `s`, returning false and leaving the string unchanged when it does not fit.
+    ///
+    /// Concatenating two valid UTF8 strings is valid UTF8, so this needs no checks on
+    /// the appended bytes.
+    pub fn push_str(&mut self, s: &str) -> bool {
+        if s.len() > (CAPACITY - self.len()) {
+            return false;
+        }
+
+        self.push_str_truncated(s);
+        true
     }
 
-    /// Generally not needed, prefer [`StaticString::as_str`] since invariants will ensure that the
-    /// underlying bytes are utf8.
-    pub fn as_utf8_checked(&self) -> Result<&str, Utf8Error> {
-        str::from_utf8(&self.static_vec)
+    /// Appends the prefix of `s` that fits, truncating at a UTF8 boundary.
+    ///
+    /// Returns the number of bytes that did not fit.
+    pub fn push_str_truncated(&mut self, s: &str) -> usize {
+        let str_end_index = s.floor_char_boundary(CAPACITY - self.len());
+        let dropped_bytes = s.len() - str_end_index;
+
+        for byte in &s.as_bytes()[..str_end_index] {
+            self.static_vec.push(*byte);
+        }
+
+        dropped_bytes
     }
 }
 
@@ -267,6 +281,50 @@ mod tests {
             "Drop off the byte size difference between the full and expected string"
         );
         expect_eq!(truncated_string, expected_string);
+    }
+
+    #[gtest]
+    fn push_str_appends() {
+        let mut string = StaticString::<11>::from_str_truncated("hello").0;
+        expect_true!(string.push_str(" world"));
+        expect_eq!(string, "hello world");
+        expect_eq!(string.len(), 11);
+    }
+
+    #[gtest]
+    fn push_str_rejects_when_it_does_not_fit() {
+        let mut string = StaticString::<5>::from_str_truncated("hello").0;
+        expect_false!(string.push_str("!"));
+        expect_eq!(string, "hello");
+    }
+
+    #[gtest]
+    fn push_str_truncated_appends_whole_string_when_it_fits() {
+        let mut string = StaticString::<11>::from_str_truncated("hello").0;
+        expect_eq!(string.push_str_truncated(" world"), 0);
+        expect_eq!(string, "hello world");
+    }
+
+    #[gtest]
+    fn push_str_truncated_drops_overflow() {
+        let mut string = StaticString::<8>::from_str_truncated("hello").0;
+        expect_eq!(string.push_str_truncated(" world"), 3);
+        expect_eq!(string, "hello wo");
+        expect_eq!(string.len(), 8);
+    }
+
+    #[gtest]
+    fn push_str_truncated_respects_utf8_boundaries() {
+        let mut string = StaticString::<2>::new();
+        expect_eq!(string.push_str_truncated("aé"), 2);
+        expect_eq!(string, "a");
+    }
+
+    #[gtest]
+    fn push_str_truncated_drops_everything_when_full() {
+        let mut string = StaticString::<5>::from_str_truncated("hello").0;
+        expect_eq!(string.push_str_truncated("world"), 5);
+        expect_eq!(string, "hello");
     }
 
     #[gtest]
