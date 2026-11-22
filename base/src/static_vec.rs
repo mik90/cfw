@@ -281,9 +281,7 @@ impl<T, const CAPACITY: usize> IndexMut<usize> for StaticVec<T, CAPACITY> {
 }
 
 #[cfg(feature = "serde")]
-impl<T: Copy + Default + serde::Serialize, const CAPACITY: usize> serde::Serialize
-    for StaticVec<T, CAPACITY>
-{
+impl<T: serde::Serialize, const CAPACITY: usize> serde::Serialize for StaticVec<T, CAPACITY> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serde::Serialize::serialize(self.as_slice(), serializer)
     }
@@ -292,13 +290,13 @@ impl<T: Copy + Default + serde::Serialize, const CAPACITY: usize> serde::Seriali
 #[cfg(feature = "serde")]
 impl<'de, T, const CAPACITY: usize> serde::Deserialize<'de> for StaticVec<T, CAPACITY>
 where
-    T: Copy + Default + serde::Deserialize<'de>,
+    T: serde::Deserialize<'de>,
 {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Visitor<T, const CAPACITY: usize>(core::marker::PhantomData<T>);
         impl<'de, T, const CAPACITY: usize> serde::de::Visitor<'de> for Visitor<T, CAPACITY>
         where
-            T: Copy + Default + serde::Deserialize<'de>,
+            T: serde::Deserialize<'de>,
         {
             type Value = StaticVec<T, CAPACITY>;
 
